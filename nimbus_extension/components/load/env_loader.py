@@ -126,7 +126,7 @@ class EnvLoader(SceneLoader):
                 self.simulation_app = SimulationApp(launch_config)
 
         if workflow_type == "SimBoxDualWorkFlow":
-            from nav2.isaac_ros_clock import ensure_isaac_ros2_bridge_ready
+            from nav2.bridge.clock import ensure_isaac_ros2_bridge_ready
 
             ensure_isaac_ros2_bridge_ready(simulation_app=self.simulation_app)
 

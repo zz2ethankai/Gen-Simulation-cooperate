@@ -494,3 +494,4 @@ docker compose run --rm isaac-sim bash -lc "/isaac-sim/python.sh -c 'import omni
 [7]: https://docs.nav2.org/development_guides/build_docs/index.html "Build and Install — Nav2 1.0.0 documentation"
 [8]: https://docs.isaacsim.omniverse.nvidia.com/4.5.0/ros2_tutorials/ros2_landing_page.html?utm_source=chatgpt.com "ROS and ROS 2 — Isaac Sim Documentation"
 [9]: https://docs.isaacsim.omniverse.nvidia.com/4.5.0/ros2_tutorials/tutorial_ros2_rtx_lidar.html?utm_source=chatgpt.com "RTX Lidar Sensors — Isaac Sim Documentation"
+> 历史文档：本教程描述的是早期示例目录结构，与当前仓库中的 `nav2/container`、`nav2/bridge`、`nav2/mapgen`、`nav2/runtime` 实际布局不一致。

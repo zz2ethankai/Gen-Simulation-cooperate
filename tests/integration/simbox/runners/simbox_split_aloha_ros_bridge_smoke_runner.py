@@ -85,7 +85,7 @@ def run_smoke(config_path: str, output_path: str, steps: int, wheel_velocity: fl
         except ImportError as exc:
             raise RuntimeError(f"ROS message packages are required for this smoke test: {exc}") from exc
 
-        from workflows.simbox.core.mobile.bridge import RangerMiniV3Bridge
+        from workflows.simbox.core.mobile import build_mobile_base_bridge
 
         print("[smoke] initializing environment", flush=True)
         init_env()
@@ -108,10 +108,7 @@ def run_smoke(config_path: str, output_path: str, steps: int, wheel_velocity: fl
         robot = _find_split_aloha(workflow)
         base_interface = robot.get_base_interface()
         print("[smoke] creating direct /cmd_vel 4WIS bridge", flush=True)
-        bridge = RangerMiniV3Bridge(
-            robot,
-            node_name="split_aloha_ros_bridge_smoke",
-        )
+        bridge = build_mobile_base_bridge(robot, node_name="split_aloha_ros_bridge_smoke")
         monitor_node = Node("split_aloha_ros_smoke_monitor")
         report["status"] = "running"
 

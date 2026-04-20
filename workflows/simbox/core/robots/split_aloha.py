@@ -329,3 +329,44 @@ class SplitAloha(TemplateRobot):
             "steering_velocities": joint_velocities[self.base_steering_joint_indices].copy(),
             "wheel_velocities": joint_velocities[self.base_wheel_joint_indices].copy(),
         }
+
+    @staticmethod
+    def _yaw_from_wxyz(q_wxyz):
+        w = float(q_wxyz[0])
+        x = float(q_wxyz[1])
+        y = float(q_wxyz[2])
+        z = float(q_wxyz[3])
+        return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+    def get_observations(self) -> dict:
+        obs = super().get_observations()
+        if not self.base_steering_joint_indices and not self.base_wheel_joint_indices:
+            return obs
+
+        bridge = getattr(self, "_simbox_ros_base_bridge", None)
+        if bridge is not None and hasattr(bridge, "get_logging_state_snapshot"):
+            base_state = bridge.get_logging_state_snapshot()
+        else:
+            translation, orientation = self.get_mobile_base_pose()
+            joint_state = self.get_base_joint_state()
+            base_state = {
+                "pose": [
+                    float(translation[0]),
+                    float(translation[1]),
+                    float(translation[2]),
+                    float(self._yaw_from_wxyz(orientation)),
+                ],
+                "twist_body": [0.0, 0.0, 0.0],
+                "steering_positions": [float(v) for v in joint_state["steering_positions"].tolist()],
+                "wheel_positions": [float(v) for v in joint_state["wheel_positions"].tolist()],
+                "steering_velocities": [float(v) for v in joint_state["steering_velocities"].tolist()],
+                "wheel_velocities": [float(v) for v in joint_state["wheel_velocities"].tolist()],
+            }
+
+        obs["states.base.pose"] = np.asarray(base_state["pose"], dtype=np.float32)
+        obs["states.base.twist_body"] = np.asarray(base_state["twist_body"], dtype=np.float32)
+        obs["states.base.steering_positions"] = np.asarray(base_state["steering_positions"], dtype=np.float32)
+        obs["states.base.wheel_positions"] = np.asarray(base_state["wheel_positions"], dtype=np.float32)
+        obs["states.base.steering_velocities"] = np.asarray(base_state["steering_velocities"], dtype=np.float32)
+        obs["states.base.wheel_velocities"] = np.asarray(base_state["wheel_velocities"], dtype=np.float32)
+        return obs

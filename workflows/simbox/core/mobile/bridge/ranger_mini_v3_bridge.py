@@ -15,8 +15,8 @@ class RangerMiniV3Bridge(BaseBridge):
 
     def __init__(self, robot, node_name: str = "ranger_mini_v3_bridge", driver=None):
         self._module_positions = np.zeros((4, 2), dtype=np.float32)
-        self._body_twist_deadband = 1.0e-4
-        self._module_speed_deadband = 1.0e-5
+        self._body_twist_deadband = 0.0
+        self._module_speed_deadband = 0.0
         super().__init__(robot=robot, node_name=node_name, driver=driver)
 
     def _validate_bridge_configuration(self, *, steering_count: int, wheel_count: int):
@@ -36,8 +36,12 @@ class RangerMiniV3Bridge(BaseBridge):
             ],
             dtype=np.float32,
         )
-        self._body_twist_deadband = float(self.base_cfg.get("body_twist_deadband", 1.0e-4))
-        self._module_speed_deadband = float(self.base_cfg.get("module_speed_deadband", 1.0e-5))
+        if "body_twist_deadband" not in self.base_cfg:
+            raise KeyError("Missing required numeric config: body_twist_deadband")
+        if "module_speed_deadband" not in self.base_cfg:
+            raise KeyError("Missing required numeric config: module_speed_deadband")
+        self._body_twist_deadband = float(self.base_cfg["body_twist_deadband"])
+        self._module_speed_deadband = float(self.base_cfg["module_speed_deadband"])
 
     def _map_command(self, command: BaseCommand) -> tuple[np.ndarray, np.ndarray]:
         current_steering = self._last_applied_steering.astype(np.float32).copy()

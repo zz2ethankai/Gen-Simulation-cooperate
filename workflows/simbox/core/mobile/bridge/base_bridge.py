@@ -76,6 +76,7 @@ class BaseBridge(ABC):
 
         now_sec = self._now_sec()
         self._command = BaseCommand.zero(received_time_sec=now_sec)
+        self._last_step_command = BaseCommand.zero(received_time_sec=now_sec)
         self._last_applied_steering = np.zeros(steering_count, dtype=np.float32)
         self._last_requested_steering = np.zeros(steering_count, dtype=np.float32)
         self._last_requested_wheel_velocities = np.zeros(wheel_count, dtype=np.float32)
@@ -130,6 +131,7 @@ class BaseBridge(ABC):
         self._last_step_dt = dt
 
         command = self._resolve_active_command(now_sec)
+        self._last_step_command = command
         requested_steering, wheel_velocities = self._map_command(command)
         self._last_requested_steering = requested_steering.astype(np.float32).copy()
         self._last_requested_wheel_velocities = wheel_velocities.astype(np.float32).copy()
@@ -183,6 +185,47 @@ class BaseBridge(ABC):
         if now_sec - self._command.received_time_sec <= self._command_timeout:
             return self._command
         return BaseCommand.zero(received_time_sec=self._command.received_time_sec)
+
+    def get_logging_action_snapshot(self) -> dict:
+        command = self._last_step_command
+        return {
+            "vx_body": float(command.vx_body),
+            "vy_body": float(command.vy_body),
+            "wz_body": float(command.wz_body),
+            "requested_steering": [float(v) for v in self._last_requested_steering.tolist()],
+            "requested_wheel_velocities": [float(v) for v in self._last_requested_wheel_velocities.tolist()],
+        }
+
+    def get_logging_state_snapshot(self) -> dict:
+        translation, orientation = self._get_robot_base_pose()
+        translation = np.asarray(translation, dtype=np.float32)
+        yaw = float(self._yaw_from_wxyz(orientation))
+        dt = max(float(self._last_step_dt), 1e-3)
+        linear_velocity_world = (translation - self._last_actual_translation) / dt
+        yaw_delta = self._wrap_angle(yaw - self._last_actual_yaw)
+        angular_velocity_world = np.array([0.0, 0.0, yaw_delta / dt], dtype=np.float32)
+        linear_velocity_body = self._world_linear_velocity_to_body(linear_velocity_world, orientation)
+        joint_state = self.robot.get_base_joint_state()
+
+        return {
+            "pose": [
+                float(translation[0]),
+                float(translation[1]),
+                float(translation[2]),
+                float(yaw),
+            ],
+            "twist_body": [
+                float(linear_velocity_body[0]),
+                float(linear_velocity_body[1]),
+                float(angular_velocity_world[2]),
+            ],
+            "steering_positions": [float(v) for v in np.asarray(joint_state["steering_positions"]).reshape(-1).tolist()],
+            "wheel_positions": [float(v) for v in np.asarray(joint_state["wheel_positions"]).reshape(-1).tolist()],
+            "steering_velocities": [
+                float(v) for v in np.asarray(joint_state["steering_velocities"]).reshape(-1).tolist()
+            ],
+            "wheel_velocities": [float(v) for v in np.asarray(joint_state["wheel_velocities"]).reshape(-1).tolist()],
+        }
 
     def _apply_steering_limits(self, requested_positions: np.ndarray, dt: float):
         requested_positions = np.clip(requested_positions, -self._steering_limit, self._steering_limit)

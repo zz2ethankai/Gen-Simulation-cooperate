@@ -409,13 +409,11 @@ def main():
 
         command_pub = bridge.node.create_publisher(Twist, bridge.ros_cfg["cmd_vel_topic"], 10)
 
-        navigator = None
         if bool(args.use_nav2):
-            navigator = workflow._nav2_navigators.get(split_aloha.name)
-            if navigator is None:
-                raise RuntimeError(
-                    "Nav2 is enabled by --use-nav2 but workflow has no Nav2 navigator for SplitAloha"
-                )
+            raise RuntimeError(
+                "Legacy --use-nav2 recording mode was removed. "
+                "Use the current navigate skill pipeline instead of the deprecated local Nav2Navigator path."
+            )
 
         output_filename = Path(args.output_path).name
         output_root = Path(args.output_root)
@@ -491,13 +489,6 @@ def main():
         reached_step = -1
         nav2_result_status = None
 
-        if bool(args.use_nav2):
-            navigator.send_goal(
-                x=float(target_world_xy[0]),
-                y=float(target_world_xy[1]),
-                yaw=float(target_world_yaw),
-            )
-
         for step_idx in range(max_steps):
             current_world_pose = split_aloha.get_world_pose()
             current_xy = np.asarray(current_world_pose[0][:2], dtype=np.float32)
@@ -512,45 +503,25 @@ def main():
             heading_err = _wrap_angle(desired_heading - current_yaw)
             yaw_err = _wrap_angle(target_yaw - current_yaw)
 
-            if bool(args.use_nav2):
-                nav2_result_status = navigator.latest_result_status
-                if nav2_result_status == int(args.nav2_success_status):
-                    reached_target = True
-                    reached_step = step_idx
-                    command_pub.publish(Twist())
-                    workflow._step_world(render=True)
-                    frame = _normalize_rgb(camera.get_observations()["color_image"])
-                    frames.append(frame)
-                    break
-
-                if dist_err <= position_tolerance and (not require_yaw or abs(yaw_err) <= yaw_tolerance):
-                    reached_target = True
-                    reached_step = step_idx
-                    command_pub.publish(Twist())
-                    workflow._step_world(render=True)
-                    frame = _normalize_rgb(camera.get_observations()["color_image"])
-                    frames.append(frame)
-                    break
+            cmd = Twist()
+            if dist_err > position_tolerance:
+                linear_cmd = min(linear_speed_limit, linear_kp * dist_err)
+                heading_scale = max(0.0, math.cos(heading_err))
+                linear_cmd *= heading_scale
+                angular_cmd = max(-angular_speed_limit, min(angular_speed_limit, angular_kp * heading_err))
+                cmd.linear.x = float(linear_cmd)
+                cmd.angular.z = float(angular_cmd)
             else:
-                cmd = Twist()
-                if dist_err > position_tolerance:
-                    linear_cmd = min(linear_speed_limit, linear_kp * dist_err)
-                    heading_scale = max(0.0, math.cos(heading_err))
-                    linear_cmd *= heading_scale
-                    angular_cmd = max(-angular_speed_limit, min(angular_speed_limit, angular_kp * heading_err))
-                    cmd.linear.x = float(linear_cmd)
-                    cmd.angular.z = float(angular_cmd)
-                else:
-                    if not require_yaw or abs(yaw_err) <= yaw_tolerance:
-                        reached_target = True
-                        reached_step = step_idx
-                        command_pub.publish(Twist())
-                        workflow._step_world(render=True)
-                        frame = _normalize_rgb(camera.get_observations()["color_image"])
-                        frames.append(frame)
-                        break
-                    cmd.linear.x = 0.0
-                    cmd.angular.z = float(max(-angular_speed_limit, min(angular_speed_limit, angular_kp * yaw_err)))
+                if not require_yaw or abs(yaw_err) <= yaw_tolerance:
+                    reached_target = True
+                    reached_step = step_idx
+                    command_pub.publish(Twist())
+                    workflow._step_world(render=True)
+                    frame = _normalize_rgb(camera.get_observations()["color_image"])
+                    frames.append(frame)
+                    break
+                cmd.linear.x = 0.0
+                cmd.angular.z = float(max(-angular_speed_limit, min(angular_speed_limit, angular_kp * yaw_err)))
 
                 command_pub.publish(cmd)
 

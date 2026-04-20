@@ -217,8 +217,8 @@ def smooth_path(self, world_path: list[Pose2D]) -> list[Pose2D]: ...
 
 文件建议：
 
-- `workflows/simbox/mobile/controllers/mobile_controller.py`
-- `workflows/simbox/mobile/controllers/split_aloha_controller.py`
+- `workflows/simbox/core/mobile/bridge/base_bridge.py`
+- `workflows/simbox/core/mobile/bridge/ranger_mini_v3_bridge.py`
 
 #### 5.1 MobileController
 

@@ -4,7 +4,9 @@ from .lmdb_logger import LmdbLogger
 
 
 # pylint: disable=line-too-long,unused-argument
-def log_dual_obs(logger: LmdbLogger, obs, action_dict, controllers, step_idx=0):
+def log_dual_obs(logger: LmdbLogger, obs, action_dict, controllers, base_bridges=None, step_idx=0):
+    base_bridges = base_bridges or {}
+
     # Add robots' proprio
     for robot_name, robot_infos in obs["robots"].items():
         for key in robot_infos.keys():
@@ -15,6 +17,19 @@ def log_dual_obs(logger: LmdbLogger, obs, action_dict, controllers, step_idx=0):
             for object_name in obs["objects"].keys():
                 for attr_name, attr_value in obs["objects"][object_name].items():
                     logger.add_object_data(robot_name, f"{object_name}/{attr_name}", attr_value)
+
+        base_bridge = base_bridges.get(robot_name)
+        if base_bridge is not None and hasattr(base_bridge, "get_logging_action_snapshot"):
+            base_action = base_bridge.get_logging_action_snapshot()
+            logger.add_action_data(robot_name, "base_actions.vx_body", base_action["vx_body"])
+            logger.add_action_data(robot_name, "base_actions.vy_body", base_action["vy_body"])
+            logger.add_action_data(robot_name, "base_actions.wz_body", base_action["wz_body"])
+            logger.add_action_data(robot_name, "base_actions.requested_steering", base_action["requested_steering"])
+            logger.add_action_data(
+                robot_name,
+                "base_actions.requested_wheel_velocities",
+                base_action["requested_wheel_velocities"],
+            )
 
         # Add robots' action data (very very important)
         if "split_aloha" in robot_name or "lift2" in robot_name or "azure_loong" in robot_name or "genie" in robot_name:

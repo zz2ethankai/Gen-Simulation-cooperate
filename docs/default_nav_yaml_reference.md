@@ -11,18 +11,18 @@
 ### `ros.localization.map_output_dir`
 
 - 含义：静态地图导出目录
-- 使用位置：`workflows/simbox/core/mobile/nav2/runtime.py`
+- 使用位置：`nav2/runtime/config.py`
 - 实际作用：`IsaacStaticMapExporter` 会把导出的 `map.pgm` 和 `map.yaml` 写到这个目录下
 
 ### `ros.nav2.enabled`
 
-- 含义：是否启用 `Nav2Navigator`
-- 使用位置：`workflows/simbox/core/mobile/nav2/nav2_navigator.py`
+- 含义：是否启用 split Isaac/Nav2 导航链路
+- 使用位置：`nav2/runtime/__init__.py`
 
 ### `nav2_skill.bt_navigator.plugin_lib_names`
 
 - 含义：Nav2 BT Navigator 需要加载的插件库列表
-- 使用位置：`workflows/simbox/core/mobile/nav2/runtime.py`
+- 使用位置：`nav2/runtime/config.py`
 - 说明：当前实现会把这一项直接写进 Nav2 参数文件，通常不建议删空
 
 ## 已删除内容
@@ -49,8 +49,8 @@
 
 静态地图不是来自 Isaac Sim 自带 occupied map 扩展接口，而是项目内自定义导出器直接读取 USD / collision geometry 后生成的：
 
-- `workflows/simbox/core/mobile/nav2/localization_stack.py`
+- `nav2/mapgen/exporter.py`
 
 运行时入口在：
 
-- `workflows/simbox/core/mobile/nav2/runtime.py`
+- `nav2/runtime/__init__.py`

@@ -320,7 +320,6 @@ def run_steering_probe(
         world = _build_world(simulator_cfg)
         workflow = create_workflow(workflow_type, world, task_cfg_path)
         workflow.init_task(0)
-        workflow._destroy_nav2_navigators()
         workflow._destroy_ros_base_bridges()
 
         robot = _find_split_aloha(workflow)

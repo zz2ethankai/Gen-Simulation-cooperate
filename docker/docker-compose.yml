@@ -41,7 +41,7 @@ services:
   nav2:
     build:
       context: ..
-      dockerfile: nav2/Dockerfile
+      dockerfile: nav2/container/Dockerfile
     image: local/ros2-humble-nav2:latest
     container_name: nav2
     network_mode: host

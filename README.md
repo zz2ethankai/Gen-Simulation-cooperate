@@ -44,10 +44,49 @@ The repository now includes an in-repo split deployment layout for running Isaac
 - `docker/isaac/`: Isaac Sim image and runtime entrypoint
 - `nav2/`: standalone Nav2 package containing container assets, ROS-side helpers, and shared client/runtime code
 
-Bring up the split stack with:
+Prerequisites:
+
+- Docker Engine with Compose v2
+- NVIDIA Container Toolkit and a visible GPU on the host
+- Enough local disk space for Isaac caches under `.docker/isaac-sim/`
+
+Build and start the split stack from the repository root with:
 
 ```bash
-docker compose up --build isaac nav2
+docker compose -f docker/docker-compose.yml build
+docker compose -f docker/docker-compose.yml up -d isaac nav2
+```
+
+Watch logs:
+
+```bash
+docker compose -f docker/docker-compose.yml logs -f isaac
+docker compose -f docker/docker-compose.yml logs -f nav2
+```
+
+Stop the stack:
+
+```bash
+docker compose -f docker/docker-compose.yml down
+```
+
+The default startup behavior is:
+
+- `isaac` autostarts `launcher.py` with `configs/de_plan_with_render_template.yaml`
+- `nav2` autostarts the in-repo Nav2 bridge and bringup stack
+
+Generated data and logs are written to:
+
+- run logs: `output/simbox_plan_with_render/de_time_profile_*.log`
+- rendered episodes and LMDB exports: `output/simbox_plan_with_render/...`
+- Isaac container logs/cache mounts: `.docker/isaac-sim/`
+
+If you prefer to run from the `docker/` directory directly, the equivalent commands are:
+
+```bash
+cd docker
+docker compose build
+docker compose up -d isaac nav2
 ```
 
 By default, the Isaac workflow writes external Nav2 runtime requests to `output/ros_bridge/runtime_requests`, and the ROS service watches that directory to launch or refresh the corresponding Nav2 stack.

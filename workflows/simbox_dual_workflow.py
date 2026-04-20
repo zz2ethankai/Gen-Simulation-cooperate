@@ -65,14 +65,13 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         self.random_seed = random_seed
         self._ros_base_command_controllers = {}
         self._ros_base_bridges = {}
-        self._nav2_navigators = {}
         self._navigation_session_managers = {}
         self._nav2_clock_publisher = None
         self._ros_bridge_unavailable_reported = False
         super().__init__(world, task_cfg_path)
 
     @staticmethod
-    def _task_uses_nav2_skill(task_cfg: dict, robot_name: str) -> bool:
+    def _task_uses_navigation_skill(task_cfg: dict, robot_name: str) -> bool:
         skills = task_cfg.get("skills", [])
         if not isinstance(skills, list):
             return False
@@ -89,7 +88,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                     if not isinstance(lr_skill_list, list):
                         continue
                     for skill_cfg in lr_skill_list:
-                        if isinstance(skill_cfg, dict) and str(skill_cfg.get("name", "")).strip() == "nav2__navigate":
+                        if isinstance(skill_cfg, dict) and str(skill_cfg.get("name", "")).strip() == "navigate":
                             return True
         return False
 
@@ -107,7 +106,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             if not isinstance(robot, dict):
                 continue
             robot_name = str(robot.get("name", "")).strip()
-            if not robot_name or not self._task_uses_nav2_skill(task_cfg, robot_name):
+            if not robot_name or not self._task_uses_navigation_skill(task_cfg, robot_name):
                 continue
             base_cfg = robot.get("base", {})
             if not isinstance(base_cfg, dict):
@@ -118,7 +117,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
     def _skill_requires_controller(skill_cfg: dict) -> bool:
         if not isinstance(skill_cfg, dict):
             return True
-        return str(skill_cfg.get("name", "")).strip() != "nav2__navigate"
+        return str(skill_cfg.get("name", "")).strip() != "navigate"
 
     def _skill_controller_names(self, task_cfg: dict, robot_name: str) -> set[str]:
         controller_names = set()
@@ -429,7 +428,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         self._ros_base_command_controllers = {}
         self._ros_base_bridges = {}
         try:
-            from .simbox.core.mobile.bridge import RangerMiniV3Bridge
+            from .simbox.core.mobile import build_mobile_base_bridge
         except Exception as exc:
             if not self._ros_bridge_unavailable_reported:
                 print(f"[ros-base-bridge] ROS bridge unavailable, skip initialization: {exc}")
@@ -452,10 +451,11 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             if not bool(ros_cfg.get("enabled", True)):
                 continue
 
-            bridge_node_name = f"{robot_name}_ranger_mini_v3_bridge".replace("-", "_")
+            platform_profile = str(dict(base_cfg.get("platform", {})).get("profile", "mobile_base")).replace("-", "_")
+            bridge_node_name = f"{robot_name}_{platform_profile}_bridge".replace("-", "_")
             bridge = None
             try:
-                bridge = RangerMiniV3Bridge(robot, node_name=bridge_node_name)
+                bridge = build_mobile_base_bridge(robot, node_name=bridge_node_name)
             except Exception as exc:
                 print(f"[ros-base-bridge] Failed to initialize bridge for '{robot_name}': {exc}")
                 if bridge is not None:
@@ -467,7 +467,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             self._ros_base_bridges[robot_name] = bridge
             setattr(robot, "_simbox_ros_base_command_controller", None)
             setattr(robot, "_simbox_ros_base_bridge", bridge)
-            print(f"[ros-base-bridge] '{robot_name}' using DIRECT /cmd_vel 4WIS bridge")
+            print(f"[ros-base-bridge] '{robot_name}' using chassis-specific DIRECT /cmd_vel bridge")
 
         if self._ros_base_bridges:
             robot_names = sorted(self._ros_base_bridges.keys())
@@ -534,7 +534,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
 
     def _initialize_navigation_session_managers(self):
         try:
-            from nav2.isaac_ros_clock import SimClockPublisher
+            from nav2.bridge.clock import SimClockPublisher
             from nav2.runtime import PersistentNav2RuntimeManager
         except Exception as exc:
             print(f"[ros-nav2-runtime] Runtime manager unavailable, skip initialization: {exc}")
@@ -642,9 +642,6 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             print(f"[ros-nav2-runtime] Clock publisher destroy failed: {exc}")
         self._nav2_clock_publisher = None
 
-    def _destroy_nav2_navigators(self):
-        self._nav2_navigators = {}
-
     def _destroy_ros_base_bridges(self):
         for robot_name, controller in list(self._ros_base_command_controllers.items()):
             try:
@@ -728,6 +725,11 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 pass
 
     def _randomization_layout_mem(self):
+        self._prepare_navigation_session_managers_for_reset()
+        self._destroy_navigation_session_managers()
+        self._destroy_nav2_clock_publisher()
+        self._destroy_ros_base_bridges()
+
         # Reset world
         self.world.reset()
 
@@ -743,6 +745,8 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         # Reset skills
         del self.skills
         self.skills = self._initialize_skills(self.task, self.task_cfg, self.controllers, self.world)
+        self._initialize_ros_base_bridges()
+        self._initialize_navigation_session_managers()
 
         # Warmup
         for _ in range(20):
@@ -760,6 +764,11 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         # episode_stats["current_times"] += 1
 
     def _randomization_layout(self):
+        self._prepare_navigation_session_managers_for_reset()
+        self._destroy_navigation_session_managers()
+        self._destroy_nav2_clock_publisher()
+        self._destroy_ros_base_bridges()
+
         # Reset world
         self.world.reset()
 
@@ -786,6 +795,8 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             del self.skills
 
         self.skills = self._initialize_skills(self.task, self.task_cfg, self.controllers, self.world)
+        self._initialize_ros_base_bridges()
+        self._initialize_navigation_session_managers()
 
         # Warmup
         for _ in range(20):
@@ -949,19 +960,37 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                                 "raw_action": action,
                             }
             elif not self.skills and episode_success:
-                print("Task is successful")
                 end = True
                 for j_idx in range(1, 7):
                     self._step_world(render=False)
                     obs = self.world.get_observations()
-                    log_dual_obs(self.logger, obs, action_dict, self.controllers, step_idx=step_id + j_idx)
+                    log_dual_obs(
+                        self.logger,
+                        obs,
+                        action_dict,
+                        self.controllers,
+                        self._ros_base_bridges,
+                        step_idx=step_id + j_idx,
+                    )
                     self.world_recorder.record()
 
+                self.logger.info(
+                    "Task is successful, mode=generate_seq, final_step=%d, recorded_tail_frames=%d",
+                    step_id,
+                    6,
+                )
                 episode_stats["succeed_times"] += 1
                 should_continue = False
 
             if record_flag:
-                log_dual_obs(self.logger, obs, action_dict, self.controllers, step_idx=step_id)
+                log_dual_obs(
+                    self.logger,
+                    obs,
+                    action_dict,
+                    self.controllers,
+                    self._ros_base_bridges,
+                    step_idx=step_id,
+                )
                 self.world_recorder.record()
             self.task.apply_action(action_dict)
             self._step_world(render=False)
@@ -1175,20 +1204,38 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                                 "raw_action": action,
                             }
             elif not self.skills and episode_success:
-                print("Task is successful")
                 end = True
                 for j_idx in range(1, 7):
                     self._step_world(render=True)
                     obs = self.world.get_observations()
-                    log_dual_obs(self.logger, obs, action_dict, self.controllers, step_idx=step_id + j_idx)
+                    log_dual_obs(
+                        self.logger,
+                        obs,
+                        action_dict,
+                        self.controllers,
+                        self._ros_base_bridges,
+                        step_idx=step_id + j_idx,
+                    )
                     self._record_rgb_depth(step_id + j_idx)
                     self.world_recorder.record()
                 length = step_id + 6
+                self.logger.info(
+                    "Task is successful, mode=plan_with_render, final_step=%d, recorded_length=%d",
+                    step_id,
+                    length,
+                )
                 episode_stats["succeed_times"] += 1
                 should_continue = False
 
             if record_flag:
-                log_dual_obs(self.logger, obs, action_dict, self.controllers, step_idx=step_id)
+                log_dual_obs(
+                    self.logger,
+                    obs,
+                    action_dict,
+                    self.controllers,
+                    self._ros_base_bridges,
+                    step_idx=step_id,
+                )
                 self._record_rgb_depth(step_id)
             self.task.apply_action(action_dict)
             self._step_world(render=True)

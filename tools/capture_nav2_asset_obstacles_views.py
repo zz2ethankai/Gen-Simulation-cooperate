@@ -9,8 +9,8 @@ import yaml
 from isaacsim import SimulationApp
 
 
-TASK_CFG_PATH = "workflows/simbox/core/configs/tasks/navigation/split_aloha/nav2_asset_obstacles.yaml"
-OUTPUT_ROOT = "output/ros_bridge/nav2_asset_obstacles_capture"
+TASK_CFG_PATH = "workflows/simbox/core/configs/tasks/navigation/split_aloha/navigate_asset_obstacles.yaml"
+OUTPUT_ROOT = "output/ros_bridge/navigate_asset_obstacles_capture"
 
 
 def _ensure_dir(path: str):
@@ -56,11 +56,11 @@ def main():
             workflow._step_world(render=True)  # pylint: disable=protected-access
 
         obs = workflow.task.get_observations()
-        for camera_name in ("nav2_global", "split_aloha_head", "split_aloha_hand_left", "split_aloha_hand_right"):
+        for camera_name in ("navigate_global", "split_aloha_head", "split_aloha_hand_left", "split_aloha_hand_right"):
             camera_obs = obs["cameras"][camera_name]
             _save_rgb(os.path.join(output_dir, f"{camera_name}.png"), np.asarray(camera_obs["color_image"]))
 
-        global_camera = workflow.task.cameras["nav2_global"]
+        global_camera = workflow.task.cameras["navigate_global"]
         for obj_cfg in task_cfg["objects"]:
             name = obj_cfg["name"]
             tx, ty, _ = obj_cfg["translation"]
@@ -71,13 +71,13 @@ def main():
             )
             for _ in range(4):
                 workflow._step_world(render=True)  # pylint: disable=protected-access
-            obstacle_obs = workflow.task.get_observations()["cameras"]["nav2_global"]
+            obstacle_obs = workflow.task.get_observations()["cameras"]["navigate_global"]
             _save_rgb(os.path.join(output_dir, f"{name}.png"), np.asarray(obstacle_obs["color_image"]))
 
         summary = {
             "task_cfg_path": TASK_CFG_PATH,
             "output_dir": output_dir,
-            "cameras": ["nav2_global", "split_aloha_head", "split_aloha_hand_left", "split_aloha_hand_right"],
+            "cameras": ["navigate_global", "split_aloha_head", "split_aloha_hand_left", "split_aloha_hand_right"],
             "obstacles": [obj["name"] for obj in task_cfg["objects"]],
         }
         with open(os.path.join(output_dir, "summary.yaml"), "w", encoding="utf-8") as f:
