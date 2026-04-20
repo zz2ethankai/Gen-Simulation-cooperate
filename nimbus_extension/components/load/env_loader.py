@@ -60,16 +60,27 @@ class EnvLoader(SceneLoader):
         if isinstance(rendering_dt, str):
             rendering_dt = float(Fraction(rendering_dt))
 
+        cuda_device = simulator.get("active_gpu", None)
+        if cuda_device is not None:
+            import torch
+            torch.cuda.set_device(cuda_device)
+            self.logger.info(f"PyTorch default CUDA device set to cuda:{cuda_device}")
+
         from isaacsim import SimulationApp
 
-        self.simulation_app = SimulationApp(
-            {
-                "headless": simulator.get("headless", True),
-                "anti_aliasing": simulator.get("anti_aliasing", 3),
-                "multi_gpu": simulator.get("multi_gpu", True),
-                "renderer": simulator.get("renderer", "RayTracedLighting"),
-            }
-        )
+        app_config = {
+            "headless": simulator.get("headless", True),
+            "anti_aliasing": simulator.get("anti_aliasing", 3),
+            "multi_gpu": simulator.get("multi_gpu", False),
+            "renderer": simulator.get("renderer", "RayTracedLighting"),
+        }
+        if "active_gpu" in simulator:
+            app_config["active_gpu"] = simulator["active_gpu"]
+        if "physics_gpu" in simulator:
+            app_config["physics_gpu"] = simulator["physics_gpu"]
+        if "max_gpu_count" in simulator:
+            app_config["max_gpu_count"] = simulator["max_gpu_count"]
+        self.simulation_app = SimulationApp(app_config)
 
         self.logger.info(f"simulator params: physics dt={physics_dt}, rendering dt={rendering_dt}")
         from omni.isaac.core import World

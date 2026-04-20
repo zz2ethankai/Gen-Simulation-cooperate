@@ -11,6 +11,10 @@ load_stage:
         stage_units_in_meters: 1.0         # Stage unit scale
         headless: True                     # Headless mode (no GUI); set false for visual debugging
         anti_aliasing: 0                   # Anti-aliasing level
+        active_gpu: 0                      # Rendering GPU (0-indexed, physical GPU)
+        physics_gpu: 0                    # Physics simulation GPU (0-indexed, physical GPU)
+        multi_gpu: false                   # Disable multi-GPU to prevent touching GPU 0
+        max_gpu_count: 1                   # Only use 1 GPU
   layout_random_generator:                 # Scene randomization
     type: env_randomizer
     args:
@@ -19,6 +23,8 @@ load_stage:
 plan_with_render_stage:
   plan_with_render:                        # Plan and render in a single stage
     type: plan_with_render
+    args:
+      save_failed: true                   # true: save data even when task fails (for debugging)
 store_stage:
   writer:                                  # Data writer
     type: env_writer

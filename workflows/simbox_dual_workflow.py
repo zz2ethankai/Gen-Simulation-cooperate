@@ -77,6 +77,14 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         set_camera_view(eye=[1.3, 0.7, 2.7], target=[0.0, 0, 1.5], camera_prim_path="/OmniverseKit_Persp")
         # Modify config
         arena_file_path = self.task_cfg.get("arena_file", None)
+        if arena_file_path is None:
+            arena_file_path = getattr(self, "_saved_arena_file", None)
+        else:
+            self._saved_arena_file = arena_file_path
+        if arena_file_path is None:
+            raise FileNotFoundError(
+                f"arena_file not found in task_cfg. Keys: {list(self.task_cfg.keys())}"
+            )
         with open(arena_file_path, "r", encoding="utf-8") as arena_file:
             arena = yaml.load(arena_file, Loader=Loader)
 
@@ -116,6 +124,18 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         self.task = get_task_cls(self.task_cfg["task"])(self.task_cfg)
         self.stage = self.world.stage
         self.stage.SetDefaultPrim(self.stage.GetPrimAtPath("/World"))
+
+        task_name = self.task.name
+        if hasattr(self.world, '_current_tasks') and task_name in self.world._current_tasks:
+            self.world._current_tasks.pop(task_name)
+
+        root_prim = self.stage.GetPrimAtPath(self.task.root_prim_path)
+        if root_prim.IsValid():
+            self.stage.RemovePrim(self.task.root_prim_path)
+        collision_prim = self.stage.GetPrimAtPath("/World/collisions")
+        if collision_prim.IsValid():
+            self.stage.RemovePrim("/World/collisions")
+
         self.world.add_task(self.task)
 
         # # Add hidden ground plane for physics simulation
@@ -657,6 +677,8 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
     def save(self, save_path: str) -> int:
         os.makedirs(save_path, exist_ok=True)
         timestamp = datetime.now().strftime("%Y-%m-%d_%H_%M_%S_%f")
+        if getattr(self, "_episode_failed", False):
+            timestamp = f"fail_{timestamp}"
         self.logger.save(save_path, timestamp, save_img=True)
 
         return self.length
@@ -738,10 +760,17 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                     self.skills, episode_success, should_continue
                 )
 
-        self.length = length
         if end:
+            self._episode_failed = False
+            self.length = length
             return length
+        elif getattr(self, "save_failed", False) and step_id > 0:
+            self._episode_failed = True
+            self.length = step_id
+            return step_id
         else:
+            self._episode_failed = False
+            self.length = 0
             return 0
 
     def _dump_task_cfg(self, task_cfg):

@@ -1,0 +1,10 @@
+Reference config (use as template):
+```yaml
+{ref_text}
+```
+
+Instruction: {instruction}
+
+Generate the modified task config YAML.
+Keep all fields that are not affected by the instruction identical to the reference.
+I want to create a scene where the bowl is taken down from the bowl rack, and the knives and forks on both sides are placed next to the plate. This is just a simple arrangement of the layout, without requiring extensive robot movements or asset transfers.

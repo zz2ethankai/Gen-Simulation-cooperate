@@ -19,16 +19,18 @@ class EnvPlanWithRender(Iterator):
         scene_iter (Iterator[Scene]): An iterator that yields scenes to be processed for planning and rendering.
     """
 
-    def __init__(self, scene_iter: Iterator[Scene]):
+    def __init__(self, scene_iter: Iterator[Scene], save_failed: bool = False):
         super().__init__()
         self.scene_iter = scene_iter
         self.episodes = 1
         self.current_episode = sys.maxsize
         self.scene = None
+        self.save_failed = save_failed
 
     @status_monitor()
     def plan_with_render(self):
         wf = self.scene.wf
+        wf.save_failed = self.save_failed
         obs_num = wf.plan_with_render()
         if obs_num <= 0:
             return None
