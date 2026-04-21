@@ -91,6 +91,32 @@ docker compose up -d isaac nav2
 
 By default, the Isaac workflow writes external Nav2 runtime requests to `output/ros_bridge/runtime_requests`, and the ROS service watches that directory to launch or refresh the corresponding Nav2 stack.
 
+## Agent Docker
+
+The repository also includes a separate Docker setup for running the code under `agent/` without reusing the Isaac/Nav2 stack:
+
+- `docker/agent/Dockerfile`: lightweight Python image for `agent/task_generator.py`
+- `docker/docker-compose.agent.yml`: standalone Compose project for the agent service
+
+This setup is intentionally isolated from `docker/docker-compose.yml` to avoid mixing LLM task generation with the simulation containers.
+
+Before running it, make sure `agent/config.yaml` is configured and `agent/.env` contains the provider credentials required by the active provider.
+
+Build and run the agent container from the repository root with:
+
+```bash
+docker compose -f docker/docker-compose.agent.yml build
+docker compose -f docker/docker-compose.agent.yml up
+```
+
+Or run it as a one-shot task:
+
+```bash
+docker compose -f docker/docker-compose.agent.yml run --rm agent
+```
+
+The container mounts the repository root to `/workspace`, so generated files continue to be written to the paths configured in `agent/config.yaml`, such as `agent/output/`.
+
 ## License and Citation
 All the code within this repo are under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/). Please consider citing our papers if it helps your research.
 
