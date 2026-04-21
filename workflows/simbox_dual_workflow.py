@@ -234,6 +234,14 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         set_camera_view(eye=[1.3, 0.7, 2.7], target=[0.0, 0, 1.5], camera_prim_path="/OmniverseKit_Persp")
         # Modify config
         arena_file_path = self.task_cfg.get("arena_file", None)
+        if arena_file_path is None:
+            arena_file_path = getattr(self, "_saved_arena_file", None)
+        else:
+            self._saved_arena_file = arena_file_path
+        if arena_file_path is None:
+            raise FileNotFoundError(
+                f"arena_file not found in task_cfg. Keys: {list(self.task_cfg.keys())}"
+            )
         with open(arena_file_path, "r", encoding="utf-8") as arena_file:
             arena = yaml.load(arena_file, Loader=Loader)
 
@@ -273,6 +281,17 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         self.task = get_task_cls(self.task_cfg["task"])(self.task_cfg)
         self.stage = self.world.stage
         self.stage.SetDefaultPrim(self.stage.GetPrimAtPath("/World"))
+
+        task_name = self.task.name
+        if hasattr(self.world, "_current_tasks") and task_name in self.world._current_tasks:
+            self.world._current_tasks.pop(task_name)
+
+        root_prim = self.stage.GetPrimAtPath(self.task.root_prim_path)
+        if root_prim.IsValid():
+            self.stage.RemovePrim(self.task.root_prim_path)
+        collision_prim = self.stage.GetPrimAtPath("/World/collisions")
+        if collision_prim.IsValid():
+            self.stage.RemovePrim("/World/collisions")
         self.world.add_task(self.task)
 
         # # Add hidden ground plane for physics simulation

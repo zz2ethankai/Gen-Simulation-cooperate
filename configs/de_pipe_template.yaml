@@ -11,6 +11,8 @@ load_stage:
         stage_units_in_meters: 1.0         # Stage unit scale
         headless: True                     # Headless mode (no GUI); set false for visual debugging
         anti_aliasing: 0                   # Anti-aliasing level
+        active_gpu: 0                      # Override via CLI: --load_stage.scene_loader.args.simulator.active_gpu=1
+        physics_gpu: 0                     # Override via CLI: --load_stage.scene_loader.args.simulator.physics_gpu=1
   layout_random_generator:                 # Scene randomization
     type: env_randomizer
     args:
@@ -36,6 +38,8 @@ dedump_stage:
         rendering_interval: 5              # Render every N physics steps
         headless: true                     # Headless mode
         multi_gpu: true                    # Enable multi-GPU for render workers
+        active_gpu: 0                      # Override via CLI: --dedump_stage.scene_loader.args.simulator.active_gpu=1
+        physics_gpu: 0                     # Override via CLI: --dedump_stage.scene_loader.args.simulator.physics_gpu=1
   layout_random_generator:
     type: env_randomizer
   seq_planner:                             # Reads serialized trajectories

@@ -39,19 +39,11 @@ platform:
 ros:
   ranger_model: ranger_mini_v3
   cmd_vel_topic: /cmd_vel
-  command_topic: /ranger/sim/base_command
-  motion_mode_topic: /ranger/sim/motion_mode
   joint_state_topic: /joint_states
   odom_topic: /odom
   tf_enabled: true
   base_frame: base_link
   odom_frame: odom
-  max_linear_speed: 1.5
-  max_angular_speed: 4.8
-  max_steer_angle_parallel: 1.57
-  allow_spinning: true
-  spinning_requires_zero_linear: true
-  ackermann_max_inner_wheel_angle_deg: 40.0
   virtual_odom:
     enabled: false
     publish_twist: true

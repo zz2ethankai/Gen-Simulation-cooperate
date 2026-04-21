@@ -42,16 +42,20 @@ class EnvPlanWithRender(Iterator):
         obs_num = wf.plan_with_render()
         if obs_num <= 0:
             if not self.emit_obs_on_failure:
+                self.logger.info(f"plan_with_render returned {obs_num}, treat episode as failed without obs output.")
                 return None
-            # Emit a placeholder observation so writer can persist partial camera logs on failed episodes.
             fallback_len = int(getattr(wf, "length", 0) or 0)
             if fallback_len <= 0:
                 fallback_len = self.failure_obs_length
             self.logger.info(
                 f"plan_with_render returned {obs_num}, emit placeholder observation with length {fallback_len}."
             )
-            return Observations(scene.name, str(self.current_episode), length=fallback_len)
-        # Assuming rgb is a dictionary of lists, get the length from one of the lists.
+            return Observations(
+                scene.name,
+                str(self.current_episode),
+                length=fallback_len,
+                data={"generate_success": False, "placeholder_failure_obs": True},
+            )
         obs = Observations(scene.name, str(self.current_episode), length=obs_num)
         return obs
 

@@ -96,6 +96,7 @@ class BaseWriter(Iterator):
                 return None
 
             self.total_case += 1
+            generate_success = self._generate_success(seq=seq, obs=obs)
 
             self.status_reporter.update_status(ComponentStatus.RUNNING)
             if seq is None and obs is None:
@@ -128,8 +129,15 @@ class BaseWriter(Iterator):
                 flush_length = len(obs) if obs is not None else len(seq)
             else:
                 flush_length = self.flush_to_disk(self.scene.wf, scene_name, seq, obs)
-            self.success_case += 1
-            self.scene.update_generate_status(success=True)
+            if generate_success:
+                self.success_case += 1
+                self.scene.update_generate_status(success=True)
+                self.logger.info(f"generate success! success rate: {self.success_case}/{self.total_case}")
+            else:
+                self.logger.info(
+                    f"generate failed but partial output was kept. success rate: {self.success_case}/{self.total_case}"
+                )
+                self.scene.update_generate_status(success=False)
             self.collect_io_frame_info(flush_length, time.time() - io_start_time)
             self.status_reporter.update_status(ComponentStatus.COMPLETED)
             return None
@@ -148,6 +156,16 @@ class BaseWriter(Iterator):
         except Exception as e:
             self.logger.exception(f"Error during data writing: {e}")
             raise e
+
+    @staticmethod
+    def _generate_success(*, seq, obs) -> bool:
+        for item in (obs, seq):
+            if item is None:
+                continue
+            data = getattr(item, "data", None)
+            if isinstance(data, dict) and "generate_success" in data:
+                return bool(data["generate_success"])
+        return True
 
     def __del__(self):
         for thread in self.flush_threads:

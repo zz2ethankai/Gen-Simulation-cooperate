@@ -120,6 +120,51 @@ class BaseBridge(ABC):
         if self._owns_rclpy_context and rclpy.ok():
             rclpy.shutdown()
 
+    def reset(self, *, clear_debug_history: bool = False):
+        self._spin_available_callbacks()
+        now_sec = self._now_sec()
+        steering_count = len(self.base_interface["steering_joint_names"])
+        wheel_count = len(self.base_interface["wheel_joint_names"])
+        zero_command = BaseCommand.zero(received_time_sec=now_sec)
+        zero_steering = np.zeros(steering_count, dtype=np.float32)
+        zero_wheel = np.zeros(wheel_count, dtype=np.float32)
+
+        self._command = zero_command
+        self._last_step_command = zero_command
+        self._last_applied_steering = zero_steering.copy()
+        self._last_requested_steering = zero_steering.copy()
+        self._last_requested_wheel_velocities = zero_wheel.copy()
+        self._last_step_time_sec = now_sec
+        self._last_step_dt = 1e-3
+        self._last_received_cmd_vel = {
+            "linear_x": 0.0,
+            "linear_y": 0.0,
+            "angular_z": 0.0,
+            "received_time_sec": float(now_sec),
+        }
+
+        if clear_debug_history:
+            self._received_cmd_vel_count = 0
+            self._driver_command_message_count = 0
+            self._pending_driver_command_count = 0
+            self._applied_driver_command_count = 0
+            self._motion_mode_message_count = 0
+            self._debug_cmd_vel_history.clear()
+            self._debug_command_history.clear()
+
+        self.robot.apply_base_command(
+            steering_positions=zero_steering,
+            wheel_velocities=zero_wheel,
+        )
+        translation, orientation = self._get_robot_base_pose()
+        self._last_actual_translation = np.array(translation, dtype=np.float32)
+        self._last_actual_yaw = float(self._yaw_from_wxyz(orientation))
+        self._last_actual_linear_velocity_world = np.zeros(3, dtype=np.float32)
+        self._last_actual_angular_velocity_world = np.zeros(3, dtype=np.float32)
+        self._publish_joint_state()
+        self._publish_odometry()
+        rclpy.spin_once(self.node, timeout_sec=0.0)
+
     def step(self, step_dt: float | None = None):
         self._spin_available_callbacks()
         now_sec = self._now_sec()

@@ -101,6 +101,12 @@ class EnvLoader(SceneLoader):
         if isinstance(rendering_dt, str):
             rendering_dt = float(Fraction(rendering_dt))
 
+        cuda_device = simulator.get("active_gpu", None)
+        if cuda_device is not None:
+            import torch
+            torch.cuda.set_device(cuda_device)
+            self.logger.info(f"PyTorch default CUDA device set to cuda:{cuda_device}")
+
         from isaacsim import SimulationApp
 
         launch_config = {

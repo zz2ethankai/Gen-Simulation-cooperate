@@ -9,15 +9,15 @@ ros:
     goal_request_root: output/ros_bridge/goal_requests
     goal_status_root: output/ros_bridge/goal_status
     goal_result_root: output/ros_bridge/goal_result
-    stack_reuse: false
+    stack_reuse: true
     goal_transport: ros_topic_bridge
     load_map_service: /map_server/load_map
     clear_global_costmap_service: /global_costmap/clear_entirely_global_costmap
     clear_local_costmap_service: /local_costmap/clear_entirely_local_costmap
     bridge_map_update_topic: /simbox/nav_bridge/map_update
-    bridge_reset_topic: /simbox/nav_bridge/reset
     bridge_goal_topic: /simbox/nav_bridge/goal
     bridge_cancel_topic: /simbox/nav_bridge/cancel
+    bridge_reset_topic: /simbox/nav_bridge/reset
     bridge_status_topic: /simbox/nav_bridge/status
     bridge_result_topic: /simbox/nav_bridge/result
     bridge_alive_timeout_sec: 3.0
@@ -61,7 +61,7 @@ nav2_skill:
       required_movement_radius: 0.05
       movement_time_allowance: 90.0
     goal_checker:
-      stateful: true
+      stateful: false
       plugin: nav2_controller::SimpleGoalChecker
     follow_path:
       plugin: nav2_mppi_controller::MPPIController
@@ -114,32 +114,32 @@ nav2_skill:
       GoalCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 8.0
-        threshold_to_consider: 1.8
+        cost_weight: 5.0
+        threshold_to_consider: 1.4
       GoalAngleCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 6.0
-        threshold_to_consider: 0.8
+        cost_weight: 3.0
+        threshold_to_consider: 0.4
       PathAlignCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 4.0
-        threshold_to_consider: 0.35
+        cost_weight: 10.0
+        threshold_to_consider: 0.8
         offset_from_furthest: 10
         max_path_occupancy_ratio: 0.2
         use_path_orientations: true
       PathFollowCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 4.0
-        threshold_to_consider: 0.5
+        cost_weight: 8.0
+        threshold_to_consider: 1.4
         offset_from_furthest: 6
       PathAngleCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 1.5
-        threshold_to_consider: 0.35
+        cost_weight: 3.0
+        threshold_to_consider: 0.8
         offset_from_furthest: 10
         max_angle_to_furthest: 0.78539816339
         mode: 2

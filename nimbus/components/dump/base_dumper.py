@@ -26,6 +26,7 @@ class BaseDumper(Iterator):
             data = next(self.data_iter)
             scene, seq, obs = unpack_iter_data(data)
             self.total_case += 1
+            generate_success = self._generate_success(seq=seq, obs=obs)
             if scene is not None:
                 if self.scene is not None and (
                     scene.task_id != self.scene.task_id
@@ -61,8 +62,15 @@ class BaseDumper(Iterator):
                 self.logger.info(f"put time: {ed - st}, data size: {asizeof.asizeof(obj)}")
             else:
                 obj = self.dump(seq, obs)
-            self.success_case += 1
-            self.scene.update_generate_status(success=True)
+            if generate_success:
+                self.success_case += 1
+                self.scene.update_generate_status(success=True)
+                self.logger.info(f"generate success! success rate: {self.success_case}/{self.total_case}")
+            else:
+                self.logger.info(
+                    f"generate failed but partial output was kept. success rate: {self.success_case}/{self.total_case}"
+                )
+                self.scene.update_generate_status(success=False)
             self.collect_seq_info(1, time.time() - io_start_time)
         except StopIteration:
             if self.output_queue is not None:
@@ -76,6 +84,16 @@ class BaseDumper(Iterator):
         except Exception as e:
             self.logger.exception(f"Error during data dumping: {e}")
             raise e
+
+    @staticmethod
+    def _generate_success(*, seq, obs) -> bool:
+        for item in (obs, seq):
+            if item is None:
+                continue
+            data = getattr(item, "data", None)
+            if isinstance(data, dict) and "generate_success" in data:
+                return bool(data["generate_success"])
+        return True
 
     @abstractmethod
     def dump(self, seq, obs):

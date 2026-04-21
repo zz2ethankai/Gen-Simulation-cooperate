@@ -32,6 +32,17 @@ class BaseLogger(ABC):
         self.depth_image_step_logger: Dict[str, List[Any]] = {}
         self.seg_image_step_logger: Dict[str, List[Any]] = {}
 
+    def _format_log_message(self, message, *args):
+        if args:
+            try:
+                return str(message) % args
+            except Exception:
+                return " ".join([str(message), *[str(arg) for arg in args]])
+        return str(message)
+
+    def info(self, message, *args):
+        print(f"[{self.__class__.__name__}] {self._format_log_message(message, *args)}")
+
     def update_tpi_initial_info(self, tpi_initial_info):
         self.tpi_initial_info = tpi_initial_info
 
