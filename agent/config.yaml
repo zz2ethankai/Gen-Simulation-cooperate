@@ -1,0 +1,61 @@
+# Non-secret agent configuration.
+# Safe to commit. No API keys here.
+#
+# 切换 provider 的步骤：
+#   1. 修改下方 active_provider
+#   2. 确认对应 provider 块里的 name/fast 是你想用的模型
+#   3. 确保 agent/.env 里填写了对应 provider 的 key 和 base_url
+
+# 当前生效的 provider（改这一行来切换）
+active_provider: anthropic
+
+
+# ── Anthropic ────────────────────────────────────────────────────────────────
+# 对应 .env 变量：ANTHROPIC_API_KEY 或 ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL
+anthropic:
+  name: claude-opus-4-6
+  fast: claude-sonnet-4-6
+  max_tokens: 8192
+
+
+# ── OpenAI-compatible ────────────────────────────────────────────────────────
+# 适用于：OpenAI 官方 / ikuncode / DeepSeek / SiliconFlow / 阿里云百炼 等
+# 对应 .env 变量：OPENAI_API_KEY + OPENAI_BASE_URL
+#
+# 常用模型名参考：
+#   OpenAI 官方:   gpt-4o / gpt-4o-mini
+#   ikuncode:      gpt-5.4 / gpt-5.4-mini
+#   DeepSeek:      deepseek-chat / deepseek-reasoner
+#   SiliconFlow:   Qwen/Qwen2.5-72B-Instruct / deepseek-ai/DeepSeek-V3
+#   阿里云百炼:     qwen-max / qwen-plus
+openai:
+  name: gpt-5.4
+  fast: gpt-5.4-mini
+  max_tokens: 8192
+
+
+# ── 默认运行参数 ──────────────────────────────────────────────────────────────
+# CLI 传了参数就覆盖这里；没传就用这里的值。
+# ref 和 instruction 是最常改的，直接在这里改比每次敲命令行方便。
+defaults:
+  # 参考 YAML 路径（相对于项目根目录）
+  ref: workflows/simbox/core/configs/tasks/basic/lift2/arrange_the_tableware/arrange_the_tableware_part0.yaml
+
+  # 生成指令：用自然语言描述你想做什么改动
+  instruction: "Replace the fork with a knife"
+
+  # 是否用 fast 模型（true/false）
+  fast: false
+
+  # 输出目录
+  output: agent/output
+
+
+# ── 其他设置 ─────────────────────────────────────────────────────────────────
+paths:
+  task_configs: workflows/simbox/core/configs/tasks
+
+generation:
+  validate_schema: true
+  save_raw_response: true
+  annotate_changes: true   # 生成 _annotated.yaml，在改动行末尾加注释说明
