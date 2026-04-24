@@ -54,8 +54,12 @@ Build and start the split stack from the repository root with:
 
 ```bash
 docker compose -f docker/docker-compose.yml build
-docker compose -f docker/docker-compose.yml up -d isaac nav2
+scripts/docker/up_nav2_stack.sh
 ```
+
+The helper script auto-generates a unique `INTERNDATA_NAV2_SESSION_UUID` when
+one is not provided, then passes it into `docker compose` so concurrent Nav2
+stacks do not share bootstrap/config/map directories.
 
 Watch logs:
 
@@ -86,7 +90,7 @@ If you prefer to run from the `docker/` directory directly, the equivalent comma
 ```bash
 cd docker
 docker compose build
-docker compose up -d isaac nav2
+../scripts/docker/up_nav2_stack.sh
 ```
 
 By default, the Isaac workflow writes external Nav2 runtime requests to `output/ros_bridge/runtime_requests`, and the ROS service watches that directory to launch or refresh the corresponding Nav2 stack.

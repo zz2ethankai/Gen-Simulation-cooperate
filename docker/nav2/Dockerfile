@@ -37,7 +37,18 @@ RUN apt-get update && apt-get install -y \
 RUN rosdep init || true
 RUN rosdep update || true
 
-COPY nav2/container/entrypoint.sh /entrypoint.sh
+# Runtime startup selection is env-driven. Compose should override these values
+# per stack/session instead of relying on project-specific defaults in the
+# entrypoint script.
+ENV INTERNDATA_AUTOSTART_ROS_STACK=1 \
+    INTERNDATA_NAV2_ROBOT_CONFIG=workflows/simbox/core/configs/robots/split_aloha.yaml \
+    INTERNDATA_NAV2_ROBOT_NAME=split_aloha \
+    INTERNDATA_NAV2_SESSION_UUID=nav2_default \
+    INTERNDATA_NAV2_STACK_CONFIG_DIR= \
+    INTERNDATA_NAV2_BOOTSTRAP_MAP_DIR= \
+    INTERNDATA_NAV2_PARAMS_FILE=
+
+COPY docker/nav2/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 WORKDIR /workspace

@@ -12,6 +12,7 @@ from omni.isaac.core.utils.transformations import (
     pose_from_tf_matrix,
     tf_matrix_from_pose,
 )
+from omni.isaac.core.utils.xforms import get_world_pose
 from scipy.spatial.transform import Rotation as R
 
 
@@ -36,6 +37,13 @@ class Flip(BaseSkill):
         elif "right" in self.controller.robot_file:
             self.robot_ee_path = self.robot.fr_ee_path
             self.robot_base_path = self.robot.fr_base_path
+
+    @staticmethod
+    def _get_object_world_tf(obj):
+        get_obj_world_pose = getattr(obj, "get_world_pose", None)
+        if callable(get_obj_world_pose):
+            return tf_matrix_from_pose(*get_obj_world_pose())
+        return tf_matrix_from_pose(*obj.get_local_pose())
 
     def simple_generate_manip_cmds(self):
         manip_list = []
@@ -155,7 +163,7 @@ class Flip(BaseSkill):
 
     def is_success(self):
         # Calculate the angle between the object's local y-axis and the world's z-axis
-        T_world_obj = tf_matrix_from_pose(*self.pick_obj.get_local_pose())
+        T_world_obj = self._get_object_world_tf(self.pick_obj)
         obj_y_axis = T_world_obj[0:3, 1]  # Extract the object's y-axis in world coordinates
         world_z_axis = np.array([0, 0, 1])  # World z-axis
         # Compute the angle between the two vectors

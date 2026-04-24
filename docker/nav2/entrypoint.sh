@@ -9,20 +9,23 @@ cd /workspace/InterndataEngine
 pids=()
 
 if [ "${INTERNDATA_AUTOSTART_ROS_STACK:-1}" = "1" ]; then
-  NAV2_STACK_CONFIG_DIR="${INTERNDATA_NAV2_STACK_CONFIG_DIR:-output/nav2_runtime/bootstrap}"
-  NAV2_BOOTSTRAP_MAP_DIR="${INTERNDATA_NAV2_BOOTSTRAP_MAP_DIR:-output/nav2_runtime/bootstrap_map}"
-  NAV2_PARAMS_FILE="/workspace/InterndataEngine/${NAV2_STACK_CONFIG_DIR}/nav2_params.yaml"
+  NAV2_SESSION_UUID="${INTERNDATA_NAV2_SESSION_UUID:-nav2_default}"
+  NAV2_STACK_CONFIG_DIR="${INTERNDATA_NAV2_STACK_CONFIG_DIR:-output/nav2_runtime/${NAV2_SESSION_UUID}/bootstrap}"
+  NAV2_BOOTSTRAP_MAP_DIR="${INTERNDATA_NAV2_BOOTSTRAP_MAP_DIR:-output/nav2_runtime/${NAV2_SESSION_UUID}/bootstrap_map}"
+  NAV2_PARAMS_FILE="${INTERNDATA_NAV2_PARAMS_FILE:-/workspace/InterndataEngine/${NAV2_STACK_CONFIG_DIR}/nav2_params.yaml}"
+  NAV2_ROBOT_CONFIG="${INTERNDATA_NAV2_ROBOT_CONFIG:?INTERNDATA_NAV2_ROBOT_CONFIG must be set}"
+  NAV2_ROBOT_NAME="${INTERNDATA_NAV2_ROBOT_NAME:?INTERNDATA_NAV2_ROBOT_NAME must be set}"
   NAV2_ODOM_TOPIC="${INTERNDATA_NAV2_ODOM_TOPIC:-/odom}"
   NAV2_WAIT_FOR_ODOM_TIMEOUT_SEC="${INTERNDATA_WAIT_FOR_ODOM_TIMEOUT_SEC:-300}"
   NAV2_WAIT_FOR_ODOM_MIN_MESSAGES="${INTERNDATA_WAIT_FOR_ODOM_MIN_MESSAGES:-3}"
 
   python3 -m nav2.mapgen.prepare_stack \
-    --robot-config "${INTERNDATA_NAV2_ROBOT_CONFIG:-workflows/simbox/core/configs/robots/split_aloha.yaml}" \
+    --robot-config "${NAV2_ROBOT_CONFIG}" \
     --output-dir "${NAV2_STACK_CONFIG_DIR}" \
     --map-dir "${NAV2_BOOTSTRAP_MAP_DIR}"
 
   python3 -m nav2.bridge.adapter \
-    --robot-name "${INTERNDATA_NAV2_ROBOT_NAME:-split_aloha}" \
+    --robot-name "${NAV2_ROBOT_NAME}" \
     --map-update-topic "${INTERNDATA_NAV2_BRIDGE_MAP_UPDATE_TOPIC:-/simbox/nav_bridge/map_update}" \
     --goal-topic "${INTERNDATA_NAV2_BRIDGE_GOAL_TOPIC:-/simbox/nav_bridge/goal}" \
     --cancel-topic "${INTERNDATA_NAV2_BRIDGE_CANCEL_TOPIC:-/simbox/nav_bridge/cancel}" \

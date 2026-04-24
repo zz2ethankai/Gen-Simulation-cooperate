@@ -41,7 +41,7 @@ def configure_base_cfg_for_nav2_skill(
     base_cfg: dict,
     *,
     map_output_dir: str = "output/nav2_maps",
-    map_resolution: float = 0.05,
+    map_resolution: float = 0.02,
     map_z_min: float = 0.0,
     map_z_max: float = 0.35,
     position_tolerance_m: float = NAV2_DEFAULT_POSITION_TOLERANCE_M,
@@ -115,7 +115,7 @@ def configure_robot_for_nav2_skill(
     robot,
     *,
     map_output_dir: str = "output/nav2_maps",
-    map_resolution: float = 0.05,
+    map_resolution: float = 0.02,
     map_z_min: float = 0.0,
     map_z_max: float = 0.35,
     position_tolerance_m: float = NAV2_DEFAULT_POSITION_TOLERANCE_M,
@@ -173,14 +173,32 @@ def _write_nav2_bt_files(output_dir: str, base_cfg: dict) -> tuple[str, str]:
     )
     skill_cfg = nav2_skill_cfg(base_cfg)
     bt_cfg = dict(skill_cfg.get("bt_navigator", {}))
+    nav2_cfg = dict(base_cfg.get("ros", {}).get("nav2", {}))
     replanning_hz = float(bt_cfg.get("replanning_hz", 0.25))
+    replan_retry_attempt_limit = int(bt_cfg.get("replan_retry_attempt_limit", 3))
     remove_passed_goals_radius = float(bt_cfg.get("remove_passed_goals_radius", 0.7))
+    clear_global_costmap_service = str(
+        nav2_cfg.get("clear_global_costmap_service", "/global_costmap/clear_entirely_global_costmap")
+    )
+    clear_local_costmap_service = str(
+        nav2_cfg.get("clear_local_costmap_service", "/local_costmap/clear_entirely_local_costmap")
+    )
     nav_to_pose_bt = f"""<!-- Holonomic Nav2 navigation without recovery/fallback behaviors. -->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
     <PipelineSequence name="NavigateWithReplanning">
       <RateController hz="{replanning_hz}">
-        <ComputePathToPose goal="{{goal}}" path="{{raw_path}}" planner_id="GridBased"/>
+        <RecoveryNode number_of_retries="{replan_retry_attempt_limit}" name="ReplanToPose">
+          <ComputePathToPose goal="{{goal}}" path="{{raw_path}}" planner_id="GridBased"/>
+          <Sequence name="ReplanRecovery">
+            <ClearEntireCostmap
+              name="ClearGlobalCostmapForReplan"
+              service_name="{clear_global_costmap_service}"/>
+            <ClearEntireCostmap
+              name="ClearLocalCostmapForReplan"
+              service_name="{clear_local_costmap_service}"/>
+          </Sequence>
+        </RecoveryNode>
       </RateController>
       <SmoothPath unsmoothed_path="{{raw_path}}" smoothed_path="{{path}}" smoother_id="simple_smoother"/>
       <FollowPath path="{{path}}" controller_id="FollowPath"/>
@@ -194,10 +212,20 @@ def _write_nav2_bt_files(output_dir: str, base_cfg: dict) -> tuple[str, str]:
   <BehaviorTree ID="MainTree">
     <PipelineSequence name="NavigateThroughPosesWithReplanning">
       <RateController hz="{replanning_hz}">
-        <Sequence>
-          <RemovePassedGoals input_goals="{{goals}}" output_goals="{{goals}}" radius="{remove_passed_goals_radius}"/>
-          <ComputePathThroughPoses goals="{{goals}}" path="{{raw_path}}" planner_id="GridBased"/>
-        </Sequence>
+        <RecoveryNode number_of_retries="{replan_retry_attempt_limit}" name="ReplanThroughPoses">
+          <Sequence name="ComputePathThroughRemainingGoals">
+            <RemovePassedGoals input_goals="{{goals}}" output_goals="{{goals}}" radius="{remove_passed_goals_radius}"/>
+            <ComputePathThroughPoses goals="{{goals}}" path="{{raw_path}}" planner_id="GridBased"/>
+          </Sequence>
+          <Sequence name="ReplanRecovery">
+            <ClearEntireCostmap
+              name="ClearGlobalCostmapForReplan"
+              service_name="{clear_global_costmap_service}"/>
+            <ClearEntireCostmap
+              name="ClearLocalCostmapForReplan"
+              service_name="{clear_local_costmap_service}"/>
+          </Sequence>
+        </RecoveryNode>
       </RateController>
       <SmoothPath unsmoothed_path="{{raw_path}}" smoothed_path="{{path}}" smoother_id="simple_smoother"/>
       <FollowPath path="{{path}}" controller_id="FollowPath"/>
@@ -256,6 +284,7 @@ def _build_nav2_params(
                 "nav2_remove_passed_goals_action_bt_node",
                 "nav2_rate_controller_bt_node",
                 "nav2_pipeline_sequence_bt_node",
+                "nav2_recovery_node_bt_node",
                 "nav2_navigate_to_pose_action_bt_node",
                 "nav2_navigate_through_poses_action_bt_node",
             ],
@@ -528,8 +557,10 @@ def _build_nav2_params(
         "tolerance": float(planner_cfg.get("tolerance", 0.10)),
         "allow_unknown": bool(planner_cfg.get("allow_unknown", False)),
     }
+    planner_passthrough_keys = {"tolerance", "allow_unknown"}
     if planner_plugin == "nav2_navfn_planner/NavfnPlanner":
         planner_params["use_astar"] = bool(planner_cfg.get("use_astar", True))
+        planner_passthrough_keys.update({"use_astar"})
     elif planner_plugin == "nav2_smac_planner/SmacPlanner2D":
         planner_params.update(
             {
@@ -539,6 +570,16 @@ def _build_nav2_params(
                 "max_on_approach_iterations": int(planner_cfg.get("max_on_approach_iterations", 1000)),
                 "max_planning_time": float(planner_cfg.get("max_planning_time", 2.0)),
                 "cost_travel_multiplier": float(planner_cfg.get("cost_travel_multiplier", 2.0)),
+            }
+        )
+        planner_passthrough_keys.update(
+            {
+                "downsample_costmap",
+                "downsampling_factor",
+                "max_iterations",
+                "max_on_approach_iterations",
+                "max_planning_time",
+                "cost_travel_multiplier",
             }
         )
     elif planner_plugin == "nav2_smac_planner/SmacPlannerLattice":
@@ -585,8 +626,42 @@ def _build_nav2_params(
                 ),
             }
         )
+        planner_passthrough_keys.update(
+            {
+                "downsample_costmap",
+                "downsampling_factor",
+                "max_iterations",
+                "max_on_approach_iterations",
+                "max_planning_time",
+                "smooth_path",
+                "minimum_turning_radius",
+                "reverse_penalty",
+                "change_penalty",
+                "non_straight_penalty",
+                "cost_penalty",
+                "rotation_penalty",
+                "retrospective_penalty",
+                "analytic_expansion_ratio",
+                "analytic_expansion_max_length",
+                "analytic_expansion_max_cost",
+                "analytic_expansion_max_cost_override",
+                "cache_obstacle_heuristic",
+                "allow_reverse_expansion",
+                "lattice_filepath",
+                "smoother",
+            }
+        )
     for key, value in planner_cfg.items():
-        if key != "plugin":
+        if key == "plugin":
+            continue
+        if planner_plugin in {
+            "nav2_navfn_planner/NavfnPlanner",
+            "nav2_smac_planner/SmacPlanner2D",
+            "nav2_smac_planner/SmacPlannerLattice",
+        }:
+            if key in planner_passthrough_keys:
+                planner_params[key] = value
+        else:
             planner_params[key] = value
 
     return {
@@ -625,8 +700,8 @@ def _build_nav2_params(
                 "general_goal_checker": {
                     "stateful": bool(goal_checker_cfg.get("stateful", False)),
                     "plugin": str(goal_checker_cfg.get("plugin", "nav2_controller::SimpleGoalChecker")),
-                    "xy_goal_tolerance": float(position_tolerance_m),
-                    "yaw_goal_tolerance": float(yaw_tolerance_rad),
+                    "xy_goal_tolerance": float(goal_checker_cfg.get("xy_goal_tolerance", position_tolerance_m)),
+                    "yaw_goal_tolerance": float(goal_checker_cfg.get("yaw_goal_tolerance", yaw_tolerance_rad)),
                 },
                 "FollowPath": follow_path_params,
             }

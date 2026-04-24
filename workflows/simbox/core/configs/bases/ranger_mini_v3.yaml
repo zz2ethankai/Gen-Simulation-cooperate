@@ -5,11 +5,11 @@ steering_limit: 2.1
 steering_rate_limit: 2.4
 wheel_velocity_limit: 20.0
 command_timeout: 0.25
-wheel_static_friction: 0.65
-wheel_dynamic_friction: 0.45
+wheel_static_friction: 0.95
+wheel_dynamic_friction: 0.75
 wheel_drive_stiffness: 0.0
-wheel_drive_damping: 60.0
-wheel_drive_max_force: 120.0
+wheel_drive_damping: 140.0
+wheel_drive_max_force: 220.0
 steering_drive_stiffness: 300000.0
 steering_drive_damping: 25000.0
 steering_drive_max_force: 25000.0

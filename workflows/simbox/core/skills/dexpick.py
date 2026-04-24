@@ -13,6 +13,7 @@ from omni.isaac.core.utils.transformations import (
     pose_from_tf_matrix,
     tf_matrix_from_pose,
 )
+from omni.isaac.core.utils.xforms import get_world_pose
 
 
 # pylint: disable=unused-argument
@@ -58,6 +59,19 @@ class Dexpick(BaseSkill):
         self.process_valid = True
         self.obj_init_trans = deepcopy(self.object.get_local_pose()[0])
 
+    @staticmethod
+    def _get_world_pose_from_path(prim_path):
+        return get_world_pose(prim_path)
+
+    def _get_armbase_world_tf(self):
+        return tf_matrix_from_pose(*self._get_world_pose_from_path(self.robot_base_path))
+
+    def _get_object_world_tf(self):
+        get_obj_world_pose = getattr(self.object, "get_world_pose", None)
+        if callable(get_obj_world_pose):
+            return tf_matrix_from_pose(*get_obj_world_pose())
+        return tf_matrix_from_pose(*self.object.get_local_pose())
+
     def simple_generate_manip_cmds(self):
         manip_list = []
 
@@ -74,12 +88,10 @@ class Dexpick(BaseSkill):
         )
         manip_list.append(cmd)
 
-        T_world_base = get_relative_transform(
-            get_prim_at_path(self.robot_base_path), get_prim_at_path(self.task.root_prim_path)
-        )
+        T_world_base = self._get_armbase_world_tf()
 
         # Reach
-        T_world_obj = tf_matrix_from_pose(*self.object.get_local_pose())
+        T_world_obj = self._get_object_world_tf()
         T_obj_ee_grasp = tf_matrix_from_pose(*self.pose_ee2o)
         T_world_ee_grasp = T_world_obj @ T_obj_ee_grasp
         T_base_ee_grasp = np.linalg.inv(T_world_base) @ T_world_ee_grasp

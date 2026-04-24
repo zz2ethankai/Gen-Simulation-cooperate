@@ -20,6 +20,7 @@ from omni.isaac.core.utils.transformations import (
     get_relative_transform,
     tf_matrix_from_pose,
 )
+from omni.isaac.core.utils.xforms import get_world_pose
 from omni.timeline import get_timeline_interface
 from scipy.spatial.transform import Rotation as R
 
@@ -61,6 +62,26 @@ class Dynamicpick(BaseSkill):
         self.pick_bias = self.skill_cfg.get("pick_bias", 0)
         self.process_valid = True
         self.obj_init_trans = deepcopy(self.pick_obj.get_local_pose()[0])
+
+    @staticmethod
+    def _get_world_pose_from_path(prim_path):
+        return get_world_pose(prim_path)
+
+    def _get_armbase_world_tf(self):
+        reference_prim_path = str(getattr(self.controller, "reference_prim_path", "")).strip()
+        if reference_prim_path:
+            return tf_matrix_from_pose(*self._get_world_pose_from_path(reference_prim_path))
+        return get_relative_transform(
+            get_prim_at_path(self.controller.reference_prim_path), get_prim_at_path(self.task.root_prim_path)
+        )
+
+    def _get_object_world_tf(self):
+        if self.meet_pose_o2w is not None:
+            return tf_matrix_from_pose(*self.meet_pose_o2w)
+        get_obj_world_pose = getattr(self.pick_obj, "get_world_pose", None)
+        if callable(get_obj_world_pose):
+            return tf_matrix_from_pose(*get_obj_world_pose())
+        return tf_matrix_from_pose(*self.pick_obj.get_local_pose())
 
     def simple_generate_manip_cmds(self):
         pass
@@ -235,10 +256,8 @@ class Dynamicpick(BaseSkill):
                         )
         if self.skill_cfg.get("direction_to_obj", None) is not None:
             direction_to_obj = self.skill_cfg["direction_to_obj"]
-            T_world_obj = tf_matrix_from_pose(*self.pick_obj.get_local_pose())
-            T_base_world = get_relative_transform(
-                get_prim_at_path(self.task.root_prim_path), get_prim_at_path(self.controller.reference_prim_path)
-            )
+            T_world_obj = self._get_object_world_tf()
+            T_base_world = np.linalg.inv(self._get_armbase_world_tf())
             T_base_obj = T_base_world @ T_world_obj
             if direction_to_obj == "right":
                 flags["direction_to_obj"] = T_base_ee[:, 1, 3] <= T_base_obj[1, 3]
@@ -280,25 +299,23 @@ class Dynamicpick(BaseSkill):
         if frame == "body":
             return self.T_obj_ee
 
-        if self.meet_pose_o2w is not None:
-            T_world_obj = tf_matrix_from_pose(*self.meet_pose_o2w)
-        else:
-            T_world_obj = tf_matrix_from_pose(*self.pick_obj.get_local_pose())
+        T_world_obj = self._get_object_world_tf()
         T_world_ee = T_world_obj[None] @ self.T_obj_ee
 
         if frame == "world":
             return T_world_ee
 
         if frame == "armbase":  # arm base frame
-            T_world_base = get_relative_transform(
-                get_prim_at_path(self.controller.reference_prim_path), get_prim_at_path(self.task.root_prim_path)
-            )
-            T_base_world = np.linalg.inv(T_world_base)
+            T_base_world = np.linalg.inv(self._get_armbase_world_tf())
             T_base_ee = T_base_world[None] @ T_world_ee
             return T_base_ee
 
     def is_ready(self):
-        object_position = self.pick_obj.get_local_pose()[0]
+        get_obj_world_pose = getattr(self.pick_obj, "get_world_pose", None)
+        if callable(get_obj_world_pose):
+            object_position, object_orientation = get_obj_world_pose()
+        else:
+            object_position, object_orientation = self.pick_obj.get_local_pose()
         ee_init_position = deepcopy(self.controller.T_world_ee_init[0:3, 3])
         x = object_position[0] - ee_init_position[0]
         self.obj_velocity = self.task.conveyor_velocity
@@ -308,8 +325,7 @@ class Dynamicpick(BaseSkill):
                 position = deepcopy(object_position)
                 delta_x = self.delta_x
                 position[0] = ee_init_position[0] + delta_x
-                orientation = self.pick_obj.get_local_pose()[1]
-                self.meet_pose_o2w = (position, orientation)
+                self.meet_pose_o2w = (position, deepcopy(object_orientation))
                 self.predict_manip_cmds()
                 self.epsilon = delta_x - (self.cmd_time * self.obj_velocity) + self.pick_bias
                 self.predict_pick = True

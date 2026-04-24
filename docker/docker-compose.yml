@@ -41,7 +41,7 @@ services:
   nav2:
     build:
       context: ..
-      dockerfile: nav2/container/Dockerfile
+      dockerfile: docker/nav2/Dockerfile
     image: local/ros2-humble-nav2:latest
     container_name: nav2
     network_mode: host
@@ -53,11 +53,17 @@ services:
       FASTDDS_BUILTIN_TRANSPORTS: UDPv4
       TURTLEBOT3_MODEL: waffle
       INTERNDATA_AUTOSTART_ROS_STACK: "1"
-      INTERNDATA_NAV2_ROBOT_CONFIG: workflows/simbox/core/configs/robots/split_aloha.yaml
-      INTERNDATA_NAV2_ROBOT_NAME: split_aloha
+      # Each Nav2 stack should use its own session UUID so bootstrap config,
+      # bootstrap map, exported maps, and bridge request/result directories do
+      # not collide across concurrently running containers.
+      INTERNDATA_NAV2_SESSION_UUID: ${INTERNDATA_NAV2_SESSION_UUID:-nav2_default}
+      # Startup selection is injected from compose instead of being hardcoded
+      # in docker/nav2/entrypoint.sh.
+      INTERNDATA_NAV2_ROBOT_CONFIG: ${INTERNDATA_NAV2_ROBOT_CONFIG:-workflows/simbox/core/configs/robots/split_aloha.yaml}
+      INTERNDATA_NAV2_ROBOT_NAME: ${INTERNDATA_NAV2_ROBOT_NAME:-split_aloha}
       INTERNDATA_BASE_CONFIG: workflows/simbox/core/configs/bases/ranger_mini_v3.yaml
-      INTERNDATA_NAV2_STACK_CONFIG_DIR: output/nav2_runtime/bootstrap
-      INTERNDATA_NAV2_BOOTSTRAP_MAP_DIR: output/nav2_runtime/bootstrap_map
+      # The remaining bootstrap/config paths are derived from the UUID inside
+      # the container unless you explicitly override them.
     volumes:
       - ..:/workspace/InterndataEngine:rw
     working_dir: /workspace/InterndataEngine

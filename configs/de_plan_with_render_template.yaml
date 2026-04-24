@@ -4,7 +4,7 @@ load_stage:
     type: env_loader
     args:
       workflow_type: SimBoxDualWorkFlow
-      cfg_path: workflows/simbox/core/configs/tasks/navigation/split_aloha/navigate_asset_switchback_narrow.yaml  # Task config path
+      cfg_path: workflows/simbox/core/configs/tasks/mobile_manipulation/split_aloha/navigate_pick_place_boxed_beverage.yaml  # Task config path
       simulator:
         physics_dt: 1/30                   # Physics update rate
         rendering_dt: 1/30                 # Render update rate

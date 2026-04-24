@@ -165,6 +165,14 @@ class LmdbLogger(BaseLogger):
             meta_info["detailed_language_instruction"] = self.detailed_language_instruction[robot_idx]
             print("language_instruction :", meta_info["language_instruction"])
             print("detailed_language_instruction :", meta_info["detailed_language_instruction"])
+            json_meta = self.json_data_logger.get(robot_name, {})
+            failed_skill = json_meta.get("failed_skill", "")
+            failure_reason = json_meta.get("failure_reason", "")
+            failure_message = json_meta.get("failure_message", "")
+            if failed_skill or failure_reason or failure_message:
+                print("failed_skill :", failed_skill)
+                print("failure_reason :", failure_reason)
+                print("failure_message :", failure_message)
             meta_info["tpi_initial_info"] = self.tpi_initial_info
             meta_info["collect_info"] = self.collect_info
             meta_info["version"] = self.version

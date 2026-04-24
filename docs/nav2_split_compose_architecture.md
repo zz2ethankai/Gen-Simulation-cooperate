@@ -18,7 +18,7 @@
 - `nav2/mapgen/`
   - 静态地图导出和 Nav2 bootstrap 参数生成
   - 包含 `exporter.py`、`prepare_stack.py`
-- `nav2/container/`
+- `docker/nav2/`
   - Nav2 容器镜像和启动入口
   - 包含 `Dockerfile`、`entrypoint.sh`
 
@@ -45,7 +45,7 @@
    - map update
    - goal
    - cancel
-4. `nav2` 容器通过 `nav2/container/entrypoint.sh` 启动：
+4. `nav2` 容器通过 `docker/nav2/entrypoint.sh` 启动：
    - `python3 -m nav2.mapgen.prepare_stack`
    - `python3 -m nav2.bridge.adapter`
    - `map_server`
@@ -64,8 +64,8 @@
 - Isaac 侧 bridge：`nav2/bridge/client.py`
 - Nav2 侧 bridge：`nav2/bridge/adapter.py`
 - 地图导出：`nav2/mapgen/exporter.py`
-- 容器入口：`nav2/container/entrypoint.sh`
-- 容器镜像：`nav2/container/Dockerfile`
+- 容器入口：`docker/nav2/entrypoint.sh`
+- 容器镜像：`docker/nav2/Dockerfile`
 
 ## 说明
 

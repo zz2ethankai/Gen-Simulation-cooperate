@@ -20,6 +20,7 @@ from omni.isaac.core.utils.transformations import (
     get_relative_transform,
     tf_matrix_from_pose,
 )
+from omni.isaac.core.utils.xforms import get_world_pose
 
 
 @register_skill
@@ -49,6 +50,24 @@ class Manualpick(BaseSkill):
         # !!! keyposes should be generated after previous skill is done
         self.manip_list = []
         self.pickcontact_view = task.pickcontact_views[robot.name][lr_arm][object_name]
+
+    @staticmethod
+    def _get_world_pose_from_path(prim_path):
+        return get_world_pose(prim_path)
+
+    def _get_armbase_world_tf(self):
+        reference_prim_path = str(getattr(self.controller, "reference_prim_path", "")).strip()
+        if reference_prim_path:
+            return tf_matrix_from_pose(*self._get_world_pose_from_path(reference_prim_path))
+        return get_relative_transform(
+            get_prim_at_path(self.controller.reference_prim_path), get_prim_at_path(self.task.root_prim_path)
+        )
+
+    def _get_object_world_tf(self):
+        get_obj_world_pose = getattr(self.pick_obj, "get_world_pose", None)
+        if callable(get_obj_world_pose):
+            return tf_matrix_from_pose(*get_obj_world_pose())
+        return tf_matrix_from_pose(*self.pick_obj.get_local_pose())
 
     def simple_generate_manip_cmds(self):
         manip_list = []
@@ -327,10 +346,8 @@ class Manualpick(BaseSkill):
                         )
         if self.skill_cfg.get("direction_to_obj", None) is not None:
             direction_to_obj = self.skill_cfg.direction_to_obj
-            T_world_obj = tf_matrix_from_pose(*self.pick_obj.get_local_pose())
-            T_base_world = get_relative_transform(
-                get_prim_at_path(self.task.root_prim_path), get_prim_at_path(self.controller.reference_prim_path)
-            )
+            T_world_obj = self._get_object_world_tf()
+            T_base_world = np.linalg.inv(self._get_armbase_world_tf())
             T_base_obj = T_base_world @ T_world_obj
             if direction_to_obj == "right":
                 flags["direction_to_obj"] = T_base_ee[:, 1, 3] <= T_base_obj[1, 3]
@@ -374,17 +391,14 @@ class Manualpick(BaseSkill):
         if frame == "body":
             return self.T_obj_ee
 
-        T_world_obj = tf_matrix_from_pose(*self.pick_obj.get_local_pose())
+        T_world_obj = self._get_object_world_tf()
         T_world_ee = T_world_obj[None] @ self.T_obj_ee
 
         if frame == "world":
             return T_world_ee
 
         if frame == "armbase":  # robot base frame
-            T_r2w = get_relative_transform(
-                get_prim_at_path(self.controller.reference_prim_path), get_prim_at_path(self.task.root_prim_path)
-            )
-            T_base_world = np.linalg.inv(T_r2w)
+            T_base_world = np.linalg.inv(self._get_armbase_world_tf())
             T_base_ee = T_base_world[None] @ T_world_ee
             return T_base_ee
 

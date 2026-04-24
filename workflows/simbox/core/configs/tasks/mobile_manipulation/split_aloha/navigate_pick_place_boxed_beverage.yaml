@@ -1,0 +1,195 @@
+tasks:
+  -
+    name: navigate_pick_place_boxed_beverage_task
+    asset_root: workflows/simbox/assets
+    task: BananaBaseTask
+    task_id: 0
+
+    offset: null
+    render: True
+
+    arena_file: workflows/simbox/core/configs/arenas/pick_randomized_arena.yaml
+
+    neglect_collision_names: ["table"]
+
+    env_map:
+      envmap_lib: envmap_lib
+      apply_randomization: False
+      intensity_range: [5000, 5000]
+      rotation_range: [0, 0]
+
+    robots:
+      -
+        name: split_aloha
+        robot_config_file: workflows/simbox/core/configs/robots/split_aloha.yaml
+        euler: [0.0, 0.0, 90.0]
+        left_joint_home: [0.00484993, 0.34198609, -0.14007858, 0.01680429, 0.14391101, -0.00252178]
+        right_joint_home: [0.00484993, 0.34198609, -0.14007858, 0.01680429, 0.14391101, -0.00252178]
+        left_joint_home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        right_joint_home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        constrain_grasp_approach: True
+        ignore_substring: ["material", "table"]
+
+    objects:
+      -
+        name: pick_object
+        path: pick_and_place/pre-train-pick/assets/omniobject3d-boxed_beverage/omniobject3d-boxed_beverage_001/Aligned_obj.usd
+        target_class: RigidObject
+        dataset: oo3d
+        category: omniobject3d-boxed_beverage
+        prim_path_child: Aligned
+        translation: [0.0, 0.0, 0.0]
+        euler: [0.0, 0.0, 0.0]
+        scale: [0.001, 0.001, 0.001]
+        apply_randomization: False
+        orientation_mode: suggested
+      -
+        name: place_target
+        path: long_horizon/pack_out_objects/tray/tray_0/Aligned_obj.usd
+        target_class: GeometryObject
+        dataset: gso
+        category: tray
+        prim_path_child: Aligned
+        translation: [0.0, 0.0, 0.0]
+        euler: [90.0, 0.0, 0.0]
+        scale: [1.2, 1.2, 1.1]
+        apply_randomization: False
+
+    regions:
+      -
+        object: pick_object
+        target: table
+        random_type: A_on_B_region_sampler
+        random_config:
+          pos_range: [
+            [-0.22, -0.08, 0.0],
+            [-0.22, -0.08, 0.0]
+          ]
+          yaw_rotation: [0.0, 0.0]
+      -
+        object: place_target
+        target: table
+        random_type: A_on_B_region_sampler
+        random_config:
+          pos_range: [
+            [0.22, -0.08, 0.0],
+            [0.22, -0.08, 0.0]
+          ]
+          yaw_rotation: [0.0, 0.0]
+      -
+        object: split_aloha
+        target: floor
+        random_type: A_on_B_region_sampler
+        random_config:
+          pos_range: [
+            [-0.75, -0.86, 0.0],
+            [-0.75, -0.86, 0.0]
+          ]
+          yaw_rotation: [0.0, 0.0]
+
+    cameras:
+      -
+        name: split_aloha_global_debug_camera
+        translation: [0.0, 0.0, 5.0]
+        orientation: [1.0, 0.0, 0.0, 0.0]
+        camera_axes: usd
+        camera_file: workflows/simbox/core/configs/cameras/realsense_d455_v3.yaml
+        parent: ""
+        apply_randomization: False
+      -
+        name: split_aloha_hand_left
+        translation: [0.0, 0.08, 0.05]
+        orientation: [0.0, 0.0, 0.965, 0.259]
+        camera_axes: usd
+        camera_file: workflows/simbox/core/configs/cameras/astra.yaml
+        parent: split_aloha/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link6
+        apply_randomization: False
+      -
+        name: split_aloha_hand_right
+        translation: [0.0, 0.08, 0.04]
+        orientation: [0.0, 0.0, 0.972, 0.233]
+        camera_axes: usd
+        camera_file: workflows/simbox/core/configs/cameras/astra.yaml
+        parent: split_aloha/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link6
+        apply_randomization: False
+      -
+        name: split_aloha_head
+        translation: [0.0, -0.00818, 0.1]
+        orientation: [0.658, 0.259, -0.282, -0.648]
+        camera_axes: usd
+        camera_file: workflows/simbox/core/configs/cameras/realsense_d455_v3.yaml
+        parent: split_aloha/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/top_camera_link
+        apply_randomization: False
+
+    data:
+      task_dir: mobile_manipulation/split_aloha/navigate_pick_place_boxed_beverage
+      language_instruction: Move the mobile base to the pick pose, pick up the boxed beverage with the left arm, then move to the place pose and place it into the tray.
+      detailed_language_instruction: Drive the SplitAloha base to the first target pose in front of the object, grasp the boxed beverage with the left arm, drive to the second target pose in front of the tray, and place the object into the tray.
+      collect_info: navigate_pick_place_boxed_beverage
+      version: v1.0
+      update: True
+      max_episode_length: 3200
+
+    skills:
+      -
+        split_aloha:
+          -
+            left:
+              -
+                name: navigate
+                goal_x: -0.15
+                goal_y: -0.66
+                goal_yaw: 1.5707963267948966
+                xy_goal_tolerance: 0.05
+                yaw_goal_tolerance: 0.05
+                startup_timeout_sec: 60.0
+                runtime_timeout_sec: 180.0
+                output_root: output/ros_bridge/skills
+                scene_name: navigate_pick_place_boxed_beverage
+              -
+                name: pick
+                objects: [pick_object]
+                filter_y_dir: ["forward", 90]
+                filter_z_dir: ["downward", 150]
+                pre_grasp_offset: 0.05
+                gripper_change_steps: 10
+                t_eps: 0.01
+                o_eps: 1
+                process_valid: True
+                lift_th: 0.02
+                post_grasp_offset_min: 0.08
+                post_grasp_offset_max: 0.12
+                test_mode: forward
+              -
+                name: navigate
+                goal_x: 0.35
+                goal_y: -0.86
+                goal_yaw: 1.5707963267948966
+                xy_goal_tolerance: 0.11
+                yaw_goal_tolerance: 0.10
+                startup_timeout_sec: 60.0
+                runtime_timeout_sec: 180.0
+                output_root: output/ros_bridge/skills
+                scene_name: navigate_pick_place_boxed_beverage
+              -
+                name: place
+                objects: [pick_object, place_target]
+                place_direction: vertical
+                filter_y_dir: ["forward", 70]
+                filter_z_dir: ["downward", 150]
+                x_ratio_range: [0.5, 0.5]
+                y_ratio_range: [0.5, 0.5]
+                pre_place_z_offset: 0.20
+                place_z_offset: 0.10
+                position_constraint: object
+                success_mode: xybbox
+                align_pick_obj_axis: [0, 1, 0]
+                align_place_obj_axis: [0, 1, 0]
+                align_obj_tol: 25
+                gripper_change_steps: 10
+                t_eps: 0.01
+                o_eps: 1
+              -
+                name: heuristic__skill
+                mode: home
+                gripper_state: 1.0

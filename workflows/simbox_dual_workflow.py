@@ -865,7 +865,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             return episode_success, should_continue
 
         # Update each robot's skills
-        for _, skill_sequences in current_skills.items():
+        for robot_name, skill_sequences in current_skills.items():
             if not skill_sequences:
                 continue
 
@@ -876,6 +876,12 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                     start_lr_skill.update()  # Must update regardless of completion
                     if start_lr_skill.is_done():
                         if not start_lr_skill.is_success():
+                            self._record_skill_failure(
+                                robot_name,
+                                start_lr_skill,
+                                fallback_reason="skill_reported_unsuccessful",
+                                fallback_message="Skill completed but reported unsuccessful status.",
+                            )
                             episode_success = False
                             should_continue = False
                         lr_skill_list.remove(start_lr_skill)
@@ -907,6 +913,31 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                         if len(skill[0].manip_list) == 0:
                             should_continue = not skill[0].is_ready()
         return episode_success, should_continue
+
+    @staticmethod
+    def _skill_display_name(skill) -> str:
+        skill_cfg = getattr(skill, "skill_cfg", None)
+        if skill_cfg is not None:
+            cfg_name = skill_cfg.get("name", None)
+            if cfg_name:
+                return str(cfg_name)
+        return str(skill.__class__.__name__).lower()
+
+    def _record_skill_failure(self, robot_name: str, skill, fallback_reason: str, fallback_message: str):
+        failure_reason = str(getattr(skill, "failure_reason", "") or fallback_reason)
+        error_message = str(getattr(skill, "error_message", "") or fallback_message)
+        failed_skill = self._skill_display_name(skill)
+        self.logger.add_json_data(robot_name, "episode_success", False)
+        self.logger.add_json_data(robot_name, "failed_skill", failed_skill)
+        self.logger.add_json_data(robot_name, "failure_reason", failure_reason)
+        self.logger.add_json_data(robot_name, "failure_message", error_message)
+        self.logger.info(
+            "Episode failed: robot=%s skill=%s reason=%s message=%s",
+            robot_name,
+            failed_skill,
+            failure_reason,
+            error_message,
+        )
 
     def plan_first_skill(self, skills, should_continue):
         for _, robot_skill_list in skills[0].items():
@@ -968,6 +999,17 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                         record_labels = [skill[0].is_record() for skill in skill_sequences[0] if skill[0]]
 
                         if False in feasible_labels:
+                            failed_skill = next(
+                                (skill[0] for skill in skill_sequences[0] if skill[0] and not skill[0].is_feasible()),
+                                None,
+                            )
+                            if failed_skill is not None:
+                                self._record_skill_failure(
+                                    robot_name,
+                                    failed_skill,
+                                    fallback_reason="skill_not_feasible",
+                                    fallback_message="Skill feasibility check failed before completion.",
+                                )
                             should_continue = False
                         if False in record_labels:
                             record_flag = False
@@ -1212,6 +1254,17 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                         record_labels = [skill[0].is_record() for skill in skill_sequences[0] if skill[0]]
 
                         if False in feasible_labels:
+                            failed_skill = next(
+                                (skill[0] for skill in skill_sequences[0] if skill[0] and not skill[0].is_feasible()),
+                                None,
+                            )
+                            if failed_skill is not None:
+                                self._record_skill_failure(
+                                    robot_name,
+                                    failed_skill,
+                                    fallback_reason="skill_not_feasible",
+                                    fallback_message="Skill feasibility check failed before completion.",
+                                )
                             should_continue = False
                         if False in record_labels:
                             record_flag = False

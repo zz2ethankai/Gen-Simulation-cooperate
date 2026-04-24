@@ -119,6 +119,7 @@ class Nav2BridgeAdapter:
         self._last_status_publish_monotonic = -1e9
         self._heartbeat_sec = max(float(heartbeat_sec), 0.2)
         self._latest_planning_debug: dict[str, Any] = {}
+        self._latest_action_result_debug: dict[str, Any] = {}
         self._costmap_update_counts = {"global": 0, "local": 0}
         self._latest_costmap_debug: dict[str, dict[str, Any]] = {"global": {}, "local": {}}
         self._waiting_costmap_refresh = False
@@ -159,6 +160,7 @@ class Nav2BridgeAdapter:
         self._detail = f"loading_map:{map_yaml_path}"
         self._state = "loading_map"
         self._latest_planning_debug = {}
+        self._latest_action_result_debug = {}
         self._waiting_costmap_refresh = False
         self._costmap_refresh_request_id = ""
         self._costmap_refresh_generation = 0
@@ -595,6 +597,8 @@ class Nav2BridgeAdapter:
             return
 
         status_code = int(getattr(result, "status", -1))
+        wrapped_result = getattr(result, "result", None)
+        self._latest_action_result_debug = self._result_message_to_dict(wrapped_result)
         if status_code == 4:
             state = "succeeded"
         elif status_code == 5:
@@ -608,7 +612,13 @@ class Nav2BridgeAdapter:
         self._result_future = None
         self._state = state
         self._detail = f"goal finished with status_code={status_code}"
-        LOGGER.info("goal finished request_id=%s state=%s status_code=%s", request_id, state, status_code)
+        LOGGER.info(
+            "goal finished request_id=%s state=%s status_code=%s action_result=%s",
+            request_id,
+            state,
+            status_code,
+            self._latest_action_result_debug,
+        )
         self._publish_status(state=state, request_id=request_id, detail=self._detail)
         self._publish_result(
             request_id=request_id,
@@ -631,6 +641,7 @@ class Nav2BridgeAdapter:
         self._goal_handle = None
         self._result_future = None
         self._latest_planning_debug = {}
+        self._latest_action_result_debug = {}
         self._waiting_costmap_refresh = False
         self._costmap_refresh_request_id = ""
         self._costmap_refresh_generation = 0
@@ -662,6 +673,7 @@ class Nav2BridgeAdapter:
             "status_code": int(status_code),
             "reported_pose": dict(self._latest_odom_pose),
             "planning": dict(self._latest_planning_debug),
+            "action_result_debug": dict(self._latest_action_result_debug),
             "updated_at": time.time(),
         }
         self._publish_json(self._result_pub, payload)
@@ -833,6 +845,37 @@ class Nav2BridgeAdapter:
             "path_length_m": float(total_length_m),
             "poses": poses,
         }
+
+    @classmethod
+    def _result_message_to_dict(cls, value, *, _depth: int = 0) -> Any:
+        if value is None:
+            return {}
+        if isinstance(value, (bool, int, float, str)):
+            return value
+        if isinstance(value, dict):
+            if _depth >= 2:
+                return {str(key): str(type(item).__name__) for key, item in value.items()}
+            return {str(key): cls._result_message_to_dict(item, _depth=_depth + 1) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            if _depth >= 2:
+                return [str(type(item).__name__) for item in value]
+            return [cls._result_message_to_dict(item, _depth=_depth + 1) for item in value]
+
+        attributes = {}
+        for name in dir(value):
+            if name.startswith("_"):
+                continue
+            try:
+                item = getattr(value, name)
+            except Exception:  # pylint: disable=broad-except
+                continue
+            if callable(item):
+                continue
+            if _depth >= 2 and not isinstance(item, (bool, int, float, str, list, tuple, dict)):
+                attributes[name] = str(type(item).__name__)
+                continue
+            attributes[name] = cls._result_message_to_dict(item, _depth=_depth + 1)
+        return attributes
 
 
 def main() -> int:

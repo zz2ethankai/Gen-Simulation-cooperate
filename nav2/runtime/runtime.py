@@ -11,6 +11,7 @@ import math
 import os
 import shutil
 from typing import Optional
+import uuid
 
 from .config import (
     NAV2_DEFAULT_POSITION_TOLERANCE_M,
@@ -52,6 +53,8 @@ class PersistentNav2RuntimeManager:
         self.goal_x = 0.0
         self.goal_y = 0.0
         self.goal_yaw = 0.0
+        self.nav2_position_tolerance_m = NAV2_DEFAULT_POSITION_TOLERANCE_M
+        self.nav2_yaw_tolerance_rad = NAV2_DEFAULT_YAW_TOLERANCE_RAD
         self.position_tolerance_m = NAV2_DEFAULT_POSITION_TOLERANCE_M
         self.yaw_tolerance_rad = NAV2_DEFAULT_YAW_TOLERANCE_RAD
         self.startup_timeout_sec = 60.0
@@ -76,6 +79,7 @@ class PersistentNav2RuntimeManager:
         self._goal_debug_map_info = None
         self._goal_params_path = ""
         self._cleaned_up = False
+        self._session_uuid = uuid.uuid4().hex
 
     @property
     def done(self) -> bool:
@@ -132,13 +136,40 @@ class PersistentNav2RuntimeManager:
         encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
         return hashlib.sha1(encoded).hexdigest()[:12]
 
+    def _session_scoped_path(self, path_value: str) -> str:
+        path = str(path_value or "").strip()
+        if not path:
+            return path
+        normalized = os.path.normpath(path)
+        if os.path.basename(normalized) == self._session_uuid:
+            return normalized
+        return os.path.join(normalized, self._session_uuid)
+
+    def _apply_session_output_namespace(self):
+        ros_cfg = self._base_cfg.setdefault("ros", {})
+        localization_cfg = ros_cfg.setdefault("localization", {})
+        localization_cfg["map_output_dir"] = self._session_scoped_path(
+            str(localization_cfg.get("map_output_dir", "output/nav2_maps"))
+        )
+
+        nav2_cfg = ros_cfg.setdefault("nav2", {})
+        for key, default in (
+            ("stack_request_root", "output/ros_bridge/runtime_requests"),
+            ("stack_status_root", "output/ros_bridge/runtime_status"),
+            ("goal_request_root", "output/ros_bridge/goal_requests"),
+            ("goal_status_root", "output/ros_bridge/goal_status"),
+            ("goal_result_root", "output/ros_bridge/goal_result"),
+        ):
+            nav2_cfg[key] = self._session_scoped_path(str(nav2_cfg.get(key, default)))
+
     def _prepare_stack_artifacts(self):
         from nav2.mapgen.exporter import IsaacStaticMapExporter
 
+        self._apply_session_output_namespace()
         robot_tag = safe_name(getattr(self.robot, "name", "robot"))
         scene_tag = safe_name(self.scene_name)
         stack_tag = f"{robot_tag}_{scene_tag}"
-        self._stack_output_dir = os.path.join(self.output_root, stack_tag, "stack")
+        self._stack_output_dir = os.path.join(self.output_root, self._session_uuid, stack_tag, "stack")
         os.makedirs(self._stack_output_dir, exist_ok=True)
 
         exporter = IsaacStaticMapExporter(
@@ -157,11 +188,11 @@ class PersistentNav2RuntimeManager:
             self._stack_output_dir,
             base_cfg=self._base_cfg,
             map_yaml_path=str(self._map_info["yaml_path"]),
-            position_tolerance_m=self.position_tolerance_m,
-            yaw_tolerance_rad=self.yaw_tolerance_rad,
+            position_tolerance_m=self.nav2_position_tolerance_m,
+            yaw_tolerance_rad=self.nav2_yaw_tolerance_rad,
         )
         self._params_path = str(artifacts["params_path"])
-        self._stack_id = f"{robot_tag}::{scene_tag}::{self._stack_signature(artifacts['params'])}"
+        self._stack_id = f"{robot_tag}::{scene_tag}::{self._session_uuid}::{self._stack_signature(artifacts['params'])}"
 
     def _new_goal_output_dir(self) -> str:
         robot_tag = safe_name(getattr(self.robot, "name", "robot"))
@@ -206,6 +237,8 @@ class PersistentNav2RuntimeManager:
         goal_x: float,
         goal_y: float,
         goal_yaw: float,
+        nav2_position_tolerance_m: float = NAV2_DEFAULT_POSITION_TOLERANCE_M,
+        nav2_yaw_tolerance_rad: float = NAV2_DEFAULT_YAW_TOLERANCE_RAD,
         position_tolerance_m: float = NAV2_DEFAULT_POSITION_TOLERANCE_M,
         yaw_tolerance_rad: float = NAV2_DEFAULT_YAW_TOLERANCE_RAD,
         startup_timeout_sec: float = 60.0,
@@ -214,6 +247,8 @@ class PersistentNav2RuntimeManager:
         self.goal_x = float(goal_x)
         self.goal_y = float(goal_y)
         self.goal_yaw = float(goal_yaw)
+        self.nav2_position_tolerance_m = float(nav2_position_tolerance_m)
+        self.nav2_yaw_tolerance_rad = float(nav2_yaw_tolerance_rad)
         self.position_tolerance_m = float(position_tolerance_m)
         self.yaw_tolerance_rad = float(yaw_tolerance_rad)
         self.startup_timeout_sec = float(startup_timeout_sec)
@@ -339,10 +374,17 @@ class PersistentNav2RuntimeManager:
                 self.result.done = True
                 self.result.success = True
                 self.state = self.STATE_SUCCEEDED
-                self._write_debug_snapshot(
+                success_message = "Nav2 goal reached within skill tolerances after post-success settling."
+                success_snapshot = self._write_debug_snapshot(
                     "success_snapshot.json",
                     "goal_succeeded",
-                    "Nav2 goal reached within skill tolerances after post-success settling.",
+                    success_message,
+                )
+                self._log_result_summary(
+                    level=logging.INFO,
+                    reason="goal_succeeded",
+                    message=success_message,
+                    control_snapshot=success_snapshot.get("control", {}),
                 )
                 self._reset_robot_bridge_state(clear_debug_history=False)
                 return
@@ -447,6 +489,37 @@ class PersistentNav2RuntimeManager:
                 json.dump(debug_snapshot, handle, indent=2, ensure_ascii=False)
         return debug_snapshot
 
+    def _log_result_summary(self, *, level: int, reason: str, message: str, control_snapshot: dict | None = None):
+        if control_snapshot is None:
+            control_snapshot = runtime_control_debug_snapshot(self.robot)
+        LOGGER.log(
+            level,
+            (
+                "nav2 skill finished: robot=%s success=%s reason=%s message=%s "
+                "goal=(%.3f, %.3f, %.3f) world_xy=%s nav_xy=%s "
+                "world_dist=%.3f nav_dist=%.3f yaw_err=%.3f "
+                "nav2_tol_xy=%.3f nav2_tol_yaw=%.3f "
+                "skill_tol_xy=%.3f skill_tol_yaw=%.3f control=%s"
+            ),
+            getattr(self.robot, "name", "robot"),
+            bool(self.result.success),
+            str(reason),
+            str(message),
+            float(self.goal_x),
+            float(self.goal_y),
+            float(self.goal_yaw),
+            self.result.final_world_xy,
+            self.result.final_nav_xy,
+            float(self.result.final_distance_to_goal),
+            float(self.result.final_nav_distance_to_goal),
+            float(self.result.final_yaw_error_rad),
+            float(self.nav2_position_tolerance_m),
+            float(self.nav2_yaw_tolerance_rad),
+            float(self.position_tolerance_m),
+            float(self.yaw_tolerance_rad),
+            control_snapshot,
+        )
+
     def _write_navigation_artifacts(self, *, planning_payload: dict, trajectory_payload: list[dict], control_snapshot: dict) -> dict:
         artifacts = {}
         if not self._goal_output_dir:
@@ -515,18 +588,12 @@ class PersistentNav2RuntimeManager:
         self.result.failure_reason = str(reason)
         self.result.error_message = str(message)
         control_snapshot = runtime_control_debug_snapshot(self.robot)
-        failure_snapshot = self._write_debug_snapshot("failure_snapshot.json", reason, message)
-        LOGGER.error(
-            "nav2 skill failed: robot=%s reason=%s message=%s world_xy=%s nav_xy=%s world_dist=%.3f nav_dist=%.3f yaw_err=%.3f control=%s",
-            failure_snapshot["robot"],
-            self.result.failure_reason,
-            self.result.error_message,
-            self.result.final_world_xy,
-            self.result.final_nav_xy,
-            self.result.final_distance_to_goal,
-            self.result.final_nav_distance_to_goal,
-            self.result.final_yaw_error_rad,
-            control_snapshot,
+        self._write_debug_snapshot("failure_snapshot.json", reason, message)
+        self._log_result_summary(
+            level=logging.ERROR,
+            reason=self.result.failure_reason,
+            message=self.result.error_message,
+            control_snapshot=control_snapshot,
         )
         self.state = self.STATE_FAILED
         self._reset_robot_bridge_state(clear_debug_history=False)

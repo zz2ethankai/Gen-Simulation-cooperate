@@ -18,6 +18,7 @@ from omni.isaac.core.utils.transformations import (
     get_relative_transform,
     tf_matrix_from_pose,
 )
+from omni.isaac.core.utils.xforms import get_world_pose
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial.transform import Slerp
 
@@ -65,6 +66,20 @@ class Goto_Pose(BaseSkill):
         # from pdb import set_trace
         # set_trace()
 
+    @staticmethod
+    def _get_world_pose_from_path(prim_path):
+        return get_world_pose(prim_path)
+
+    def _get_ee_world_tf(self):
+        return tf_matrix_from_pose(*self._get_world_pose_from_path(self.controller.robot_ee_path))
+
+    @staticmethod
+    def _get_object_world_tf(obj):
+        get_obj_world_pose = getattr(obj, "get_world_pose", None)
+        if callable(get_obj_world_pose):
+            return tf_matrix_from_pose(*get_obj_world_pose())
+        return tf_matrix_from_pose(*obj.get_local_pose())
+
     def simple_generate_manip_cmds(self):
         manip_list = []
         p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
@@ -74,10 +89,8 @@ class Goto_Pose(BaseSkill):
         if self.q_base_ee_tgt is None:
             # Start Filter according to constraints
             obj = self.task.objects[self.skill_cfg["objects"][0]]
-            T_world_obj = tf_matrix_from_pose(*obj.get_local_pose())
-            T_world_ee = get_relative_transform(
-                get_prim_at_path(self.controller.robot_ee_path), get_prim_at_path(self.task.root_prim_path)
-            )
+            T_world_obj = self._get_object_world_tf(obj)
+            T_world_ee = self._get_ee_world_tf()
             self.T_obj_ee = np.linalg.inv(T_world_obj) @ T_world_ee
 
             self.align_obj_axis = self.skill_cfg["align_obj_axis"]

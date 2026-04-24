@@ -21,6 +21,7 @@ from omni.isaac.core.utils.transformations import (
     pose_from_tf_matrix,
     tf_matrix_from_pose,
 )
+from omni.isaac.core.utils.xforms import get_world_pose
 from scipy.spatial.transform import Rotation as R
 
 
@@ -60,6 +61,25 @@ class Place(BaseSkill):
         self.align_plane_x_axis = self.skill_cfg.get("align_plane_x_axis", None)
         self.align_plane_y_axis = self.skill_cfg.get("align_plane_y_axis", None)
         self.align_obj_tol = self.skill_cfg.get("align_obj_tol", None)
+
+    @staticmethod
+    def _get_world_pose_from_path(prim_path):
+        return get_world_pose(prim_path)
+
+    def _get_armbase_world_tf(self):
+        armbase_t, armbase_q = self._get_world_pose_from_path(self.robot_base_path)
+        return tf_matrix_from_pose(armbase_t, armbase_q)
+
+    def _get_ee_world_tf(self):
+        ee_t, ee_q = self._get_world_pose_from_path(self.robot_ee_path)
+        return tf_matrix_from_pose(ee_t, ee_q)
+
+    @staticmethod
+    def _get_object_world_tf(obj):
+        get_obj_world_pose = getattr(obj, "get_world_pose", None)
+        if callable(get_obj_world_pose):
+            return tf_matrix_from_pose(*get_obj_world_pose())
+        return tf_matrix_from_pose(*obj.get_local_pose())
 
     def simple_generate_manip_cmds(self):
         manip_list = []
@@ -139,16 +159,12 @@ class Place(BaseSkill):
         self.place_ee_trans = p_base_ee_place
 
     def sample_gripper_place_traj(self):
-        self.T_world_obj = tf_matrix_from_pose(*self.pick_obj.get_local_pose())
-        self.T_world_ee = get_relative_transform(
-            get_prim_at_path(self.robot_ee_path), get_prim_at_path(self.task.root_prim_path)
-        )
-        self.T_base_world = get_relative_transform(
-            get_prim_at_path(self.task.root_prim_path), get_prim_at_path(self.robot_base_path)
-        )
+        self.T_world_obj = self._get_object_world_tf(self.pick_obj)
+        self.T_world_ee = self._get_ee_world_tf()
+        self.T_base_world = np.linalg.inv(self._get_armbase_world_tf())
         self.T_obj_ee = np.linalg.inv(self.T_world_obj) @ self.T_world_ee
         ee2o_distance = np.linalg.norm(self.T_obj_ee[0:3, 3])
-        self.T_world_container = tf_matrix_from_pose(*self.place_obj.get_local_pose())
+        self.T_world_container = self._get_object_world_tf(self.place_obj)
 
         bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
         b_min, b_max = bbox_place_obj.min, bbox_place_obj.max

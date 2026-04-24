@@ -31,8 +31,15 @@ class Navigate(BaseSkill):
         except KeyError as exc:
             raise KeyError("navigate requires goal_x, goal_y, and goal_yaw") from exc
 
-        self.position_tolerance_m = float(cfg.get("xy_goal_tolerance", 0.10))
-        self.yaw_tolerance_rad = float(cfg.get("yaw_goal_tolerance", 0.10))
+        legacy_position_tolerance_m = float(cfg.get("xy_goal_tolerance", cfg.get("skill_xy_goal_tolerance", 0.10)))
+        legacy_yaw_tolerance_rad = float(cfg.get("yaw_goal_tolerance", cfg.get("skill_yaw_goal_tolerance", 0.10)))
+        goal_checker_cfg = dict(
+            getattr(self.robot, "base_cfg", {}).get("nav2_skill", {}).get("controller_server", {}).get("goal_checker", {})
+        )
+        self.nav2_position_tolerance_m = float(goal_checker_cfg.get("xy_goal_tolerance", legacy_position_tolerance_m))
+        self.nav2_yaw_tolerance_rad = float(goal_checker_cfg.get("yaw_goal_tolerance", legacy_yaw_tolerance_rad))
+        self.position_tolerance_m = legacy_position_tolerance_m
+        self.yaw_tolerance_rad = legacy_yaw_tolerance_rad
         self.startup_timeout_sec = float(cfg.get("startup_timeout_sec", 60.0))
         self.runtime_timeout_sec = float(cfg.get("runtime_timeout_sec", 240.0))
         self.output_root = str(cfg.get("output_root", "output/ros_bridge/skills"))
@@ -41,11 +48,11 @@ class Navigate(BaseSkill):
         self._configured_base_cfg = configure_robot_for_nav2_skill(
             self.robot,
             map_output_dir=str(cfg.get("map_output_dir", "output/nav2_maps")),
-            map_resolution=float(cfg.get("map_resolution", 0.05)),
+            map_resolution=float(cfg.get("map_resolution", 0.02)),
             map_z_min=float(cfg.get("map_z_min", 0.0)),
             map_z_max=float(cfg.get("map_z_max", 0.35)),
-            position_tolerance_m=self.position_tolerance_m,
-            yaw_tolerance_rad=self.yaw_tolerance_rad,
+            position_tolerance_m=self.nav2_position_tolerance_m,
+            yaw_tolerance_rad=self.nav2_yaw_tolerance_rad,
         )
         self._manager = None
         self._goal_started = False
@@ -88,6 +95,8 @@ class Navigate(BaseSkill):
                 goal_x=self.goal_x,
                 goal_y=self.goal_y,
                 goal_yaw=self.goal_yaw,
+                nav2_position_tolerance_m=self.nav2_position_tolerance_m,
+                nav2_yaw_tolerance_rad=self.nav2_yaw_tolerance_rad,
                 position_tolerance_m=self.position_tolerance_m,
                 yaw_tolerance_rad=self.yaw_tolerance_rad,
                 startup_timeout_sec=self.startup_timeout_sec,

@@ -14,6 +14,7 @@ from omni.isaac.core.utils.transformations import (
     pose_from_tf_matrix,
     tf_matrix_from_pose,
 )
+from omni.isaac.core.utils.xforms import get_world_pose
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial.transform import Slerp
 
@@ -61,6 +62,23 @@ class Dexplace(BaseSkill):
             self.draw = kwargs["draw"]
         self.manip_list = []
 
+    @staticmethod
+    def _get_world_pose_from_path(prim_path):
+        return get_world_pose(prim_path)
+
+    def _get_armbase_world_tf(self):
+        return tf_matrix_from_pose(*self._get_world_pose_from_path(self.robot_base_path))
+
+    def _get_ee_world_tf(self):
+        return tf_matrix_from_pose(*self._get_world_pose_from_path(self.robot_ee_path))
+
+    @staticmethod
+    def _get_object_world_tf(obj):
+        get_obj_world_pose = getattr(obj, "get_world_pose", None)
+        if callable(get_obj_world_pose):
+            return tf_matrix_from_pose(*get_obj_world_pose())
+        return tf_matrix_from_pose(*obj.get_local_pose())
+
     def simple_generate_manip_cmds(self):
         manip_list = []
         place_traj, post_place_level = self.sample_gripper_place_traj()
@@ -93,14 +111,11 @@ class Dexplace(BaseSkill):
 
     def sample_gripper_place_traj(self):
         place_traj = []
-        T_base_ee = get_relative_transform(get_prim_at_path(self.robot_ee_path), get_prim_at_path(self.robot_base_path))
-        T_world_base = get_relative_transform(
-            get_prim_at_path(self.robot_base_path), get_prim_at_path(self.task.root_prim_path)
-        )
-        T_world_ee = T_world_base @ T_base_ee
+        T_world_base = self._get_armbase_world_tf()
+        T_world_ee = self._get_ee_world_tf()
         p_world_ee_start, q_world_ee_start = pose_from_tf_matrix(T_world_ee)
         # Getting the object pose
-        T_world_obj = tf_matrix_from_pose(*self.pick_obj.get_local_pose())
+        T_world_obj = self._get_object_world_tf(self.pick_obj)
         # Calculate the pose of the end-effector in the object's coordinate frame
         T_obj_world = np.linalg.inv(T_world_obj)
         # Getting the relation pose and distance of ee to object (after picking, before placing)
@@ -129,7 +144,7 @@ class Dexplace(BaseSkill):
 
         # 1. Obtaining ee_ori
         p_world_ee_init = self.controller.T_world_ee_init[0:3, 3]  # getting initial ee position
-        container_position = self.place_obj.get_local_pose()[0]  # getting container position
+        container_position = np.array(self._get_object_world_tf(self.place_obj)[:3, 3], copy=True)
         container_position[1] += 0.0
         gripper_axis = container_position - p_world_ee_init  # gripper_axis is aligned with the container direction
         gripper_axis = gripper_axis / np.linalg.norm(gripper_axis)  # Normalize the target vector
@@ -218,14 +233,14 @@ class Dexplace(BaseSkill):
         return len(self.manip_list) == 0
 
     def is_success(self):
-        x, y, z = self.pick_obj.get_local_pose()[0]  # pick_obj position
+        x, y, z = self._get_object_world_tf(self.pick_obj)[:3, 3]
         within_boundary = (
             self.place_boundary[0][0] <= x <= self.place_boundary[1][0]
             and self.place_boundary[0][1] <= y <= self.place_boundary[1][1]
             and self.place_boundary[0][2] <= z  # <= self.place_boundary[1][2]
         )
 
-        print("pos :", self.pick_obj.get_local_pose()[0])
+        print("pos :", np.array([x, y, z]))
         print("boundary :", self.place_boundary)
         print("within_boundary :", within_boundary)
 

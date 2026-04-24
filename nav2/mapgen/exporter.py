@@ -26,7 +26,7 @@ class IsaacStaticMapExporter:
         if not isinstance(self.localization_cfg, dict):
             raise TypeError("base_cfg['ros']['localization'] must be a dict when present")
 
-        self._resolution = float(self.localization_cfg.get("map_resolution", 0.05))
+        self._resolution = float(self.localization_cfg.get("map_resolution", 0.02))
         self._z_min = float(self.localization_cfg.get("map_z_min", 0.0))
         self._z_max = float(self.localization_cfg.get("map_z_max", 1.50))
         self._padding = float(self.localization_cfg.get("map_bounds_padding_m", 0.75))

@@ -14,6 +14,7 @@ from omni.isaac.core.utils.transformations import (
     pose_from_tf_matrix,
     tf_matrix_from_pose,
 )
+from omni.isaac.core.utils.xforms import get_world_pose
 
 
 # pylint: disable=unused-argument
@@ -40,6 +41,24 @@ class FailPick(BaseSkill):
         self.manip_list = []
         self.process_valid = True
         self.obj_init_trans = deepcopy(self.object.get_local_pose()[0])
+
+    @staticmethod
+    def _get_world_pose_from_path(prim_path):
+        return get_world_pose(prim_path)
+
+    def _get_armbase_world_tf(self):
+        reference_prim_path = str(getattr(self.controller, "reference_prim_path", "")).strip()
+        if reference_prim_path:
+            return tf_matrix_from_pose(*self._get_world_pose_from_path(reference_prim_path))
+        return get_relative_transform(
+            get_prim_at_path(self.controller.reference_prim_path), get_prim_at_path(self.task.root_prim_path)
+        )
+
+    def _get_object_world_tf(self):
+        get_obj_world_pose = getattr(self.object, "get_world_pose", None)
+        if callable(get_obj_world_pose):
+            return tf_matrix_from_pose(*get_obj_world_pose())
+        return tf_matrix_from_pose(*self.object.get_local_pose())
 
     def simple_generate_manip_cmds(self):
         manip_list = []
@@ -150,10 +169,8 @@ class FailPick(BaseSkill):
                         flags[axis] = np.logical_and(T_ee2r[:, row, col] <= cos_val1, T_ee2r[:, row, col] >= cos_val2)
         if self.skill_cfg.get("direction_to_obj", None) is not None:
             direction_to_obj = self.skill_cfg.direction_to_obj
-            T_o2w = tf_matrix_from_pose(*self.object.get_local_pose())
-            T_w2r = get_relative_transform(
-                get_prim_at_path(self.task.root_prim_path), get_prim_at_path(self.controller.reference_prim_path)
-            )
+            T_o2w = self._get_object_world_tf()
+            T_w2r = np.linalg.inv(self._get_armbase_world_tf())
             T_o2r = T_w2r @ T_o2w
             if direction_to_obj == "right":
                 flags["direction_to_obj"] = T_ee2r[:, 1, 3] <= T_o2r[1, 3]
@@ -185,17 +202,14 @@ class FailPick(BaseSkill):
         if frame == "body":
             return self.T_ee2o
 
-        T_o2w = tf_matrix_from_pose(*self.object.get_local_pose())
+        T_o2w = self._get_object_world_tf()
         T_ee2w = T_o2w[None] @ self.T_ee2o
 
         if frame == "world":
             return T_ee2w
 
         if frame == "robot":  # robot base frame
-            T_r2w = get_relative_transform(
-                get_prim_at_path(self.controller.reference_prim_path), get_prim_at_path(self.task.root_prim_path)
-            )
-            T_w2r = np.linalg.inv(T_r2w)
+            T_w2r = np.linalg.inv(self._get_armbase_world_tf())
             T_ee2r = T_w2r[None] @ T_ee2w
             return T_ee2r
 
