@@ -1,4 +1,5 @@
 import traceback
+import sys
 from threading import Thread
 from time import sleep, time
 
@@ -35,22 +36,24 @@ class HeadNode:
         # Map runner ObjectRef to worker name for proper cleanup
         self.runner_to_worker = {}
         self.all_workers_spawned = False
+        self._queues_shutdown = False
 
     def gen_tasks(self):
         self.logger.info(f"headnode: {self.idx}: =============start gen task=============")
         pre_worker_stop_num = 0
         while not self.GEN_STOP_SIG:
-            if self.data_queue is None:
+            data_queue = self.data_queue
+            if data_queue is None:
                 self.logger.info(f"headnode: {self.idx}: =============Gen Tasks stop==============")
                 self.all_workers_spawned = True
                 return
-            if self.data_queue.empty():
+            if data_queue.empty():
                 sleep(0)
                 continue
             if self.task_queue is not None and self.task_queue.size() >= self.safe_threshold:
                 sleep(1)
                 continue
-            task = self.data_queue.get()
+            task = data_queue.get()
             assert isinstance(
                 task, Package
             ), f"the transfered type of data should be Package type, but it is {type(task)}"
@@ -112,8 +115,9 @@ class HeadNode:
                     return
             else:
                 self.task_board.reg_task(task)
-        if self.data_queue and not self.data_queue.empty():
-            task = self.data_queue.get_nowait()
+        data_queue = self.data_queue
+        if data_queue is not None and not data_queue.empty():
+            task = data_queue.get_nowait()
             self.task_board.reg_task(task)
         self.logger.info("=============Gen Tasks stop==============")
         self.all_workers_spawned = True
@@ -194,8 +198,30 @@ class HeadNode:
         if self.run_thread is not None:
             self.run_thread.join()
         self.sig_stop()
+        self._shutdown_queues(shutdown_output=False)
 
-    def __del__(self):
+    def _shutdown_queues(self, *, shutdown_output=True):
+        if self._queues_shutdown and (self.output_queue is None or not shutdown_output):
+            return
         if self.task_queue is not None:
             self.task_queue.shutdown()
-        self.output_queue.shutdown()
+            self.task_queue = None
+        if self.output_queue is not None:
+            if shutdown_output:
+                self.output_queue.shutdown()
+                self.output_queue = None
+        if shutdown_output:
+            self._queues_shutdown = True
+
+    def __del__(self):
+        sys_module = globals().get("sys")
+        if (
+            getattr(self, "_queues_shutdown", True)
+            or sys_module is None
+            or getattr(sys_module, "meta_path", None) is None
+        ):
+            return
+        try:
+            self._shutdown_queues()
+        except Exception:
+            pass

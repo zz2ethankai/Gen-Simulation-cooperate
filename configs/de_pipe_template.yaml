@@ -1,22 +1,40 @@
-name: simbox_pipe_dynamic_actor
+name: simbox_pipe_nav2
 load_stage:
   scene_loader:                            # Scene loader (plan process)
     type: env_loader
     args:
       workflow_type: SimBoxDualWorkFlow
-      cfg_path: workflows/simbox/core/configs/tasks/example/sort_the_rubbish.yaml  # Task config path
+      cfg_path: workflows/simbox/core/configs/tasks/mobile_manipulation/split_aloha/navigate_pick_place_boxed_beverage.yaml  # Task config path
       simulator:
         physics_dt: 1/30                   # Physics update rate
         rendering_dt: 1/30                 # Render update rate
         stage_units_in_meters: 1.0         # Stage unit scale
         headless: True                     # Headless mode (no GUI); set false for visual debugging
+        experience: /isaac-sim/apps/omni.isaac.sim.python.gym.headless.kit
         anti_aliasing: 0                   # Anti-aliasing level
+        multi_gpu: false                   # Keep this plan worker pinned to its assigned GPU
+        max_gpu_count: 1
         active_gpu: 0                      # Override via CLI: --load_stage.scene_loader.args.simulator.active_gpu=1
         physics_gpu: 0                     # Override via CLI: --load_stage.scene_loader.args.simulator.physics_gpu=1
+        renderer: RayTracedLighting        # Isaac Sim 4.1 options: RayTracedLighting, PathTracing
+        planning_step_render: true         # Nav2 base physics needs the same rendered world step path as plan_with_render
+        # Optional higher-quality PathTracing settings:
+        # renderer: PathTracing
+        # denoiser: True
+        # samples_per_pixel_per_frame: 16
+        # max_bounces: 4
+        # max_specular_transmission_bounces: 6
+        # max_volume_bounces: 64
+        # total_spp: 256
+        # adaptive_sampling: True
+        # adaptive_sampling_target_error: 0.001
+        # optix_temporal_denoiser: False
+        # denoise_aovs: True
+        # firefly_filter: True
   layout_random_generator:                 # Scene randomization
     type: env_randomizer
     args:
-      random_num: 3                        # Number of random samples per task
+      random_num: 1                        # Number of random samples per task
       strict_mode: true                    # true: output count must equal random_num
 plan_stage:
   seq_planner:                             # Trajectory planner
@@ -31,15 +49,57 @@ dedump_stage:
     type: env_loader
     args:
       workflow_type: SimBoxDualWorkFlow
-      cfg_path: workflows/simbox/core/configs/tasks/example/sort_the_rubbish.yaml  # Must match load_stage cfg_path
+      cfg_path: workflows/simbox/core/configs/tasks/mobile_manipulation/split_aloha/navigate_pick_place_boxed_beverage.yaml  # Must match load_stage cfg_path
       simulator:
         physics_dt: 1/30                   # Physics update rate
         rendering_dt: 1/30                 # Render update rate
-        rendering_interval: 5              # Render every N physics steps
+        rendering_interval: 1              # Render every N physics steps
         headless: true                     # Headless mode
-        multi_gpu: true                    # Enable multi-GPU for render workers
-        active_gpu: 0                      # Override via CLI: --dedump_stage.scene_loader.args.simulator.active_gpu=1
-        physics_gpu: 0                     # Override via CLI: --dedump_stage.scene_loader.args.simulator.physics_gpu=1
+        experience: /isaac-sim/apps/omni.isaac.sim.python.gym.headless.kit
+        multi_gpu: false                   # Keep this render worker pinned to its assigned GPU
+        max_gpu_count: 1
+        active_gpu: 1                      # Override via CLI: --dedump_stage.scene_loader.args.simulator.active_gpu=0
+        physics_gpu: 1                     # Override via CLI: --dedump_stage.scene_loader.args.simulator.physics_gpu=0
+        renderer: RayTracedLighting              # Isaac Sim 4.1 options: RayTracedLighting, PathTracing
+
+        # Renderer choices (Isaac Sim 4.1 SimulationApp):
+        # renderer: RayTracedLighting      # Faster RTX real-time lighting, recommended for throughput
+        # renderer: PathTracing            # Higher quality, much slower
+
+        # Resolution:
+        # width: 1280
+        # height: 720
+
+        # Anti-aliasing:
+        # anti_aliasing: 0                 # Disabled
+        # anti_aliasing: 1                 # TAA
+        # anti_aliasing: 2                 # FXAA
+        # anti_aliasing: 3                 # DLSS
+        anti_aliasing: 3                  # Disabled; PathTracing samples provide anti-aliasing
+
+        # Frame sampling:
+        # rendering_interval: 5            # Render every N physics steps; larger is faster/fewer frames
+
+        # PathTracing launch options:
+        denoiser: True                     # Keep low-SPP frames usable; requires nvoptix.bin in container
+        samples_per_pixel_per_frame: 2     # Balanced replay quality for transparent/highlight materials
+        max_bounces: 4                     # Keep enough path depth for glass while limiting replay cost
+        max_specular_transmission_bounces: 6
+        max_volume_bounces: 0
+        subdiv_refinement_level: 0
+
+        # PathTracing runtime settings:
+        # total_spp: 16                      # Balanced glass quality without changing resolution/frame cadence
+        # adaptive_sampling: False           # Avoid extra adaptive-sampling overhead at very low total_spp
+        # adaptive_sampling_target_error: 0.01
+        # optix_denoiser: True
+        # optix_temporal_denoiser: False     # Temporal denoise is expensive/fragile for moving replay frames
+        # denoise_aovs: False                # Denoise RGB only; avoid extra AOV denoise work
+        # firefly_filter: True
+        # firefly_max_intensity_glossy: 3200.0
+        # firefly_max_intensity_diffuse: 3200.0
+        # reset_pt_accum_on_time_change: True
+        # fractional_cutout_opacity: True    # Preserve transparent/cutout material edges for glass-like assets
   layout_random_generator:
     type: env_randomizer
   seq_planner:                             # Reads serialized trajectories
@@ -56,11 +116,11 @@ store_stage:
 stage_pipe:
   stage_num: [3, 3]                        # Number of pipeline stages [plan, render]
   stage_dev: ["gpu", "gpu"]                # Device type per stage
-  worker_num: [2, 1]                       # Number of workers per stage [plan, render]
+  worker_num: [1, 1]                       # Number of workers per stage [plan, render]
   worker_schedule: True                    # Enable dynamic worker scheduling
   safe_threshold: 100                      # Max pending items before throttling
   status_timeouts:                         # Worker timeout thresholds (seconds, -1 = infinite)
     idle: 360                              # Max idle time before restart
     ready: -1                              # Max time in ready state
-    running: 600                           # Max running time per task
+    running: 1800                          # Max running time per task; PathTracing replay can exceed 10 minutes
   monitor_check_interval: 120              # Health check interval (seconds)

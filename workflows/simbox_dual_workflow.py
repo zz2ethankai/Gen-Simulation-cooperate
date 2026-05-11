@@ -59,10 +59,12 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         task_cfg_path: str,
         scene_info: str = "dining_room_scene_info",
         random_seed: int = None,
+        planning_step_render: bool = False,
     ):
         self.scene_info = scene_info
         self.step_replay = False
         self.random_seed = random_seed
+        self.planning_step_render = bool(planning_step_render)
         self._ros_base_command_controllers = {}
         self._ros_base_bridges = {}
         self._navigation_session_managers = {}
@@ -960,6 +962,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
 
     def generate_seq(self) -> list:
         end = False
+        step_render = bool(getattr(self, "planning_step_render", False))
 
         # while True:
         #     obs = self.world.get_observations()
@@ -978,7 +981,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         for _ in range(10):
             obs = self.world.get_observations()
             # self._init_static_objects(self.task)
-            self._step_world(render=False)
+            self._step_world(render=step_render)
 
         while not (step_id >= max_episode_length or (not self.skills and not episode_success) or (not should_continue)):
             obs = self.world.get_observations()
@@ -1023,7 +1026,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             elif not self.skills and episode_success:
                 end = True
                 for j_idx in range(1, 7):
-                    self._step_world(render=False)
+                    self._step_world(render=step_render)
                     obs = self.world.get_observations()
                     log_dual_obs(
                         self.logger,
@@ -1054,7 +1057,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 )
                 self.world_recorder.record()
             self.task.apply_action(action_dict)
-            self._step_world(render=False)
+            self._step_world(render=step_render)
 
             step_id += 1
             if self.skills:

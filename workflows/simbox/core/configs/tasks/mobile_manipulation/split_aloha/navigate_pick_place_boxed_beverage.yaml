@@ -32,7 +32,7 @@ tasks:
 
     objects:
       -
-        name: pick_object
+        name: pick_object_222
         path: pick_and_place/pre-train-pick/assets/omniobject3d-boxed_beverage/omniobject3d-boxed_beverage_001/Aligned_obj.usd
         target_class: RigidObject
         dataset: oo3d
@@ -54,6 +54,39 @@ tasks:
         euler: [90.0, 0.0, 0.0]
         scale: [1.2, 1.2, 1.1]
         apply_randomization: False
+      -
+        name: pick_object
+        path: basic/pour/redwine_glass/redwine_glass_0/Aligned_obj.usd
+        target_class: RigidObject
+        dataset: oo3d
+        category: "redwine_glass_0"
+        prim_path_child: Aligned
+        translation: [0.0, 0.0, 0.0]
+        euler: [0.0, 0.0, 0.0]
+        scale: [0.01, 0.01, 0.01]
+        apply_randomization: True
+      -
+        name: distractor_can
+        path: pick_and_place/pre-train-pick/assets/phocal-can/omniobject3d-can_001/Aligned_obj.usd
+        target_class: RigidObject
+        dataset: oo3d
+        category: phocal-can
+        prim_path_child: Aligned
+        translation: [0.0, 0.0, 0.0]
+        euler: [90.0, 0.0, 0.0]
+        scale: [0.001, 0.001, 0.001]
+        apply_randomization: False
+      -
+        name: distractor_mug
+        path: pick_and_place/pre-train-pick/assets/omniobject3d-mug/google_scan-mug_0160/Aligned_obj.usd
+        target_class: RigidObject
+        dataset: oo3d
+        category: omniobject3d-mug
+        prim_path_child: Aligned
+        translation: [0.0, 0.0, 0.0]
+        euler: [90.0, 0.0, 0.0]
+        scale: [0.001, 0.001, 0.001]
+        apply_randomization: False
 
     regions:
       -
@@ -74,6 +107,36 @@ tasks:
           pos_range: [
             [0.22, -0.08, 0.0],
             [0.22, -0.08, 0.0]
+          ]
+          yaw_rotation: [0.0, 0.0]
+      -
+        object: distractor_glass
+        target: table
+        random_type: A_on_B_region_sampler
+        random_config:
+          pos_range: [
+            [-0.05, -0.26, 0.0],
+            [-0.05, -0.26, 0.0]
+          ]
+          yaw_rotation: [0.0, 0.0]
+      -
+        object: distractor_can
+        target: table
+        random_type: A_on_B_region_sampler
+        random_config:
+          pos_range: [
+            [0.05, 0.12, 0.0],
+            [0.05, 0.12, 0.0]
+          ]
+          yaw_rotation: [0.0, 0.0]
+      -
+        object: distractor_mug
+        target: table
+        random_type: A_on_B_region_sampler
+        random_config:
+          pos_range: [
+            [-0.35, 0.06, 0.0],
+            [-0.35, 0.06, 0.0]
           ]
           yaw_rotation: [0.0, 0.0]
       -
@@ -134,7 +197,7 @@ tasks:
       -
         split_aloha:
           -
-            left:
+            right:
               -
                 name: navigate
                 goal_x: -0.15

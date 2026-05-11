@@ -22,7 +22,18 @@ def run_data_engine(config, master_seed=None):
         from .data_engine import DistPipeDataEngine
 
         cuda_devs = os.environ.get("CUDA_VISIBLE_DEVICES")
-        ray.init(num_gpus=1, runtime_env={"env_vars": {"CUDA_VISIBLE_DEVICES": cuda_devs}} if cuda_devs else {})
+        os.environ.setdefault("RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES", "1")
+        ray_init_kwargs = {}
+        if cuda_devs:
+            visible_devices = [device.strip() for device in cuda_devs.split(",") if device.strip()]
+            ray_init_kwargs["num_gpus"] = len(visible_devices)
+            ray_init_kwargs["runtime_env"] = {
+                "env_vars": {
+                    "CUDA_VISIBLE_DEVICES": cuda_devs,
+                    "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
+                }
+            }
+        ray.init(**ray_init_kwargs)
         data_engine = DistPipeDataEngine(config, master_seed=master_seed)
     else:
         from .data_engine import DataEngine

@@ -11,6 +11,19 @@ load_stage:
         stage_units_in_meters: 1.0         # Stage unit scale
         headless: True                     # Headless mode (no GUI)
         anti_aliasing: 0                   # Anti-aliasing level
+        # Optional higher-quality PathTracing settings:
+        # renderer: PathTracing
+        # denoiser: True
+        # samples_per_pixel_per_frame: 32
+        # max_bounces: 4
+        # max_specular_transmission_bounces: 6
+        # max_volume_bounces: 64
+        # total_spp: 512
+        # adaptive_sampling: True
+        # adaptive_sampling_target_error: 0.001
+        # optix_temporal_denoiser: False
+        # denoise_aovs: True
+        # firefly_filter: True
   layout_random_generator:                 # Reads pre-planned trajectories from input_dir
     type: env_randomizer
     args:

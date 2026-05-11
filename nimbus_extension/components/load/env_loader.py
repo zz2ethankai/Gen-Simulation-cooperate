@@ -52,6 +52,34 @@ def _resolve_experience(configured_path: str, *, headless: bool) -> str:
     return ""
 
 
+def _apply_optional_setting(simulation_app, simulator: dict, key: str, setting_path: str, cast):
+    if key not in simulator:
+        return None
+    value = cast(simulator[key])
+    simulation_app.set_setting(setting_path, value)
+    return value
+
+
+def _resolve_torch_cuda_device(configured_device):
+    if configured_device is None:
+        return None
+    import torch
+
+    visible_count = torch.cuda.device_count()
+    if visible_count <= 0:
+        return None
+
+    configured_device = int(configured_device)
+    if configured_device < visible_count:
+        return configured_device
+
+    cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    if cuda_visible_devices:
+        return 0
+
+    return configured_device
+
+
 class EnvLoader(SceneLoader):
     """
     Environment loader that initializes Isaac Sim and loads scenes based on workflow configurations.
@@ -104,8 +132,14 @@ class EnvLoader(SceneLoader):
         cuda_device = simulator.get("active_gpu", None)
         if cuda_device is not None:
             import torch
-            torch.cuda.set_device(cuda_device)
-            self.logger.info(f"PyTorch default CUDA device set to cuda:{cuda_device}")
+
+            torch_cuda_device = _resolve_torch_cuda_device(cuda_device)
+            if torch_cuda_device is not None:
+                torch.cuda.set_device(torch_cuda_device)
+                self.logger.info(
+                    f"PyTorch default CUDA device set to cuda:{torch_cuda_device}"
+                    f" (configured active_gpu={cuda_device}, CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '')})"
+                )
 
         from isaacsim import SimulationApp
 
@@ -115,6 +149,22 @@ class EnvLoader(SceneLoader):
             "multi_gpu": simulator.get("multi_gpu", True),
             "renderer": simulator.get("renderer", "RayTracedLighting"),
         }
+        for key in ("active_gpu", "physics_gpu", "width", "height"):
+            if key in simulator:
+                launch_config[key] = int(simulator[key])
+        for key in ("max_gpu_count", "denoiser", "samples_per_pixel_per_frame", "max_bounces",
+                    "max_specular_transmission_bounces", "max_volume_bounces", "subdiv_refinement_level"):
+            if key in simulator:
+                launch_config[key] = simulator[key]
+        self.logger.info(
+            "SimulationApp launch GPU config: active_gpu=%s physics_gpu=%s"
+            " (configured active_gpu=%s physics_gpu=%s, CUDA_VISIBLE_DEVICES=%s)",
+            launch_config.get("active_gpu"),
+            launch_config.get("physics_gpu"),
+            simulator.get("active_gpu"),
+            simulator.get("physics_gpu"),
+            os.environ.get("CUDA_VISIBLE_DEVICES", ""),
+        )
         experience = _resolve_experience(simulator.get("experience", ""), headless=bool(launch_config["headless"]))
         if launch_config["headless"]:
             if "disable_viewport_updates" in simulator:
@@ -130,6 +180,26 @@ class EnvLoader(SceneLoader):
                 self.simulation_app = SimulationApp(launch_config, experience=experience)
             else:
                 self.simulation_app = SimulationApp(launch_config)
+        applied_renderer_settings = {}
+        optional_renderer_settings = (
+            ("total_spp", "/rtx/pathtracing/totalSpp", int),
+            ("adaptive_sampling", "/rtx/pathtracing/adaptiveSampling/enabled", bool),
+            ("adaptive_sampling_target_error", "/rtx/pathtracing/adaptiveSampling/targetError", float),
+            ("optix_denoiser", "/rtx/pathtracing/optixDenoiser/enabled", bool),
+            ("optix_temporal_denoiser", "/rtx/pathtracing/optixDenoiser/temporalMode/enabled", bool),
+            ("denoise_aovs", "/rtx/pathtracing/optixDenoiser/AOV", bool),
+            ("firefly_filter", "/rtx/pathtracing/fireflyFilter/enabled", bool),
+            ("firefly_max_intensity_glossy", "/rtx/pathtracing/fireflyFilter/maxIntensityPerSample", float),
+            ("firefly_max_intensity_diffuse", "/rtx/pathtracing/fireflyFilter/maxIntensityPerSampleDiffuse", float),
+            ("reset_pt_accum_on_time_change", "/rtx/resetPtAccumOnAnimTimeChange", bool),
+            ("fractional_cutout_opacity", "/rtx/pathtracing/fractionalCutoutOpacity", bool),
+        )
+        for key, setting_path, cast in optional_renderer_settings:
+            value = _apply_optional_setting(self.simulation_app, simulator, key, setting_path, cast)
+            if value is not None:
+                applied_renderer_settings[key] = value
+        if applied_renderer_settings:
+            self.logger.info(f"Applied renderer settings: {applied_renderer_settings}")
 
         if workflow_type == "SimBoxDualWorkFlow":
             from nav2.bridge.clock import ensure_isaac_ros2_bridge_ready
@@ -149,12 +219,18 @@ class EnvLoader(SceneLoader):
         from workflows import import_extensions
 
         import_extensions(workflow_type)
+        workflow_kwargs = {
+            "scene_info": scene_info,
+            "random_seed": get_random_seed(),
+        }
+        if workflow_type == "SimBoxDualWorkFlow":
+            workflow_kwargs["planning_step_render"] = bool(simulator.get("planning_step_render", False))
+
         self.workflow = create_workflow(
             workflow_type,
             world,
             cfg_path,
-            scene_info=scene_info,
-            random_seed=get_random_seed(),
+            **workflow_kwargs,
         )
         self.workflow.simulation_app = self.simulation_app
 

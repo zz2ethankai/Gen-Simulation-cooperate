@@ -1,0 +1,31 @@
+# Backup of the previous default Nav2 global planner settings before switching
+# `default_nav.yaml` from SmacPlannerLattice to SmacPlanner2D.
+nav2_skill:
+  planner_server:
+    plugin: nav2_smac_planner/SmacPlannerLattice
+    tolerance: 0.10
+    allow_unknown: false
+    downsample_costmap: false
+    max_iterations: 1000000
+    max_on_approach_iterations: 2000
+    max_planning_time: 3.0
+    smooth_path: true
+    reverse_penalty: 1.0
+    change_penalty: 0.0
+    non_straight_penalty: 1.05
+    cost_penalty: 2.0
+    rotation_penalty: 3.0
+    retrospective_penalty: 0.015
+    analytic_expansion_ratio: 3.5
+    analytic_expansion_max_length: 2.5
+    analytic_expansion_max_cost: 200.0
+    analytic_expansion_max_cost_override: false
+    cache_obstacle_heuristic: true
+    allow_reverse_expansion: false
+    lattice_filepath: /opt/ros/humble/share/nav2_smac_planner/sample_primitives/5cm_resolution/0.5m_turning_radius/omni/output.json
+    smoother:
+      tolerance: 1.0e-10
+      max_iterations: 1000
+      w_data: 0.2
+      w_smooth: 0.3
+      do_refinement: true

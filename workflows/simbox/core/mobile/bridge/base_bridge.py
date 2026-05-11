@@ -50,6 +50,7 @@ class BaseBridge(ABC):
         self._steering_command_sign = float(
             self.base_cfg.get("steering_command_sign", self.ros_cfg.get("steering_command_sign", 1.0))
         )
+        self._min_body_velocity, self._max_body_velocity = self._load_body_velocity_limits()
         if abs(self._steering_command_sign) <= 1.0e-6:
             raise ValueError("steering_command_sign must be non-zero")
         if self._wheel_radius <= 0.0:
@@ -209,6 +210,7 @@ class BaseBridge(ABC):
             "received_time_sec": float(received_time_sec),
         }
         command = BaseCommand.from_twist_message(msg, received_time_sec=received_time_sec)
+        command = self._clamp_command(command)
         self._command = command
         self._debug_cmd_vel_history.append(
             {
@@ -230,6 +232,33 @@ class BaseBridge(ABC):
         if now_sec - self._command.received_time_sec <= self._command_timeout:
             return self._command
         return BaseCommand.zero(received_time_sec=self._command.received_time_sec)
+
+    def _load_body_velocity_limits(self) -> tuple[np.ndarray, np.ndarray]:
+        hard_limits = (
+            self.base_cfg.get("platform", {})
+            .get("nav2", {})
+            .get("controller_hard_limits", {})
+        )
+        min_velocity = hard_limits.get("min_velocity", [-float("inf"), -float("inf"), -float("inf")])
+        max_velocity = hard_limits.get("max_velocity", [float("inf"), float("inf"), float("inf")])
+        min_velocity = np.asarray(min_velocity, dtype=np.float32).reshape(-1)
+        max_velocity = np.asarray(max_velocity, dtype=np.float32).reshape(-1)
+        if min_velocity.size != 3 or max_velocity.size != 3:
+            raise ValueError("platform.nav2.controller_hard_limits velocity limits must be 3-element lists")
+        return min_velocity, max_velocity
+
+    def _clamp_command(self, command: BaseCommand) -> BaseCommand:
+        clamped = np.clip(
+            np.asarray([command.vx_body, command.vy_body, command.wz_body], dtype=np.float32),
+            self._min_body_velocity,
+            self._max_body_velocity,
+        )
+        return BaseCommand(
+            vx_body=float(clamped[0]),
+            vy_body=float(clamped[1]),
+            wz_body=float(clamped[2]),
+            received_time_sec=command.received_time_sec,
+        )
 
     def get_logging_action_snapshot(self) -> dict:
         command = self._last_step_command
