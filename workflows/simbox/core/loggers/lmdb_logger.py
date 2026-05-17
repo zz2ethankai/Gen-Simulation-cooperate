@@ -43,7 +43,7 @@ def _normalize_rgb_frame(frame):
     return image
 
 
-def _save_rgb_video(ffmpeg_path, output_path, frames, fps=15):
+def _save_rgb_video(ffmpeg_path, output_path, frames, fps=30):
     if not frames:
         return
 
@@ -130,6 +130,7 @@ class LmdbLogger(BaseLogger):
         max_size: int = 1,
         image_quality: int = 100,
         save_depth: bool = True,
+        video_fps: int = 30,
         min_inttype: int = 0,
         max_inttype: int = 2**24 - 1,
     ):
@@ -143,6 +144,7 @@ class LmdbLogger(BaseLogger):
         )
         self.max_size = int(max_size * 1024**4)
         self.image_quality = image_quality
+        self.video_fps = int(video_fps)
         self.min_inttype = min_inttype
         self.max_inttype = max_inttype
 
@@ -273,7 +275,7 @@ class LmdbLogger(BaseLogger):
                         )
                         meta_info["keys"][key].append(f"{key}/{step_id}".encode("utf-8"))
 
-                    _save_rgb_video(ffmpeg_path, root_img_path / "demo.mp4", value, fps=15)
+                    _save_rgb_video(ffmpeg_path, root_img_path / "demo.mp4", value, fps=self.video_fps)
 
                 for key, value in self.depth_image_logger.get(robot_name, {}).items():
                     root_img_path = save_dir / f"{key}"

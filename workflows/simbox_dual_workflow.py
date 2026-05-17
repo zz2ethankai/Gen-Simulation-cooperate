@@ -4,7 +4,7 @@ import os
 import pickle
 import random
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from copy import deepcopy
 from datetime import datetime
 
@@ -341,12 +341,20 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             self._init_static_objects(self.task)
             self._step_world(render=False)
 
+        get_physics_dt = getattr(self.world, "get_physics_dt", None)
+        if callable(get_physics_dt):
+            physics_dt = float(get_physics_dt())
+        else:
+            physics_dt = float(getattr(self.world, "physics_dt", 1.0 / 30.0))
+        video_fps = int(round(1.0 / physics_dt)) if physics_dt > 0 else 30
+
         self.logger = LmdbLogger(
             task_dir=self.task_cfg["data"]["task_dir"],
             language_instruction=self.task.language_instruction,
             detailed_language_instruction=self.task.detailed_language_instruction,
             collect_info=self.task_cfg["data"]["collect_info"],
             version=self.task_cfg["data"].get("version", "v1.0"),
+            video_fps=video_fps,
         )
         # Motion vectors are large dense tensors; keep LMDB logging opt-in.
         self.log_motion_vectors = bool(self.task_cfg["data"].get("log_motion_vectors", False))
@@ -371,6 +379,31 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         else:
             draw = None
 
+        self._skills_use_dag = self._task_uses_skill_dag(task_cfg)
+        if self._skills_use_dag:
+            return self._initialize_skill_dag(task, task_cfg, controllers, world, draw)
+        return self._initialize_legacy_skills(task, task_cfg, controllers, world, draw)
+
+    @staticmethod
+    def _task_uses_skill_dag(task_cfg):
+        for cfg_skill_dict in task_cfg.get("skills", []):
+            if not isinstance(cfg_skill_dict, dict):
+                continue
+            for robot_skill_list in cfg_skill_dict.values():
+                if not isinstance(robot_skill_list, list):
+                    continue
+                for lr_skill_dict in robot_skill_list:
+                    if not isinstance(lr_skill_dict, dict):
+                        continue
+                    for lr_skill_list in lr_skill_dict.values():
+                        if not isinstance(lr_skill_list, list):
+                            continue
+                        for skill_cfg in lr_skill_list:
+                            if isinstance(skill_cfg, dict) and ("id" in skill_cfg or "depends_on" in skill_cfg):
+                                return True
+        return False
+
+    def _initialize_legacy_skills(self, task, task_cfg, controllers, world, draw):
         # Initialize skills for each robot.
         skills = []
         for cfg_skill_dict in task_cfg["skills"]:
@@ -398,6 +431,84 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                     skill_dict[robot_name].append(skill_sequence)
             skills.append(skill_dict)
         return skills
+
+    def _initialize_skill_dag(self, task, task_cfg, controllers, world, draw):
+        nodes_by_id = {}
+        nodes = []
+
+        for phase_idx, cfg_skill_dict in enumerate(task_cfg["skills"]):
+            for robot_name, robot_skill_list in cfg_skill_dict.items():
+                robot = task.robots[robot_name]
+                controller = controllers[robot_name]
+
+                for sequence_idx, lr_skill_dict in enumerate(robot_skill_list):
+                    for lr_name, lr_skill_list in lr_skill_dict.items():
+                        for skill_idx, skill_cfg in enumerate(lr_skill_list):
+                            if "id" not in skill_cfg:
+                                raise ValueError(
+                                    f"DAG skill config requires 'id': robot={robot_name}, "
+                                    f"controller={lr_name}, phase={phase_idx}, sequence={sequence_idx}, skill={skill_idx}"
+                                )
+                            skill_id = str(skill_cfg["id"])
+                            if skill_id in nodes_by_id:
+                                raise ValueError(f"Duplicate skill id in DAG config: {skill_id}")
+
+                            depends_on = skill_cfg.get("depends_on", [])
+                            if depends_on is None:
+                                depends_on = []
+                            if not isinstance(depends_on, list):
+                                raise TypeError(f"Skill '{skill_id}' depends_on must be a list")
+                            depends_on = [str(dep_id) for dep_id in depends_on]
+
+                            skill = get_skill_cls(skill_cfg["name"])(
+                                robot,
+                                controller[lr_name],
+                                task,
+                                skill_cfg,
+                                world=world,
+                                workflow=self,
+                                draw=draw,
+                            )
+                            setattr(skill, "skill_id", skill_id)
+                            node = {
+                                "id": skill_id,
+                                "depends_on": depends_on,
+                                "robot_name": robot_name,
+                                "controller_name": str(lr_name),
+                                "skill": skill,
+                                "state": "pending",
+                            }
+                            nodes_by_id[skill_id] = node
+                            nodes.append(node)
+
+        ordered_nodes = self._toposort_skill_nodes(nodes, nodes_by_id)
+        return {"nodes": ordered_nodes, "nodes_by_id": nodes_by_id}
+
+    @staticmethod
+    def _toposort_skill_nodes(nodes, nodes_by_id):
+        indegree = {node["id"]: 0 for node in nodes}
+        children = defaultdict(list)
+
+        for node in nodes:
+            for dep_id in node["depends_on"]:
+                if dep_id not in nodes_by_id:
+                    raise ValueError(f"Skill '{node['id']}' depends on unknown skill '{dep_id}'")
+                children[dep_id].append(node["id"])
+                indegree[node["id"]] += 1
+
+        ready = deque([node["id"] for node in nodes if indegree[node["id"]] == 0])
+        ordered = []
+        while ready:
+            skill_id = ready.popleft()
+            ordered.append(nodes_by_id[skill_id])
+            for child_id in children[skill_id]:
+                indegree[child_id] -= 1
+                if indegree[child_id] == 0:
+                    ready.append(child_id)
+
+        if len(ordered) != len(nodes):
+            raise ValueError("Cycle detected in skill DAG config")
+        return ordered
 
     def _initialize_controllers(self, task, task_cfg, world):
         """Initialize controllers for each robot."""
@@ -857,6 +968,9 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
 
     def update_skill_states(self, skills, episode_success, should_continue):
         """Update and manage skill states."""
+        if self._skills_use_dag:
+            return self.update_dag_skill_states(skills, episode_success, should_continue)
+
         current_skills = skills[0]
 
         # Check if any skills remain
@@ -917,6 +1031,99 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         return episode_success, should_continue
 
     @staticmethod
+    def _dag_skill_done(skills):
+        return all(node["state"] == "succeeded" for node in skills["nodes"])
+
+    def _skills_complete(self):
+        if self._skills_use_dag:
+            return self._dag_skill_done(self.skills)
+        return not self.skills
+
+    def _dag_ready_to_start(self, node, nodes_by_id):
+        return node["state"] == "pending" and all(
+            nodes_by_id[dep_id]["state"] == "succeeded" for dep_id in node["depends_on"]
+        )
+
+    def _start_dag_ready_skills(self, skills, should_continue):
+        nodes_by_id = skills["nodes_by_id"]
+        for node in skills["nodes"]:
+            if not self._dag_ready_to_start(node, nodes_by_id):
+                continue
+
+            skill = node["skill"]
+            skill.simple_generate_manip_cmds()
+            if hasattr(skill, "visualize_target"):
+                skill.visualize_target(self.world)
+            node["state"] = "running"
+            if len(skill.manip_list) == 0 and not skill.is_ready():
+                should_continue = True
+        return should_continue
+
+    def _collect_dag_skill_actions(self, skills):
+        actions_by_robot = defaultdict(list)
+        running_nodes = [node for node in skills["nodes"] if node["state"] == "running"]
+        record_flag = True
+
+        for node in running_nodes:
+            skill = node["skill"]
+            if not skill.is_feasible():
+                self._record_skill_failure(
+                    node["robot_name"],
+                    skill,
+                    fallback_reason="skill_not_feasible",
+                    fallback_message="Skill feasibility check failed before completion.",
+                )
+                node["state"] = "failed"
+                return {}, False, True
+            if not skill.is_record():
+                record_flag = False
+
+            if skill.is_ready():
+                actions_by_robot[node["robot_name"]].append(skill.controller.forward(skill.manip_list[0]))
+
+        action_dict = {}
+        for robot_name, actions in actions_by_robot.items():
+            if actions:
+                action_dict[robot_name] = {
+                    "joint_positions": np.concatenate([a["joint_positions"] for a in actions]),
+                    "joint_indices": np.concatenate([a["joint_indices"] for a in actions]),
+                    "raw_action": actions,
+                }
+
+        return action_dict, record_flag, False
+
+    def update_dag_skill_states(self, skills, episode_success, should_continue):
+        for node in skills["nodes"]:
+            if node["state"] != "running":
+                continue
+
+            skill = node["skill"]
+            skill.update()
+            if skill.is_done():
+                if not skill.is_success():
+                    self._record_skill_failure(
+                        node["robot_name"],
+                        skill,
+                        fallback_reason="skill_reported_unsuccessful",
+                        fallback_message="Skill completed but reported unsuccessful status.",
+                    )
+                    node["state"] = "failed"
+                    episode_success = False
+                    should_continue = False
+                else:
+                    node["state"] = "succeeded"
+
+            if hasattr(skill, "visualize_target"):
+                skill.visualize_target(self.world)
+
+        if should_continue:
+            should_continue = self._start_dag_ready_skills(skills, should_continue)
+
+        if any(node["state"] == "failed" for node in skills["nodes"]):
+            return episode_success, False
+        return episode_success, should_continue
+
+    @staticmethod
     def _skill_display_name(skill) -> str:
         skill_cfg = getattr(skill, "skill_cfg", None)
         if skill_cfg is not None:
@@ -931,6 +1138,9 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         failed_skill = self._skill_display_name(skill)
         self.logger.add_json_data(robot_name, "episode_success", False)
         self.logger.add_json_data(robot_name, "failed_skill", failed_skill)
+        skill_id = getattr(skill, "skill_id", None)
+        if skill_id is not None:
+            self.logger.add_json_data(robot_name, "failed_skill_id", str(skill_id))
         self.logger.add_json_data(robot_name, "failure_reason", failure_reason)
         self.logger.add_json_data(robot_name, "failure_message", error_message)
         self.logger.info(
@@ -942,6 +1152,9 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         )
 
     def plan_first_skill(self, skills, should_continue):
+        if self._skills_use_dag:
+            return self._start_dag_ready_skills(skills, should_continue)
+
         for _, robot_skill_list in skills[0].items():
             for lr_skill_list in robot_skill_list[0]:
                 lr_skill_list[0].simple_generate_manip_cmds()
@@ -983,11 +1196,20 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             # self._init_static_objects(self.task)
             self._step_world(render=step_render)
 
-        while not (step_id >= max_episode_length or (not self.skills and not episode_success) or (not should_continue)):
+        while not (
+            step_id >= max_episode_length
+            or (self._skills_complete() and not episode_success)
+            or (not should_continue)
+        ):
             obs = self.world.get_observations()
             action_dict = {}
             record_flag = True
-            if self.skills and should_continue:
+            if self._skills_use_dag and not self._skills_complete() and should_continue:
+                action_dict, record_flag, skill_failed = self._collect_dag_skill_actions(self.skills)
+                if skill_failed:
+                    episode_success = False
+                    should_continue = False
+            elif not self._skills_use_dag and self.skills and should_continue:
                 # Process current skills
                 current_skills = self.skills[0]
                 for robot_name, skill_sequences in current_skills.items():
@@ -1023,7 +1245,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                                 "joint_indices": np.concatenate([a["joint_indices"] for a in action]),
                                 "raw_action": action,
                             }
-            elif not self.skills and episode_success:
+            elif self._skills_complete() and episode_success:
                 end = True
                 for j_idx in range(1, 7):
                     self._step_world(render=step_render)
@@ -1060,7 +1282,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             self._step_world(render=step_render)
 
             step_id += 1
-            if self.skills:
+            if not self._skills_complete():
                 episode_success, should_continue = self.update_skill_states(
                     self.skills, episode_success, should_continue
                 )
@@ -1238,11 +1460,20 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         #     # self._init_static_objects(self.task)
         #     self.world.step(render=True)
 
-        while not (step_id >= max_episode_length or (not self.skills and not episode_success) or (not should_continue)):
+        while not (
+            step_id >= max_episode_length
+            or (self._skills_complete() and not episode_success)
+            or (not should_continue)
+        ):
             obs = self.world.get_observations()
             action_dict = {}
             record_flag = True
-            if self.skills and should_continue:
+            if self._skills_use_dag and not self._skills_complete() and should_continue:
+                action_dict, record_flag, skill_failed = self._collect_dag_skill_actions(self.skills)
+                if skill_failed:
+                    episode_success = False
+                    should_continue = False
+            elif not self._skills_use_dag and self.skills and should_continue:
                 # Process current skills
                 current_skills = self.skills[0]
                 for robot_name, skill_sequences in current_skills.items():
@@ -1278,7 +1509,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                                 "joint_indices": np.concatenate([a["joint_indices"] for a in action]),
                                 "raw_action": action,
                             }
-            elif not self.skills and episode_success:
+            elif self._skills_complete() and episode_success:
                 end = True
                 for j_idx in range(1, 7):
                     self._step_world(render=True)
@@ -1316,7 +1547,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             self._step_world(render=True)
 
             step_id += 1
-            if self.skills:
+            if not self._skills_complete():
                 episode_success, should_continue = self.update_skill_states(
                     self.skills, episode_success, should_continue
                 )

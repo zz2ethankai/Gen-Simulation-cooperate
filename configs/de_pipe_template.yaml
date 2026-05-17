@@ -34,7 +34,7 @@ load_stage:
   layout_random_generator:                 # Scene randomization
     type: env_randomizer
     args:
-      random_num: 1                        # Number of random samples per task
+      random_num: 6                        # Number of random samples per task
       strict_mode: true                    # true: output count must equal random_num
 plan_stage:
   seq_planner:                             # Trajectory planner
