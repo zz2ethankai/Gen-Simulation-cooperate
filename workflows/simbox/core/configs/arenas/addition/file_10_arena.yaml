@@ -1,0 +1,92 @@
+name: assets_addition_file_10_arena
+fixtures:
+- name: empty_room
+  path: assets_addition/file_10/empty_room.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_10_bookshelf_01_0_id173
+  path: assets_addition/file_10/assets/arena/file_10__bookshelf_01_0_id173.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_10_pantry_shelving_unit_0_id54
+  path: assets_addition/file_10/assets/arena/file_10__pantry_shelving_unit_0_id54.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_10_platform_bed_with_storage_drawers_0_id203
+  path: assets_addition/file_10/assets/arena/file_10__platform_bed_with_storage_drawers_0_id203.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_10_sectional_sofa_01_0_id148
+  path: assets_addition/file_10/assets/arena/file_10__sectional_sofa_01_0_id148.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_10_steel_pantry_shelving_unit_0_id89
+  path: assets_addition/file_10/assets/arena/file_10__steel_pantry_shelving_unit_0_id89.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0

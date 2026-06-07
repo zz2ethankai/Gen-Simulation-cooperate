@@ -34,6 +34,9 @@ class IsaacStaticMapExporter:
         self._robot_clear_footprint_points = self._resolve_robot_clear_footprint_points()
         self._border_obstacle_thickness = float(self.localization_cfg.get("map_border_obstacle_thickness_m", 0.15))
         self._min_obstacle_height = float(self.localization_cfg.get("map_min_obstacle_height_m", 0.04))
+        self._include_visual_wall_geometry = bool(
+            self.localization_cfg.get("map_include_visual_wall_geometry", True)
+        )
         if self._resolution <= 0.0:
             raise ValueError("localization.map_resolution must be positive")
         if self._z_max <= self._z_min:
@@ -264,14 +267,21 @@ class IsaacStaticMapExporter:
                 continue
             if any(prim_path == path or prim_path.startswith(f"{path}/") for path in excluded_prim_paths):
                 continue
-            if not prim.HasAPI(UsdPhysics.CollisionAPI):
+            has_collision = prim.HasAPI(UsdPhysics.CollisionAPI)
+            is_visual_wall = (
+                self._include_visual_wall_geometry
+                and "/Walls/" in prim_path
+                and (prim.IsA(UsdGeom.Mesh) or prim.IsA(UsdGeom.Gprim))
+            )
+            if not has_collision and not is_visual_wall:
                 continue
 
-            collision_enabled_attr = prim.GetAttribute("physics:collisionEnabled")
-            if collision_enabled_attr.IsValid():
-                collision_enabled = collision_enabled_attr.Get()
-                if collision_enabled is False:
-                    continue
+            if has_collision:
+                collision_enabled_attr = prim.GetAttribute("physics:collisionEnabled")
+                if collision_enabled_attr.IsValid():
+                    collision_enabled = collision_enabled_attr.Get()
+                    if collision_enabled is False:
+                        continue
 
             bounds = bbox_cache.ComputeWorldBound(prim)
             aligned = Gf.BBox3d(bounds.ComputeAlignedRange()).GetBox()

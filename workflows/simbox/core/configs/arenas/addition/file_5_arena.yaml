@@ -1,0 +1,122 @@
+name: assets_addition_file_5_arena
+fixtures:
+- name: empty_room
+  path: assets_addition/file_5/empty_room.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_5_bookcase_low_0_id186
+  path: assets_addition/file_5/assets/arena/file_5__bookcase_low_0_id186.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_5_heavy_duty_shelving_unit_01_0_id145
+  path: assets_addition/file_5/assets/arena/file_5__heavy_duty_shelving_unit_01_0_id145.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_5_stainless_utility_sink_unit_0_id92
+  path: assets_addition/file_5/assets/arena/file_5__stainless_utility_sink_unit_0_id92.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_5_tall_bookcase_0_id179
+  path: assets_addition/file_5/assets/arena/file_5__tall_bookcase_0_id179.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_5_tall_easel_0_id84
+  path: assets_addition/file_5/assets/arena/file_5__tall_easel_0_id84.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_5_utility_sink_with_faucet_0_id113
+  path: assets_addition/file_5/assets/arena/file_5__utility_sink_with_faucet_0_id113.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_5_wall_shelving_ladder_style_0_id105
+  path: assets_addition/file_5/assets/arena/file_5__wall_shelving_ladder_style_0_id105.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0

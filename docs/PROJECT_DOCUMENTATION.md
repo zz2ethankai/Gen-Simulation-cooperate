@@ -999,13 +999,24 @@ tasks:
 | 配置项 | 类型 | 必填 | 默认值 | 说明 |
 |--------|------|:----:|--------|------|
 | **name** | str | 是 | navigate | 技能名称 |
-| **goal_x** | float | 是 | - | 目标 X 坐标 |
-| **goal_y** | float | 是 | - | 目标 Y 坐标 |
-| **goal_yaw** | float | 是 | - | 目标偏航角 |
+| **goal** | str | 否 | - | 命名导航目标，优先从 task 顶层 `positions[goal]` 读取 `x/y/yaw` |
+| **goal_x** | float | 否 | - | 目标 X 坐标，未配置 `goal` 时使用 |
+| **goal_y** | float | 否 | - | 目标 Y 坐标，未配置 `goal` 时使用 |
+| **goal_yaw** | float | 否 | - | 目标偏航角，未配置 `goal` 时使用 |
 | **xy_goal_tolerance** | float | 否 | 0.05 | 位置容差 |
 | **yaw_goal_tolerance** | float | 否 | 0.05 | 姿态容差 |
 | **startup_timeout_sec** | float | 否 | 60.0 | 启动超时 |
 | **runtime_timeout_sec** | float | 否 | 180.0 | 运行超时 |
+
+task 顶层可选定义：
+
+```yaml
+positions:
+  nav_to_pick:
+    x: -0.08
+    y: -0.72
+    yaw: 1.5707963267948966
+```
 
 #### 抓取技能 (pick)
 
@@ -2750,6 +2761,10 @@ docker compose -f docker/docker-compose.yml up -d
 # 已知限制与待改进项
 
 ## 已知限制
+
+- `approach_rotate` 当前不建议用于生产任务。该 skill 已注册，但内部 `get_tgt_js()` 仍未实现；当配置启用 `dummy_forward` 时会触发 `NotImplementedError`。
+- `track` 当前成功判定偏宽松。代码使用“位置接近或姿态接近”即成功，而不是同时满足两者；适合演示或可视化用途，严格评测时需要谨慎。
+- `dynamicpick` 采用特殊调度方式。它不是空实现，但不在 `simple_generate_manip_cmds()` 中直接生成轨迹，而是依赖调度器持续轮询 `is_ready()` 后再内部触发预测与轨迹生成。
 
 ### 1. 硬件限制
 

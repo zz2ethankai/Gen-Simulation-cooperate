@@ -1,27 +1,27 @@
-[tool.pytest.ini_options]
-# Test configuration for better isolation
-addopts = [
-    "--verbose",
-    "--tb=short", 
-    "--strict-markers",
+[project]
+name = "interndataengine"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "modelscope>=1.37.0",
+    "numba>=0.65.1",
+    "numpy>=2.4.5",
+    "open3d>=0.19.0",
+    "pyarmor==9.2.3",
+    "scipy>=1.17.1",
+    "torch>=2.12.0",
+    "tqdm>=4.67.3",
+    "trimesh>=4.12.2",
+    "usd-core>=26.5",
 ]
 
-# Test discovery
-testpaths = ["test"]
-python_files = ["test_*.py", "*_test.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
 
-# Warnings
-filterwarnings = [
-    "ignore::DeprecationWarning",
-    "ignore::PendingDeprecationWarning",
-]
-
-# Markers
-markers = [
-    "unit: Unit tests",
-    "integration: Integration tests", 
-    "slow: Slow tests",
-    "isaac_sim: Tests requiring Isaac Sim",
+[tool.uv.workspace]
+members = [
+    "workflows/simbox/tools",
 ]

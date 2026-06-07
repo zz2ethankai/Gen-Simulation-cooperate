@@ -45,8 +45,8 @@ nav2_skill:
     goal_checker:
       stateful: false
       plugin: nav2_controller::SimpleGoalChecker
-      xy_goal_tolerance: 0.02
-      yaw_goal_tolerance: 0.02
+      xy_goal_tolerance: 0.06
+      yaw_goal_tolerance: 0.06
     follow_path:
       plugin: nav2_mppi_controller::MPPIController
       time_steps: 40

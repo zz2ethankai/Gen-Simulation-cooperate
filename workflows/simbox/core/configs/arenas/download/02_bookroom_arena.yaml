@@ -1,0 +1,246 @@
+name: asset_02_bookroom
+fixtures:
+- name: floor
+  target_class: PlaneObject
+  size:
+  - 4.2
+  - 3.2
+  translation:
+  - 2.1
+  - 1.6
+  - 0.0
+  collision_enabled: True
+  collision_thickness: 0.02
+  texture:
+    texture_lib: texture_libs/floor_textures
+    apply_randomization: False
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+- name: wall_north
+  target_class: PlaneObject
+  size:
+  - 4.2
+  - 2.8
+  translation:
+  - 2.1
+  - 3.2
+  - 1.4
+  collision_enabled: True
+  collision_thickness: 0.02
+  euler:
+  - 90.0
+  - 0.0
+  - 0.0
+  texture:
+    texture_lib: texture_libs/wall_textures
+    apply_randomization: False
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+- name: wall_south
+  target_class: PlaneObject
+  size:
+  - 4.2
+  - 2.8
+  translation:
+  - 2.1
+  - 0.0
+  - 1.4
+  collision_enabled: True
+  collision_thickness: 0.02
+  euler:
+  - 90.0
+  - 0.0
+  - 0.0
+  texture:
+    texture_lib: texture_libs/wall_textures
+    apply_randomization: False
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+- name: wall_west
+  target_class: PlaneObject
+  size:
+  - 3.2
+  - 2.8
+  translation:
+  - 0.0
+  - 1.6
+  - 1.4
+  collision_enabled: True
+  collision_thickness: 0.02
+  euler:
+  - 90.0
+  - 0.0
+  - 90.0
+  texture:
+    texture_lib: texture_libs/wall_textures
+    apply_randomization: False
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+- name: wall_east
+  target_class: PlaneObject
+  size:
+  - 3.2
+  - 2.8
+  translation:
+  - 4.2
+  - 1.6
+  - 1.4
+  collision_enabled: True
+  collision_thickness: 0.02
+  euler:
+  - 90.0
+  - 0.0
+  - 90.0
+  texture:
+    texture_lib: texture_libs/wall_textures
+    apply_randomization: False
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+- name: open_bookshelf_0_id2
+  path: assets/basic/02_bookroom/fixtures/open_bookshelf/open_bookshelf_0_id2/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 2.4
+  - 0.205
+  - 1.1
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: open_bookshelf
+  asset_source_mode: phys3d_mesh_converted_z_up
+  support_surface: True
+  static: True
+  metadata: assets/basic/02_bookroom/fixtures/open_bookshelf/open_bookshelf_0_id2/metadata.json
+- name: main_desk_0_id1
+  path: assets/basic/02_bookroom/fixtures/main_desk/main_desk_0_id1/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 1.8
+  - 2.72
+  - 0.375
+  euler:
+  - 0.0
+  - 180.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: main_desk
+  asset_source_mode: phys3d_mesh_converted_z_up
+  support_surface: True
+  static: True
+  metadata: assets/basic/02_bookroom/fixtures/main_desk/main_desk_0_id1/metadata.json
+- name: low_storage_shelf_0_id3
+  path: assets/basic/02_bookroom/fixtures/low_storage_shelf/low_storage_shelf_0_id3/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 0.19
+  - 1.2
+  - 0.22
+  euler:
+  - 0.0
+  - 90.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: low_storage_shelf
+  asset_source_mode: original_usd_inherited
+  support_surface: True
+  static: True
+  metadata: assets/basic/02_bookroom/fixtures/low_storage_shelf/low_storage_shelf_0_id3/metadata.json
+- name: ergonomic_chair_0_id4
+  path: assets/basic/02_bookroom/fixtures/ergonomic_chair/ergonomic_chair_0_id4/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 1.8
+  - 1.2
+  - 0.48
+  euler:
+  - 0.0
+  - 90.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: ergonomic_chair
+  asset_source_mode: original_usd_inherited
+  support_surface: False
+  static: True
+  metadata: assets/basic/02_bookroom/fixtures/ergonomic_chair/ergonomic_chair_0_id4/metadata.json
+- name: desk_round_rug_0_id5
+  path: assets/basic/02_bookroom/fixtures/desk_round_rug/desk_round_rug_0_id5/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 3.555
+  - 1.2
+  - 0.01
+  euler:
+  - 0.0
+  - 270.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: desk_round_rug
+  asset_source_mode: phys3d_mesh_converted_z_up
+  support_surface: False
+  static: True
+  metadata: assets/basic/02_bookroom/fixtures/desk_round_rug/desk_round_rug_0_id5/metadata.json
+- name: study_outlet_panel_0_id6
+  path: assets/basic/02_bookroom/fixtures/study_outlet_panel/study_outlet_panel_0_id6/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 0.5975
+  - 3.1773
+  - 0.46
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: study_outlet_panel
+  asset_source_mode: phys3d_mesh_converted_z_up
+  support_surface: False
+  static: True
+  metadata: assets/basic/02_bookroom/fixtures/study_outlet_panel/study_outlet_panel_0_id6/metadata.json

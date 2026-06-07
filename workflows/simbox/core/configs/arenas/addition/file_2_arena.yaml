@@ -1,0 +1,103 @@
+name: assets_addition_file_2_arena
+fixtures:
+- name: empty_room
+  path: assets_addition/file_2/empty_room.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_2_bookcase_low_0_id103
+  path: assets_addition/file_2/assets/arena/file_2__bookcase_low_0_id103.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_2_bookcase_tall_narrow_0_id157
+  path: assets_addition/file_2/assets/arena/file_2__bookcase_tall_narrow_0_id157.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_2_queen_bed_frame_0_id263
+  path: assets_addition/file_2/assets/arena/file_2__queen_bed_frame_0_id263.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_2_slim_bookcase_0_id223
+  path: assets_addition/file_2/assets/arena/file_2__slim_bookcase_0_id223.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_2_three_seat_sofa_0_id49
+  path: assets_addition/file_2/assets/arena/file_2__three_seat_sofa_0_id49.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: floor
+  target_class: PlaneObject
+  size:
+  - 30.0
+  - 30.0
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  collision_enabled: False
+  visible: False

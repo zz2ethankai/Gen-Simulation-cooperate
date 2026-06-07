@@ -26,11 +26,16 @@ if [ -z "${SESSION_UUID}" ]; then
 fi
 export INTERNDATA_NAV2_SESSION_UUID="${SESSION_UUID}"
 
+if [ -z "${INTERNDATA_NAV2_SKILL_OVERRIDES_JSON:-}" ]; then
+  export INTERNDATA_NAV2_SKILL_OVERRIDES_JSON='{"footprint_points":[[0.18,0.12],[0.18,-0.12],[-0.18,-0.12],[-0.18,0.12]],"inflation_radius_m":0.12,"local_costmap":{"footprint_padding":0.0},"global_costmap":{"footprint_padding":0.0}}'
+fi
+
 if [ "$#" -eq 0 ]; then
   set -- isaac nav2
 fi
 
 echo "Using INTERNDATA_NAV2_SESSION_UUID=${INTERNDATA_NAV2_SESSION_UUID}"
+echo "Using INTERNDATA_NAV2_SKILL_OVERRIDES_JSON=${INTERNDATA_NAV2_SKILL_OVERRIDES_JSON}"
 echo "Compose file: ${COMPOSE_FILE}"
 echo "Services: $*"
 

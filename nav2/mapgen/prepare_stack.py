@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 from copy import deepcopy
+import json
+import os
 from pathlib import Path
 
 import yaml
@@ -60,6 +62,18 @@ def _load_robot_base_cfg(robot_config_path: Path) -> dict:
 
     _deep_update_dict(merged_base_cfg, base_cfg)
     return merged_base_cfg
+
+
+def _load_nav2_skill_overrides(raw_json: str | None) -> dict | None:
+    if not raw_json:
+        return None
+    try:
+        overrides = json.loads(raw_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError("nav2 skill overrides must be valid JSON") from exc
+    if not isinstance(overrides, dict):
+        raise TypeError("nav2 skill overrides JSON must decode to an object")
+    return overrides
 
 
 def _write_bootstrap_map(map_dir: Path) -> Path:
@@ -119,13 +133,21 @@ def main() -> int:
         type=float,
         default=NAV2_DEFAULT_YAW_TOLERANCE_RAD,
     )
+    parser.add_argument(
+        "--nav2-skill-overrides-json",
+        default=os.environ.get("INTERNDATA_NAV2_SKILL_OVERRIDES_JSON", ""),
+        help="JSON object merged into base_cfg['nav2_skill'] before generating resident Nav2 params",
+    )
     args = parser.parse_args()
 
     robot_config_path = _resolve_repo_path(args.robot_config)
     output_dir = _resolve_repo_path(args.output_dir)
     map_dir = _resolve_repo_path(args.map_dir)
 
-    base_cfg = configure_base_cfg_for_nav2_skill(_load_robot_base_cfg(robot_config_path))
+    base_cfg = configure_base_cfg_for_nav2_skill(
+        _load_robot_base_cfg(robot_config_path),
+        nav2_skill_overrides=_load_nav2_skill_overrides(args.nav2_skill_overrides_json),
+    )
     bootstrap_map_yaml = _write_bootstrap_map(map_dir)
     base_cfg.setdefault("ros", {}).setdefault("localization", {})["map_yaml_path"] = str(bootstrap_map_yaml)
 

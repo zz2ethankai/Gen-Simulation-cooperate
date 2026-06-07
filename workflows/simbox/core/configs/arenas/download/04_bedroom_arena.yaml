@@ -1,0 +1,384 @@
+name: asset_04_bedroom
+fixtures:
+- name: floor
+  target_class: PlaneObject
+  size:
+  - 4.5
+  - 3.6
+  translation:
+  - 2.25
+  - 1.8
+  - 0.0
+  collision_enabled: True
+  collision_thickness: 0.02
+  texture:
+    texture_lib: texture_libs/floor_textures
+    apply_randomization: False
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+- name: wall_north
+  target_class: PlaneObject
+  size:
+  - 4.5
+  - 2.8
+  translation:
+  - 2.25
+  - 3.6
+  - 1.4
+  collision_enabled: True
+  collision_thickness: 0.02
+  euler:
+  - 90.0
+  - 0.0
+  - 0.0
+  texture:
+    texture_lib: texture_libs/wall_textures
+    apply_randomization: False
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+- name: wall_south
+  target_class: PlaneObject
+  size:
+  - 4.5
+  - 2.8
+  translation:
+  - 2.25
+  - 0.0
+  - 1.4
+  collision_enabled: True
+  collision_thickness: 0.02
+  euler:
+  - 90.0
+  - 0.0
+  - 0.0
+  texture:
+    texture_lib: texture_libs/wall_textures
+    apply_randomization: False
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+- name: wall_west
+  target_class: PlaneObject
+  size:
+  - 3.6
+  - 2.8
+  translation:
+  - 0.0
+  - 1.8
+  - 1.4
+  collision_enabled: True
+  collision_thickness: 0.02
+  euler:
+  - 90.0
+  - 0.0
+  - 90.0
+  texture:
+    texture_lib: texture_libs/wall_textures
+    apply_randomization: False
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+- name: wall_east
+  target_class: PlaneObject
+  size:
+  - 3.6
+  - 2.8
+  translation:
+  - 4.5
+  - 1.8
+  - 1.4
+  collision_enabled: True
+  collision_thickness: 0.02
+  euler:
+  - 90.0
+  - 0.0
+  - 90.0
+  texture:
+    texture_lib: texture_libs/wall_textures
+    apply_randomization: False
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+- name: double_bed_0_id1
+  path: assets/basic/04_bedroom/fixtures/double_bed/double_bed_0_id1/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 1.2
+  - 2.57
+  - 0.32
+  euler:
+  - 0.0
+  - 180.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: double_bed
+  asset_source_mode: phys3d_mesh_converted_z_up
+  support_surface: False
+  static: True
+  metadata: assets/basic/04_bedroom/fixtures/double_bed/double_bed_0_id1/metadata.json
+- name: left_nightstand_0_id2
+  path: assets/basic/04_bedroom/fixtures/left_nightstand/left_nightstand_0_id2/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 4.0
+  - 0.3
+  - 0.26
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: left_nightstand
+  asset_source_mode: phys3d_mesh_converted_z_up
+  support_surface: True
+  static: True
+  metadata: assets/basic/04_bedroom/fixtures/left_nightstand/left_nightstand_0_id2/metadata.json
+- name: right_nightstand_0_id3
+  path: assets/basic/04_bedroom/fixtures/right_nightstand/right_nightstand_0_id3/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 3.8
+  - 3.3
+  - 0.26
+  euler:
+  - 0.0
+  - 180.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: right_nightstand
+  asset_source_mode: phys3d_mesh_converted_z_up
+  support_surface: True
+  static: True
+  metadata: assets/basic/04_bedroom/fixtures/right_nightstand/right_nightstand_0_id3/metadata.json
+- name: bed_foot_platform_0_id6
+  path: assets/basic/04_bedroom/fixtures/bed_foot_platform/bed_foot_platform_0_id6/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 0.8
+  - 0.27
+  - 0.235
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: bed_foot_platform
+  asset_source_mode: phys3d_mesh_converted_z_up
+  support_surface: True
+  static: True
+  metadata: assets/basic/04_bedroom/fixtures/bed_foot_platform/bed_foot_platform_0_id6/metadata.json
+- name: bedside_rug_0_id8
+  path: assets/basic/04_bedroom/fixtures/bedside_rug/bedside_rug_0_id8/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 3.0
+  - 1.8
+  - 0.01
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: bedside_rug
+  asset_source_mode: phys3d_mesh_converted_z_up
+  support_surface: False
+  static: True
+  metadata: assets/basic/04_bedroom/fixtures/bedside_rug/bedside_rug_0_id8/metadata.json
+- name: wardrobe_closed_0_id4
+  path: assets/basic/04_bedroom/fixtures/wardrobe_closed/wardrobe_closed_0_id4/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 4.17
+  - 1.8
+  - 1.2
+  euler:
+  - 0.0
+  - 270.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: wardrobe_closed
+  asset_source_mode: obj_converted
+  support_surface: False
+  static: True
+  metadata: assets/basic/04_bedroom/fixtures/wardrobe_closed/wardrobe_closed_0_id4/metadata.json
+- name: vanity_desk_0_id5
+  path: assets/basic/04_bedroom/fixtures/vanity_desk/vanity_desk_0_id5/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 2.6
+  - 0.37
+  - 0.375
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: vanity_desk
+  asset_source_mode: phys3d_mesh_converted_z_up
+  support_surface: True
+  static: True
+  metadata: assets/basic/04_bedroom/fixtures/vanity_desk/vanity_desk_0_id5/metadata.json
+- name: vanity_chair_0_id7
+  path: assets/basic/04_bedroom/fixtures/vanity_chair/vanity_chair_0_id7/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 2.6
+  - 1.0
+  - 0.43
+  euler:
+  - 0.0
+  - 180.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: vanity_chair
+  asset_source_mode: original_usd_inherited
+  support_surface: False
+  static: True
+  metadata: assets/basic/04_bedroom/fixtures/vanity_chair/vanity_chair_0_id7/metadata.json
+- name: folded_towel_0_id9001
+  path: assets/basic/04_bedroom/fixtures/folded_towel/folded_towel_0_id9001/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 2.78
+  - 1.68
+  - 0.026
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: folded_towel
+  asset_source_mode: original_usd_inherited
+  support_surface: False
+  static: True
+  metadata: assets/basic/04_bedroom/fixtures/folded_towel/folded_towel_0_id9001/metadata.json
+- name: clothing_storage_box_0_id9013
+  path: assets/basic/04_bedroom/fixtures/clothing_storage_box/clothing_storage_box_0_id9013/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 3.17
+  - 3.0
+  - 0.096
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: clothing_storage_box
+  asset_source_mode: original_usd_inherited
+  support_surface: True
+  static: True
+  metadata: assets/basic/04_bedroom/fixtures/clothing_storage_box/clothing_storage_box_0_id9013/metadata.json
+- name: sock_roll_0_id9014
+  path: assets/basic/04_bedroom/fixtures/sock_roll/sock_roll_0_id9014/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 3.13
+  - 1.92
+  - 0.041
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: sock_roll
+  asset_source_mode: original_usd_inherited
+  support_surface: False
+  static: True
+  metadata: assets/basic/04_bedroom/fixtures/sock_roll/sock_roll_0_id9014/metadata.json
+- name: vanity_wall_mirror_0_id9
+  path: assets/basic/04_bedroom/fixtures/vanity_wall_mirror/vanity_wall_mirror_0_id9/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 2.665128
+  - 0.352989
+  - 1.345
+  euler:
+  - 0.0
+  - 270.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: vanity_wall_mirror
+  asset_source_mode: phys3d_mesh_converted_z_up
+  support_surface: False
+  static: True
+  metadata: assets/basic/04_bedroom/fixtures/vanity_wall_mirror/vanity_wall_mirror_0_id9/metadata.json

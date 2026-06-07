@@ -431,6 +431,7 @@ class BaseBridge(ABC):
         now_sec: float,
         dt: float,
     ):
+        joint_state = self.robot.get_base_joint_state()
         history_item = {
             "time_sec": float(now_sec),
             "dt": float(dt),
@@ -447,6 +448,20 @@ class BaseBridge(ABC):
             "requested_steering": [float(v) for v in list(np.asarray(requested_steering).reshape(-1))],
             "applied_steering": [float(v) for v in list(np.asarray(steering_positions).reshape(-1))],
             "wheel_velocities": [float(v) for v in list(np.asarray(wheel_velocities).reshape(-1))],
+            "actual_joint_state": {
+                "steering_positions": [
+                    float(v) for v in np.asarray(joint_state["steering_positions"]).reshape(-1).tolist()
+                ],
+                "wheel_positions": [
+                    float(v) for v in np.asarray(joint_state["wheel_positions"]).reshape(-1).tolist()
+                ],
+                "steering_velocities": [
+                    float(v) for v in np.asarray(joint_state["steering_velocities"]).reshape(-1).tolist()
+                ],
+                "wheel_velocities": [
+                    float(v) for v in np.asarray(joint_state["wheel_velocities"]).reshape(-1).tolist()
+                ],
+            },
             "pose": dict(self._last_published_pose_debug),
         }
         self._debug_command_history.append(history_item)

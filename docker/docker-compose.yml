@@ -29,7 +29,7 @@ services:
       FASTDDS_BUILTIN_TRANSPORTS: UDPv4
       LIVESTREAM: ${LIVESTREAM:-0}
       INTERNDATA_AUTOSTART_LAUNCHER: "1"
-      INTERNDATA_LAUNCHER_CONFIG: configs/de_pipe_template.yaml
+      INTERNDATA_LAUNCHER_CONFIG: configs/de_plan_with_render_template.yaml
     volumes:
       - ${ISAAC_CACHE_MAIN:-../.docker/isaac-sim/cache/main}:/root/.cache/ov:rw
       - ${ISAAC_CACHE_COMPUTE:-../.docker/isaac-sim/cache/computecache}:/root/.nv/ComputeCache:rw
@@ -65,6 +65,7 @@ services:
       # in docker/nav2/entrypoint.sh.
       INTERNDATA_NAV2_ROBOT_CONFIG: ${INTERNDATA_NAV2_ROBOT_CONFIG:-workflows/simbox/core/configs/robots/split_aloha.yaml}
       INTERNDATA_NAV2_ROBOT_NAME: ${INTERNDATA_NAV2_ROBOT_NAME:-split_aloha}
+      INTERNDATA_NAV2_SKILL_OVERRIDES_JSON: ${INTERNDATA_NAV2_SKILL_OVERRIDES_JSON:-}
       INTERNDATA_BASE_CONFIG: workflows/simbox/core/configs/bases/ranger_mini_v3.yaml
       # The remaining bootstrap/config paths are derived from the UUID inside
       # the container unless you explicitly override them.

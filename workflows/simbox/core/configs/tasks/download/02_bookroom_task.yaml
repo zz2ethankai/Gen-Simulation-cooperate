@@ -1,0 +1,819 @@
+tasks:
+- name: asset_02_bookroom_task
+  asset_root: download/02_bookroom
+  task: BananaBaseTask
+  task_id: 0
+  offset: null
+  render: True
+  arena_file: workflows/simbox/core/configs/arenas/download/02_bookroom_arena.yaml
+  env_map:
+    envmap_lib: ../../InternDataAssets/assets/envmap_lib
+    apply_randomization: False
+    intensity_range:
+    - 5000
+    - 5000
+    rotation_range:
+    - 0
+    - 0
+  robots:
+  - name: split_aloha
+    robot_config_file: workflows/simbox/core/configs/robots/split_aloha.yaml
+    path: ../../workflows/simbox/assets/split_aloha_mid_360/robot.usd
+    euler:
+    - 0.0
+    - 0.0
+    - 90.0
+    ignore_substring:
+    - material
+    - table
+    use_batch: True
+    collision_activation_distance: 0.05
+  objects:
+  - name: hardcover_book_a_0_id9000
+    path: assets/basic/02_bookroom/small_objects/hardcover_book/hardcover_book_a_0_id9000/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 1.4738
+    - 0.205
+    - 1.363
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: hardcover_book
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/02_bookroom/small_objects/hardcover_book/hardcover_book_a_0_id9000/metadata.json
+    spawn_region: hardcover_book_a__0__id9000_candidate_region
+  - name: hardcover_book_b_0_id9001
+    path: assets/basic/02_bookroom/small_objects/hardcover_book/hardcover_book_b_0_id9001/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 3.1
+    - 0.205
+    - 1.363
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: hardcover_book
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/02_bookroom/small_objects/hardcover_book/hardcover_book_b_0_id9001/metadata.json
+    spawn_region: hardcover_book_b__0__id9001_candidate_region
+  - name: paperback_book_c_0_id9002
+    path: assets/basic/02_bookroom/small_objects/paperback_book/paperback_book_c_0_id9002/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 2.4
+    - 0.205
+    - 1.749
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: paperback_book
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/02_bookroom/small_objects/paperback_book/paperback_book_c_0_id9002/metadata.json
+    spawn_region: paperback_book_c__0__id9002_candidate_region
+  - name: small_plant_0_id9003
+    path: assets/basic/02_bookroom/small_objects/plant_pot/small_plant_0_id9003/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 3.3525
+    - 0.205
+    - 0.932
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: plant_pot
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/02_bookroom/small_objects/plant_pot/small_plant_0_id9003/metadata.json
+    spawn_region: small_plant__0__id9003_candidate_region
+  - name: notebook_0_id9004
+    path: assets/basic/02_bookroom/small_objects/notebook/notebook_0_id9004/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 2.625
+    - 2.72
+    - 0.765
+    euler:
+    - 0.0
+    - 180.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: notebook
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/02_bookroom/small_objects/notebook/notebook_0_id9004/metadata.json
+    spawn_region: notebook__0__id9004_candidate_region
+  - name: pen_holder_0_id9005
+    path: assets/basic/02_bookroom/small_objects/pen_holder/pen_holder_0_id9005/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 1.8
+    - 2.72
+    - 0.811
+    euler:
+    - 0.0
+    - 180.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned
+    category: pen_holder
+    asset_source_mode: phys3d_mesh_converted_z_up
+    metadata: assets/basic/02_bookroom/small_objects/pen_holder/pen_holder_0_id9005/metadata.json
+    spawn_region: pen_holder__0__id9005_candidate_region
+  - name: black_pen_a_0_id9006
+    path: assets/basic/02_bookroom/small_objects/black_pen/black_pen_a_0_id9006/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 2.3981
+    - 2.495
+    - 0.762
+    euler:
+    - 0.0
+    - 180.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: black_pen
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/02_bookroom/small_objects/black_pen/black_pen_a_0_id9006/metadata.json
+    spawn_region: black_pen_a__0__id9006_candidate_region
+  - name: black_pen_b_0_id9007
+    path: assets/basic/02_bookroom/small_objects/black_pen/black_pen_b_0_id9007/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 1.8
+    - 2.9145
+    - 0.762
+    euler:
+    - 0.0
+    - 180.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: black_pen
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/02_bookroom/small_objects/black_pen/black_pen_b_0_id9007/metadata.json
+    spawn_region: black_pen_b__0__id9007_candidate_region
+  - name: black_pen_c_0_id9008
+    path: assets/basic/02_bookroom/small_objects/black_pen/black_pen_c_0_id9008/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 1.3887
+    - 2.72
+    - 0.762
+    euler:
+    - 0.0
+    - 270.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: black_pen
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/02_bookroom/small_objects/black_pen/black_pen_c_0_id9008/metadata.json
+    spawn_region: black_pen_c__0__id9008_candidate_region
+  - name: metal_file_folder_0_id9009
+    path: assets/basic/02_bookroom/small_objects/file_folder/metal_file_folder_0_id9009/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 2.3625
+    - 2.72
+    - 0.762
+    euler:
+    - 0.0
+    - 180.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: file_folder
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/02_bookroom/small_objects/file_folder/metal_file_folder_0_id9009/metadata.json
+    spawn_region: metal_file_folder__0__id9009_candidate_region
+  - name: stapler_0_id9010
+    path: assets/basic/02_bookroom/small_objects/stapler/stapler_0_id9010/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 1.325
+    - 2.495
+    - 0.786
+    euler:
+    - 0.0
+    - 270.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: stapler
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/02_bookroom/small_objects/stapler/stapler_0_id9010/metadata.json
+    spawn_region: stapler__0__id9010_candidate_region
+  - name: tablet_0_id9011
+    path: assets/basic/02_bookroom/small_objects/tablet/tablet_0_id9011/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 1.215
+    - 2.72
+    - 0.7595
+    euler:
+    - 0.0
+    - 180.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: tablet
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/02_bookroom/small_objects/tablet/tablet_0_id9011/metadata.json
+    spawn_region: tablet__0__id9011_candidate_region
+  - name: wireless_mouse_0_id9012
+    path: assets/basic/02_bookroom/small_objects/wireless_mouse/wireless_mouse_0_id9012/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 1.1719
+    - 2.4837
+    - 0.775
+    euler:
+    - 0.0
+    - 180.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: wireless_mouse
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/02_bookroom/small_objects/wireless_mouse/wireless_mouse_0_id9012/metadata.json
+    spawn_region: wireless_mouse__0__id9012_candidate_region
+  - name: coffee_mug_0_id9013
+    path: assets/basic/02_bookroom/small_objects/coffee_mug/coffee_mug_0_id9013/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 2.4206
+    - 2.3825
+    - 0.8035
+    euler:
+    - 0.0
+    - 180.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned
+    category: coffee_mug
+    asset_source_mode: obj_converted
+    metadata: assets/basic/02_bookroom/small_objects/coffee_mug/coffee_mug_0_id9013/metadata.json
+    spawn_region: coffee_mug__0__id9013_candidate_region
+  - name: glasses_case_0_id9014
+    path: assets/basic/02_bookroom/small_objects/glasses_case/glasses_case_0_id9014/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 2.43
+    - 3.02
+    - 0.7735
+    euler:
+    - 0.0
+    - 180.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned
+    category: glasses_case
+    asset_source_mode: obj_converted
+    metadata: assets/basic/02_bookroom/small_objects/glasses_case/glasses_case_0_id9014/metadata.json
+    spawn_region: glasses_case__0__id9014_candidate_region
+  - name: desk_lamp_0_id9015
+    path: assets/basic/02_bookroom/small_objects/desk_lamp/desk_lamp_0_id9015/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 2.275
+    - 3.04
+    - 0.956
+    euler:
+    - 0.0
+    - 180.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: desk_lamp
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/02_bookroom/small_objects/desk_lamp/desk_lamp_0_id9015/metadata.json
+    spawn_region: desk_lamp__0__id9015_candidate_region
+  - name: storage_box_0_id9016
+    path: assets/basic/02_bookroom/small_objects/storage_box/storage_box_0_id9016/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 0.19
+    - 1.2
+    - 0.3828
+    euler:
+    - 0.0
+    - 90.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: storage_box
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/02_bookroom/small_objects/storage_box/storage_box_0_id9016/metadata.json
+    spawn_region: storage_box__0__id9016_candidate_region
+  regions:
+  - object: split_aloha
+    target: floor
+    random_type: A_on_B_region_sampler
+    random_config:
+      pos_range:
+      - - 1.35
+        - 0.0
+        - 0.0
+      - - 1.35
+        - 0.0
+        - 0.0
+      yaw_rotation:
+      - 180.0
+      - 180.0
+  cameras: []
+  data:
+    task_dir: download/02_bookroom
+    language_instruction: Generated task for asset_02_bookroom_task from natural-language
+      source steps.
+    detailed_language_instruction: Skills were generated by Codex from source_tasks.
+      Validate grasp annotations and runtime feasibility before large-scale use.
+    collect_info: download_02_bookroom
+    version: v1.0
+    update: True
+    max_episode_length: 1000
+  positions:
+    wp_st_1_bookcase_front:
+      x: 3.45
+      y: 1.6
+      yaw: -1.5707963267948966
+    wp_st_2_desk_front:
+      x: 2.1
+      y: 0.75
+      yaw: -3.141592653589793
+    wp_st_3_desk_left:
+      x: 1.1
+      y: 1.0
+      yaw: -3.141592653589793
+    wp_st_4_underdesk_shelf:
+      x: 2.0
+      y: 0.55
+      yaw: -3.141592653589793
+  skills:
+  - split_aloha:
+    - base:
+      - name: navigate
+        id: nav_to_pick
+        depends_on: []
+        goal: wp_st_1_bookcase_front
+      - name: navigate
+        id: nav_to_place
+        depends_on:
+        - pick_hardcover_book_a_0_id9000
+        goal: wp_st_2_desk_front
+      left:
+      - name: pick
+        id: pick_hardcover_book_a_0_id9000
+        depends_on:
+        - nav_to_pick
+        objects:
+        - hardcover_book_a_0_id9000
+        filter_x_dir:
+        - backward
+        - 135
+        filter_y_dir:
+        - downward
+        - 120
+        filter_z_dir:
+        - forward
+        - 135
+        - 45
+        pre_grasp_offset: 0.05
+        gripper_change_steps: 20
+        t_eps: 0.025
+        o_eps: 1
+        process_valid: True
+        lift_th: 0.02
+        post_grasp_offset_min: 0.05
+        post_grasp_offset_max: 0.1
+      - name: place
+        id: place_hardcover_book_a_0_id9000
+        depends_on:
+        - nav_to_place
+        objects:
+        - hardcover_book_a_0_id9000
+        - main_desk_0_id1
+        position_constraint: object
+        filter_x_dir:
+        - backward
+        - 110
+        filter_y_dir:
+        - downward
+        - 120
+        filter_z_dir:
+        - forward
+        - 70
+        x_ratio_range:
+        - 0.35
+        - 0.65
+        y_ratio_range:
+        - 0.35
+        - 0.65
+        success_mode: xybbox
+        pre_place_z_offset: 0.1
+        place_z_offset: 0.1
+        gripper_change_steps: 20
+      - name: heuristic__skill
+        id: home_left
+        depends_on:
+        - place_hardcover_book_a_0_id9000
+        mode: home
+        gripper_state: 1.0
+      right: []
+  source_regions:
+  - name: hardcover_book_a_0_id9000_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 1.4738
+    - 0.205
+    - 0.0
+    size:
+    - 0.51
+    - 0.35
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: hardcover_book_b_0_id9001_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 3.1
+    - 0.205
+    - 0.0
+    size:
+    - 0.51
+    - 0.35
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: paperback_book_c_0_id9002_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 2.4
+    - 0.205
+    - 0.0
+    size:
+    - 0.45
+    - 0.35
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: small_plant_0_id9003_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 3.3525
+    - 0.205
+    - 0.0
+    size:
+    - 0.35
+    - 0.35
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: notebook_0_id9004_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 2.625
+    - 2.72
+    - 0.0
+    size:
+    - 0.42
+    - 0.63
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: pen_holder_0_id9005_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 1.8
+    - 2.72
+    - 0.0
+    size:
+    - 0.35
+    - 0.35
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: black_pen_a_0_id9006_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 2.3981
+    - 2.495
+    - 0.0
+    size:
+    - 0.435
+    - 0.35
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: black_pen_b_0_id9007_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 1.8
+    - 2.9145
+    - 0.0
+    size:
+    - 0.435
+    - 0.35
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: black_pen_c_0_id9008_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 1.3887
+    - 2.72
+    - 0.0
+    size:
+    - 0.435
+    - 0.35
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: metal_file_folder_0_id9009_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 2.3625
+    - 2.72
+    - 0.0
+    size:
+    - 0.72
+    - 0.96
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: stapler_0_id9010_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 1.325
+    - 2.495
+    - 0.0
+    size:
+    - 0.35
+    - 0.36
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: tablet_0_id9011_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 1.215
+    - 2.72
+    - 0.0
+    size:
+    - 0.54
+    - 0.765
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: wireless_mouse_0_id9012_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 1.1719
+    - 2.4837
+    - 0.0
+    size:
+    - 0.35
+    - 0.35
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: coffee_mug_0_id9013_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 2.4206
+    - 2.3825
+    - 0.0
+    size:
+    - 0.35
+    - 0.35
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: glasses_case_0_id9014_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 2.43
+    - 3.02
+    - 0.0
+    size:
+    - 0.35
+    - 0.48
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: desk_lamp_0_id9015_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 2.275
+    - 3.04
+    - 0.0
+    size:
+    - 0.45
+    - 0.45
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: storage_box_0_id9016_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 0.19
+    - 1.2
+    - 0.0
+    size:
+    - 0.75
+    - 0.54
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  source_tasks:
+  - id: study_task_01
+    target: Book Retrieval
+    core_objects:
+    - hardcover_book_a
+    steps:
+    - navigate to bookcase
+    - grasp book spine
+    - move to desk
+    - place book flat on desk center
+    - arm home
+    success: book lies flat on desk with cover up
+    available_core_objects:
+    - hardcover_book_a
+    missing_core_objects: []
+  - id: study_task_02
+    target: Pen to Holder
+    core_objects:
+    - black_pen_a
+    - pen_holder
+    steps:
+    - navigate desk
+    - grasp center pen
+    - move above pen holder
+    - drop pen into holder
+    - retreat
+    success: pen is inside holder below rim
+    available_core_objects:
+    - black_pen_a
+    - pen_holder
+    missing_core_objects: []
+  - id: study_task_03
+    target: Cup Relocation
+    core_objects:
+    - coffee_mug
+    steps:
+    - navigate desk left
+    - grasp mug side
+    - move to desk left upper target
+    - place upright
+    success: mug is upright and more than 5cm from desk edge
+    available_core_objects:
+    - coffee_mug
+    missing_core_objects: []
+  - id: study_task_04
+    target: Device Zone Arrangement
+    core_objects:
+    - tablet
+    - wireless_mouse
+    steps:
+    - grasp tablet
+    - place tablet left upper desk
+    - align to mouse
+    - grasp mouse
+    - place mouse 8cm right of tablet
+    success: tablet and mouse are adjacent on desk and stable
+    available_core_objects:
+    - tablet
+    - wireless_mouse
+    missing_core_objects: []
+  - id: study_task_05
+    target: Cross-Zone Filing
+    core_objects:
+    - metal_file_folder
+    - storage_box
+    - small_plant
+    steps:
+    - grasp file folder from desk
+    - insert into storage box under desk
+    - navigate bookcase
+    - grasp plant pot
+    - place on desk near lamp
+    success: file is in box and plant remains upright on desk
+    available_core_objects:
+    - metal_file_folder
+    - storage_box
+    - small_plant
+    missing_core_objects: []

@@ -1,0 +1,62 @@
+name: assets_addition_file_4_arena
+fixtures:
+- name: empty_room
+  path: assets_addition/file_4/empty_room.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_4_low_bookcase_0_id150
+  path: assets_addition/file_4/assets/arena/file_4__low_bookcase_0_id150.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_4_platform_bed_140_0_id151
+  path: assets_addition/file_4/assets/arena/file_4__platform_bed_140_0_id151.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_4_sofa_3_seat_01_0_id61
+  path: assets_addition/file_4/assets/arena/file_4__sofa_3_seat_01_0_id61.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0

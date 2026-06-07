@@ -1,0 +1,384 @@
+name: asset_03_livingroom
+fixtures:
+- name: floor
+  target_class: PlaneObject
+  size:
+  - 5.0
+  - 4.0
+  translation:
+  - 2.5
+  - 2.0
+  - 0.0
+  collision_enabled: True
+  collision_thickness: 0.02
+  texture:
+    texture_lib: texture_libs/floor_textures
+    apply_randomization: False
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+- name: wall_north
+  target_class: PlaneObject
+  size:
+  - 5.0
+  - 2.8
+  translation:
+  - 2.5
+  - 4.0
+  - 1.4
+  collision_enabled: True
+  collision_thickness: 0.02
+  euler:
+  - 90.0
+  - 0.0
+  - 0.0
+  texture:
+    texture_lib: texture_libs/wall_textures
+    apply_randomization: False
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+- name: wall_south
+  target_class: PlaneObject
+  size:
+  - 5.0
+  - 2.8
+  translation:
+  - 2.5
+  - 0.0
+  - 1.4
+  collision_enabled: True
+  collision_thickness: 0.02
+  euler:
+  - 90.0
+  - 0.0
+  - 0.0
+  texture:
+    texture_lib: texture_libs/wall_textures
+    apply_randomization: False
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+- name: wall_west
+  target_class: PlaneObject
+  size:
+  - 4.0
+  - 2.8
+  translation:
+  - 0.0
+  - 2.0
+  - 1.4
+  collision_enabled: True
+  collision_thickness: 0.02
+  euler:
+  - 90.0
+  - 0.0
+  - 90.0
+  texture:
+    texture_lib: texture_libs/wall_textures
+    apply_randomization: False
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+- name: wall_east
+  target_class: PlaneObject
+  size:
+  - 4.0
+  - 2.8
+  translation:
+  - 5.0
+  - 2.0
+  - 1.4
+  collision_enabled: True
+  collision_thickness: 0.02
+  euler:
+  - 90.0
+  - 0.0
+  - 90.0
+  texture:
+    texture_lib: texture_libs/wall_textures
+    apply_randomization: False
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+- name: three_seat_sofa_0_id1
+  path: assets/basic/03_livingroom/fixtures/three_seat_sofa/three_seat_sofa_0_id1/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 2.8
+  - 0.42
+  - 0.42
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: three_seat_sofa
+  asset_source_mode: phys3d_mujoco_converted_z_up
+  support_surface: False
+  static: True
+  metadata: assets/basic/03_livingroom/fixtures/three_seat_sofa/three_seat_sofa_0_id1/metadata.json
+- name: coffee_table_0_id2
+  path: assets/basic/03_livingroom/fixtures/coffee_table/coffee_table_0_id2/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 1.6
+  - 2.4
+  - 0.22
+  euler:
+  - 0.0
+  - 270.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: coffee_table
+  asset_source_mode: phys3d_mesh_converted_z_up
+  support_surface: True
+  static: True
+  metadata: assets/basic/03_livingroom/fixtures/coffee_table/coffee_table_0_id2/metadata.json
+- name: lounge_chair_0_id6
+  path: assets/basic/03_livingroom/fixtures/lounge_chair/lounge_chair_0_id6/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 0.37
+  - 0.6
+  - 0.42
+  euler:
+  - 0.0
+  - 90.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: lounge_chair
+  asset_source_mode: original_usd_inherited
+  support_surface: False
+  static: True
+  metadata: assets/basic/03_livingroom/fixtures/lounge_chair/lounge_chair_0_id6/metadata.json
+- name: floor_lamp_0_id7
+  path: assets/basic/03_livingroom/fixtures/floor_lamp/floor_lamp_0_id7/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 4.81
+  - 0.4
+  - 0.8
+  euler:
+  - 0.0
+  - 270.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: floor_lamp
+  asset_source_mode: original_usd_inherited
+  support_surface: False
+  static: True
+  metadata: assets/basic/03_livingroom/fixtures/floor_lamp/floor_lamp_0_id7/metadata.json
+- name: central_gray_rug_0_id8
+  path: assets/basic/03_livingroom/fixtures/central_gray_rug/central_gray_rug_0_id8/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 3.6
+  - 2.0
+  - 0.01
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: central_gray_rug
+  asset_source_mode: phys3d_mesh_converted_z_up
+  support_surface: False
+  static: True
+  metadata: assets/basic/03_livingroom/fixtures/central_gray_rug/central_gray_rug_0_id8/metadata.json
+- name: tv_cabinet_0_id3
+  path: assets/basic/03_livingroom/fixtures/tv_cabinet/tv_cabinet_0_id3/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 0.24
+  - 2.8
+  - 0.225
+  euler:
+  - 0.0
+  - 90.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: tv_cabinet
+  asset_source_mode: phys3d_mesh_converted_z_up
+  support_surface: True
+  static: True
+  metadata: assets/basic/03_livingroom/fixtures/tv_cabinet/tv_cabinet_0_id3/metadata.json
+- name: side_cabinet_0_id4
+  path: assets/basic/03_livingroom/fixtures/side_cabinet/side_cabinet_0_id4/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 4.4
+  - 3.76
+  - 0.35
+  euler:
+  - 0.0
+  - 180.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: side_cabinet
+  asset_source_mode: phys3d_mesh_converted_z_up
+  support_surface: True
+  static: True
+  metadata: assets/basic/03_livingroom/fixtures/side_cabinet/side_cabinet_0_id4/metadata.json
+- name: open_storage_shelf_0_id5
+  path: assets/basic/03_livingroom/fixtures/open_storage_shelf/open_storage_shelf_0_id5/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 1.4
+  - 3.78
+  - 0.82
+  euler:
+  - 0.0
+  - 180.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: open_storage_shelf
+  asset_source_mode: phys3d_mesh_converted_z_up
+  support_surface: True
+  static: True
+  metadata: assets/basic/03_livingroom/fixtures/open_storage_shelf/open_storage_shelf_0_id5/metadata.json
+- name: toy_block_0_id9014
+  path: assets/basic/03_livingroom/fixtures/toy_block/toy_block_0_id9014/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 3.1448
+  - 1.8969
+  - 0.031
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: toy_block
+  asset_source_mode: original_usd_inherited
+  support_surface: False
+  static: True
+  metadata: assets/basic/03_livingroom/fixtures/toy_block/toy_block_0_id9014/metadata.json
+- name: toy_block_0_id9015
+  path: assets/basic/03_livingroom/fixtures/toy_block/toy_block_0_id9015/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 2.038
+  - 2.322
+  - 0.031
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: toy_block
+  asset_source_mode: original_usd_inherited
+  support_surface: False
+  static: True
+  metadata: assets/basic/03_livingroom/fixtures/toy_block/toy_block_0_id9015/metadata.json
+- name: toy_block_0_id9016
+  path: assets/basic/03_livingroom/fixtures/toy_block/toy_block_0_id9016/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 2.9028
+  - 2.1184
+  - 0.031
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: toy_block
+  asset_source_mode: original_usd_inherited
+  support_surface: False
+  static: True
+  metadata: assets/basic/03_livingroom/fixtures/toy_block/toy_block_0_id9016/metadata.json
+- name: wall_mounted_tv_0_id9
+  path: assets/basic/03_livingroom/fixtures/wall_mounted_tv/wall_mounted_tv_0_id9/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 0.03
+  - 1.5302
+  - 1.58
+  euler:
+  - 0.0
+  - 270.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  category: wall_mounted_tv
+  asset_source_mode: phys3d_mesh_converted_z_up
+  support_surface: False
+  static: True
+  metadata: assets/basic/03_livingroom/fixtures/wall_mounted_tv/wall_mounted_tv_0_id9/metadata.json

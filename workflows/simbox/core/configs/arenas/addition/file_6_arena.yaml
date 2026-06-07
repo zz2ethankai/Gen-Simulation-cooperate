@@ -1,0 +1,62 @@
+name: assets_addition_file_6_arena
+fixtures:
+- name: empty_room
+  path: assets_addition/file_6/empty_room.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_6_entry_floor_runner_01_0_id26
+  path: assets_addition/file_6/assets/arena/file_6__entry_floor_runner_01_0_id26.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_6_metal_shelving_unit_0_id141
+  path: assets_addition/file_6/assets/arena/file_6__metal_shelving_unit_0_id141.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_6_platform_bed_low_0_id178
+  path: assets_addition/file_6/assets/arena/file_6__platform_bed_low_0_id178.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0

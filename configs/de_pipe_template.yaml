@@ -4,7 +4,7 @@ load_stage:
     type: env_loader
     args:
       workflow_type: SimBoxDualWorkFlow
-      cfg_path: workflows/simbox/core/configs/tasks/mobile_manipulation/split_aloha/navigate_pick_place_boxed_beverage.yaml  # Task config path
+      cfg_path: workflows/simbox/assets/custom/scene_4/01_kitchen/assets/basic/kitchen_apple_to_tray/simbox_task.yaml # Task config path
       simulator:
         physics_dt: 1/30                   # Physics update rate
         rendering_dt: 1/30                 # Render update rate
@@ -49,7 +49,7 @@ dedump_stage:
     type: env_loader
     args:
       workflow_type: SimBoxDualWorkFlow
-      cfg_path: workflows/simbox/core/configs/tasks/mobile_manipulation/split_aloha/navigate_pick_place_boxed_beverage.yaml  # Must match load_stage cfg_path
+      cfg_path: workflows/simbox/assets/custom/scene_4/01_kitchen/assets/basic/kitchen_apple_to_tray/simbox_task.yaml  # Must match load_stage cfg_path
       simulator:
         physics_dt: 1/30                   # Physics update rate
         rendering_dt: 1/30                 # Render update rate
@@ -60,7 +60,7 @@ dedump_stage:
         max_gpu_count: 1
         active_gpu: 1                      # Override via CLI: --dedump_stage.scene_loader.args.simulator.active_gpu=0
         physics_gpu: 1                     # Override via CLI: --dedump_stage.scene_loader.args.simulator.physics_gpu=0
-        renderer: RayTracedLighting              # Isaac Sim 4.1 options: RayTracedLighting, PathTracing
+        renderer: PathTracing              # Isaac Sim 4.1 options: RayTracedLighting, PathTracing
 
         # Renderer choices (Isaac Sim 4.1 SimulationApp):
         # renderer: RayTracedLighting      # Faster RTX real-time lighting, recommended for throughput

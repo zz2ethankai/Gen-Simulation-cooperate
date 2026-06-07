@@ -1,0 +1,372 @@
+name: asset_01_kitchen
+fixtures:
+- name: floor
+  target_class: PlaneObject
+  size:
+  - 4.0
+  - 3.0
+  translation:
+  - 2.0
+  - 1.5
+  - 0.0
+  collision_enabled: True
+  collision_thickness: 0.02
+  texture:
+    texture_lib: interndata_scene/texture_libs/floor_textures
+    apply_randomization: False
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+- name: wall_south
+  target_class: PlaneObject
+  size:
+  - 4.0
+  - 2.8
+  translation:
+  - 2.0
+  - -0.052
+  - 1.4
+  collision_enabled: True
+  collision_thickness: 0.02
+  euler:
+  - 90.0
+  - 0.0
+  - 0.0
+  texture:
+    texture_lib: interndata_scene/texture_libs/wall_textures
+    apply_randomization: False
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+  role: wall
+- name: wall_east
+  target_class: PlaneObject
+  size:
+  - 3.0
+  - 2.8
+  translation:
+  - 4.052
+  - 1.5
+  - 1.4
+  collision_enabled: True
+  collision_thickness: 0.02
+  euler:
+  - 90.0
+  - 0.0
+  - 90.0
+  texture:
+    texture_lib: interndata_scene/texture_libs/wall_textures
+    apply_randomization: False
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+  role: wall
+- name: wall_north
+  target_class: PlaneObject
+  size:
+  - 4.0
+  - 2.8
+  translation:
+  - 2.0
+  - 3.052
+  - 1.4
+  collision_enabled: True
+  collision_thickness: 0.02
+  euler:
+  - 90.0
+  - 0.0
+  - 180.0
+  texture:
+    texture_lib: interndata_scene/texture_libs/wall_textures
+    apply_randomization: False
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+  role: wall
+- name: wall_west
+  target_class: PlaneObject
+  size:
+  - 3.0
+  - 2.8
+  translation:
+  - -0.052
+  - 1.5
+  - 1.4
+  collision_enabled: True
+  collision_thickness: 0.02
+  euler:
+  - 90.0
+  - 0.0
+  - -90.0
+  texture:
+    texture_lib: interndata_scene/texture_libs/wall_textures
+    apply_randomization: False
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+  role: wall
+- name: wall_cabinet_display_0_id8210
+  path: assets/basic/01_kitchen/fixtures/wall_cabinet_display/wall_cabinet_display_0_id9/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 1.5314
+  - 0.19
+  - 1.65
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  asset_category: wall_cabinet
+  support_surface: True
+- name: pantry_tall_cabinet_0_id8211
+  path: assets/basic/01_kitchen/fixtures/pantry_tall_cabinet/pantry_tall_cabinet_0_id10/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 3.76
+  - 0.9814
+  - 1.05
+  euler:
+  - 0.0
+  - 0.0
+  - 270.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  asset_category: pantry_cabinet
+  support_surface: True
+- name: sink_counter_base_0_id8201
+  path: assets/basic/01_kitchen/fixtures/sink_counter_base/sink_counter_base_0_id1/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 0.85
+  - 2.67
+  - 0.45
+  euler:
+  - 0.0
+  - 0.0
+  - 180.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  asset_category: sink_counter_base
+  support_surface: True
+- name: cooktop_counter_base_0_id8202
+  path: assets/basic/01_kitchen/fixtures/cooktop_counter_base/cooktop_counter_base_0_id2/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 2.55
+  - 2.67
+  - 0.45
+  euler:
+  - 0.0
+  - 0.0
+  - 180.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  asset_category: cooktop_counter_base
+  support_surface: True
+- name: storage_counter_base_0_id8203
+  path: assets/basic/01_kitchen/fixtures/storage_counter_base/storage_counter_base_0_id3/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 3.47
+  - 1.75
+  - 0.45
+  euler:
+  - 0.0
+  - 0.0
+  - 270.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  asset_category: storage_counter_base
+  support_surface: True
+- name: prep_island_0_id8204
+  path: assets/basic/01_kitchen/fixtures/prep_island/prep_island_0_id4/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 2.0
+  - 1.35
+  - 0.45
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  asset_category: prep_island
+  support_surface: True
+- name: tray_support_0_id8205
+  path: assets/basic/01_kitchen/fixtures/tray_support/tray_support_0_id5/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 0.38
+  - 0.8886
+  - 0.375
+  euler:
+  - 0.0
+  - 0.0
+  - 90.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  asset_category: tray_support
+  support_surface: True
+- name: refrigerator_0_id8206
+  path: assets/basic/01_kitchen/fixtures/refrigerator/refrigerator_0_id7/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 3.65
+  - 0.35
+  - 0.9
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  asset_category: refrigerator
+  support_surface: False
+- name: wall_oven_0_id8207
+  path: assets/basic/01_kitchen/fixtures/wall_oven/wall_oven_0_id8/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 3.695
+  - 2.67
+  - 0.45
+  euler:
+  - 0.0
+  - 0.0
+  - 270.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  asset_category: wall_oven
+  support_surface: False
+- name: sink_0_id8208
+  path: assets/basic/01_kitchen/fixtures/sink/sink/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 1.015
+  - 2.67
+  - 1.006
+  euler:
+  - 0.0
+  - 0.0
+  - 180.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  asset_category: sink
+  support_surface: False
+- name: induction_cooktop_0_id8209
+  path: assets/basic/01_kitchen/fixtures/cooktop/induction_cooktop/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 2.88
+  - 2.67
+  - 0.956
+  euler:
+  - 0.0
+  - 0.0
+  - 180.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  asset_category: cooktop
+  support_surface: False
+- name: range_hood_0_id8213
+  path: assets/basic/01_kitchen/fixtures/range_hood/range_hood_0_id11/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 2.55
+  - 2.857
+  - 1.55
+  euler:
+  - 0.0
+  - 0.0
+  - 180.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  asset_category: range_hood
+  support_surface: False
+- name: kitchen_outlet_panel_0_id8215
+  path: assets/basic/01_kitchen/fixtures/kitchen_outlet_panel/kitchen_outlet_panel_0_id12/Aligned_obj.usd
+  target_class: GeometryObject
+  translation:
+  - 3.98
+  - 1.1
+  - 1.05
+  euler:
+  - 0.0
+  - 0.0
+  - 270.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision_enabled: True
+  collision_approximation: bbox
+  collision_visible: False
+  asset_category: outlet_panel
+  support_surface: False

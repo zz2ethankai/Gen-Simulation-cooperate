@@ -1,0 +1,2209 @@
+tasks:
+- name: assets_addition_file_3_scene_task
+  asset_root: workflows/simbox/assets
+  task: BananaBaseTask
+  task_id: 0
+  offset: null
+  render: true
+  arena_file: workflows/simbox/core/configs/arenas/addition/file_3_arena.yaml
+  env_map:
+    envmap_lib: envmap_lib
+    apply_randomization: false
+    intensity_range:
+    - 5000
+    - 5000
+    rotation_range:
+    - 0
+    - 0
+  robots: []
+  objects:
+  - name: accent_lamp_0_id188
+    path: assets_addition/file_3/assets/task_obj/accent_lamp_0_id188/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: accent_lamp
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: breakfast_chair_1_0_id133
+    path: assets_addition/file_3/assets/task_obj/breakfast_chair_1_0_id133/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: breakfast_chair_1
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: breakfast_chair_2_0_id133
+    path: assets_addition/file_3/assets/task_obj/breakfast_chair_2_0_id133/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: breakfast_chair_2
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: breakfast_nook_requirement_placeholder_0_id172
+    path: assets_addition/file_3/assets/task_obj/breakfast_nook_requirement_placeholder_0_id172/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: breakfast_nook_requirement_placeholder
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: coffee_table_0_id49
+    path: assets_addition/file_3/assets/task_obj/coffee_table_0_id49/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: coffee_table
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: compact_work_desk_0_id146
+    path: assets_addition/file_3/assets/task_obj/compact_work_desk_0_id146/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: compact_work_desk
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: desk_chair_0_id219
+    path: assets_addition/file_3/assets/task_obj/desk_chair_0_id219/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: desk_chair
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: desk_organizer_sticky_notes_insert_0_id166
+    path: assets_addition/file_3/assets/task_obj/desk_organizer_sticky_notes_insert_0_id166/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: desk_organizer_sticky_notes_insert
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: ergonomic_task_chair_0_id151
+    path: assets_addition/file_3/assets/task_obj/ergonomic_task_chair_0_id151/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: ergonomic_task_chair
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: floor_lamp_0_id56
+    path: assets_addition/file_3/assets/task_obj/floor_lamp_0_id56/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: floor_lamp
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: kitchen_base_cabinet_run_0_id85
+    path: assets_addition/file_3/assets/task_obj/kitchen_base_cabinet_run_0_id85/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: kitchen_base_cabinet_run
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: kitchen_broom_mop_station_0_id119
+    path: assets_addition/file_3/assets/task_obj/kitchen_broom_mop_station_0_id119/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: kitchen_broom_mop_station
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: kitchen_counter_stools_0_id108
+    path: assets_addition/file_3/assets/task_obj/kitchen_counter_stools_0_id108/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: kitchen_counter_stools
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: kitchen_counter_stools_1_id108
+    path: assets_addition/file_3/assets/task_obj/kitchen_counter_stools_1_id108/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: kitchen_counter_stools
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: kitchen_mobile_island_0_id103
+    path: assets_addition/file_3/assets/task_obj/kitchen_mobile_island_0_id103/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: kitchen_mobile_island
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: kitchen_pantry_cabinet_0_id97
+    path: assets_addition/file_3/assets/task_obj/kitchen_pantry_cabinet_0_id97/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: kitchen_pantry_cabinet
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: kitchen_range_oven_0_id90
+    path: assets_addition/file_3/assets/task_obj/kitchen_range_oven_0_id90/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: kitchen_range_oven
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: kitchen_refrigerator_0_id93
+    path: assets_addition/file_3/assets/task_obj/kitchen_refrigerator_0_id93/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: kitchen_refrigerator
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: landing_console_table_0_id183
+    path: assets_addition/file_3/assets/task_obj/landing_console_table_0_id183/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: landing_console_table
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: media_console_0_id63
+    path: assets_addition/file_3/assets/task_obj/media_console_0_id63/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: media_console
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mudroom_base_cabinet_console_0_id14
+    path: assets_addition/file_3/assets/task_obj/mudroom_base_cabinet_console_0_id14/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: mudroom_base_cabinet_console
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mudroom_bench_with_cubbies_0_id9
+    path: assets_addition/file_3/assets/task_obj/mudroom_bench_with_cubbies_0_id9/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: mudroom_bench_with_cubbies
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mudroom_round_lidded_trash_bin_0_id21
+    path: assets_addition/file_3/assets/task_obj/mudroom_round_lidded_trash_bin_0_id21/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: mudroom_round_lidded_trash_bin
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: nightstand_hinged_0_id209
+    path: assets_addition/file_3/assets/task_obj/nightstand_hinged_0_id209/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: nightstand_hinged
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: potted_plant_0_id192
+    path: assets_addition/file_3/assets/task_obj/potted_plant_0_id192/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: potted_plant
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: side_table_0_id52
+    path: assets_addition/file_3/assets/task_obj/side_table_0_id52/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: side_table
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: sideboard_cabinet_0_id144
+    path: assets_addition/file_3/assets/task_obj/sideboard_cabinet_0_id144/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: sideboard_cabinet
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: storage_bench_0_id140
+    path: assets_addition/file_3/assets/task_obj/storage_bench_0_id140/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: storage_bench
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: study_desk_0_id211
+    path: assets_addition/file_3/assets/task_obj/study_desk_0_id211/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: study_desk
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: tall_mudroom_storage_cabinet_0_id3
+    path: assets_addition/file_3/assets/task_obj/tall_mudroom_storage_cabinet_0_id3/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: tall_mudroom_storage_cabinet
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: toy_chest_0_id227
+    path: assets_addition/file_3/assets/task_obj/toy_chest_0_id227/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: toy_chest
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: wardrobe_closet_0_id231
+    path: assets_addition/file_3/assets/task_obj/wardrobe_closet_0_id231/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: wardrobe_closet
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_apple_1119_0032_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_apple_1119_0032_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: apple_1119_0032
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_apple_1211_0059_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_apple_1211_0059_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: apple_1211_0059
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_apple_1221_0069_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_apple_1221_0069_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: apple_1221_0069
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_apple_1229_0077_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_apple_1229_0077_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: apple_1229_0077
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_apple_1230_0078_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_apple_1230_0078_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: apple_1230_0078
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_apple_1302_0096_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_apple_1302_0096_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: apple_1302_0096
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_apple_1303_0097_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_apple_1303_0097_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: apple_1303_0097
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_bin_0_0010_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_bin_0_0010_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: bin_0_0010
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_bin_1110_0023_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_bin_1110_0023_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: bin_1110_0023
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_bin_1129_0042_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_bin_1129_0042_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: bin_1129_0042
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_bin_1231_0079_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_bin_1231_0079_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: bin_1231_0079
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_blanket_1232_0080_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_blanket_1232_0080_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: blanket_1232_0080
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_board_game_box_0_0004_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_board_game_box_0_0004_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: board_game_box_0_0004
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_board_game_box_1107_0020_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_board_game_box_1107_0020_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: board_game_box_1107_0020
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_board_game_box_1108_0021_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_board_game_box_1108_0021_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: board_game_box_1108_0021
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_bowl_1104_0017_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_bowl_1104_0017_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: bowl_1104_0017
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_bowl_1116_0029_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_bowl_1116_0029_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: bowl_1116_0029
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_bowl_1125_0038_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_bowl_1125_0038_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: bowl_1125_0038
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_bowl_1133_0046_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_bowl_1133_0046_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: bowl_1133_0046
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_bowl_1204_0052_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_bowl_1204_0052_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: bowl_1204_0052
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_bowl_1208_0056_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_bowl_1208_0056_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: bowl_1208_0056
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_bowl_1214_0062_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_bowl_1214_0062_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: bowl_1214_0062
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_bowl_1220_0068_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_bowl_1220_0068_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: bowl_1220_0068
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_bowl_1233_0081_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_bowl_1233_0081_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: bowl_1233_0081
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_bowl_2_0002_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_bowl_2_0002_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: bowl_2_0002
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_coin_1101_0014_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_coin_1101_0014_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: coin_1101_0014
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_coin_1201_0049_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_coin_1201_0049_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: coin_1201_0049
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_cone_1109_0022_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_cone_1109_0022_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: cone_1109_0022
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_cone_1117_0030_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_cone_1117_0030_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: cone_1117_0030
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_cone_1130_0043_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_cone_1130_0043_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: cone_1130_0043
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_cone_1213_0061_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_cone_1213_0061_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: cone_1213_0061
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_cone_1_0012_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_cone_1_0012_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: cone_1_0012
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_decorative_cone_1_0006_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_decorative_cone_1_0006_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: decorative_cone_1_0006
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_desk_mat_1218_0066_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_desk_mat_1218_0066_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: desk_mat_1218_0066
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_desk_mat_1237_0085_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_desk_mat_1237_0085_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: desk_mat_1237_0085
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_desk_organizer_1123_0036_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_desk_organizer_1123_0036_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: desk_organizer_1123_0036
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_desk_organizer_1300_0094_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_desk_organizer_1300_0094_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: desk_organizer_1300_0094
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_dish_soap_bottle_1112_0025_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_dish_soap_bottle_1112_0025_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: dish_soap_bottle_1112_0025
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_fruit_1106_0019_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_fruit_1106_0019_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: fruit_1106_0019
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_fruit_1118_0031_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_fruit_1118_0031_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: fruit_1118_0031
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_fruit_1126_0039_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_fruit_1126_0039_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: fruit_1126_0039
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_fruit_1134_0047_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_fruit_1134_0047_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: fruit_1134_0047
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_fruit_1206_0054_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_fruit_1206_0054_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: fruit_1206_0054
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_fruit_1210_0058_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_fruit_1210_0058_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: fruit_1210_0058
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_fruit_1215_0063_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_fruit_1215_0063_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: fruit_1215_0063
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_fruit_bowl_1238_0086_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_fruit_bowl_1238_0086_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: fruit_bowl_1238_0086
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_fruit_bowl_1304_0098_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_fruit_bowl_1304_0098_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: fruit_bowl_1304_0098
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_fruit_bowl_1400_0099_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_fruit_bowl_1400_0099_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: fruit_bowl_1400_0099
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_key_1102_0015_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_key_1102_0015_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: key_1102_0015
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_key_1128_0041_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_key_1128_0041_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: key_1128_0041
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_key_1202_0050_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_key_1202_0050_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: key_1202_0050
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_key_1217_0065_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_key_1217_0065_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: key_1217_0065
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_key_1222_0070_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_key_1222_0070_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: key_1222_0070
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_key_1223_0071_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_key_1223_0071_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: key_1223_0071
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_key_1224_0072_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_key_1224_0072_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: key_1224_0072
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_key_1225_0073_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_key_1225_0073_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: key_1225_0073
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_key_tray_0_0005_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_key_tray_0_0005_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: key_tray_0_0005
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_key_tray_1100_0013_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_key_tray_1100_0013_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: key_tray_1100_0013
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_key_tray_1200_0048_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_key_tray_1200_0048_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: key_tray_1200_0048
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_mat_1239_0087_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_mat_1239_0087_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: mat_1239_0087
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_napkins_1122_0035_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_napkins_1122_0035_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: napkins_1122_0035
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_notebook_1219_0067_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_notebook_1219_0067_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: notebook_1219_0067
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_notebook_1240_0088_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_notebook_1240_0088_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: notebook_1240_0088
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_organizer_1103_0016_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_organizer_1103_0016_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: organizer_1103_0016
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_organizer_1131_0044_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_organizer_1131_0044_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: organizer_1131_0044
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_organizer_1203_0051_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_organizer_1203_0051_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: organizer_1203_0051
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_organizer_1241_0089_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_organizer_1241_0089_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: organizer_1241_0089
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_organizer_1_0001_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_organizer_1_0001_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: organizer_1_0001
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_pen_1105_0018_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_pen_1105_0018_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: pen_1105_0018
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_pen_1205_0053_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_pen_1205_0053_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: pen_1205_0053
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_pen_1226_0074_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_pen_1226_0074_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: pen_1226_0074
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_pen_1227_0075_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_pen_1227_0075_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: pen_1227_0075
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_pen_1228_0076_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_pen_1228_0076_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: pen_1228_0076
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_seat_cushion_1120_0033_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_seat_cushion_1120_0033_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: seat_cushion_1120_0033
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_shoe_pair_1242_0090_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_shoe_pair_1242_0090_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: shoe_pair_1242_0090
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_snack_basket_1114_0027_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_snack_basket_1114_0027_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: snack_basket_1114_0027
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_sponge_1111_0024_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_sponge_1111_0024_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: sponge_1111_0024
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_sticky_notes_1132_0045_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_sticky_notes_1132_0045_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: sticky_notes_1132_0045
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_sticky_notes_1301_0095_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_sticky_notes_1301_0095_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: sticky_notes_1301_0095
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_storage_bin_0_0011_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_storage_bin_0_0011_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: storage_bin_0_0011
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_storage_bin_1212_0060_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_storage_bin_1212_0060_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: storage_bin_1212_0060
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_table_lamp_1121_0034_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_table_lamp_1121_0034_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: table_lamp_1121_0034
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_table_lamp_1_0003_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_table_lamp_1_0003_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: table_lamp_1_0003
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_tray_0_0000_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_tray_0_0000_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: tray_0_0000
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_tray_1115_0028_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_tray_1115_0028_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: tray_1115_0028
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_tray_1207_0055_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_tray_1207_0055_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: tray_1207_0055
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_tray_1216_0064_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_tray_1216_0064_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: tray_1216_0064
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_tray_1243_0091_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_tray_1243_0091_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: tray_1243_0091
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  - name: mesh_small_tray_1245_0093_mesh_0_00
+    path: assets_addition/file_3/assets/task_obj/small_usd/mesh_small_tray_1245_0093_mesh_0_00/Aligned_obj.usd
+    target_class: GeometryObject
+    dataset: assets_addition
+    category: tray_1245_0093
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: false
+  regions: []
+  cameras: []
+  data:
+    task_dir: assets_addition/file_3
+    language_instruction: Load assets_addition scene file_3.
+    detailed_language_instruction: Load assets_addition scene file_3 without robots
+      or action skills.
+    collect_info: assets_addition_file_3
+    version: v1.0
+    update: true
+    max_episode_length: 1000
+  skills: []

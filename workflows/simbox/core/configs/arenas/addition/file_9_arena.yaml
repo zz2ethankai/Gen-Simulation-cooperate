@@ -1,0 +1,77 @@
+name: assets_addition_file_9_arena
+fixtures:
+- name: empty_room
+  path: assets_addition/file_9/empty_room.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_9_chaise_lounge_0_id205
+  path: assets_addition/file_9/assets/arena/file_9__chaise_lounge_0_id205.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_9_low_bookcase_0_id210
+  path: assets_addition/file_9/assets/arena/file_9__low_bookcase_0_id210.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_9_sample_shelving_unit_0_id234
+  path: assets_addition/file_9/assets/arena/file_9__sample_shelving_unit_0_id234.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_9_tall_sample_shelving_unit_0_id73
+  path: assets_addition/file_9/assets/arena/file_9__tall_sample_shelving_unit_0_id73.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0

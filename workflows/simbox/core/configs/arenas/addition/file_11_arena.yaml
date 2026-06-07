@@ -1,0 +1,107 @@
+name: assets_addition_file_11_arena
+fixtures:
+- name: empty_room
+  path: assets_addition/file_11/empty_room.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_11_compact_bed_0_id85
+  path: assets_addition/file_11/assets/arena/file_11__compact_bed_0_id85.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_11_heavy_duty_metal_shelving_unit_0_id162
+  path: assets_addition/file_11/assets/arena/file_11__heavy_duty_metal_shelving_unit_0_id162.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_11_lab_style_storage_shelving_0_id146
+  path: assets_addition/file_11/assets/arena/file_11__lab_style_storage_shelving_0_id146.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_11_platform_bed_full_0_id193
+  path: assets_addition/file_11/assets/arena/file_11__platform_bed_full_0_id193.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_11_tall_bookcase_research_0_id217
+  path: assets_addition/file_11/assets/arena/file_11__tall_bookcase_research_0_id217.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_11_utility_storage_shelving_0_id234
+  path: assets_addition/file_11/assets/arena/file_11__utility_storage_shelving_0_id234.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0

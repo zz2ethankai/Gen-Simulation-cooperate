@@ -37,6 +37,28 @@ def nav2_skill_cfg(base_cfg: dict) -> dict:
     return dict(base_cfg.get("nav2_skill", {}))
 
 
+def _deep_update_dict(target: dict, updates: dict) -> dict:
+    for key, value in updates.items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            _deep_update_dict(target[key], value)
+        else:
+            target[key] = deepcopy(value)
+    return target
+
+
+def _normalize_footprint_points(points) -> list[list[float]]:
+    if not isinstance(points, (list, tuple)):
+        return []
+    normalized = []
+    for point in points:
+        if not isinstance(point, (list, tuple)) or len(point) < 2:
+            continue
+        normalized.append([float(point[0]), float(point[1])])
+    if len(normalized) < 3:
+        return []
+    return normalized
+
+
 def configure_base_cfg_for_nav2_skill(
     base_cfg: dict,
     *,
@@ -44,8 +66,10 @@ def configure_base_cfg_for_nav2_skill(
     map_resolution: float = 0.02,
     map_z_min: float = 0.0,
     map_z_max: float = 0.35,
+    map_include_visual_wall_geometry: bool = True,
     position_tolerance_m: float = NAV2_DEFAULT_POSITION_TOLERANCE_M,
     yaw_tolerance_rad: float = NAV2_DEFAULT_YAW_TOLERANCE_RAD,
+    nav2_skill_overrides: dict | None = None,
 ):
     """Normalize mobile-base config for external compose-managed Nav2 sessions."""
 
@@ -73,9 +97,15 @@ def configure_base_cfg_for_nav2_skill(
     localization_cfg["map_output_dir"] = str(map_output_dir)
     localization_cfg["map_z_min"] = float(map_z_min)
     localization_cfg["map_z_max"] = float(map_z_max)
+    localization_cfg["map_include_visual_wall_geometry"] = bool(map_include_visual_wall_geometry)
     localization_cfg["map_frame"] = str(localization_cfg.get("map_frame", "map"))
     localization_cfg["odom_frame"] = str(localization_cfg.get("odom_frame", ros_cfg.get("odom_frame", "odom")))
     localization_cfg["base_frame"] = str(localization_cfg.get("base_frame", ros_cfg.get("base_frame", "base_link")))
+    localization_cfg.setdefault(
+        "clear_footprint_points",
+        platform.default_nav2_footprint_points(base_cfg),
+    )
+    localization_cfg.setdefault("robot_clear_radius_m", 0.0)
 
     nav2_cfg = ros_cfg.setdefault("nav2", {})
     nav2_cfg["enabled"] = True
@@ -106,6 +136,8 @@ def configure_base_cfg_for_nav2_skill(
     nav2_cfg["bridge_alive_timeout_sec"] = float(nav2_cfg.get("bridge_alive_timeout_sec", 3.0))
 
     base_cfg.setdefault("nav2_skill", {})
+    if isinstance(nav2_skill_overrides, dict):
+        _deep_update_dict(base_cfg["nav2_skill"], nav2_skill_overrides)
     base_cfg["nav2_skill"]["position_tolerance_m"] = float(position_tolerance_m)
     base_cfg["nav2_skill"]["yaw_tolerance_rad"] = float(yaw_tolerance_rad)
     return deepcopy(base_cfg)
@@ -118,8 +150,10 @@ def configure_robot_for_nav2_skill(
     map_resolution: float = 0.02,
     map_z_min: float = 0.0,
     map_z_max: float = 0.35,
+    map_include_visual_wall_geometry: bool = True,
     position_tolerance_m: float = NAV2_DEFAULT_POSITION_TOLERANCE_M,
     yaw_tolerance_rad: float = NAV2_DEFAULT_YAW_TOLERANCE_RAD,
+    nav2_skill_overrides: dict | None = None,
 ):
     base_cfg = configure_base_cfg_for_nav2_skill(
         getattr(robot, "base_cfg", {}),
@@ -127,8 +161,10 @@ def configure_robot_for_nav2_skill(
         map_resolution=map_resolution,
         map_z_min=map_z_min,
         map_z_max=map_z_max,
+        map_include_visual_wall_geometry=map_include_visual_wall_geometry,
         position_tolerance_m=position_tolerance_m,
         yaw_tolerance_rad=yaw_tolerance_rad,
+        nav2_skill_overrides=nav2_skill_overrides,
     )
     robot.base_cfg = base_cfg
     return deepcopy(base_cfg)
@@ -264,9 +300,11 @@ def _build_nav2_params(
         localization_cfg.get("base_frame", nav2_cfg.get("robot_base_frame", ros_cfg.get("base_frame", "base_link")))
     )
     skill_cfg = nav2_skill_cfg(base_cfg)
-    footprint_points = platform.default_nav2_footprint_points(base_cfg)
+    footprint_points = _normalize_footprint_points(skill_cfg.get("footprint_points"))
+    if not footprint_points:
+        footprint_points = platform.default_nav2_footprint_points(base_cfg)
     footprint = format_nav2_footprint(footprint_points)
-    inflation_radius = float(platform.default_nav2_inflation_radius_m(base_cfg))
+    inflation_radius = float(skill_cfg.get("inflation_radius_m", platform.default_nav2_inflation_radius_m(base_cfg)))
     inscribed_radius = footprint_inscribed_radius(footprint_points)
     inflation_radius = max(inflation_radius, inscribed_radius)
     minimum_turning_radius = float(platform.default_nav2_minimum_turning_radius_m(base_cfg))

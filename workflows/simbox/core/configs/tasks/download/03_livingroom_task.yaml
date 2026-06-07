@@ -1,0 +1,718 @@
+tasks:
+- name: asset_03_livingroom_task
+  asset_root: download/03_livingroom
+  task: BananaBaseTask
+  task_id: 0
+  offset: null
+  render: True
+  arena_file: workflows/simbox/core/configs/arenas/download/03_livingroom_arena.yaml
+  env_map:
+    envmap_lib: ../../InternDataAssets/assets/envmap_lib
+    apply_randomization: False
+    intensity_range:
+    - 5000
+    - 5000
+    rotation_range:
+    - 0
+    - 0
+  robots:
+  - name: split_aloha
+    robot_config_file: workflows/simbox/core/configs/robots/split_aloha.yaml
+    path: ../../workflows/simbox/assets/split_aloha_mid_360/robot.usd
+    euler:
+    - 0.0
+    - 0.0
+    - 90.0
+    ignore_substring:
+    - material
+    - table
+    use_batch: True
+    collision_activation_distance: 0.05
+  objects:
+  - name: remote_control_0_id9000
+    path: assets/basic/03_livingroom/small_objects/remote_control/remote_control_0_id9000/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 1.6
+    - 3.05
+    - 0.4535
+    euler:
+    - 0.0
+    - 270.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned
+    category: remote_control
+    asset_source_mode: obj_converted
+    metadata: assets/basic/03_livingroom/small_objects/remote_control/remote_control_0_id9000/metadata.json
+    spawn_region: remote_control__0__id9000_candidate_region
+  - name: phone_0_id9001
+    path: assets/basic/03_livingroom/small_objects/phone/phone_0_id9001/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 1.7325
+    - 1.9444
+    - 0.45
+    euler:
+    - 0.0
+    - 270.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: phone
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/03_livingroom/small_objects/phone/phone_0_id9001/metadata.json
+    spawn_region: phone__0__id9001_candidate_region
+  - name: tissue_box_0_id9002
+    path: assets/basic/03_livingroom/small_objects/tissue_box/tissue_box_0_id9002/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 1.8025
+    - 2.4
+    - 0.486
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: tissue_box
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/03_livingroom/small_objects/tissue_box/tissue_box_0_id9002/metadata.json
+    spawn_region: tissue_box__0__id9002_candidate_region
+  - name: magazine_a_0_id9003
+    path: assets/basic/03_livingroom/small_objects/magazine/magazine_a_0_id9003/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 1.4575
+    - 1.995
+    - 0.45
+    euler:
+    - 0.0
+    - 270.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: magazine
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/03_livingroom/small_objects/magazine/magazine_a_0_id9003/metadata.json
+    spawn_region: magazine_a__0__id9003_candidate_region
+  - name: glasses_case_0_id9004
+    path: assets/basic/03_livingroom/small_objects/glasses_case/glasses_case_0_id9004/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 1.395
+    - 2.7125
+    - 0.4635
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned
+    category: glasses_case
+    asset_source_mode: obj_converted
+    metadata: assets/basic/03_livingroom/small_objects/glasses_case/glasses_case_0_id9004/metadata.json
+    spawn_region: glasses_case__0__id9004_candidate_region
+  - name: livingroom_mug_0_id9005
+    path: assets/basic/03_livingroom/small_objects/mug/livingroom_mug_0_id9005/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 1.3
+    - 2.4
+    - 0.496
+    euler:
+    - 0.0
+    - 270.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: mug
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/03_livingroom/small_objects/mug/livingroom_mug_0_id9005/metadata.json
+    spawn_region: livingroom_mug__0__id9005_candidate_region
+  - name: round_coaster_a_0_id9006
+    path: assets/basic/03_livingroom/small_objects/coaster/round_coaster_a_0_id9006/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 1.6
+    - 2.4
+    - 0.45
+    euler:
+    - 0.0
+    - 270.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: coaster
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/03_livingroom/small_objects/coaster/round_coaster_a_0_id9006/metadata.json
+    spawn_region: round_coaster_a__0__id9006_candidate_region
+  - name: round_coaster_b_0_id9007
+    path: assets/basic/03_livingroom/small_objects/coaster/round_coaster_b_0_id9007/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 1.4525
+    - 2.4
+    - 0.45
+    euler:
+    - 0.0
+    - 270.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: coaster
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/03_livingroom/small_objects/coaster/round_coaster_b_0_id9007/metadata.json
+    spawn_region: round_coaster_b__0__id9007_candidate_region
+  - name: storage_basket_0_id9008
+    path: assets/basic/03_livingroom/small_objects/storage_basket/storage_basket_0_id9008/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 1.4
+    - 3.78
+    - 0.4896
+    euler:
+    - 0.0
+    - 180.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: storage_basket
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/03_livingroom/small_objects/storage_basket/storage_basket_0_id9008/metadata.json
+    spawn_region: storage_basket__0__id9008_candidate_region
+  - name: snack_can_0_id9009
+    path: assets/basic/03_livingroom/small_objects/snack_can/snack_can_0_id9009/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 1.66
+    - 3.78
+    - 1.0322
+    euler:
+    - 0.0
+    - 180.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: snack_can
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/03_livingroom/small_objects/snack_can/snack_can_0_id9009/metadata.json
+    spawn_region: snack_can__0__id9009_candidate_region
+  - name: magazine_b_0_id9010
+    path: assets/basic/03_livingroom/small_objects/magazine/magazine_b_0_id9010/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 4.4
+    - 3.76
+    - 0.71
+    euler:
+    - 0.0
+    - 180.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: magazine
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/03_livingroom/small_objects/magazine/magazine_b_0_id9010/metadata.json
+    spawn_region: magazine_b__0__id9010_candidate_region
+  - name: water_bottle_0_id9011
+    path: assets/basic/03_livingroom/small_objects/water_bottle/water_bottle_0_id9011/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 4.5863
+    - 3.76
+    - 0.816
+    euler:
+    - 0.0
+    - 180.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: water_bottle
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/03_livingroom/small_objects/water_bottle/water_bottle_0_id9011/metadata.json
+    spawn_region: water_bottle__0__id9011_candidate_region
+  - name: small_cushion_0_id9013
+    path: assets/basic/03_livingroom/small_objects/small_cushion/small_cushion_0_id9013/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 1.6683
+    - 2.66
+    - 0.496
+    euler:
+    - 0.0
+    - 270.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned
+    category: small_cushion
+    asset_source_mode: obj_converted
+    metadata: assets/basic/03_livingroom/small_objects/small_cushion/small_cushion_0_id9013/metadata.json
+    spawn_region: small_cushion__0__id9013_candidate_region
+  - name: small_plant_0_id9017
+    path: assets/basic/03_livingroom/small_objects/plant_pot/small_plant_0_id9017/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 0.24
+    - 2.185
+    - 0.546
+    euler:
+    - 0.0
+    - 90.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: plant_pot
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/03_livingroom/small_objects/plant_pot/small_plant_0_id9017/metadata.json
+    spawn_region: small_plant__0__id9017_candidate_region
+  regions:
+  - object: split_aloha
+    target: floor
+    random_type: A_on_B_region_sampler
+    random_config:
+      pos_range:
+      - - 0.0
+        - -0.95
+        - 0.0
+      - - 0.0
+        - -0.95
+        - 0.0
+      yaw_rotation:
+      - 90.0
+      - 90.0
+  cameras: []
+  data:
+    task_dir: download/03_livingroom
+    language_instruction: Generated task for asset_03_livingroom_task from natural-language
+      source steps.
+    detailed_language_instruction: Skills were generated by Codex from source_tasks.
+      Validate grasp annotations and runtime feasibility before large-scale use.
+    collect_info: download_03_livingroom
+    version: v1.0
+    update: True
+    max_episode_length: 1000
+  positions:
+    wp_lr_1_coffee_table_front:
+      x: 2.5
+      y: 1.05
+      yaw: -3.141592653589793
+    wp_lr_2_tv_cabinet_front:
+      x: 2.5
+      y: 3.05
+      yaw: 0.0
+    wp_lr_3_shelf_front:
+      x: 4.35
+      y: 2.7
+      yaw: -1.5707963267948966
+    wp_lr_4_sofa_side:
+      x: 0.9
+      y: 2.0
+      yaw: 1.5707963267948966
+    wp_lr_5_rug_edge:
+      x: 2.5
+      y: 1.45
+      yaw: -3.141592653589793
+  skills:
+  - split_aloha:
+    - base:
+      - name: navigate
+        id: nav_to_pick
+        depends_on: []
+        goal: wp_lr_1_coffee_table_front
+      - name: navigate
+        id: nav_to_place
+        depends_on:
+        - pick_remote_control
+        goal: wp_lr_3_shelf_front
+      left:
+      - name: pick
+        id: pick_remote_control
+        depends_on:
+        - nav_to_pick
+        objects:
+        - remote_control_0_id9000
+        filter_x_dir:
+        - backward
+        - 135
+        filter_y_dir:
+        - downward
+        - 120
+        filter_z_dir:
+        - forward
+        - 135
+        - 45
+        pre_grasp_offset: 0.05
+        gripper_change_steps: 20
+        t_eps: 0.025
+        o_eps: 1
+        process_valid: True
+        lift_th: 0.02
+        post_grasp_offset_min: 0.05
+        post_grasp_offset_max: 0.1
+      - name: place
+        id: place_remote_control
+        depends_on:
+        - nav_to_place
+        objects:
+        - remote_control_0_id9000
+        - storage_basket_0_id9008
+        position_constraint: object
+        filter_x_dir:
+        - backward
+        - 110
+        filter_y_dir:
+        - downward
+        - 120
+        filter_z_dir:
+        - forward
+        - 70
+        x_ratio_range:
+        - 0.35
+        - 0.65
+        y_ratio_range:
+        - 0.35
+        - 0.65
+        success_mode: xybbox
+        pre_place_z_offset: 0.1
+        place_z_offset: 0.1
+        gripper_change_steps: 20
+      - name: heuristic__skill
+        id: home_left
+        depends_on:
+        - place_remote_control
+        mode: home
+        gripper_state: 1.0
+      right: []
+  source_regions:
+  - name: remote_control_0_id9000_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 1.6
+    - 3.05
+    - 0.0
+    size:
+    - 0.35
+    - 0.48
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: phone_0_id9001_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 1.7325
+    - 1.9444
+    - 0.0
+    size:
+    - 0.35
+    - 0.45
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: tissue_box_0_id9002_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 1.8025
+    - 2.4
+    - 0.0
+    size:
+    - 0.66
+    - 0.36
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: magazine_a_0_id9003_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 1.4575
+    - 1.995
+    - 0.0
+    size:
+    - 0.63
+    - 0.84
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: glasses_case_0_id9004_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 1.395
+    - 2.7125
+    - 0.0
+    size:
+    - 0.35
+    - 0.48
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: livingroom_mug_0_id9005_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 1.3
+    - 2.4
+    - 0.0
+    size:
+    - 0.35
+    - 0.35
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: round_coaster_a_0_id9006_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 1.6
+    - 2.4
+    - 0.0
+    size:
+    - 0.35
+    - 0.35
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: round_coaster_b_0_id9007_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 1.4525
+    - 2.4
+    - 0.0
+    size:
+    - 0.35
+    - 0.35
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: storage_basket_0_id9008_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 1.4
+    - 3.78
+    - 0.0
+    size:
+    - 0.96
+    - 0.72
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: snack_can_0_id9009_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 1.66
+    - 3.78
+    - 0.0
+    size:
+    - 0.35
+    - 0.35
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: magazine_b_0_id9010_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 4.4
+    - 3.76
+    - 0.0
+    size:
+    - 0.63
+    - 0.84
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: water_bottle_0_id9011_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 4.5863
+    - 3.76
+    - 0.0
+    size:
+    - 0.35
+    - 0.35
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: small_cushion_0_id9013_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 1.6683
+    - 2.66
+    - 0.0
+    size:
+    - 0.9
+    - 0.9
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: small_plant_0_id9017_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 0.24
+    - 2.185
+    - 0.0
+    size:
+    - 0.35
+    - 0.35
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  source_tasks:
+  - id: living_task_01
+    target: Remote to Basket
+    core_objects:
+    - remote_control
+    - storage_basket
+    steps:
+    - navigate coffee table
+    - grasp remote
+    - navigate shelf
+    - place remote inside basket
+    - home
+    success: remote is fully inside basket
+    available_core_objects:
+    - remote_control
+    - storage_basket
+    missing_core_objects: []
+  - id: living_task_02
+    target: Mug to Coaster
+    core_objects:
+    - livingroom_mug
+    - round_coaster_a
+    steps:
+    - navigate coffee table
+    - grasp mug upright
+    - place on coaster center
+    - vertical retreat
+    success: mug bottom center lies on coaster and remains upright
+    available_core_objects:
+    - livingroom_mug
+    - round_coaster_a
+    missing_core_objects: []
+  - id: living_task_03
+    target: Phone to Side Cabinet
+    core_objects:
+    - phone
+    steps:
+    - grasp phone long sides from coffee table
+    - navigate side cabinet
+    - place screen up
+    - release
+    success: phone is flat screen up and does not slide
+    available_core_objects:
+    - phone
+    missing_core_objects: []
+  - id: living_task_04
+    target: Coffee Table Cleanup
+    core_objects:
+    - remote_control
+    - storage_basket
+    - magazine_a
+    steps:
+    - put remote in basket on shelf
+    - return coffee table
+    - grasp magazine
+    - place magazine on TV cabinet left
+    success: remote is in basket on shelf, magazine flat on TV cabinet
+    available_core_objects:
+    - remote_control
+    - storage_basket
+    - magazine_a
+    missing_core_objects: []
+  - id: living_task_05
+    target: Toy Blocks Cleanup
+    core_objects:
+    - toy_block
+    - storage_basket
+    steps:
+    - navigate rug edge
+    - pick block one from rug
+    - drop in basket
+    - repeat for block two
+    - repeat for block three
+    success: all three toy blocks are inside basket
+    available_core_objects:
+    - toy_block
+    - storage_basket
+    missing_core_objects: []

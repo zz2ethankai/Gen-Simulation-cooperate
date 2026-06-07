@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import math
+
 from core.skills.base_skill import BaseSkill, SKILL_DICT, register_skill
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from omni.isaac.core.controllers import BaseController
 from omni.isaac.core.robots.robot import Robot
 from omni.isaac.core.tasks import BaseTask
 
 from nav2.runtime import configure_robot_for_nav2_skill
+
+
+def _wrap_to_pi(yaw: float) -> float:
+    return (float(yaw) + math.pi) % (2.0 * math.pi) - math.pi
 
 
 @register_skill
@@ -24,12 +30,7 @@ class Navigate(BaseSkill):
         self.workflow = kwargs.get("workflow")
         self.skill_cfg = cfg
 
-        try:
-            self.goal_x = float(cfg["goal_x"])
-            self.goal_y = float(cfg["goal_y"])
-            self.goal_yaw = float(cfg["goal_yaw"])
-        except KeyError as exc:
-            raise KeyError("navigate requires goal_x, goal_y, and goal_yaw") from exc
+        self.goal_x, self.goal_y, self.goal_yaw = self._resolve_goal_pose(task, cfg)
 
         legacy_position_tolerance_m = float(cfg.get("xy_goal_tolerance", cfg.get("skill_xy_goal_tolerance", 0.10)))
         legacy_yaw_tolerance_rad = float(cfg.get("yaw_goal_tolerance", cfg.get("skill_yaw_goal_tolerance", 0.10)))
@@ -44,6 +45,7 @@ class Navigate(BaseSkill):
         self.runtime_timeout_sec = float(cfg.get("runtime_timeout_sec", 240.0))
         self.output_root = str(cfg.get("output_root", "output/ros_bridge/skills"))
         self.scene_name = str(cfg.get("scene_name", getattr(task, "name", "navigate_skill_scene")))
+        nav2_skill_overrides = self._nav2_skill_overrides(cfg)
 
         self._configured_base_cfg = configure_robot_for_nav2_skill(
             self.robot,
@@ -51,8 +53,10 @@ class Navigate(BaseSkill):
             map_resolution=float(cfg.get("map_resolution", 0.02)),
             map_z_min=float(cfg.get("map_z_min", 0.0)),
             map_z_max=float(cfg.get("map_z_max", 0.35)),
+            map_include_visual_wall_geometry=bool(cfg.get("map_include_visual_wall_geometry", True)),
             position_tolerance_m=self.nav2_position_tolerance_m,
             yaw_tolerance_rad=self.nav2_yaw_tolerance_rad,
+            nav2_skill_overrides=nav2_skill_overrides,
         )
         self._manager = None
         self._goal_started = False
@@ -62,6 +66,39 @@ class Navigate(BaseSkill):
         self.manip_list = []
         self.failure_reason = ""
         self.error_message = ""
+
+    def _resolve_goal_pose(self, task: BaseTask, cfg: DictConfig) -> tuple[float, float, float]:
+        goal_name = str(cfg.get("goal", "") or "").strip()
+        if goal_name:
+            task_cfg = getattr(task, "cfg", {}) or {}
+            positions = task_cfg.get("positions")
+            if not isinstance(positions, dict):
+                raise KeyError(f"navigate goal '{goal_name}' requires task.cfg['positions'] to be a mapping")
+
+            goal_pose = positions.get(goal_name)
+            if not isinstance(goal_pose, dict):
+                raise KeyError(f"navigate goal '{goal_name}' was not found in task.cfg['positions']")
+
+            try:
+                return float(goal_pose["x"]), float(goal_pose["y"]), _wrap_to_pi(float(goal_pose["yaw"]))
+            except KeyError as exc:
+                raise KeyError(
+                    f"navigate goal '{goal_name}' requires position fields 'x', 'y', and 'yaw'"
+                ) from exc
+
+        try:
+            return float(cfg["goal_x"]), float(cfg["goal_y"]), _wrap_to_pi(float(cfg["goal_yaw"]))
+        except KeyError as exc:
+            raise KeyError("navigate requires either goal or goal_x, goal_y, and goal_yaw") from exc
+
+    @staticmethod
+    def _nav2_skill_overrides(cfg: DictConfig) -> dict:
+        overrides = cfg.get("nav2_skill", {})
+        if isinstance(overrides, DictConfig):
+            overrides = OmegaConf.to_container(overrides, resolve=True)
+        if not isinstance(overrides, dict):
+            return {}
+        return overrides
 
     def simple_generate_manip_cmds(self):
         self._hold_command = None

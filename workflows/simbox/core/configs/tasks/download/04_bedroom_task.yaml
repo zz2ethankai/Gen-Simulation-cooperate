@@ -1,0 +1,614 @@
+tasks:
+- name: asset_04_bedroom_task
+  asset_root: download/04_bedroom
+  task: BananaBaseTask
+  task_id: 0
+  offset: null
+  render: True
+  arena_file: workflows/simbox/core/configs/arenas/download/04_bedroom_arena.yaml
+  env_map:
+    envmap_lib: ../../InternDataAssets/assets/envmap_lib
+    apply_randomization: False
+    intensity_range:
+    - 5000
+    - 5000
+    rotation_range:
+    - 0
+    - 0
+  robots:
+  - name: split_aloha
+    robot_config_file: workflows/simbox/core/configs/robots/split_aloha.yaml
+    path: ../../workflows/simbox/assets/split_aloha_mid_360/robot.usd
+    euler:
+    - 0.0
+    - 0.0
+    - 90.0
+    ignore_substring:
+    - material
+    - table
+    use_batch: True
+    collision_activation_distance: 0.05
+  objects:
+  - name: folded_tshirt_0_id9000
+    path: assets/basic/04_bedroom/small_objects/folded_tshirt/folded_tshirt_0_id9000/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 0.8
+    - 0.27
+    - 0.491
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned
+    category: folded_tshirt
+    asset_source_mode: obj_converted
+    metadata: assets/basic/04_bedroom/small_objects/folded_tshirt/folded_tshirt_0_id9000/metadata.json
+    spawn_region: folded_tshirt__0__id9000_candidate_region
+  - name: folded_scarf_0_id9002
+    path: assets/basic/04_bedroom/small_objects/folded_scarf/folded_scarf_0_id9002/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 0.4875
+    - 0.27
+    - 0.491
+    euler:
+    - 0.0
+    - 90.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: folded_scarf
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/04_bedroom/small_objects/folded_scarf/folded_scarf_0_id9002/metadata.json
+    spawn_region: folded_scarf__0__id9002_candidate_region
+  - name: bedroom_phone_0_id9003
+    path: assets/basic/04_bedroom/small_objects/phone/bedroom_phone_0_id9003/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 3.8
+    - 3.3
+    - 0.53
+    euler:
+    - 0.0
+    - 270.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: phone
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/04_bedroom/small_objects/phone/bedroom_phone_0_id9003/metadata.json
+    spawn_region: bedroom_phone__0__id9003_candidate_region
+  - name: water_glass_0_id9004
+    path: assets/basic/04_bedroom/small_objects/water_glass/water_glass_0_id9004/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 3.8
+    - 3.435
+    - 0.586
+    euler:
+    - 0.0
+    - 180.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: water_glass
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/04_bedroom/small_objects/water_glass/water_glass_0_id9004/metadata.json
+    spawn_region: water_glass__0__id9004_candidate_region
+  - name: glasses_case_0_id9005
+    path: assets/basic/04_bedroom/small_objects/glasses_case/glasses_case_0_id9005/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 3.8375
+    - 0.3
+    - 0.5435
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned
+    category: glasses_case
+    asset_source_mode: obj_converted
+    metadata: assets/basic/04_bedroom/small_objects/glasses_case/glasses_case_0_id9005/metadata.json
+    spawn_region: glasses_case__0__id9005_candidate_region
+  - name: alarm_clock_0_id9006
+    path: assets/basic/04_bedroom/small_objects/alarm_clock/alarm_clock_0_id9006/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 4.0
+    - 0.135
+    - 0.551
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: alarm_clock
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/04_bedroom/small_objects/alarm_clock/alarm_clock_0_id9006/metadata.json
+    spawn_region: alarm_clock__0__id9006_candidate_region
+  - name: bedside_book_0_id9007
+    path: assets/basic/04_bedroom/small_objects/bedside_book/bedside_book_0_id9007/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 4.0
+    - 0.3563
+    - 0.541
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: bedside_book
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/04_bedroom/small_objects/bedside_book/bedside_book_0_id9007/metadata.json
+    spawn_region: bedside_book__0__id9007_candidate_region
+  - name: tissue_box_0_id9008
+    path: assets/basic/04_bedroom/small_objects/tissue_box/tissue_box_0_id9008/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 2.945
+    - 0.37
+    - 0.796
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: tissue_box
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/04_bedroom/small_objects/tissue_box/tissue_box_0_id9008/metadata.json
+    spawn_region: tissue_box__0__id9008_candidate_region
+  - name: hand_cream_0_id9009
+    path: assets/basic/04_bedroom/small_objects/hand_cream_tube/hand_cream_0_id9009/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 2.6
+    - 0.2375
+    - 0.776
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: hand_cream_tube
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/04_bedroom/small_objects/hand_cream_tube/hand_cream_0_id9009/metadata.json
+    spawn_region: hand_cream__0__id9009_candidate_region
+  - name: jewelry_tray_0_id9010
+    path: assets/basic/04_bedroom/small_objects/jewelry_tray/jewelry_tray_0_id9010/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 2.6
+    - 0.37
+    - 0.766
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: jewelry_tray
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/04_bedroom/small_objects/jewelry_tray/jewelry_tray_0_id9010/metadata.json
+    spawn_region: jewelry_tray__0__id9010_candidate_region
+  - name: bedroom_tablet_0_id9011
+    path: assets/basic/04_bedroom/small_objects/tablet/bedroom_tablet_0_id9011/Aligned_obj.usd
+    target_class: RigidObject
+    translation:
+    - 2.24
+    - 0.37
+    - 0.7595
+    euler:
+    - 0.0
+    - 0.0
+    - 0.0
+    scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    apply_randomization: False
+    prim_path_child: Aligned/Normalize/Source/base_link
+    category: tablet
+    asset_source_mode: original_usd_inherited
+    metadata: assets/basic/04_bedroom/small_objects/tablet/bedroom_tablet_0_id9011/metadata.json
+    spawn_region: bedroom_tablet__0__id9011_candidate_region
+  regions:
+  - object: split_aloha
+    target: floor
+    random_type: A_on_B_region_sampler
+    random_config:
+      pos_range:
+      - - -1.15
+        - -0.8
+        - 0.0
+      - - -1.15
+        - -0.8
+        - 0.0
+      yaw_rotation:
+      - 90.0
+      - 90.0
+  cameras: []
+  data:
+    task_dir: download/04_bedroom
+    language_instruction: Generated task for asset_04_bedroom_task from natural-language
+      source steps.
+    detailed_language_instruction: Skills were generated by Codex from source_tasks.
+      Validate grasp annotations and runtime feasibility before large-scale use.
+    collect_info: download_04_bedroom
+    version: v1.0
+    update: True
+    max_episode_length: 1000
+  positions:
+    wp_br_1_left_nightstand_front:
+      x: 1.1
+      y: 1.0
+      yaw: -3.141592653589793
+    wp_br_2_right_nightstand_front:
+      x: 3.35
+      y: 1.0
+      yaw: -3.141592653589793
+    wp_br_3_bed_bench_front:
+      x: 2.25
+      y: 2.55
+      yaw: 0.0
+    wp_br_4_wardrobe_box_front:
+      x: 3.8
+      y: 2.45
+      yaw: -1.5707963267948966
+    wp_br_5_vanity_front:
+      x: 1.0
+      y: 2.9
+      yaw: 0.0
+    wp_br_6_rug_edge:
+      x: 1.45
+      y: 2.0
+      yaw: 1.5707963267948966
+  skills:
+  - split_aloha:
+    - base:
+      - name: navigate
+        id: nav_to_pick
+        depends_on: []
+        goal: wp_br_2_right_nightstand_front
+      left:
+      - name: pick
+        id: pick_bedroom_phone_0_id9003
+        depends_on:
+        - nav_to_pick
+        objects:
+        - bedroom_phone_0_id9003
+        filter_x_dir:
+        - backward
+        - 135
+        filter_y_dir:
+        - downward
+        - 120
+        filter_z_dir:
+        - forward
+        - 135
+        - 45
+        pre_grasp_offset: 0.05
+        gripper_change_steps: 20
+        t_eps: 0.025
+        o_eps: 1
+        process_valid: True
+        lift_th: 0.02
+        post_grasp_offset_min: 0.05
+        post_grasp_offset_max: 0.1
+      - name: place
+        id: place_bedroom_phone_0_id9003
+        depends_on:
+        - pick_bedroom_phone_0_id9003
+        objects:
+        - bedroom_phone_0_id9003
+        - right_nightstand_0_id3
+        position_constraint: object
+        filter_x_dir:
+        - backward
+        - 110
+        filter_y_dir:
+        - downward
+        - 120
+        filter_z_dir:
+        - forward
+        - 70
+        x_ratio_range:
+        - 0.35
+        - 0.65
+        y_ratio_range:
+        - 0.35
+        - 0.65
+        success_mode: xybbox
+        pre_place_z_offset: 0.1
+        place_z_offset: 0.1
+        gripper_change_steps: 20
+      - name: heuristic__skill
+        id: home_left
+        depends_on:
+        - place_bedroom_phone_0_id9003
+        mode: home
+        gripper_state: 1.0
+      right: []
+  source_regions:
+  - name: folded_tshirt_0_id9000_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 0.8
+    - 0.27
+    - 0.0
+    size:
+    - 0.9
+    - 0.75
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: folded_scarf_0_id9002_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 0.4875
+    - 0.27
+    - 0.0
+    size:
+    - 1.05
+    - 0.36
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: bedroom_phone_0_id9003_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 3.8
+    - 3.3
+    - 0.0
+    size:
+    - 0.35
+    - 0.45
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: water_glass_0_id9004_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 3.8
+    - 3.435
+    - 0.0
+    size:
+    - 0.35
+    - 0.35
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: glasses_case_0_id9005_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 3.8375
+    - 0.3
+    - 0.0
+    size:
+    - 0.35
+    - 0.48
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: alarm_clock_0_id9006_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 4.0
+    - 0.135
+    - 0.0
+    size:
+    - 0.35
+    - 0.35
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: bedside_book_0_id9007_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 4.0
+    - 0.3563
+    - 0.0
+    size:
+    - 0.48
+    - 0.69
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: tissue_box_0_id9008_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 2.945
+    - 0.37
+    - 0.0
+    size:
+    - 0.66
+    - 0.36
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: hand_cream_0_id9009_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 2.6
+    - 0.2375
+    - 0.0
+    size:
+    - 0.42
+    - 0.35
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: jewelry_tray_0_id9010_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 2.6
+    - 0.37
+    - 0.0
+    size:
+    - 0.6
+    - 0.36
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  - name: bedroom_tablet_0_id9011_candidate_region
+    source_type: rect_on_floor
+    center:
+    - 2.24
+    - 0.37
+    - 0.0
+    size:
+    - 0.54
+    - 0.765
+    height: 0.0
+    sampling:
+      mode: uniform
+      keep_upright: True
+      min_edge_clearance: 0.05
+  source_tasks:
+  - id: bedroom_task_01
+    target: Phone Placement
+    core_objects:
+    - bedroom_phone
+    steps:
+    - navigate right nightstand
+    - grasp phone long sides
+    - place phone in safe center
+    - release
+    success: phone is flat screen up and more than 5cm from nightstand edge
+    available_core_objects:
+    - bedroom_phone
+    missing_core_objects: []
+  - id: bedroom_task_02
+    target: T-shirt to Storage Box
+    core_objects:
+    - folded_tshirt
+    - clothing_storage_box
+    steps:
+    - navigate bed bench
+    - grasp folded T-shirt
+    - move to wardrobe zone
+    - place flat inside clothing storage box
+    - release
+    success: T-shirt is fully inside box and remains folded
+    available_core_objects:
+    - folded_tshirt
+    - clothing_storage_box
+    missing_core_objects: []
+  - id: bedroom_task_03
+    target: Hand Cream to Organizer
+    core_objects:
+    - hand_cream
+    - small_organizer
+    steps:
+    - navigate vanity desk
+    - grasp hand cream tube
+    - lower above organizer on lower shelf
+    - place tube inside organizer
+    - release
+    success: hand cream tube is inside organizer
+    available_core_objects:
+    - hand_cream
+    - small_organizer
+    missing_core_objects: []
+  - id: bedroom_task_04
+    target: Bedside Floor Cleanup
+    core_objects:
+    - sock_roll
+    - clothing_storage_box
+    steps:
+    - navigate bedside rug edge
+    - pick sock roll from floor
+    - move to wardrobe zone
+    - place in clothing storage box
+    - release
+    success: sock roll is inside clothing storage box
+    available_core_objects:
+    - sock_roll
+    - clothing_storage_box
+    missing_core_objects: []
+  - id: bedroom_task_05
+    target: Bedtime Item Arrangement
+    core_objects:
+    - bedside_book
+    - water_glass
+    - alarm_clock
+    steps:
+    - place bedside book on left nightstand center front
+    - grasp water glass from right nightstand
+    - keep upright
+    - check alarm clock is stable on left nightstand back
+    success: book is flat on left nightstand, water glass upright on right, alarm
+      clock stable on left back
+    available_core_objects:
+    - bedside_book
+    - water_glass
+    - alarm_clock
+    missing_core_objects: []

@@ -1,0 +1,107 @@
+name: assets_addition_file_3_arena
+fixtures:
+- name: empty_room
+  path: assets_addition/file_3/empty_room.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_3_bookcase_0_id69
+  path: assets_addition/file_3/assets/arena/file_3__bookcase_0_id69.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_3_bookcase_low_0_id221
+  path: assets_addition/file_3/assets/arena/file_3__bookcase_low_0_id221.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_3_reading_rug_0_id236
+  path: assets_addition/file_3/assets/arena/file_3__reading_rug_0_id236.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_3_sectional_sofa_0_id43
+  path: assets_addition/file_3/assets/arena/file_3__sectional_sofa_0_id43.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_3_tall_bookcase_0_id162
+  path: assets_addition/file_3/assets/arena/file_3__tall_bookcase_0_id162.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_3_twin_bed_frame_0_id201
+  path: assets_addition/file_3/assets/arena/file_3__twin_bed_frame_0_id201.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0

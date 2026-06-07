@@ -193,6 +193,16 @@ tasks:
       update: True
       max_episode_length: 3200
 
+    positions:
+      nav_to_pick:
+        x: -0.08
+        y: -0.72
+        yaw: 1.5707963267948966
+      nav_to_place:
+        x: 0.22
+        y: -0.72
+        yaw: 1.5707963267948966
+
     skills:
       -
         split_aloha:
@@ -202,9 +212,7 @@ tasks:
                 id: nav_to_pick
                 name: navigate
                 depends_on: []
-                goal_x: -0.08
-                goal_y: -0.72
-                goal_yaw: 1.5707963267948966
+                goal: nav_to_pick
                 xy_goal_tolerance: 0.05
                 yaw_goal_tolerance: 0.05
                 startup_timeout_sec: 60.0
@@ -215,9 +223,7 @@ tasks:
                 id: nav_to_place
                 name: navigate
                 depends_on: [pick_object_1, pick_object_2]
-                goal_x: 0.22
-                goal_y: -0.72
-                goal_yaw: 1.5707963267948966
+                goal: nav_to_place
                 xy_goal_tolerance: 0.11
                 yaw_goal_tolerance: 0.10
                 startup_timeout_sec: 60.0

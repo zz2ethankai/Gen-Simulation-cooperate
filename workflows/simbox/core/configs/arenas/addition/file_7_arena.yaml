@@ -1,0 +1,107 @@
+name: assets_addition_file_7_arena
+fixtures:
+- name: empty_room
+  path: assets_addition/file_7/empty_room.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_7_bookcase_tall_1_0_id173
+  path: assets_addition/file_7/assets/arena/file_7__bookcase_tall_1_0_id173.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_7_bookcase_tall_2_0_id173
+  path: assets_addition/file_7/assets/arena/file_7__bookcase_tall_2_0_id173.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_7_low_bookcase_01_0_id97
+  path: assets_addition/file_7/assets/arena/file_7__low_bookcase_01_0_id97.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_7_queen_platform_bed_0_id141
+  path: assets_addition/file_7/assets/arena/file_7__queen_platform_bed_0_id141.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_7_tall_bookcase_left_0_id125
+  path: assets_addition/file_7/assets/arena/file_7__tall_bookcase_left_0_id125.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_7_tall_bookcase_right_0_id130
+  path: assets_addition/file_7/assets/arena/file_7__tall_bookcase_right_0_id130.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0

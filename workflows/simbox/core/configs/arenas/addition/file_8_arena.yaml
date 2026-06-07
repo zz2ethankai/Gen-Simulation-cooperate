@@ -1,0 +1,62 @@
+name: assets_addition_file_8_arena
+fixtures:
+- name: empty_room
+  path: assets_addition/file_8/empty_room.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_8_bookcase_0_id100
+  path: assets_addition/file_8/assets/arena/file_8__bookcase_0_id100.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_8_queen_bed_upholstered_0_id225
+  path: assets_addition/file_8/assets/arena/file_8__queen_bed_upholstered_0_id225.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+- name: file_8_sectional_sofa_0_id72
+  path: assets_addition/file_8/assets/arena/file_8__sectional_sofa_0_id72.usd
+  target_class: GeometryObject
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
