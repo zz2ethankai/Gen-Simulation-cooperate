@@ -318,6 +318,7 @@ class PersistentNav2RuntimeManager:
 
         if self.state == self.STATE_WAITING_FOR_MAP_READY:
             if bridge_state == "ready":
+                self._start_robot_bridge_heading_alignment()
                 bridge_client.publish_goal(
                     request_id=self._request_id,
                     goal_x=self.goal_x,
@@ -447,6 +448,25 @@ class PersistentNav2RuntimeManager:
             return float(get_physics_dt())
         return float(getattr(self.world, "physics_dt", 1.0 / 60.0))
 
+    def _start_robot_bridge_heading_alignment(self):
+        bridge = getattr(self.robot, "_simbox_ros_base_bridge", None)
+        if bridge is None or not hasattr(bridge, "start_heading_alignment"):
+            return
+        follow_path_cfg = (
+            self._base_cfg.get("nav2_skill", {})
+            .get("controller_server", {})
+            .get("follow_path", {})
+        )
+        try:
+            bridge.start_heading_alignment(
+                target_x=float(self.goal_x),
+                target_y=float(self.goal_y),
+                tolerance_rad=float(follow_path_cfg.get("angular_dist_threshold", 0.12)),
+                rotate_vel=float(follow_path_cfg.get("rotate_to_heading_angular_vel", 0.3)),
+            )
+        except Exception:
+            LOGGER.exception("failed to start base heading alignment gate")
+
     def _write_debug_snapshot(self, filename: str, reason: str, message: str):
         self._update_pose_result_fields()
         control_snapshot = runtime_control_debug_snapshot(self.robot)
@@ -472,6 +492,7 @@ class PersistentNav2RuntimeManager:
             "nav_dist": float(self.result.final_nav_distance_to_goal),
             "yaw_err": float(self.result.final_yaw_error_rad),
             "control": control_snapshot,
+            "planning": planning_payload,
             "map_info": dict(self._goal_debug_map_info or self._map_info or {}),
             "params_path": str(self._goal_params_path or self._params_path),
             "stack_id": str(self._stack_id),

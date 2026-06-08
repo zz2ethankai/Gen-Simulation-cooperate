@@ -16,6 +16,7 @@ steering_drive_max_force: 25000.0
 steering_command_sign: -1.0
 body_twist_deadband: 0.0001
 module_speed_deadband: 0.00001
+debug_history_size: 4096
 platform:
   profile: ranger_mini_v3
   nav2:

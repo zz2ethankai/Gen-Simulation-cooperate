@@ -59,6 +59,178 @@ def _normalize_footprint_points(points) -> list[list[float]]:
     return normalized
 
 
+def _build_mppi_follow_path_params(
+    follow_path_cfg: dict,
+    follow_path_plugin: str,
+    *,
+    max_velocity: tuple[float, float, float],
+    min_velocity: tuple[float, float, float],
+    max_accel: tuple[float, float, float],
+    max_decel: tuple[float, float, float],
+) -> dict:
+    return {
+        "plugin": follow_path_plugin,
+        "time_steps": int(follow_path_cfg.get("time_steps", 40)),
+        "model_dt": float(follow_path_cfg.get("model_dt", 0.05)),
+        "batch_size": int(follow_path_cfg.get("batch_size", 1200)),
+        "iteration_count": int(follow_path_cfg.get("iteration_count", 1)),
+        "prune_distance": float(follow_path_cfg.get("prune_distance", 1.8)),
+        "transform_tolerance": float(follow_path_cfg.get("transform_tolerance", 0.3)),
+        "temperature": float(follow_path_cfg.get("temperature", 0.3)),
+        "gamma": float(follow_path_cfg.get("gamma", 0.015)),
+        "motion_model": str(follow_path_cfg.get("motion_model", "Omni")),
+        "open_loop": bool(follow_path_cfg.get("open_loop", False)),
+        "visualize": bool(follow_path_cfg.get("visualize", False)),
+        "regenerate_noises": bool(follow_path_cfg.get("regenerate_noises", False)),
+        "reset_period": float(follow_path_cfg.get("reset_period", 1.0)),
+        "retry_attempt_limit": int(follow_path_cfg.get("retry_attempt_limit", 1)),
+        "vx_max": float(max_velocity[0]),
+        "vx_min": float(min_velocity[0]),
+        "vy_max": float(max_velocity[1]),
+        "vy_min": float(min_velocity[1]),
+        "wz_max": float(max_velocity[2]),
+        "ax_max": float(max_accel[0]),
+        "ax_min": float(max_decel[0]),
+        "ay_max": float(max_accel[1]),
+        "ay_min": float(max_decel[1]),
+        "az_max": float(max_accel[2]),
+        "vx_std": float(follow_path_cfg.get("vx_std", 0.12)),
+        "vy_std": float(follow_path_cfg.get("vy_std", 0.14)),
+        "wz_std": float(follow_path_cfg.get("wz_std", 0.25)),
+        "TrajectoryVisualizer": dict(
+            follow_path_cfg.get(
+                "TrajectoryVisualizer",
+                {
+                    "trajectory_step": 5,
+                    "time_step": 3,
+                },
+            )
+        ),
+        "TrajectoryValidator": dict(
+            follow_path_cfg.get(
+                "TrajectoryValidator",
+                {
+                    "plugin": "mppi::DefaultOptimalTrajectoryValidator",
+                    "collision_lookahead_time": 2.0,
+                    "consider_footprint": True,
+                },
+            )
+        ),
+        "critics": list(
+            follow_path_cfg.get(
+                "critics",
+                [
+                    "ConstraintCritic",
+                    "CostCritic",
+                    "GoalCritic",
+                    "GoalAngleCritic",
+                    "PathAlignCritic",
+                    "PathFollowCritic",
+                    "PathAngleCritic",
+                    "TwirlingCritic",
+                ],
+            )
+        ),
+        "ConstraintCritic": dict(
+            follow_path_cfg.get(
+                "ConstraintCritic",
+                {
+                    "enabled": True,
+                    "cost_power": 1,
+                    "cost_weight": 4.0,
+                },
+            )
+        ),
+        "CostCritic": dict(
+            follow_path_cfg.get(
+                "CostCritic",
+                {
+                    "enabled": True,
+                    "cost_power": 1,
+                    "cost_weight": 3.8,
+                    "critical_cost": 300.0,
+                    "consider_footprint": True,
+                    "collision_cost": 1000000.0,
+                    "near_goal_distance": 0.4,
+                    "trajectory_point_step": 2,
+                },
+            )
+        ),
+        "GoalCritic": dict(
+            follow_path_cfg.get(
+                "GoalCritic",
+                {
+                    "enabled": True,
+                    "cost_power": 1,
+                    "cost_weight": 5.0,
+                    "threshold_to_consider": 1.4,
+                },
+            )
+        ),
+        "GoalAngleCritic": dict(
+            follow_path_cfg.get(
+                "GoalAngleCritic",
+                {
+                    "enabled": True,
+                    "cost_power": 1,
+                    "cost_weight": 3.0,
+                    "threshold_to_consider": 0.4,
+                },
+            )
+        ),
+        "PathAlignCritic": dict(
+            follow_path_cfg.get(
+                "PathAlignCritic",
+                {
+                    "enabled": True,
+                    "cost_power": 1,
+                    "cost_weight": 10.0,
+                    "threshold_to_consider": 0.8,
+                    "offset_from_furthest": 10,
+                    "max_path_occupancy_ratio": 0.2,
+                    "use_path_orientations": True,
+                },
+            )
+        ),
+        "PathFollowCritic": dict(
+            follow_path_cfg.get(
+                "PathFollowCritic",
+                {
+                    "enabled": True,
+                    "cost_power": 1,
+                    "cost_weight": 8.0,
+                    "threshold_to_consider": 1.4,
+                    "offset_from_furthest": 6,
+                },
+            )
+        ),
+        "PathAngleCritic": dict(
+            follow_path_cfg.get(
+                "PathAngleCritic",
+                {
+                    "enabled": True,
+                    "cost_power": 1,
+                    "cost_weight": 3.0,
+                    "threshold_to_consider": 0.8,
+                    "offset_from_furthest": 10,
+                    "max_angle_to_furthest": 0.78539816339,
+                    "mode": 2,
+                },
+            )
+        ),
+        "TwirlingCritic": dict(
+            follow_path_cfg.get(
+                "TwirlingCritic",
+                {
+                    "enabled": True,
+                    "cost_power": 1,
+                    "cost_weight": 8.0,
+                },
+            )
+        ),
+    }
+
+
 def configure_base_cfg_for_nav2_skill(
     base_cfg: dict,
     *,
@@ -400,167 +572,40 @@ def _build_nav2_params(
             "RotateToGoal.lookahead_time": float(follow_path_cfg.get("RotateToGoal.lookahead_time", -1.0)),
         }
     elif follow_path_plugin == "nav2_mppi_controller::MPPIController":
-        follow_path_params = {
-            "plugin": follow_path_plugin,
-            "time_steps": int(follow_path_cfg.get("time_steps", 40)),
-            "model_dt": float(follow_path_cfg.get("model_dt", 0.05)),
-            "batch_size": int(follow_path_cfg.get("batch_size", 1200)),
-            "iteration_count": int(follow_path_cfg.get("iteration_count", 1)),
-            "prune_distance": float(follow_path_cfg.get("prune_distance", 1.8)),
-            "transform_tolerance": float(follow_path_cfg.get("transform_tolerance", 0.3)),
-            "temperature": float(follow_path_cfg.get("temperature", 0.3)),
-            "gamma": float(follow_path_cfg.get("gamma", 0.015)),
-            "motion_model": str(follow_path_cfg.get("motion_model", "Omni")),
-            "open_loop": bool(follow_path_cfg.get("open_loop", False)),
-            "visualize": bool(follow_path_cfg.get("visualize", False)),
-            "regenerate_noises": bool(follow_path_cfg.get("regenerate_noises", False)),
-            "reset_period": float(follow_path_cfg.get("reset_period", 1.0)),
-            "retry_attempt_limit": int(follow_path_cfg.get("retry_attempt_limit", 1)),
-            "vx_max": float(max_velocity[0]),
-            "vx_min": float(min_velocity[0]),
-            "vy_max": float(max_velocity[1]),
-            "vy_min": float(min_velocity[1]),
-            "wz_max": float(max_velocity[2]),
-            "ax_max": float(max_accel[0]),
-            "ax_min": float(max_decel[0]),
-            "ay_max": float(max_accel[1]),
-            "ay_min": float(max_decel[1]),
-            "az_max": float(max_accel[2]),
-            "vx_std": float(follow_path_cfg.get("vx_std", 0.12)),
-            "vy_std": float(follow_path_cfg.get("vy_std", 0.14)),
-            "wz_std": float(follow_path_cfg.get("wz_std", 0.25)),
-            "TrajectoryVisualizer": dict(
-                follow_path_cfg.get(
-                    "TrajectoryVisualizer",
-                    {
-                        "trajectory_step": 5,
-                        "time_step": 3,
-                    },
-                )
-            ),
-            "TrajectoryValidator": dict(
-                follow_path_cfg.get(
-                    "TrajectoryValidator",
-                    {
-                        "plugin": "mppi::DefaultOptimalTrajectoryValidator",
-                        "collision_lookahead_time": 2.0,
-                        "consider_footprint": True,
-                    },
-                )
-            ),
-            "critics": list(
-                follow_path_cfg.get(
-                    "critics",
-                    [
-                        "ConstraintCritic",
-                        "CostCritic",
-                        "GoalCritic",
-                        "GoalAngleCritic",
-                        "PathAlignCritic",
-                        "PathFollowCritic",
-                        "PathAngleCritic",
-                        "TwirlingCritic",
-                    ],
-                )
-            ),
-            "ConstraintCritic": dict(
-                follow_path_cfg.get(
-                    "ConstraintCritic",
-                    {
-                        "enabled": True,
-                        "cost_power": 1,
-                        "cost_weight": 4.0,
-                    },
-                )
-            ),
-            "CostCritic": dict(
-                follow_path_cfg.get(
-                    "CostCritic",
-                    {
-                        "enabled": True,
-                        "cost_power": 1,
-                        "cost_weight": 3.8,
-                        "critical_cost": 300.0,
-                        "consider_footprint": True,
-                        "collision_cost": 1000000.0,
-                        "near_goal_distance": 0.4,
-                        "trajectory_point_step": 2,
-                    },
-                )
-            ),
-            "GoalCritic": dict(
-                follow_path_cfg.get(
-                    "GoalCritic",
-                    {
-                        "enabled": True,
-                        "cost_power": 1,
-                        "cost_weight": 5.0,
-                        "threshold_to_consider": 1.4,
-                    },
-                )
-            ),
-            "GoalAngleCritic": dict(
-                follow_path_cfg.get(
-                    "GoalAngleCritic",
-                    {
-                        "enabled": True,
-                        "cost_power": 1,
-                        "cost_weight": 3.0,
-                        "threshold_to_consider": 0.4,
-                    },
-                )
-            ),
-            "PathAlignCritic": dict(
-                follow_path_cfg.get(
-                    "PathAlignCritic",
-                    {
-                        "enabled": True,
-                        "cost_power": 1,
-                        "cost_weight": 10.0,
-                        "threshold_to_consider": 0.8,
-                        "offset_from_furthest": 10,
-                        "max_path_occupancy_ratio": 0.2,
-                        "use_path_orientations": True,
-                    },
-                )
-            ),
-            "PathFollowCritic": dict(
-                follow_path_cfg.get(
-                    "PathFollowCritic",
-                    {
-                        "enabled": True,
-                        "cost_power": 1,
-                        "cost_weight": 8.0,
-                        "threshold_to_consider": 1.4,
-                        "offset_from_furthest": 6,
-                    },
-                )
-            ),
-            "PathAngleCritic": dict(
-                follow_path_cfg.get(
-                    "PathAngleCritic",
-                    {
-                        "enabled": True,
-                        "cost_power": 1,
-                        "cost_weight": 3.0,
-                        "threshold_to_consider": 0.8,
-                        "offset_from_furthest": 10,
-                        "max_angle_to_furthest": 0.78539816339,
-                        "mode": 2,
-                    },
-                )
-            ),
-            "TwirlingCritic": dict(
-                follow_path_cfg.get(
-                    "TwirlingCritic",
-                    {
-                        "enabled": True,
-                        "cost_power": 1,
-                        "cost_weight": 8.0,
-                    },
-                )
-            ),
-        }
+        follow_path_params = _build_mppi_follow_path_params(
+            follow_path_cfg,
+            follow_path_plugin,
+            max_velocity=max_velocity,
+            min_velocity=min_velocity,
+            max_accel=max_accel,
+            max_decel=max_decel,
+        )
+    elif follow_path_plugin == "nav2_rotation_shim_controller::RotationShimController":
+        primary_controller = str(
+            follow_path_cfg.get("primary_controller", "nav2_mppi_controller::MPPIController")
+        )
+        follow_path_params = _build_mppi_follow_path_params(
+            follow_path_cfg,
+            primary_controller,
+            max_velocity=max_velocity,
+            min_velocity=min_velocity,
+            max_accel=max_accel,
+            max_decel=max_decel,
+        )
+        follow_path_params.update(
+            {
+                "plugin": follow_path_plugin,
+                "primary_controller": primary_controller,
+                "angular_dist_threshold": float(follow_path_cfg.get("angular_dist_threshold", 0.35)),
+                "forward_sampling_distance": float(follow_path_cfg.get("forward_sampling_distance", 0.5)),
+                "rotate_to_heading_angular_vel": float(
+                    follow_path_cfg.get("rotate_to_heading_angular_vel", 0.3)
+                ),
+                "max_angular_accel": float(follow_path_cfg.get("max_angular_accel", max_accel[2])),
+                "simulate_ahead_time": float(follow_path_cfg.get("simulate_ahead_time", 1.0)),
+                "rotate_to_goal_heading": bool(follow_path_cfg.get("rotate_to_goal_heading", True)),
+            }
+        )
     else:
         follow_path_params = {"plugin": follow_path_plugin}
     hard_limit_override_keys = {

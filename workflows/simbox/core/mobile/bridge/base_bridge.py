@@ -83,6 +83,10 @@ class BaseBridge(ABC):
         self._last_requested_wheel_velocities = np.zeros(wheel_count, dtype=np.float32)
         self._last_step_time_sec = now_sec
         self._last_step_dt = 1e-3
+        self._heading_gate_enabled = False
+        self._heading_gate_target_yaw = 0.0
+        self._heading_gate_tolerance_rad = 0.0
+        self._heading_gate_rotate_vel = 0.0
 
         history_size = max(int(self.base_cfg.get("debug_history_size", 256)), 1)
         self._received_cmd_vel_count = 0
@@ -143,6 +147,7 @@ class BaseBridge(ABC):
             "angular_z": 0.0,
             "received_time_sec": float(now_sec),
         }
+        self._heading_gate_enabled = False
 
         if clear_debug_history:
             self._received_cmd_vel_count = 0
@@ -166,6 +171,25 @@ class BaseBridge(ABC):
         self._publish_odometry()
         rclpy.spin_once(self.node, timeout_sec=0.0)
 
+    def start_heading_alignment(
+        self,
+        *,
+        target_x: float,
+        target_y: float,
+        tolerance_rad: float = 0.12,
+        rotate_vel: float = 0.3,
+    ):
+        translation, _orientation = self._get_robot_base_pose()
+        dx = float(target_x) - float(translation[0])
+        dy = float(target_y) - float(translation[1])
+        if math.hypot(dx, dy) <= 1.0e-6:
+            self._heading_gate_enabled = False
+            return
+        self._heading_gate_target_yaw = math.atan2(dy, dx)
+        self._heading_gate_tolerance_rad = max(float(tolerance_rad), 0.0)
+        self._heading_gate_rotate_vel = abs(float(rotate_vel))
+        self._heading_gate_enabled = self._heading_gate_rotate_vel > 0.0
+
     def step(self, step_dt: float | None = None):
         self._spin_available_callbacks()
         now_sec = self._now_sec()
@@ -176,7 +200,7 @@ class BaseBridge(ABC):
         self._last_step_time_sec = now_sec
         self._last_step_dt = dt
 
-        command = self._resolve_active_command(now_sec)
+        command = self._apply_heading_gate(self._resolve_active_command(now_sec), now_sec)
         self._last_step_command = command
         requested_steering, wheel_velocities = self._map_command(command)
         self._last_requested_steering = requested_steering.astype(np.float32).copy()
@@ -197,6 +221,21 @@ class BaseBridge(ABC):
             dt=dt,
         )
         rclpy.spin_once(self.node, timeout_sec=0.0)
+
+    def _apply_heading_gate(self, command: BaseCommand, now_sec: float) -> BaseCommand:
+        if not self._heading_gate_enabled:
+            return command
+        _translation, orientation = self._get_robot_base_pose()
+        yaw = float(self._yaw_from_wxyz(orientation))
+        yaw_error = math.atan2(
+            math.sin(self._heading_gate_target_yaw - yaw),
+            math.cos(self._heading_gate_target_yaw - yaw),
+        )
+        if abs(yaw_error) <= self._heading_gate_tolerance_rad:
+            self._heading_gate_enabled = False
+            return command
+        rotate_vel = math.copysign(self._heading_gate_rotate_vel, yaw_error)
+        return BaseCommand(vx_body=0.0, vy_body=0.0, wz_body=rotate_vel, received_time_sec=float(now_sec))
 
     def _on_cmd_vel(self, msg: Twist):
         received_time_sec = self._now_sec()

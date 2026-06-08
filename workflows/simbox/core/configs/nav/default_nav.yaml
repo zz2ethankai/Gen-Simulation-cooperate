@@ -33,7 +33,7 @@ nav2_skill:
     max_planning_time: 2.0
     cost_travel_multiplier: 2.0
   controller_server:
-    controller_frequency: 20.0
+    controller_frequency: 30.0
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.001
     min_theta_velocity_threshold: 0.001
@@ -48,9 +48,17 @@ nav2_skill:
       xy_goal_tolerance: 0.06
       yaw_goal_tolerance: 0.06
     follow_path:
-      plugin: nav2_mppi_controller::MPPIController
-      time_steps: 40
-      model_dt: 0.05
+      plugin: nav2_rotation_shim_controller::RotationShimController
+      primary_controller: nav2_mppi_controller::MPPIController
+      angular_dist_threshold: 0.35
+      forward_sampling_distance: 0.5
+      rotate_to_heading_angular_vel: 0.3
+      max_angular_accel: 0.7
+      simulate_ahead_time: 1.0
+      rotate_to_goal_heading: true
+      closed_loop: true
+      time_steps: 60
+      model_dt: 0.03333333333333333
       batch_size: 1200
       iteration_count: 1
       prune_distance: 1.8
@@ -169,7 +177,7 @@ nav2_skill:
     min_rotational_vel: 0.1
     rotational_acc_lim: 1.0
   velocity_smoother:
-    smoothing_frequency: 20.0
+    smoothing_frequency: 30.0
     scale_velocities: false
     feedback: CLOSED_LOOP
     odom_duration: 0.1
