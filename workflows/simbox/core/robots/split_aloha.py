@@ -249,8 +249,6 @@ class SplitAloha(TemplateRobot):
             if not drive_api.GetTargetVelocityAttr().HasAuthoredValue():
                 drive_api.GetTargetVelocityAttr().Set(0.0)
 
-        self._setup_mobile_support_joint_indices()
-
         for joint_path in self._steering_joint_paths:
             prim = get_prim_at_path(joint_path)
             if not prim.IsValid():
@@ -274,8 +272,11 @@ class SplitAloha(TemplateRobot):
             drive_api.GetMaxForceAttr().Set(wheel_drive_max_force)
 
     def _setup_mobile_support_joint_indices(self):
-        dof_names = list(getattr(self._articulation_view, "dof_names", []))
+        raw_dof_names = getattr(self._articulation_view, "dof_names", None)
         self._mobile_support_joint_indices = []
+        if raw_dof_names is None:
+            return
+        dof_names = list(raw_dof_names)
         for joint_path, _drive_type in self._mobile_support_joint_paths:
             joint_name = os.path.basename(joint_path)
             if joint_name in dof_names:
