@@ -8,7 +8,7 @@ Subclasses implement _get_default_ignore_substring() and _configure_joint_indice
 import random
 import time
 from copy import deepcopy
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -471,6 +471,57 @@ class TemplateController(BaseController):
     def open_gripper(self):
         self._gripper_state = 1.0
 
+    def _get_curobo_world_object_names(self) -> List[str]:
+        if self.motion_gen is not None:
+            world_model = getattr(self.motion_gen, "world_model", None)
+            objects = getattr(world_model, "objects", None)
+            if objects is not None:
+                return [obj.name for obj in objects]
+
+        objects = getattr(self.world_cfg, "objects", None)
+        if objects is not None:
+            return [obj.name for obj in objects]
+        return []
+
+    @staticmethod
+    def _select_attach_descendants(object_names: List[str]) -> List[str]:
+        visual_names = [name for name in object_names if "/visual" in name or name.endswith("/visual")]
+        if visual_names:
+            return visual_names[:1]
+
+        collision_names = [name for name in object_names if "/collisions/" in name or name.endswith("/collisions")]
+        if collision_names:
+            return collision_names[:1]
+
+        return object_names
+
+    def _resolve_attach_object_names(self, obj_prim_path) -> Tuple[List[str], List[str]]:
+        requested_names = obj_prim_path if isinstance(obj_prim_path, (list, tuple)) else [obj_prim_path]
+        world_object_names = self._get_curobo_world_object_names()
+        world_object_set = set(world_object_names)
+
+        resolved_names = []
+        disabled_names = []
+        for requested_name in requested_names:
+            if requested_name in world_object_set:
+                candidates = [requested_name]
+                descendants = []
+            else:
+                prefix = requested_name.rstrip("/") + "/"
+                descendants = [name for name in world_object_names if name.startswith(prefix)]
+                candidates = self._select_attach_descendants(descendants)
+                if not candidates:
+                    candidates = [requested_name]
+
+            for candidate in candidates:
+                if candidate not in resolved_names:
+                    resolved_names.append(candidate)
+            for descendant in descendants:
+                if descendant not in resolved_names and descendant not in disabled_names:
+                    disabled_names.append(descendant)
+
+        return resolved_names, disabled_names
+
     def attach_obj(self, obj_prim_path: str, link_name="attached_object"):
         sim_js = self.robot.get_joints_state()
         js_names = self.robot.dof_names
@@ -481,13 +532,16 @@ class TemplateController(BaseController):
             jerk=self.tensor_args.to_device(sim_js.velocities) * 0.0,
             joint_names=js_names,
         )
+        object_names, disabled_names = self._resolve_attach_object_names(obj_prim_path)
         self.motion_gen.attach_objects_to_robot(
             cu_js,
-            [obj_prim_path],
+            object_names,
             link_name=link_name,
             sphere_fit_type=SphereFitType.VOXEL_VOLUME_SAMPLE_SURFACE,
             world_objects_pose_offset=Pose.from_list([0, 0, 0.01, 1, 0, 0, 0], self.tensor_args),
         )
+        for object_name in disabled_names:
+            self.motion_gen.world_coll_checker.enable_obstacle(enable=False, name=object_name)
 
     def detach_obj(self):
         self.motion_gen.detach_object_from_robot()
