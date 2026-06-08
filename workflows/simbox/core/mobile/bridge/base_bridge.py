@@ -171,6 +171,23 @@ class BaseBridge(ABC):
         self._publish_odometry()
         rclpy.spin_once(self.node, timeout_sec=0.0)
 
+    def prepare_for_navigation(self):
+        unlock_fn = getattr(self.robot, "unlock_mobile_base_for_navigation", None)
+        if callable(unlock_fn):
+            unlock_fn()
+
+    def finalize_after_navigation(self):
+        self.reset(clear_debug_history=False)
+        lock_fn = getattr(self.robot, "lock_mobile_base_after_navigation", None)
+        if callable(lock_fn):
+            lock_fn()
+        self._last_applied_steering = np.zeros_like(self._last_applied_steering)
+        self._last_requested_steering = np.zeros_like(self._last_requested_steering)
+        self._last_requested_wheel_velocities = np.zeros_like(self._last_requested_wheel_velocities)
+        self._publish_joint_state()
+        self._publish_odometry()
+        rclpy.spin_once(self.node, timeout_sec=0.0)
+
     def start_heading_alignment(
         self,
         *,

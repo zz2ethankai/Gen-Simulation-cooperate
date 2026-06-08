@@ -271,13 +271,14 @@ class PersistentNav2RuntimeManager:
         if previous_request_id:
             bridge_client.cancel_request(previous_request_id)
         self._reset_robot_bridge_state(clear_debug_history=True)
+        self._prepare_robot_bridge_for_navigation()
         self._prepare_stack_artifacts()
         self._freeze_goal_debug_artifacts()
         self.state = self.STATE_WAITING_FOR_STACK_READY
         self._startup_deadline = time_monotonic() + self.startup_timeout_sec
 
     def prepare_for_reset(self):
-        self._reset_robot_bridge_state(clear_debug_history=False)
+        self._finalize_robot_bridge_after_navigation()
         if self._bridge_client is not None:
             try:
                 self._bridge_client.publish_reset()
@@ -387,7 +388,7 @@ class PersistentNav2RuntimeManager:
                     message=success_message,
                     control_snapshot=success_snapshot.get("control", {}),
                 )
-                self._reset_robot_bridge_state(clear_debug_history=False)
+                self._finalize_robot_bridge_after_navigation()
                 return
             if time_monotonic() >= float(self._post_success_deadline):
                 self._fail(
@@ -412,7 +413,7 @@ class PersistentNav2RuntimeManager:
                 )
             except Exception:
                 LOGGER.exception("failed to write nav2 shutdown snapshot")
-        self._reset_robot_bridge_state(clear_debug_history=False)
+        self._finalize_robot_bridge_after_navigation()
         if self._bridge_client is not None:
             try:
                 self._bridge_client.destroy()
@@ -617,7 +618,7 @@ class PersistentNav2RuntimeManager:
             control_snapshot=control_snapshot,
         )
         self.state = self.STATE_FAILED
-        self._reset_robot_bridge_state(clear_debug_history=False)
+        self._finalize_robot_bridge_after_navigation()
 
     def _reset_robot_bridge_state(self, *, clear_debug_history: bool):
         bridge = getattr(self.robot, "_simbox_ros_base_bridge", None)
@@ -631,6 +632,29 @@ class PersistentNav2RuntimeManager:
                 getattr(self.robot, "name", "robot"),
                 clear_debug_history,
             )
+
+    def _prepare_robot_bridge_for_navigation(self):
+        bridge = getattr(self.robot, "_simbox_ros_base_bridge", None)
+        prepare_fn = getattr(bridge, "prepare_for_navigation", None)
+        if not callable(prepare_fn):
+            return
+        try:
+            prepare_fn()
+        except Exception:
+            LOGGER.exception("failed to prepare base bridge for navigation")
+
+    def _finalize_robot_bridge_after_navigation(self):
+        bridge = getattr(self.robot, "_simbox_ros_base_bridge", None)
+        if bridge is None:
+            return
+        finalize_fn = getattr(bridge, "finalize_after_navigation", None)
+        if callable(finalize_fn):
+            try:
+                finalize_fn()
+                return
+            except Exception:
+                LOGGER.exception("failed to finalize base bridge after navigation")
+        self._reset_robot_bridge_state(clear_debug_history=False)
 
     def _update_pose_result_fields(self):
         world_translation, world_orientation = self.robot.get_mobile_base_pose()

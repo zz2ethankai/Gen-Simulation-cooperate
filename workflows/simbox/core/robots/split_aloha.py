@@ -21,6 +21,7 @@ class SplitAloha(TemplateRobot):
         self.base_wheel_joint_names = []
         self.base_steering_joint_indices = []
         self.base_wheel_joint_indices = []
+        self._base_initial_steering_positions = None
         self.mobile_base_prim_path = None
         self._mobile_support_joint_paths = []
         self._mobile_support_body_paths = []
@@ -29,6 +30,8 @@ class SplitAloha(TemplateRobot):
         self._wheel_physics_material_path = None
         self._wheel_joint_paths = []
         self._steering_joint_paths = []
+        self._mobile_support_joint_indices = []
+        self._mobile_support_lock_targets = []
         super().__init__(*args, **kwargs)
         self.base_cfg = deepcopy(self.cfg.get("base", {}))
         self.base_steering_joint_names = list(self.base_cfg.get("steering_joint_names", []))
@@ -88,11 +91,22 @@ class SplitAloha(TemplateRobot):
     def initialize(self, *args, **kwargs):
         super().initialize(*args, **kwargs)
         self._setup_base_joint_indices()
+        self._capture_base_initial_steering_positions()
 
     def _setup_base_joint_indices(self):
         dof_names = list(self._articulation_view.dof_names)
         self.base_steering_joint_indices = [dof_names.index(name) for name in self.base_steering_joint_names]
         self.base_wheel_joint_indices = [dof_names.index(name) for name in self.base_wheel_joint_names]
+
+    def _capture_base_initial_steering_positions(self):
+        if not self.base_steering_joint_indices:
+            self._base_initial_steering_positions = np.zeros(0, dtype=np.float32)
+            return
+        joint_positions = self._articulation_view.get_joint_positions()[0]
+        self._base_initial_steering_positions = np.asarray(
+            joint_positions[self.base_steering_joint_indices],
+            dtype=np.float32,
+        ).copy()
 
     def _setup_mobile_base_interface(self):
         mobile_root = os.path.dirname(os.path.dirname(self.fl_base_path))
@@ -235,6 +249,8 @@ class SplitAloha(TemplateRobot):
             if not drive_api.GetTargetVelocityAttr().HasAuthoredValue():
                 drive_api.GetTargetVelocityAttr().Set(0.0)
 
+        self._setup_mobile_support_joint_indices()
+
         for joint_path in self._steering_joint_paths:
             prim = get_prim_at_path(joint_path)
             if not prim.IsValid():
@@ -256,6 +272,71 @@ class SplitAloha(TemplateRobot):
             drive_api.GetStiffnessAttr().Set(wheel_drive_stiffness)
             drive_api.GetDampingAttr().Set(wheel_drive_damping)
             drive_api.GetMaxForceAttr().Set(wheel_drive_max_force)
+
+    def _setup_mobile_support_joint_indices(self):
+        dof_names = list(getattr(self._articulation_view, "dof_names", []))
+        self._mobile_support_joint_indices = []
+        for joint_path, _drive_type in self._mobile_support_joint_paths:
+            joint_name = os.path.basename(joint_path)
+            if joint_name in dof_names:
+                self._mobile_support_joint_indices.append(dof_names.index(joint_name))
+
+    def _set_mobile_support_drive(self, *, locked: bool):
+        try:
+            from pxr import UsdPhysics  # pylint: disable=import-outside-toplevel
+        except ImportError:
+            return
+
+        stiffness = float(self.base_cfg.get("support_lock_stiffness", 1.0e8)) if locked else 0.0
+        damping = float(self.base_cfg.get("support_lock_damping", 1.0e6)) if locked else 0.0
+        max_force = float(self.base_cfg.get("support_lock_max_force", 1.0e8)) if locked else 0.0
+        for joint_path, drive_type in self._mobile_support_joint_paths:
+            prim = get_prim_at_path(joint_path)
+            if not prim.IsValid():
+                continue
+            drive_api = UsdPhysics.DriveAPI.Get(prim, drive_type)
+            if not drive_api:
+                continue
+            drive_api.GetStiffnessAttr().Set(stiffness)
+            drive_api.GetDampingAttr().Set(damping)
+            drive_api.GetMaxForceAttr().Set(max_force)
+
+    def unlock_mobile_base_for_navigation(self):
+        self._set_mobile_support_drive(locked=False)
+
+    def lock_mobile_base_after_navigation(self):
+        if self._base_initial_steering_positions is None:
+            self._capture_base_initial_steering_positions()
+        steering_positions = np.asarray(self._base_initial_steering_positions, dtype=np.float32).copy()
+        wheel_velocities = np.zeros(len(self.base_wheel_joint_indices), dtype=np.float32)
+        if self.base_steering_joint_indices:
+            self._articulation_view.set_joint_positions(
+                steering_positions.reshape(1, -1),
+                joint_indices=np.array(self.base_steering_joint_indices, dtype=np.int32),
+            )
+        if self.base_wheel_joint_indices:
+            self._articulation_view.set_joint_velocity_targets(
+                wheel_velocities.reshape(1, -1),
+                joint_indices=np.array(self.base_wheel_joint_indices, dtype=np.int32),
+            )
+        if self.base_steering_joint_indices or self.base_wheel_joint_indices:
+            self.apply_base_command(steering_positions=steering_positions, wheel_velocities=wheel_velocities)
+
+        if not self._mobile_support_joint_indices:
+            self._setup_mobile_support_joint_indices()
+        if self._mobile_support_joint_indices:
+            current_positions = self._articulation_view.get_joint_positions()[0]
+            support_indices = np.array(self._mobile_support_joint_indices, dtype=np.int32)
+            self._mobile_support_lock_targets = current_positions[support_indices].copy()
+            self._articulation_view.set_joint_position_targets(
+                self._mobile_support_lock_targets.reshape(1, -1),
+                joint_indices=support_indices,
+            )
+            self._articulation_view.set_joint_velocities(
+                np.zeros((1, len(support_indices)), dtype=np.float32),
+                joint_indices=support_indices,
+            )
+        self._set_mobile_support_drive(locked=True)
 
     @staticmethod
     def _is_finite_scalar(value):
