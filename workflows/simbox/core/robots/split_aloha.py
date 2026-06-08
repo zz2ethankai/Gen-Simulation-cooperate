@@ -91,6 +91,7 @@ class SplitAloha(TemplateRobot):
     def initialize(self, *args, **kwargs):
         super().initialize(*args, **kwargs)
         self._setup_base_joint_indices()
+        self._setup_mobile_support_joint_indices()
         self._capture_base_initial_steering_positions()
 
     def _setup_base_joint_indices(self):
@@ -281,6 +282,11 @@ class SplitAloha(TemplateRobot):
             joint_name = os.path.basename(joint_path)
             if joint_name in dof_names:
                 self._mobile_support_joint_indices.append(dof_names.index(joint_name))
+                continue
+            for index, dof_name in enumerate(dof_names):
+                if str(dof_name).endswith("/" + joint_name):
+                    self._mobile_support_joint_indices.append(index)
+                    break
 
     def _set_mobile_support_drive(self, *, locked: bool):
         try:
@@ -325,18 +331,26 @@ class SplitAloha(TemplateRobot):
 
         if not self._mobile_support_joint_indices:
             self._setup_mobile_support_joint_indices()
-        if self._mobile_support_joint_indices:
-            current_positions = self._articulation_view.get_joint_positions()[0]
-            support_indices = np.array(self._mobile_support_joint_indices, dtype=np.int32)
-            self._mobile_support_lock_targets = current_positions[support_indices].copy()
-            self._articulation_view.set_joint_position_targets(
-                self._mobile_support_lock_targets.reshape(1, -1),
-                joint_indices=support_indices,
-            )
-            self._articulation_view.set_joint_velocities(
-                np.zeros((1, len(support_indices)), dtype=np.float32),
-                joint_indices=support_indices,
-            )
+        if not self._mobile_support_joint_indices:
+            self._set_mobile_support_drive(locked=False)
+            return
+
+        current_positions = self._articulation_view.get_joint_positions()[0]
+        support_indices = np.array(self._mobile_support_joint_indices, dtype=np.int32)
+        self._mobile_support_lock_targets = current_positions[support_indices].copy()
+        lock_targets = self._mobile_support_lock_targets.reshape(1, -1)
+        self._articulation_view.set_joint_positions(
+            lock_targets,
+            joint_indices=support_indices,
+        )
+        self._articulation_view.set_joint_position_targets(
+            lock_targets,
+            joint_indices=support_indices,
+        )
+        self._articulation_view.set_joint_velocities(
+            np.zeros((1, len(support_indices)), dtype=np.float32),
+            joint_indices=support_indices,
+        )
         self._set_mobile_support_drive(locked=True)
 
     @staticmethod
