@@ -23,21 +23,17 @@ class SplitAloha(TemplateRobot):
         self.base_wheel_joint_indices = []
         self._base_initial_steering_positions = None
         self.mobile_base_prim_path = None
-        self._mobile_support_joint_paths = []
-        self._mobile_support_body_paths = []
         self._wheel_collision_paths = []
         self._disabled_collision_paths = []
         self._wheel_physics_material_path = None
         self._wheel_joint_paths = []
         self._steering_joint_paths = []
-        self._mobile_support_joint_indices = []
-        self._mobile_support_lock_targets = []
         super().__init__(*args, **kwargs)
         self.base_cfg = deepcopy(self.cfg.get("base", {}))
         self.base_steering_joint_names = list(self.base_cfg.get("steering_joint_names", []))
         self.base_wheel_joint_names = list(self.base_cfg.get("wheel_joint_names", []))
         self._setup_mobile_base_interface()
-        self._configure_mobile_support_joints_for_physical_drive()
+        self._configure_mobile_base_wheel_drives()
 
     def _setup_joint_indices(self):
         self.left_joint_indices = self.cfg["left_joint_indices"]
@@ -91,7 +87,6 @@ class SplitAloha(TemplateRobot):
     def initialize(self, *args, **kwargs):
         super().initialize(*args, **kwargs)
         self._setup_base_joint_indices()
-        self._setup_mobile_support_joint_indices()
         self._capture_base_initial_steering_positions()
 
     def _setup_base_joint_indices(self):
@@ -118,16 +113,6 @@ class SplitAloha(TemplateRobot):
         else:
             self.mobile_base_prim_path = None
 
-        self._mobile_support_joint_paths = [
-            (f"{mobile_root}/dummy_base_x/mobile_translate_x", "linear"),
-            (f"{mobile_root}/dummy_base_y/mobile_translate_y", "linear"),
-            (f"{mobile_root}/dummy_base_rotate/mobile_rotate", "angular"),
-        ]
-        self._mobile_support_body_paths = [
-            f"{mobile_root}/dummy_base_x",
-            f"{mobile_root}/dummy_base_y",
-            f"{mobile_root}/dummy_base_rotate",
-        ]
         # Only keep the real wheel collision geometry in the physical drive path.
         # Steering support / fork geometry can easily catch the floor or low obstacles
         # and destabilize the base when we are trying to validate wheel-ground contact.
@@ -152,9 +137,9 @@ class SplitAloha(TemplateRobot):
         ]
         self._steering_joint_paths = [f"{mobile_root}/{base_frame}/{joint_name}" for joint_name in self.base_steering_joint_names]
 
-    def _configure_mobile_support_joints_for_physical_drive(self):
+    def _configure_mobile_base_wheel_drives(self):
         try:
-            from pxr import Gf, UsdPhysics  # pylint: disable=import-outside-toplevel
+            from pxr import UsdPhysics  # pylint: disable=import-outside-toplevel
             from omni.physx.scripts import physicsUtils, utils  # pylint: disable=import-outside-toplevel
         except ImportError:
             return
@@ -194,62 +179,6 @@ class SplitAloha(TemplateRobot):
             collision_api = UsdPhysics.CollisionAPI.Apply(prim)
             collision_api.CreateCollisionEnabledAttr().Set(False)
 
-        for body_path in self._mobile_support_body_paths:
-            prim = get_prim_at_path(body_path)
-            if not prim.IsValid():
-                continue
-            mass_api = UsdPhysics.MassAPI.Apply(prim)
-            mass_attr = mass_api.GetMassAttr()
-            mass_value = mass_attr.Get() if mass_attr.HasAuthoredValue() else None
-            if mass_value is None or not self._is_finite_scalar(mass_value) or float(mass_value) <= 0.0:
-                self._set_or_create_attr(mass_attr, 0.5, mass_api.CreateMassAttr)
-            inertia_attr = mass_api.GetDiagonalInertiaAttr()
-            inertia_value = inertia_attr.Get() if inertia_attr.HasAuthoredValue() else None
-            if not self._is_finite_vec3(inertia_value) or any(float(component) <= 0.0 for component in inertia_value):
-                self._set_or_create_attr(
-                    inertia_attr,
-                    Gf.Vec3f(0.01, 0.01, 0.01),
-                    mass_api.CreateDiagonalInertiaAttr,
-                )
-            com_attr = mass_api.GetCenterOfMassAttr()
-            com_value = com_attr.Get() if com_attr.HasAuthoredValue() else None
-            if not self._is_finite_vec3(com_value):
-                self._set_or_create_attr(
-                    com_attr,
-                    Gf.Vec3f(0.0, 0.0, 0.0),
-                    mass_api.CreateCenterOfMassAttr,
-                )
-            axes_attr = mass_api.GetPrincipalAxesAttr()
-            axes_value = axes_attr.Get() if axes_attr.HasAuthoredValue() else None
-            if not self._is_finite_quat(axes_value):
-                self._set_or_create_attr(
-                    axes_attr,
-                    Gf.Quatf(1.0, 0.0, 0.0, 0.0),
-                    mass_api.CreatePrincipalAxesAttr,
-                )
-
-        for joint_path, drive_type in self._mobile_support_joint_paths:
-            prim = get_prim_at_path(joint_path)
-            if not prim.IsValid():
-                continue
-            drive_api = UsdPhysics.DriveAPI.Get(prim, drive_type)
-            if not drive_api:
-                continue
-            if drive_api.GetStiffnessAttr().HasAuthoredValue():
-                drive_api.GetStiffnessAttr().Set(float(drive_api.GetStiffnessAttr().Get()))
-            else:
-                drive_api.GetStiffnessAttr().Set(0.0)
-            if drive_api.GetDampingAttr().HasAuthoredValue():
-                drive_api.GetDampingAttr().Set(float(drive_api.GetDampingAttr().Get()))
-            else:
-                drive_api.GetDampingAttr().Set(0.0)
-            if drive_api.GetMaxForceAttr().HasAuthoredValue():
-                drive_api.GetMaxForceAttr().Set(float(drive_api.GetMaxForceAttr().Get()))
-            else:
-                drive_api.GetMaxForceAttr().Set(0.0)
-            if not drive_api.GetTargetVelocityAttr().HasAuthoredValue():
-                drive_api.GetTargetVelocityAttr().Set(0.0)
-
         for joint_path in self._steering_joint_paths:
             prim = get_prim_at_path(joint_path)
             if not prim.IsValid():
@@ -272,86 +201,10 @@ class SplitAloha(TemplateRobot):
             drive_api.GetDampingAttr().Set(wheel_drive_damping)
             drive_api.GetMaxForceAttr().Set(wheel_drive_max_force)
 
-    def _setup_mobile_support_joint_indices(self):
-        raw_dof_names = getattr(self._articulation_view, "dof_names", None)
-        self._mobile_support_joint_indices = []
-        if raw_dof_names is None:
-            return
-        dof_names = list(raw_dof_names)
-        for joint_path, _drive_type in self._mobile_support_joint_paths:
-            joint_name = os.path.basename(joint_path)
-            if joint_name in dof_names:
-                self._mobile_support_joint_indices.append(dof_names.index(joint_name))
-                continue
-            for index, dof_name in enumerate(dof_names):
-                if str(dof_name).endswith("/" + joint_name):
-                    self._mobile_support_joint_indices.append(index)
-                    break
-
-    def _set_mobile_support_drive(self, *, locked: bool):
-        try:
-            from pxr import UsdPhysics  # pylint: disable=import-outside-toplevel
-        except ImportError:
-            return
-
-        stiffness = float(self.base_cfg.get("support_lock_stiffness", 1.0e8)) if locked else 0.0
-        damping = float(self.base_cfg.get("support_lock_damping", 1.0e6)) if locked else 0.0
-        max_force = float(self.base_cfg.get("support_lock_max_force", 1.0e8)) if locked else 0.0
-        for joint_path, drive_type in self._mobile_support_joint_paths:
-            prim = get_prim_at_path(joint_path)
-            if not prim.IsValid():
-                continue
-            drive_api = UsdPhysics.DriveAPI.Get(prim, drive_type)
-            if not drive_api:
-                continue
-            drive_api.GetStiffnessAttr().Set(stiffness)
-            drive_api.GetDampingAttr().Set(damping)
-            drive_api.GetMaxForceAttr().Set(max_force)
-
-    def unlock_mobile_base_for_navigation(self):
-        self._set_mobile_support_drive(locked=False)
-
-    def lock_mobile_base_after_navigation(self):
+    def get_base_initial_steering_positions(self):
         if self._base_initial_steering_positions is None:
             self._capture_base_initial_steering_positions()
-        steering_positions = np.asarray(self._base_initial_steering_positions, dtype=np.float32).copy()
-        wheel_velocities = np.zeros(len(self.base_wheel_joint_indices), dtype=np.float32)
-        if self.base_steering_joint_indices:
-            self._articulation_view.set_joint_positions(
-                steering_positions.reshape(1, -1),
-                joint_indices=np.array(self.base_steering_joint_indices, dtype=np.int32),
-            )
-        if self.base_wheel_joint_indices:
-            self._articulation_view.set_joint_velocity_targets(
-                wheel_velocities.reshape(1, -1),
-                joint_indices=np.array(self.base_wheel_joint_indices, dtype=np.int32),
-            )
-        if self.base_steering_joint_indices or self.base_wheel_joint_indices:
-            self.apply_base_command(steering_positions=steering_positions, wheel_velocities=wheel_velocities)
-
-        if not self._mobile_support_joint_indices:
-            self._setup_mobile_support_joint_indices()
-        if not self._mobile_support_joint_indices:
-            self._set_mobile_support_drive(locked=False)
-            return
-
-        current_positions = self._articulation_view.get_joint_positions()[0]
-        support_indices = np.array(self._mobile_support_joint_indices, dtype=np.int32)
-        self._mobile_support_lock_targets = current_positions[support_indices].copy()
-        lock_targets = self._mobile_support_lock_targets.reshape(1, -1)
-        self._articulation_view.set_joint_positions(
-            lock_targets,
-            joint_indices=support_indices,
-        )
-        self._articulation_view.set_joint_position_targets(
-            lock_targets,
-            joint_indices=support_indices,
-        )
-        self._articulation_view.set_joint_velocities(
-            np.zeros((1, len(support_indices)), dtype=np.float32),
-            joint_indices=support_indices,
-        )
-        self._set_mobile_support_drive(locked=True)
+        return np.asarray(self._base_initial_steering_positions, dtype=np.float32).copy()
 
     @staticmethod
     def _is_finite_scalar(value):
@@ -406,6 +259,13 @@ class SplitAloha(TemplateRobot):
             raise ValueError("steering_positions size does not match steering joints")
         if wheel_velocities.shape[0] != len(self.base_wheel_joint_indices):
             raise ValueError("wheel_velocities size does not match wheel joints")
+        if not np.all(np.isfinite(steering_positions)):
+            fallback = self.get_base_initial_steering_positions()
+            if fallback.shape[0] != steering_positions.shape[0] or not np.all(np.isfinite(fallback)):
+                fallback = np.zeros_like(steering_positions)
+            steering_positions = fallback.astype(np.float32)
+        if not np.all(np.isfinite(wheel_velocities)):
+            wheel_velocities = np.zeros_like(wheel_velocities, dtype=np.float32)
 
         self._articulation_view.set_joint_position_targets(
             steering_positions.reshape(1, -1),

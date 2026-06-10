@@ -513,6 +513,12 @@ def _build_nav2_params(
     velocity_smoother_cfg = dict(skill_cfg.get("velocity_smoother", {}))
 
     follow_path_plugin = str(follow_path_cfg.get("plugin", "nav2_mppi_controller::MPPIController"))
+    rotation_shim_plugin = "nav2_rotation_shim_controller::RotationShimController"
+    rotate_to_heading_enabled = bool(follow_path_cfg.get("rotate_to_heading_enabled", False))
+    if follow_path_plugin == rotation_shim_plugin and not rotate_to_heading_enabled:
+        follow_path_plugin = str(
+            follow_path_cfg.get("primary_controller", "nav2_mppi_controller::MPPIController")
+        )
     if follow_path_plugin == "dwb_core::DWBLocalPlanner":
         follow_path_params = {
             "plugin": follow_path_plugin,
@@ -580,7 +586,7 @@ def _build_nav2_params(
             max_accel=max_accel,
             max_decel=max_decel,
         )
-    elif follow_path_plugin == "nav2_rotation_shim_controller::RotationShimController":
+    elif follow_path_plugin == rotation_shim_plugin:
         primary_controller = str(
             follow_path_cfg.get("primary_controller", "nav2_mppi_controller::MPPIController")
         )
@@ -620,8 +626,20 @@ def _build_nav2_params(
         "ay_min",
         "az_max",
     }
+    rotation_shim_only_keys = {
+        "primary_controller",
+        "angular_dist_threshold",
+        "forward_sampling_distance",
+        "rotate_to_heading_angular_vel",
+        "max_angular_accel",
+        "simulate_ahead_time",
+        "rotate_to_goal_heading",
+    }
+    internal_follow_path_keys = {"plugin", "rotate_to_heading_enabled"}
+    if follow_path_plugin != rotation_shim_plugin:
+        internal_follow_path_keys.update(rotation_shim_only_keys)
     for key, value in follow_path_cfg.items():
-        if key != "plugin" and key not in hard_limit_override_keys:
+        if key not in internal_follow_path_keys and key not in hard_limit_override_keys:
             follow_path_params[key] = value
 
     local_costmap_frame = str(

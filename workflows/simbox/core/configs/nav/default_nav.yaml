@@ -22,6 +22,7 @@ ros:
     bridge_result_topic: /simbox/nav_bridge/result
     bridge_alive_timeout_sec: 3.0
 nav2_skill:
+  local_goal_reached_hold_sec: 0.5
   planner_server:
     plugin: nav2_smac_planner/SmacPlanner2D
     tolerance: 0.10
@@ -52,8 +53,8 @@ nav2_skill:
       primary_controller: nav2_mppi_controller::MPPIController
       angular_dist_threshold: 0.35
       forward_sampling_distance: 0.5
-      rotate_to_heading_angular_vel: 0.3
-      max_angular_accel: 0.7
+      rotate_to_heading_angular_vel: 0.22
+      max_angular_accel: 0.45
       simulate_ahead_time: 1.0
       rotate_to_goal_heading: true
       closed_loop: true
@@ -173,9 +174,9 @@ nav2_skill:
       plugin: nav2_behaviors/Wait
     transform_tolerance: 0.2
     simulate_ahead_time: 2.0
-    max_rotational_vel: 0.35
+    max_rotational_vel: 0.45
     min_rotational_vel: 0.1
-    rotational_acc_lim: 1.0
+    rotational_acc_lim: 1.2
   velocity_smoother:
     smoothing_frequency: 30.0
     scale_velocities: false

@@ -218,6 +218,49 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             else:
                 base[key] = value
 
+    def _resolve_arena_file_path(self, arena_file_path: str | None) -> str | None:
+        if arena_file_path and os.path.exists(arena_file_path):
+            return arena_file_path
+
+        candidates = []
+        task_cfg_dir = os.path.dirname(os.path.abspath(self.task_cfg_path))
+        candidates.append(os.path.join(task_cfg_dir, "simbox_arena.yaml"))
+
+        raw_paths = [arena_file_path, self.task_cfg.get("asset_root")]
+        task_name = str(self.task_cfg.get("name", "")).strip()
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        scene4_roots = [
+            os.path.join(repo_root, "workflows", "simbox", "assets", "custom", "scene_4"),
+            os.path.join(repo_root, "InternDataAssets", "assets", "custom", "scene_4"),
+        ]
+
+        for raw_path in raw_paths:
+            if not raw_path:
+                continue
+            normalized = str(raw_path).replace("\\", "/")
+            marker = "/scene_4/"
+            if marker not in normalized:
+                continue
+            suffix = normalized.split(marker, 1)[1].strip("/")
+            if suffix.endswith("simbox_arena.yaml"):
+                relative_arena = suffix
+            elif task_name:
+                relative_arena = os.path.join(suffix, "assets", "basic", task_name, "simbox_arena.yaml")
+            else:
+                continue
+            for root in scene4_roots:
+                candidates.append(os.path.join(root, relative_arena))
+
+        for candidate in candidates:
+            if candidate and os.path.exists(candidate):
+                if arena_file_path and candidate != arena_file_path:
+                    print(
+                        "[simbox] arena_file does not exist, using fallback: "
+                        f"requested={arena_file_path}, resolved={candidate}"
+                    )
+                return candidate
+        return arena_file_path
+
     def reset(self, need_preload: bool = True):
         self._prepare_navigation_session_managers_for_reset()
         self._destroy_navigation_session_managers()
@@ -244,6 +287,8 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             raise FileNotFoundError(
                 f"arena_file not found in task_cfg. Keys: {list(self.task_cfg.keys())}"
             )
+        arena_file_path = self._resolve_arena_file_path(arena_file_path)
+        self._saved_arena_file = arena_file_path
         with open(arena_file_path, "r", encoding="utf-8") as arena_file:
             arena = yaml.load(arena_file, Loader=Loader)
 
@@ -950,6 +995,33 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         )
 
         # episode_stats["current_times"] += 1
+
+    def reset_after_failed_generation(self):
+        self._prepare_navigation_session_managers_for_reset()
+        self._destroy_navigation_session_managers()
+        self._destroy_nav2_clock_publisher()
+        self._destroy_ros_base_bridges()
+
+        self.world.reset()
+        self.task.individual_reset()
+        if hasattr(self.task, "reset_fixed_rigid_objects"):
+            self.task.reset_fixed_rigid_objects()
+        self.task.post_reset()
+        self._step_world(render=False)
+
+        self._reset_controllers(self.controllers)
+        if hasattr(self, "skills"):
+            del self.skills
+        self.skills = self._initialize_skills(self.task, self.task_cfg, self.controllers, self.world)
+        self._initialize_ros_base_bridges()
+        self._initialize_navigation_session_managers()
+
+        for _ in range(20):
+            self.world.get_observations()
+            self._init_static_objects(self.task)
+            self._step_world(render=False)
+
+        self._initialize_world_recorder()
 
     def randomization(self, layout_path=None) -> bool:
         try:

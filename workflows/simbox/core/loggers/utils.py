@@ -30,6 +30,11 @@ def log_dual_obs(logger: LmdbLogger, obs, action_dict, controllers, base_bridges
                 "base_actions.requested_wheel_velocities",
                 base_action["requested_wheel_velocities"],
             )
+            logger.add_action_data(
+                robot_name,
+                "base_actions.applied_wheel_velocities",
+                base_action.get("applied_wheel_velocities", base_action["requested_wheel_velocities"]),
+            )
 
         # Add robots' action data (very very important)
         if "split_aloha" in robot_name or "lift2" in robot_name or "azure_loong" in robot_name or "genie" in robot_name:

@@ -24,10 +24,10 @@ class RangerMiniV3Platform(MobileBasePlatform):
         "minimum_turning_radius_m": 0.47644,
         "max_steer_angle_ackermann": 0.6981,
         "controller_hard_limits": {
-            "max_velocity": [0.35, 0.25, 0.60],
-            "min_velocity": [-0.35, -0.25, -0.60],
-            "max_accel": [0.35, 0.35, 0.70],
-            "max_decel": [-0.35, -0.35, -0.70],
+            "max_velocity": [0.45, 0.32, 0.75],
+            "min_velocity": [-0.45, -0.32, -0.75],
+            "max_accel": [0.45, 0.45, 0.90],
+            "max_decel": [-0.45, -0.45, -0.90],
         },
     }
 

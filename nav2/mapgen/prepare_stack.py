@@ -81,20 +81,19 @@ def _write_bootstrap_map(map_dir: Path) -> Path:
     pgm_path = map_dir / "map.pgm"
     yaml_path = map_dir / "map.yaml"
 
-    if not pgm_path.exists():
-        width = 64
-        height = 64
-        free_value = 254
-        with open(pgm_path, "wb") as handle:
-            handle.write(f"P5\n{width} {height}\n255\n".encode("ascii"))
-            handle.write(bytes([free_value]) * width * height)
+    width = 256
+    height = 256
+    free_value = 254
+    with open(pgm_path, "wb") as handle:
+        handle.write(f"P5\n{width} {height}\n255\n".encode("ascii"))
+        handle.write(bytes([free_value]) * width * height)
 
     yaml_payload = "\n".join(
         [
             f"image: {pgm_path.name}",
             "mode: trinary",
             "resolution: 0.050000",
-            "origin: [-1.600000, -1.600000, 0.0]",
+            "origin: [-3.200000, -3.200000, 0.0]",
             "negate: 0",
             "occupied_thresh: 0.65",
             "free_thresh: 0.25",

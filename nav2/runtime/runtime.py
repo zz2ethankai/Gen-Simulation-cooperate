@@ -78,6 +78,11 @@ class PersistentNav2RuntimeManager:
         self._goal_output_tag = ""
         self._goal_debug_map_info = None
         self._goal_params_path = ""
+        self._restore_after_nav_started = False
+        self._post_success_started_at = None
+        self._post_success_settle_started_at = None
+        self._local_goal_reached_started_at = None
+        self._post_success_trigger = ""
         self._cleaned_up = False
         self._session_uuid = uuid.uuid4().hex
 
@@ -265,6 +270,11 @@ class PersistentNav2RuntimeManager:
         self._request_id = self._goal_output_tag
         self._goal_debug_map_info = None
         self._goal_params_path = ""
+        self._restore_after_nav_started = False
+        self._post_success_started_at = None
+        self._post_success_settle_started_at = None
+        self._local_goal_reached_started_at = None
+        self._post_success_trigger = ""
 
         bridge_client = self._ensure_bridge_client()
         bridge_client.reset_debug_trace()
@@ -291,13 +301,34 @@ class PersistentNav2RuntimeManager:
         self._runtime_deadline = None
         self._post_success_deadline = None
         self._request_id = ""
+        self._restore_after_nav_started = False
+        self._post_success_started_at = None
+        self._post_success_settle_started_at = None
+        self._local_goal_reached_started_at = None
+        self._post_success_trigger = ""
 
     def step(self):
         if self.done or self.state == self.STATE_IDLE:
             return
 
+        if self._robot_base_state_is_invalid():
+            reason = self._robot_base_invalid_reason()
+            self._fail(
+                "robot_base_state_invalid",
+                f"Navigation stopped because the mobile base state became non-finite: {reason}",
+            )
+            return
+
         bridge_client = self._ensure_bridge_client()
         bridge_client.step(step_dt=self._step_dt())
+
+        if self._robot_base_state_is_invalid():
+            reason = self._robot_base_invalid_reason()
+            self._fail(
+                "robot_base_state_invalid",
+                f"Navigation stopped because the mobile base state became non-finite: {reason}",
+            )
+            return
 
         if self.state == self.STATE_WAITING_FOR_STACK_READY:
             if bridge_client.bridge_online and bridge_client.nav_stack_ready:
@@ -342,8 +373,7 @@ class PersistentNav2RuntimeManager:
                 self._runtime_deadline = time_monotonic() + self.runtime_timeout_sec
                 return
             if bridge_state == "succeeded":
-                self.state = self.STATE_POST_SUCCESS_SETTLING
-                self._post_success_deadline = time_monotonic() + 2.0
+                self._enter_post_success_settling()
                 return
             if bridge_state in {"failed", "rejected", "aborted", "canceled"}:
                 self._fail("bridge_" + bridge_state, self._bridge_detail(status=status, result=result) or f"Bridge ended with {bridge_state}")
@@ -356,11 +386,14 @@ class PersistentNav2RuntimeManager:
         if self.state == self.STATE_RUNNING:
             self._update_pose_result_fields()
             if bridge_state == "succeeded":
-                self.state = self.STATE_POST_SUCCESS_SETTLING
-                self._post_success_deadline = time_monotonic() + 2.0
+                self._enter_post_success_settling(trigger="nav2_result")
                 return
             if bridge_state in {"failed", "rejected", "aborted", "canceled"}:
                 self._fail("bridge_" + bridge_state, self._bridge_detail(status=status, result=result) or f"Bridge ended with {bridge_state}")
+                return
+            if self._local_goal_reached_hold_elapsed():
+                bridge_client.cancel_request(self._request_id)
+                self._enter_post_success_settling(trigger="local_goal_reached")
                 return
             if time_monotonic() >= float(self._runtime_deadline):
                 bridge_client.cancel_request(self._request_id)
@@ -369,32 +402,63 @@ class PersistentNav2RuntimeManager:
 
         if self.state == self.STATE_POST_SUCCESS_SETTLING:
             self._update_pose_result_fields()
+            restore_done = self._robot_bridge_restore_after_navigation_done()
             if bridge_state in {"failed", "rejected", "aborted", "canceled"}:
-                self._fail("bridge_" + bridge_state, self._bridge_detail(status=status, result=result) or f"Bridge ended with {bridge_state}")
-                return
-            if self._goal_within_tolerance():
+                if self._post_success_trigger == "local_goal_reached" and bridge_state == "canceled":
+                    pass
+                else:
+                    self._fail("bridge_" + bridge_state, self._bridge_detail(status=status, result=result) or f"Bridge ended with {bridge_state}")
+                    return
+            now = self._sim_time()
+            if restore_done and self._post_success_settle_started_at is None:
+                self._post_success_settle_started_at = now
+            elif not restore_done:
+                self._post_success_settle_started_at = None
+            settle_done = (
+                self._post_success_settle_started_at is not None
+                and now - float(self._post_success_settle_started_at) >= self._post_success_settle_sec()
+            )
+            if self._goal_within_tolerance() and restore_done and settle_done:
                 self.result.done = True
                 self.result.success = True
                 self.state = self.STATE_SUCCEEDED
-                success_message = "Nav2 goal reached within skill tolerances after post-success settling."
+                if self._post_success_trigger == "local_goal_reached":
+                    success_reason = "local_goal_reached"
+                    success_message = (
+                        "Local goal tolerance held before Nav2 action result; "
+                        "navigation settled successfully."
+                    )
+                else:
+                    success_reason = "goal_succeeded"
+                    success_message = "Nav2 goal reached within skill tolerances after post-success settling."
                 success_snapshot = self._write_debug_snapshot(
                     "success_snapshot.json",
-                    "goal_succeeded",
+                    success_reason,
                     success_message,
                 )
                 self._log_result_summary(
                     level=logging.INFO,
-                    reason="goal_succeeded",
+                    reason=success_reason,
                     message=success_message,
                     control_snapshot=success_snapshot.get("control", {}),
                 )
                 self._finalize_robot_bridge_after_navigation()
                 return
-            if time_monotonic() >= float(self._post_success_deadline):
-                self._fail(
-                    "goal_tolerance_not_met",
-                    "Nav2 reported success but skill tolerances were not met after post-success settling.",
-                )
+            if now >= float(self._post_success_deadline):
+                if self._post_success_trigger == "local_goal_reached":
+                    success_source = "Local goal tolerance was held"
+                else:
+                    success_source = "Nav2 reported success"
+                if not restore_done:
+                    self._fail(
+                        "restore_after_navigation_timeout",
+                        f"{success_source} but wheel restore did not finish within post-success simulation timeout.",
+                    )
+                else:
+                    self._fail(
+                        "goal_tolerance_not_met",
+                        f"{success_source} but skill tolerances were not met after post-success settling.",
+                    )
 
     def shutdown(self):
         if self._cleaned_up:
@@ -443,11 +507,73 @@ class PersistentNav2RuntimeManager:
             and self.result.final_yaw_error_rad <= self.yaw_tolerance_rad
         )
 
+    def _local_goal_reached_hold_elapsed(self) -> bool:
+        now = self._sim_time()
+        if not self._goal_within_tolerance():
+            self._local_goal_reached_started_at = None
+            return False
+        if self._local_goal_reached_started_at is None:
+            self._local_goal_reached_started_at = now
+        return now - float(self._local_goal_reached_started_at) >= self._local_goal_reached_hold_sec()
+
     def _step_dt(self) -> float:
         get_physics_dt = getattr(self.world, "get_physics_dt", None)
         if callable(get_physics_dt):
             return float(get_physics_dt())
         return float(getattr(self.world, "physics_dt", 1.0 / 60.0))
+
+    def _sim_time(self) -> float:
+        value = getattr(self.world, "current_time", None)
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            value = float("nan")
+        if math.isfinite(value):
+            return value
+        return time_monotonic()
+
+    def _post_success_timeout_sec(self) -> float:
+        nav2_skill_cfg = self._base_cfg.get("nav2_skill", {}) if isinstance(self._base_cfg, dict) else {}
+        return max(float(nav2_skill_cfg.get("post_success_timeout_sec", 3.0)), 0.1)
+
+    def _post_success_settle_sec(self) -> float:
+        nav2_skill_cfg = self._base_cfg.get("nav2_skill", {}) if isinstance(self._base_cfg, dict) else {}
+        return max(float(nav2_skill_cfg.get("post_success_settle_sec", 0.25)), 0.0)
+
+    def _local_goal_reached_hold_sec(self) -> float:
+        nav2_skill_cfg = self._base_cfg.get("nav2_skill", {}) if isinstance(self._base_cfg, dict) else {}
+        return max(float(nav2_skill_cfg.get("local_goal_reached_hold_sec", 0.5)), 0.0)
+
+    def _enter_post_success_settling(self, *, trigger: str = "nav2_result"):
+        self.state = self.STATE_POST_SUCCESS_SETTLING
+        self._post_success_trigger = str(trigger)
+        self._start_robot_bridge_restore_after_navigation()
+        now = self._sim_time()
+        self._post_success_started_at = now
+        self._post_success_deadline = now + self._post_success_timeout_sec()
+        self._post_success_settle_started_at = None
+
+    def _robot_base_state_is_invalid(self) -> bool:
+        bridge = getattr(self.robot, "_simbox_ros_base_bridge", None)
+        has_bad_state = getattr(bridge, "has_non_finite_state", None)
+        if callable(has_bad_state) and bool(has_bad_state()):
+            return True
+        try:
+            translation, orientation = self.robot.get_mobile_base_pose()
+            values = [float(translation[0]), float(translation[1]), float(translation[2])]
+            values.extend(float(v) for v in list(orientation)[:4])
+            return not all(math.isfinite(value) for value in values)
+        except Exception:
+            return True
+
+    def _robot_base_invalid_reason(self) -> str:
+        bridge = getattr(self.robot, "_simbox_ros_base_bridge", None)
+        reason_fn = getattr(bridge, "non_finite_state_reason", None)
+        if callable(reason_fn):
+            reason = str(reason_fn()).strip()
+            if reason:
+                return reason
+        return "non_finite_mobile_base_pose"
 
     def _start_robot_bridge_heading_alignment(self):
         bridge = getattr(self.robot, "_simbox_ros_base_bridge", None)
@@ -458,6 +584,8 @@ class PersistentNav2RuntimeManager:
             .get("controller_server", {})
             .get("follow_path", {})
         )
+        if not bool(follow_path_cfg.get("rotate_to_heading_enabled", False)):
+            return
         try:
             bridge.start_heading_alignment(
                 target_x=float(self.goal_x),
@@ -492,6 +620,9 @@ class PersistentNav2RuntimeManager:
             "world_dist": float(self.result.final_distance_to_goal),
             "nav_dist": float(self.result.final_nav_distance_to_goal),
             "yaw_err": float(self.result.final_yaw_error_rad),
+            "post_success_trigger": str(self._post_success_trigger),
+            "local_goal_reached_started_at": self._local_goal_reached_started_at,
+            "local_goal_reached_hold_sec": self._local_goal_reached_hold_sec(),
             "control": control_snapshot,
             "planning": planning_payload,
             "map_info": dict(self._goal_debug_map_info or self._map_info or {}),
@@ -643,9 +774,38 @@ class PersistentNav2RuntimeManager:
         except Exception:
             LOGGER.exception("failed to prepare base bridge for navigation")
 
+    def _start_robot_bridge_restore_after_navigation(self):
+        if self._restore_after_nav_started:
+            return
+        self._restore_after_nav_started = True
+        bridge = getattr(self.robot, "_simbox_ros_base_bridge", None)
+        finalize_fn = getattr(bridge, "finalize_after_navigation", None)
+        if not callable(finalize_fn):
+            return
+        try:
+            finalize_fn()
+        except Exception:
+            LOGGER.exception("failed to start base bridge restore after navigation")
+
+    def _robot_bridge_restore_after_navigation_done(self) -> bool:
+        bridge = getattr(self.robot, "_simbox_ros_base_bridge", None)
+        done_fn = getattr(bridge, "restore_after_navigation_done", None)
+        if callable(done_fn):
+            try:
+                return bool(done_fn())
+            except Exception:
+                LOGGER.exception("failed to query base bridge restore after navigation state")
+                return True
+        if bridge is None:
+            return True
+        return not bool(getattr(bridge, "_restore_after_navigation", False))
+
     def _finalize_robot_bridge_after_navigation(self):
         bridge = getattr(self.robot, "_simbox_ros_base_bridge", None)
         if bridge is None:
+            return
+        self._start_robot_bridge_restore_after_navigation()
+        if self._restore_after_nav_started:
             return
         finalize_fn = getattr(bridge, "finalize_after_navigation", None)
         if callable(finalize_fn):
@@ -657,9 +817,20 @@ class PersistentNav2RuntimeManager:
         self._reset_robot_bridge_state(clear_debug_history=False)
 
     def _update_pose_result_fields(self):
-        world_translation, world_orientation = self.robot.get_mobile_base_pose()
-        world_xy = (float(world_translation[0]), float(world_translation[1]))
-        world_yaw = float(yaw_from_wxyz(world_orientation))
+        try:
+            world_translation, world_orientation = self.robot.get_mobile_base_pose()
+            world_xy = (float(world_translation[0]), float(world_translation[1]))
+            world_yaw = float(yaw_from_wxyz(world_orientation))
+        except Exception:
+            LOGGER.exception("failed to read mobile base pose for nav2 result")
+            return
+        if not all(math.isfinite(value) for value in (world_xy[0], world_xy[1], world_yaw)):
+            LOGGER.error(
+                "mobile base pose is non-finite during nav2 result update: xy=%s yaw=%s",
+                world_xy,
+                world_yaw,
+            )
+            return
 
         bridge_client = self._bridge_client
         result_payload = bridge_client.request_result(self._request_id) if bridge_client is not None else {}
@@ -674,6 +845,9 @@ class PersistentNav2RuntimeManager:
             nav_xy = (float(reported_pose["x"]), float(reported_pose["y"]))
             nav_yaw = float(reported_pose["yaw"])
         else:
+            nav_xy = world_xy
+            nav_yaw = world_yaw
+        if not all(math.isfinite(value) for value in (nav_xy[0], nav_xy[1], nav_yaw)):
             nav_xy = world_xy
             nav_yaw = world_yaw
 

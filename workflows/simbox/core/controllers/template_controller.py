@@ -5,10 +5,11 @@ Common functionality extracted from FR3, FrankaRobotiq85, Genie1, Lift2, SplitAl
 Subclasses implement _get_default_ignore_substring() and _configure_joint_indices().
 """
 
+import numbers
 import random
 import time
 from copy import deepcopy
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -227,6 +228,7 @@ class TemplateController(BaseController):
         self.motion_gen.clear_world_cache()
         self.motion_gen.reset(reset_seed=False)
         self.motion_gen.update_world(self.world_cfg)
+        self._world_update_signature = self._make_world_update_signature(self.world_cfg)
 
     def update_pose_cost_metric(self, hold_vec_weight: Optional[List[float]] = None) -> None:
         # reference: https://curobo.org/advanced_examples/3_constrained_planning.html
@@ -245,17 +247,66 @@ class TemplateController(BaseController):
             pose_cost_metric = None
         self.plan_config.pose_cost_metric = pose_cost_metric
 
+    @staticmethod
+    def _signature_value(value: Any):
+        if value is None or isinstance(value, (str, bool, int)):
+            return value
+        if isinstance(value, numbers.Real):
+            return round(float(value), 6)
+        if isinstance(value, np.ndarray):
+            return tuple(round(float(x), 6) for x in value.reshape(-1).tolist())
+        if isinstance(value, torch.Tensor):
+            return tuple(round(float(x), 6) for x in value.detach().cpu().reshape(-1).tolist())
+        if isinstance(value, (list, tuple)):
+            return tuple(TemplateController._signature_value(x) for x in value)
+        return str(value)
+
+    @classmethod
+    def _make_world_update_signature(cls, world_cfg: WorldConfig):
+        objects = getattr(world_cfg, "objects", None) or []
+        signature = []
+        for obj in objects:
+            signature.append(
+                (
+                    type(obj).__name__,
+                    getattr(obj, "name", None),
+                    cls._signature_value(getattr(obj, "pose", None)),
+                    cls._signature_value(getattr(obj, "dims", None)),
+                    cls._signature_value(getattr(obj, "scale", None)),
+                    getattr(obj, "file_path", None),
+                    cls._signature_value(getattr(obj, "vertices", None)),
+                    cls._signature_value(getattr(obj, "faces", None)),
+                )
+            )
+        return tuple(signature)
+
+    def _update_world_if_changed(self, obstacles: WorldConfig) -> None:
+        signature = self._make_world_update_signature(obstacles)
+        if self.motion_gen is not None and signature != getattr(self, "_world_update_signature", None):
+            self.motion_gen.update_world(obstacles)
+        self.world_cfg = obstacles
+        self._world_update_signature = signature
+
     def update(self) -> None:
         obstacles = self.usd_help.get_obstacles_from_stage(
             ignore_substring=self.ignore_substring, reference_prim_path=self.reference_prim_path
         ).get_collision_check_world()
-        if self.motion_gen is not None:
-            self.motion_gen.update_world(obstacles)
-        self.world_cfg = obstacles
+        self._update_world_if_changed(obstacles)
+
+    def _clear_attached_object_state(self) -> None:
+        if self.motion_gen is None:
+            return
+        try:
+            self.motion_gen.detach_object_from_robot()
+            self.motion_gen.clear_world_cache()
+            self._world_update_signature = None
+        except Exception as exc:
+            print(f"[curobo-controller] Failed to clear attached object state during reset: {exc}")
 
     def reset(self, ignore_substring: Optional[str] = None) -> None:
         if ignore_substring:
             self.ignore_substring = ignore_substring
+        self._clear_attached_object_state()
         self.update()
         self.init_curobo = True
         self.cmd_plan = None
@@ -344,17 +395,21 @@ class TemplateController(BaseController):
     def forward(self, manip_cmd, eps=5e-3):
         ee_trans, ee_ori = manip_cmd[0:2]
         gripper_fn = manip_cmd[2]
-        params = manip_cmd[3]
+        params = dict(manip_cmd[3])
+        skip_plan = bool(params.pop("skip_plan", False))
+        gripper_action = params.pop("gripper_action", None)
+        params.pop("t_eps", None)
+        params.pop("o_eps", None)
         assert hasattr(self, gripper_fn)
         method = getattr(self, gripper_fn)
         if gripper_fn in ["in_plane_rotation", "mobile_move", "dummy_forward"]:
             return method(**params)
         elif gripper_fn in ["update_pose_cost_metric", "update_specific"]:
             method(**params)
-            return self.ee_forward(ee_trans, ee_ori, eps=eps, skip_plan=True)
+            return self.ee_forward(ee_trans, ee_ori, eps=eps, skip_plan=True, gripper_action=gripper_action)
         else:
             method(**params)
-            return self.ee_forward(ee_trans, ee_ori, eps)
+            return self.ee_forward(ee_trans, ee_ori, eps, skip_plan=skip_plan, gripper_action=gripper_action)
 
     def ee_forward(
         self,
@@ -362,6 +417,7 @@ class TemplateController(BaseController):
         ee_ori: torch.Tensor | np.ndarray,
         eps=1e-4,
         skip_plan=False,
+        gripper_action=None,
     ):
         ee_trans = self.tensor_args.to_device(ee_trans)
         ee_ori = self.tensor_args.to_device(ee_ori)
@@ -431,9 +487,13 @@ class TemplateController(BaseController):
                 art_action = ArticulationAction(joint_positions=sim_js.positions[self.arm_indices])
         else:
             art_action = ArticulationAction(joint_positions=sim_js.positions[self.arm_indices])
+            self.num_last_cmd += 1
         self._step_idx += 1
         arm_action = art_action.joint_positions
-        gripper_action = self.get_gripper_action()
+        if gripper_action is None:
+            gripper_action = self.get_gripper_action()
+        else:
+            gripper_action = np.asarray(gripper_action, dtype=float)
         joint_positions = np.concatenate([arm_action, gripper_action])
         self._action = {
             "joint_positions": joint_positions,
@@ -550,9 +610,7 @@ class TemplateController(BaseController):
         obstacles = self.usd_help.get_obstacles_from_stage(
             ignore_substring=ignore_substring, reference_prim_path=reference_prim_path
         ).get_collision_check_world()
-        if self.motion_gen is not None:
-            self.motion_gen.update_world(obstacles)
-        self.world_cfg = obstacles
+        self._update_world_if_changed(obstacles)
 
     def test_single_ik(self, ee_trans, ee_ori):
         assert not self.use_batch

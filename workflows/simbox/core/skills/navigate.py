@@ -19,7 +19,7 @@ def _wrap_to_pi(yaw: float) -> float:
 
 @register_skill
 class Navigate(BaseSkill):
-    """Block until the mobile base reaches an explicit world-frame navigation goal."""
+    """Block until the mobile base reaches a floor-referenced navigation goal."""
 
     def __init__(self, robot: Robot, controller: BaseController, task: BaseTask, cfg: DictConfig, *args, **kwargs):
         super().__init__()
@@ -80,16 +80,56 @@ class Navigate(BaseSkill):
                 raise KeyError(f"navigate goal '{goal_name}' was not found in task.cfg['positions']")
 
             try:
-                return float(goal_pose["x"]), float(goal_pose["y"]), _wrap_to_pi(float(goal_pose["yaw"]))
+                local_x = float(goal_pose["x"])
+                local_y = float(goal_pose["y"])
+                local_yaw = float(goal_pose["yaw"])
             except KeyError as exc:
                 raise KeyError(
                     f"navigate goal '{goal_name}' requires position fields 'x', 'y', and 'yaw'"
                 ) from exc
+            return self._floor_center_goal_to_world(task, local_x, local_y, local_yaw)
 
         try:
             return float(cfg["goal_x"]), float(cfg["goal_y"]), _wrap_to_pi(float(cfg["goal_yaw"]))
         except KeyError as exc:
             raise KeyError("navigate requires either goal or goal_x, goal_y, and goal_yaw") from exc
+
+    @classmethod
+    def _floor_center_goal_to_world(
+        cls,
+        task: BaseTask,
+        local_x: float,
+        local_y: float,
+        local_yaw: float,
+    ) -> tuple[float, float, float]:
+        floor_x, floor_y, floor_yaw = cls._floor_world_pose(task)
+        cos_yaw = math.cos(floor_yaw)
+        sin_yaw = math.sin(floor_yaw)
+        world_x = floor_x + local_x * cos_yaw - local_y * sin_yaw
+        world_y = floor_y + local_x * sin_yaw + local_y * cos_yaw
+        world_yaw = _wrap_to_pi(floor_yaw + local_yaw)
+        return float(world_x), float(world_y), float(world_yaw)
+
+    @staticmethod
+    def _floor_world_pose(task: BaseTask) -> tuple[float, float, float]:
+        fixtures = getattr(task, "fixtures", {}) or {}
+        floor = fixtures.get("floor")
+        if floor is None or not hasattr(floor, "get_world_pose"):
+            raise KeyError("navigate positions require task.fixtures['floor'] as the default reference")
+
+        translation, orientation = floor.get_world_pose()
+        return (
+            float(translation[0]),
+            float(translation[1]),
+            _wrap_to_pi(
+                math.atan2(
+                    2.0 * (float(orientation[0]) * float(orientation[3]) + float(orientation[1]) * float(orientation[2])),
+                    1.0
+                    - 2.0
+                    * (float(orientation[2]) * float(orientation[2]) + float(orientation[3]) * float(orientation[3])),
+                )
+            ),
+        )
 
     @staticmethod
     def _nav2_skill_overrides(cfg: DictConfig) -> dict:
@@ -97,7 +137,14 @@ class Navigate(BaseSkill):
         if isinstance(overrides, DictConfig):
             overrides = OmegaConf.to_container(overrides, resolve=True)
         if not isinstance(overrides, dict):
-            return {}
+            overrides = {}
+        else:
+            overrides = dict(overrides)
+
+        if "rotate_to_heading_enabled" in cfg:
+            controller_cfg = overrides.setdefault("controller_server", {})
+            follow_path_cfg = controller_cfg.setdefault("follow_path", {})
+            follow_path_cfg["rotate_to_heading_enabled"] = bool(cfg.get("rotate_to_heading_enabled"))
         return overrides
 
     def simple_generate_manip_cmds(self):

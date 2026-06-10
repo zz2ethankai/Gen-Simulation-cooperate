@@ -144,6 +144,67 @@ class BananaBaseTask(BaseTask):
         self.pickcontact_views = self._set_pickcontact_view(self.cfg)
         self.artcontact_views = self._set_artcontact_view(self.cfg)
 
+    def reset_fixed_rigid_objects(self):
+        """Restore non-randomized rigid objects after a failed generation retry."""
+        for cfg in self.cfg["objects"]:
+            if cfg.get("apply_randomization", False):
+                continue
+            if cfg.get("target_class") != "RigidObject":
+                continue
+            obj = self.objects.get(cfg["name"])
+            if obj is None:
+                continue
+
+            orientation = get_orientation(cfg.get("euler"), cfg.get("quaternion"))
+            translation = cfg.get("translation")
+            if translation is None:
+                translation = deepcopy(obj.get_local_pose()[0])
+            obj.set_local_pose(translation=translation, orientation=orientation)
+
+            region_cfg = self._get_region_cfg_for_object(cfg["name"])
+            if region_cfg is not None:
+                pose = self._get_deterministic_region_pose(obj, region_cfg)
+                if pose is not None:
+                    obj.set_local_pose(*pose)
+
+            self._zero_object_velocity(obj)
+
+    def _get_region_cfg_for_object(self, object_name):
+        for region_cfg in self.cfg.get("regions", []):
+            if region_cfg.get("object") == object_name:
+                return region_cfg
+        return None
+
+    def _get_deterministic_region_pose(self, obj, region_cfg):
+        if region_cfg.get("random_type") != "A_on_B_region_sampler":
+            return None
+        random_config = deepcopy(region_cfg.get("random_config", {}))
+        pos_range = random_config.get("pos_range")
+        yaw_rotation = random_config.get("yaw_rotation")
+        if pos_range is None or yaw_rotation is None:
+            return None
+
+        pos_mid = ((np.asarray(pos_range[0], dtype=float) + np.asarray(pos_range[1], dtype=float)) / 2.0).tolist()
+        yaw_mid = float((float(yaw_rotation[0]) + float(yaw_rotation[1])) / 2.0)
+        random_config["pos_range"] = [pos_mid, pos_mid]
+        random_config["yaw_rotation"] = [yaw_mid, yaw_mid]
+
+        target_name = region_cfg.get("target")
+        if target_name not in self._task_objects:
+            return None
+        target = self._task_objects[target_name]
+        if "sub_tgt_prim" in region_cfg:
+            target = XFormPrim(prim_path=target.prim_path + region_cfg["sub_tgt_prim"])
+
+        return RandomRegionSampler.A_on_B_region_sampler(obj, target, **random_config)
+
+    @staticmethod
+    def _zero_object_velocity(obj):
+        if hasattr(obj, "set_linear_velocity"):
+            obj.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+        if hasattr(obj, "set_angular_velocity"):
+            obj.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+
     def individual_reset_from_mem(self):
         for cfg in self.cfg["arena"]["fixtures"]:
             if cfg.get("apply_randomization", False):

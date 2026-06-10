@@ -71,6 +71,7 @@ class BaseDumper(Iterator):
                     f"generate failed but partial output was kept. success rate: {self.success_case}/{self.total_case}"
                 )
                 self.scene.update_generate_status(success=False)
+                self._reset_scene_after_failed_generation()
             self.collect_seq_info(1, time.time() - io_start_time)
         except StopIteration:
             if self.output_queue is not None:
@@ -94,6 +95,18 @@ class BaseDumper(Iterator):
             if isinstance(data, dict) and "generate_success" in data:
                 return bool(data["generate_success"])
         return True
+
+    def _reset_scene_after_failed_generation(self):
+        if self.scene is None or self.scene.wf is None:
+            return
+        reset_fn = getattr(self.scene.wf, "reset_after_failed_generation", None)
+        if not callable(reset_fn):
+            return
+        try:
+            self.logger.info("Reset workflow state after failed generation.")
+            reset_fn()
+        except Exception:
+            self.logger.exception("Failed to reset workflow state after failed generation.")
 
     @abstractmethod
     def dump(self, seq, obs):

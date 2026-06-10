@@ -1,0 +1,728 @@
+format: task
+version: 1
+name: 04_bedroom_task
+arena: arena.yaml
+task_objects:
+- name: folded_tshirt__0__id9000
+  category: folded_tshirt
+  usd_path: assets/basic/04_bedroom/small_objects/folded_tshirt/folded_tshirt_0_id9000/Aligned_obj.usd
+  obj_path: assets/basic/04_bedroom/small_objects/folded_tshirt/folded_tshirt_0_id9000/Aligned_obj.obj
+  size:
+  - 0.3
+  - 0.076533
+  - 0.06689
+  asset_source_mode: obj_converted
+  metadata: assets/basic/04_bedroom/small_objects/folded_tshirt/folded_tshirt_0_id9000/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: bed_foot_platform__0__id6
+  spawn_region: folded_tshirt__0__id9000_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 0.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: folded_tshirt__0__id9000_candidate_region
+- name: folded_scarf__0__id9002
+  category: folded_scarf
+  usd_path: assets/basic/04_bedroom/small_objects/folded_scarf/folded_scarf_0_id9002/Aligned_obj.usd
+  obj_path: assets/basic/04_bedroom/small_objects/folded_scarf/folded_scarf_0_id9002/Aligned_obj.obj
+  size:
+  - 0.35
+  - 0.002981
+  - 0.038486
+  asset_source_mode: original_usd_inherited
+  metadata: assets/basic/04_bedroom/small_objects/folded_scarf/folded_scarf_0_id9002/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: bed_foot_platform__0__id6
+  spawn_region: folded_scarf__0__id9002_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 90.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: folded_scarf__0__id9002_candidate_region
+- name: bedroom_phone__0__id9003
+  category: phone
+  usd_path: assets/basic/04_bedroom/small_objects/phone/bedroom_phone_0_id9003/Aligned_obj.usd
+  obj_path: assets/basic/04_bedroom/small_objects/phone/bedroom_phone_0_id9003/Aligned_obj.obj
+  size:
+  - 0.061094
+  - 0.15
+  - 0.04236
+  asset_source_mode: original_usd_inherited
+  metadata: assets/basic/04_bedroom/small_objects/phone/bedroom_phone_0_id9003/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: right_nightstand__0__id3
+  spawn_region: bedroom_phone__0__id9003_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 270.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: bedroom_phone__0__id9003_candidate_region
+- name: water_glass__0__id9004
+  category: water_glass
+  usd_path: assets/basic/04_bedroom/small_objects/water_glass/water_glass_0_id9004/Aligned_obj.usd
+  obj_path: assets/basic/04_bedroom/small_objects/water_glass/water_glass_0_id9004/Aligned_obj.obj
+  size:
+  - 0.108213
+  - 0.12
+  - 0.108213
+  asset_source_mode: original_usd_inherited
+  metadata: assets/basic/04_bedroom/small_objects/water_glass/water_glass_0_id9004/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: right_nightstand__0__id3
+  spawn_region: water_glass__0__id9004_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 180.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: water_glass__0__id9004_candidate_region
+- name: glasses_case__0__id9005
+  category: glasses_case
+  usd_path: assets/basic/04_bedroom/small_objects/glasses_case/glasses_case_0_id9005/Aligned_obj.usd
+  obj_path: assets/basic/04_bedroom/small_objects/glasses_case/glasses_case_0_id9005/Aligned_obj.obj
+  size:
+  - 0.152382
+  - 0.050603
+  - 0.16
+  asset_source_mode: obj_converted
+  metadata: assets/basic/04_bedroom/small_objects/glasses_case/glasses_case_0_id9005/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: left_nightstand__0__id2
+  spawn_region: glasses_case__0__id9005_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 0.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: glasses_case__0__id9005_candidate_region
+- name: alarm_clock__0__id9006
+  category: alarm_clock
+  usd_path: assets/basic/04_bedroom/small_objects/alarm_clock/alarm_clock_0_id9006/Aligned_obj.usd
+  obj_path: assets/basic/04_bedroom/small_objects/alarm_clock/alarm_clock_0_id9006/Aligned_obj.obj
+  size:
+  - 0.07143
+  - 0.1
+  - 0.043971
+  asset_source_mode: original_usd_inherited
+  metadata: assets/basic/04_bedroom/small_objects/alarm_clock/alarm_clock_0_id9006/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: left_nightstand__0__id2
+  spawn_region: alarm_clock__0__id9006_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 0.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: alarm_clock__0__id9006_candidate_region
+- name: bedside_book__0__id9007
+  category: bedside_book
+  usd_path: assets/basic/04_bedroom/small_objects/bedside_book/bedside_book_0_id9007/Aligned_obj.usd
+  obj_path: assets/basic/04_bedroom/small_objects/bedside_book/bedside_book_0_id9007/Aligned_obj.obj
+  size:
+  - 0.23
+  - 0.086229
+  - 0.195188
+  asset_source_mode: original_usd_inherited
+  metadata: assets/basic/04_bedroom/small_objects/bedside_book/bedside_book_0_id9007/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: left_nightstand__0__id2
+  spawn_region: bedside_book__0__id9007_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 0.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: bedside_book__0__id9007_candidate_region
+- name: tissue_box__0__id9008
+  category: tissue_box
+  usd_path: assets/basic/04_bedroom/small_objects/tissue_box/tissue_box_0_id9008/Aligned_obj.usd
+  obj_path: assets/basic/04_bedroom/small_objects/tissue_box/tissue_box_0_id9008/Aligned_obj.obj
+  size:
+  - 0.185881
+  - 0.129724
+  - 0.22
+  asset_source_mode: original_usd_inherited
+  metadata: assets/basic/04_bedroom/small_objects/tissue_box/tissue_box_0_id9008/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: vanity_desk__0__id5
+  spawn_region: tissue_box__0__id9008_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 0.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: tissue_box__0__id9008_candidate_region
+- name: hand_cream__0__id9009
+  category: hand_cream_tube
+  usd_path: assets/basic/04_bedroom/small_objects/hand_cream_tube/hand_cream_0_id9009/Aligned_obj.usd
+  obj_path: assets/basic/04_bedroom/small_objects/hand_cream_tube/hand_cream_0_id9009/Aligned_obj.obj
+  size:
+  - 0.04363
+  - 0.14
+  - 0.031578
+  asset_source_mode: original_usd_inherited
+  metadata: assets/basic/04_bedroom/small_objects/hand_cream_tube/hand_cream_0_id9009/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: vanity_desk__0__id5
+  spawn_region: hand_cream__0__id9009_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 0.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: hand_cream__0__id9009_candidate_region
+- name: jewelry_tray__0__id9010
+  category: jewelry_tray
+  usd_path: assets/basic/04_bedroom/small_objects/jewelry_tray/jewelry_tray_0_id9010/Aligned_obj.usd
+  obj_path: assets/basic/04_bedroom/small_objects/jewelry_tray/jewelry_tray_0_id9010/Aligned_obj.obj
+  size:
+  - 0.073936
+  - 0.021928
+  - 0.2
+  asset_source_mode: original_usd_inherited
+  metadata: assets/basic/04_bedroom/small_objects/jewelry_tray/jewelry_tray_0_id9010/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: vanity_desk__0__id5
+  spawn_region: jewelry_tray__0__id9010_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 0.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: jewelry_tray__0__id9010_candidate_region
+- name: bedroom_tablet__0__id9011
+  category: tablet
+  usd_path: assets/basic/04_bedroom/small_objects/tablet/bedroom_tablet_0_id9011/Aligned_obj.usd
+  obj_path: assets/basic/04_bedroom/small_objects/tablet/bedroom_tablet_0_id9011/Aligned_obj.obj
+  size:
+  - 0.183404
+  - 0.255
+  - 0.008954
+  asset_source_mode: original_usd_inherited
+  metadata: assets/basic/04_bedroom/small_objects/tablet/bedroom_tablet_0_id9011/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: vanity_desk__0__id5
+  spawn_region: bedroom_tablet__0__id9011_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 0.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: bedroom_tablet__0__id9011_candidate_region
+spawn_logic:
+  default: A_on_B_region_sampler
+  preserve_support_parent: true
+  reject_on_collision: true
+  settle_with_gravity: true
+  max_attempts_per_object: 64
+regions:
+- name: folded_tshirt__0__id9000_candidate_region
+  type: A_on_B_region_sampler
+  A: folded_tshirt__0__id9000
+  B: bed_foot_platform__0__id6
+  center:
+  - 0.8
+  - 0.27
+  size:
+  - 0.9
+  - 0.75
+  support_surface_y: 0.47
+  yaw_range:
+  - 0.0
+  - 0.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: folded_scarf__0__id9002_candidate_region
+  type: A_on_B_region_sampler
+  A: folded_scarf__0__id9002
+  B: bed_foot_platform__0__id6
+  center:
+  - 0.4875
+  - 0.27
+  size:
+  - 1.05
+  - 0.36
+  support_surface_y: 0.47
+  yaw_range:
+  - 90.0
+  - 90.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: bedroom_phone__0__id9003_candidate_region
+  type: A_on_B_region_sampler
+  A: bedroom_phone__0__id9003
+  B: right_nightstand__0__id3
+  center:
+  - 3.8
+  - 3.3
+  size:
+  - 0.35
+  - 0.45
+  support_surface_y: 0.52
+  yaw_range:
+  - 270.0
+  - 270.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: water_glass__0__id9004_candidate_region
+  type: A_on_B_region_sampler
+  A: water_glass__0__id9004
+  B: right_nightstand__0__id3
+  center:
+  - 3.8
+  - 3.435
+  size:
+  - 0.35
+  - 0.35
+  support_surface_y: 0.52
+  yaw_range:
+  - 180.0
+  - 180.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: glasses_case__0__id9005_candidate_region
+  type: A_on_B_region_sampler
+  A: glasses_case__0__id9005
+  B: left_nightstand__0__id2
+  center:
+  - 3.8375
+  - 0.3
+  size:
+  - 0.35
+  - 0.48
+  support_surface_y: 0.52
+  yaw_range:
+  - 0.0
+  - 0.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: alarm_clock__0__id9006_candidate_region
+  type: A_on_B_region_sampler
+  A: alarm_clock__0__id9006
+  B: left_nightstand__0__id2
+  center:
+  - 4.0
+  - 0.135
+  size:
+  - 0.35
+  - 0.35
+  support_surface_y: 0.52
+  yaw_range:
+  - 0.0
+  - 0.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: bedside_book__0__id9007_candidate_region
+  type: A_on_B_region_sampler
+  A: bedside_book__0__id9007
+  B: left_nightstand__0__id2
+  center:
+  - 4.0
+  - 0.3563
+  size:
+  - 0.48
+  - 0.69
+  support_surface_y: 0.52
+  yaw_range:
+  - 0.0
+  - 0.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: tissue_box__0__id9008_candidate_region
+  type: A_on_B_region_sampler
+  A: tissue_box__0__id9008
+  B: vanity_desk__0__id5
+  center:
+  - 2.945
+  - 0.37
+  size:
+  - 0.66
+  - 0.36
+  support_surface_y: 0.75
+  yaw_range:
+  - 0.0
+  - 0.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: hand_cream__0__id9009_candidate_region
+  type: A_on_B_region_sampler
+  A: hand_cream__0__id9009
+  B: vanity_desk__0__id5
+  center:
+  - 2.6
+  - 0.2375
+  size:
+  - 0.42
+  - 0.35
+  support_surface_y: 0.75
+  yaw_range:
+  - 0.0
+  - 0.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: jewelry_tray__0__id9010_candidate_region
+  type: A_on_B_region_sampler
+  A: jewelry_tray__0__id9010
+  B: vanity_desk__0__id5
+  center:
+  - 2.6
+  - 0.37
+  size:
+  - 0.6
+  - 0.36
+  support_surface_y: 0.75
+  yaw_range:
+  - 0.0
+  - 0.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: bedroom_tablet__0__id9011_candidate_region
+  type: A_on_B_region_sampler
+  A: bedroom_tablet__0__id9011
+  B: vanity_desk__0__id5
+  center:
+  - 2.24
+  - 0.37
+  size:
+  - 0.54
+  - 0.765
+  support_surface_y: 0.75
+  yaw_range:
+  - 0.0
+  - 0.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: robot_initial_region
+  type: A_on_B_region_sampler
+  A: robot
+  B: floor
+  center:
+  - 1.55
+  - 1.05
+  size:
+  - 0.7
+  - 0.4
+  support_surface_y: 0.0
+  yaw_range:
+  - 180.0
+  - 180.0
+  sampling:
+    mode: fixed
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    reject_on_collision: true
+  center_xyz:
+  - 1.55
+  - 0.0
+  - 1.05
+  footprint_m:
+  - 0.7
+  - 0.4
+  clearance_requirement_m: 0.8
+  robot_base: Ranger Mini V3
+robot:
+  robot_config_file: workflows/simbox/core/configs/robots/genie1.yaml
+  waypoints:
+  - name: WP-BR-1_left_nightstand_front
+    pose_xy_yaw:
+    - 1.1
+    - 1.0
+    - 180.0
+    purpose: 'left nightstand: glasses case, bedside book, alarm clock'
+    clearance_radius: 0.35
+  - name: WP-BR-2_right_nightstand_front
+    pose_xy_yaw:
+    - 3.35
+    - 1.0
+    - 180.0
+    purpose: 'right nightstand: phone, water glass'
+    clearance_radius: 0.35
+  - name: WP-BR-3_bed_bench_front
+    pose_xy_yaw:
+    - 2.25
+    - 2.55
+    - 0.0
+    purpose: folded T-shirt on bed bench
+    clearance_radius: 0.35
+  - name: WP-BR-4_wardrobe_box_front
+    pose_xy_yaw:
+    - 3.8
+    - 2.45
+    - 270.0
+    purpose: clothing storage box on floor in front of wardrobe
+    clearance_radius: 0.35
+  - name: WP-BR-5_vanity_front
+    pose_xy_yaw:
+    - 1.0
+    - 2.9
+    - 0.0
+    purpose: 'vanity desk: tissue box, hand cream, jewelry tray, tablet'
+    clearance_radius: 0.35
+  - name: WP-BR-6_rug_edge
+    pose_xy_yaw:
+    - 1.45
+    - 2.0
+    - 90.0
+    purpose: floor sock roll and scarf pickup without blocking passage
+    clearance_radius: 0.35
+  initial_region: robot_initial_region
+  base_model: Ranger Mini V3
+  base_footprint_m:
+  - 0.7
+  - 0.4
+cameras:
+- name: split_aloha_hand_left
+  translation:
+  - 0.0
+  - 0.08
+  - 0.05
+  orientation:
+  - 0.0
+  - 0.0
+  - 0.965
+  - 0.259
+  camera_axes: usd
+  camera_file: workflows/simbox/core/configs/cameras/realsense_d455.yaml
+  parent: ''
+  apply_randomization: false
+- name: split_aloha_hand_right
+  translation:
+  - 0.0
+  - -0.08
+  - 0.05
+  orientation:
+  - 0.0
+  - 0.0
+  - 0.259
+  - 0.965
+  camera_axes: usd
+  camera_file: workflows/simbox/core/configs/cameras/realsense_d455.yaml
+  parent: ''
+  apply_randomization: false
+- name: split_aloha_head
+  translation:
+  - 0.15
+  - 0.0
+  - 0.85
+  orientation:
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  camera_axes: usd
+  camera_file: workflows/simbox/core/configs/cameras/realsense_d455.yaml
+  parent: ''
+  apply_randomization: false
+skills:
+- genie1:
+  - left: []
+    right:
+    - name: pick
+      objects:
+      - folded_tshirt__0__id9000
+      filter_y_dir:
+      - forward
+      - 60
+      filter_z_dir:
+      - downward
+      - 150
+      pre_grasp_offset: 0.05
+      gripper_change_steps: 10
+      t_eps: 0.025
+      o_eps: 1
+      process_valid: true
+      lift_th: 0.02
+      post_grasp_offset_min: 0.1
+      post_grasp_offset_max: 0.15
+    - name: place
+      objects:
+      - folded_tshirt__0__id9000
+      - bed_foot_platform__0__id6
+      place_direction: vertical
+data:
+  task_dir: runs/04_bedroom_task
+  language_instruction: Pick up the folded T-shirt and place it on the bed bench
+  detailed_language_instruction: Reach for the folded T-shirt;Grasp firmly;Move to
+    bed bench;Release
+  collect_info: ''
+  version: v1.0
+  update: true
+  max_episode_length: 1000
+metadata:
+  scene_name: 04_bedroom
+  room_size_m:
+  - 4.5
+  - 3.6
+  - 2.8
+  robot_footprint_m:
+  - 0.7
+  - 0.4
+  min_aisle_m: 0.8

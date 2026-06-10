@@ -43,6 +43,11 @@ class Pick(BaseSkill):
         self._plan_debug_path = None
         self._runtime_failure_debug_path = None
         self._runtime_failure_snapshot_written = False
+        self._success_check_debug_path = None
+        self._success_check_snapshot_written = False
+        self._last_success_check_debug = {}
+        self._execution_trace = []
+        self._execution_trace_path = None
         self._selected_candidate_debug = {}
         self._mobile_base_prim_path = getattr(self.robot, "mobile_base_prim_path", None)
         self._cached_mobile_to_armbase_tf = None
@@ -224,32 +229,166 @@ class Pick(BaseSkill):
             "params": params,
         }
 
+    def _gripper_action_for_state(self, gripper_cmd: str) -> np.ndarray:
+        sign = -1.0 if gripper_cmd == "close_gripper" else 1.0
+        old_state = getattr(self.controller, "_gripper_state", 1.0)
+        self.controller._gripper_state = sign
+        try:
+            return np.asarray(self.controller.get_gripper_action(), dtype=float)
+        finally:
+            self.controller._gripper_state = old_state
+
+    def _append_gripper_transition(self, manip_list, ee_trans, ee_ori, gripper_cmd: str):
+        steps = max(int(self.skill_cfg.get("gripper_change_steps", 40)), 1)
+        start_cmd = "open_gripper" if gripper_cmd == "close_gripper" else "close_gripper"
+        start = self._gripper_action_for_state(start_cmd)
+        target = self._gripper_action_for_state(gripper_cmd)
+        for step in range(steps):
+            ratio = float(step + 1) / float(steps)
+            gripper_action = start + (target - start) * ratio
+            manip_list.append(
+                (
+                    ee_trans,
+                    ee_ori,
+                    gripper_cmd,
+                    {"skip_plan": True, "gripper_action": gripper_action},
+                )
+            )
+
+    def _append_gripper_hold(self, manip_list, ee_trans, ee_ori, gripper_cmd: str, steps=None):
+        if steps is None:
+            steps = self.skill_cfg.get("grasp_open_hold_steps", 8)
+        steps = max(int(steps), 0)
+        gripper_action = self._gripper_action_for_state(gripper_cmd)
+        for _ in range(steps):
+            manip_list.append(
+                (
+                    ee_trans,
+                    ee_ori,
+                    gripper_cmd,
+                    {"skip_plan": True, "gripper_action": gripper_action},
+                )
+            )
+
+    def _grasp_arrival_params(self):
+        t_eps = min(float(self.skill_cfg.get("t_eps", 1e-3)), float(self.skill_cfg.get("grasp_t_eps", 0.008)))
+        o_eps = min(float(self.skill_cfg.get("o_eps", 5e-3)), float(self.skill_cfg.get("grasp_o_eps", 0.2)))
+        return {"t_eps": t_eps, "o_eps": o_eps}
+
+    def _offset_from_grasp(self, grasp_translation, T_base_ee_grasp, offset):
+        if offset <= 0.0:
+            return grasp_translation
+        if "r5a" in self.controller.robot_file:
+            approach_axis = T_base_ee_grasp[:3, 0]
+        else:
+            approach_axis = T_base_ee_grasp[:3, 2]
+        return grasp_translation - approach_axis * offset
+
+    def _get_object_pose_in_armbase(self):
+        T_world_obj = tf_matrix_from_pose(*self._get_object_world_pose())
+        T_world_base = self._get_armbase_transform_in_task()
+        T_base_obj = np.linalg.inv(T_world_base) @ T_world_obj
+        return pose_from_tf_matrix(T_base_obj)
+
+    def _select_grasp_index(self, pre_result, result, p_base_ee_grasps, q_base_ee_grasps, T_base_ee_grasps):
+        priority_index = select_index_by_priority_dual(pre_result, result)
+        pre_success_mask = np.asarray(pre_result.success.detach().cpu().numpy()).reshape(-1).astype(bool)
+        grasp_success_mask = np.asarray(result.success.detach().cpu().numpy()).reshape(-1).astype(bool)
+        both_success = np.logical_and(pre_success_mask, grasp_success_mask)
+        candidate_indices = np.where(both_success)[0]
+        if len(candidate_indices) == 0:
+            return priority_index
+
+        obj_base_t, _ = self._get_object_pose_in_armbase()
+        target_grasp_z = float(self.skill_cfg.get("target_grasp_z", 0.12))
+        target_grasp_orientation = self.skill_cfg.get("target_grasp_orientation", None)
+        if target_grasp_orientation is None and self.pick_obj.name.startswith("apple_"):
+            target_grasp_orientation = [
+                0.150190916268329,
+                0.7899356519730897,
+                -0.5611163759233482,
+                0.19645041889234482,
+            ]
+        if target_grasp_orientation is not None:
+            target_grasp_orientation = np.asarray(target_grasp_orientation, dtype=float)
+            target_grasp_orientation = target_grasp_orientation / np.linalg.norm(target_grasp_orientation)
+        target_grasp_orientation_weight = float(self.skill_cfg.get("target_grasp_orientation_weight", 1.0))
+        priority_rank = {int(idx): rank for rank, idx in enumerate(candidate_indices.tolist())}
+        scored = []
+        for idx in candidate_indices:
+            rel = np.asarray(p_base_ee_grasps[idx], dtype=float) - np.asarray(obj_base_t, dtype=float)
+            xy_norm = float(np.linalg.norm(rel[:2]))
+            approach_axis = T_base_ee_grasps[idx, :3, 0 if "r5a" in self.controller.robot_file else 2]
+            vertical_penalty = max(0.0, float(approach_axis[2]) + 0.75)
+            height_penalty = abs(float(rel[2]) - target_grasp_z)
+            orientation_penalty = 0.0
+            if target_grasp_orientation is not None:
+                q = np.asarray(q_base_ee_grasps[idx], dtype=float)
+                q = q / np.linalg.norm(q)
+                orientation_penalty = 1.0 - abs(float(np.dot(q, target_grasp_orientation)))
+            score = height_penalty + xy_norm + vertical_penalty + orientation_penalty * target_grasp_orientation_weight
+            scored.append(
+                (
+                    score,
+                    priority_rank.get(int(idx), 0),
+                    int(idx),
+                    rel.tolist(),
+                    xy_norm,
+                    float(rel[2]),
+                    orientation_penalty,
+                )
+            )
+
+        scored.sort()
+        selected = scored[0]
+        self._candidate_rank_debug = [
+            {
+                "score": score,
+                "priority_rank": rank,
+                "candidate_index": idx,
+                "relative_grasp_translation": rel,
+                "xy_norm": xy_norm,
+                "relative_grasp_z": rel_z,
+                "orientation_penalty": orientation_penalty,
+            }
+            for score, rank, idx, rel, xy_norm, rel_z, orientation_penalty in scored[: min(len(scored), 16)]
+        ]
+        print(
+            "[pick-debug] Selected grasp candidate "
+            f"{selected[2]} after physical ranking; "
+            f"priority_candidate={priority_index}, score={selected[0]:.6f}"
+        )
+        return selected[2]
+
     def simple_generate_manip_cmds(self):
         manip_list = []
         self._runtime_failure_snapshot_written = False
         self._runtime_failure_debug_path = None
         self._selected_candidate_debug = {}
+        self._candidate_rank_debug = []
+        self._execution_trace = []
+        self._execution_trace_path = None
 
         # Update
         p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        cmd = (p_base_ee_cur, q_base_ee_cur, "update_pose_cost_metric", {"hold_vec_weight": None})
-        manip_list.append(cmd)
-
-        ignore_substring = deepcopy(self.controller.ignore_substring + self.skill_cfg.get("ignore_substring", []))
-        ignore_substring.append(self.pick_obj.name)
+        open_gripper_action = self._gripper_action_for_state("open_gripper")
         cmd = (
             p_base_ee_cur,
             q_base_ee_cur,
-            "update_specific",
-            {"ignore_substring": ignore_substring, "reference_prim_path": self.controller.reference_prim_path},
+            "update_pose_cost_metric",
+            {"hold_vec_weight": None, "gripper_action": open_gripper_action},
         )
         manip_list.append(cmd)
+
+        base_ignore_substring = deepcopy(self.controller.ignore_substring + self.skill_cfg.get("ignore_substring", []))
+        grasp_ignore_substring = deepcopy(base_ignore_substring)
+        grasp_ignore_substring.append(self.pick_obj.name)
 
         # Pre grasp
         T_base_ee_grasps = self.sample_ee_pose()  # (N, 4, 4)
         T_base_ee_pregrasps = deepcopy(T_base_ee_grasps)
         self.controller.update_specific(
-            ignore_substring=ignore_substring, reference_prim_path=self.controller.reference_prim_path
+            ignore_substring=base_ignore_substring, reference_prim_path=self.controller.reference_prim_path
         )
 
         if "r5a" in self.controller.robot_file:
@@ -292,16 +431,23 @@ class Pick(BaseSkill):
             else:
                 # Inputs are different, compute separately
                 pre_result = self.controller.test_batch_forward(p_base_ee_pregrasps, q_base_ee_pregrasps)
+                self.controller.update_specific(
+                    ignore_substring=grasp_ignore_substring, reference_prim_path=self.controller.reference_prim_path
+                )
                 result = self.controller.test_batch_forward(p_base_ee_grasps, q_base_ee_grasps)
-                index = select_index_by_priority_dual(pre_result, result)
                 pre_success_mask = np.asarray(pre_result.success.detach().cpu().numpy()).reshape(-1).astype(bool)
                 grasp_success_mask = np.asarray(result.success.detach().cpu().numpy()).reshape(-1).astype(bool)
                 success_found = bool(np.logical_and(pre_success_mask, grasp_success_mask).any())
+                index = self._select_grasp_index(pre_result, result, p_base_ee_grasps, q_base_ee_grasps, T_base_ee_grasps)
                 candidate_results = [
                     {
                         **self._candidate_source_debug(i),
                         "pregrasp_success": bool(pre_success_mask[i]),
                         "grasp_success": bool(grasp_success_mask[i]),
+                        "pregrasp_translation": p_base_ee_pregrasps[i],
+                        "pregrasp_orientation": q_base_ee_pregrasps[i],
+                        "grasp_translation": p_base_ee_grasps[i],
+                        "grasp_orientation": q_base_ee_grasps[i],
                     }
                     for i in range(min(len(pre_success_mask), 128))
                 ]
@@ -325,6 +471,10 @@ class Pick(BaseSkill):
                 else:
                     raise NotImplementedError
                 if self.skill_cfg.get("pre_grasp_offset", 0.1) > 0:
+                    self.controller.update_specific(
+                        ignore_substring=grasp_ignore_substring,
+                        reference_prim_path=self.controller.reference_prim_path,
+                    )
                     if test_mode == "forward":
                         result = self.controller.test_single_forward(p_base_ee_grasp, q_base_ee_grasp)
                     elif test_mode == "ik":
@@ -374,6 +524,17 @@ class Pick(BaseSkill):
         }
 
         # Pre-grasp
+        cmd = (
+            p_base_ee_cur,
+            q_base_ee_cur,
+            "update_specific",
+            {
+                "ignore_substring": base_ignore_substring,
+                "reference_prim_path": self.controller.reference_prim_path,
+                "gripper_action": open_gripper_action,
+            },
+        )
+        manip_list.append(cmd)
         cmd = (p_base_ee_pregrasps[index], q_base_ee_pregrasps[index], "open_gripper", {})
         manip_list.append(cmd)
         if self.skill_cfg.get("pre_grasp_hold_vec_weight", None) is not None:
@@ -385,26 +546,71 @@ class Pick(BaseSkill):
             )
             manip_list.append(cmd)
 
+        guard_offset = float(
+            self.skill_cfg.get(
+                "grasp_guard_offset",
+                min(float(self.skill_cfg.get("pre_grasp_offset", 0.1)), 0.04),
+            )
+        )
+        if guard_offset > 0.0:
+            p_base_ee_grasp_guard = self._offset_from_grasp(
+                p_base_ee_grasps[index],
+                T_base_ee_grasps[index],
+                guard_offset,
+            )
+            cmd = (
+                p_base_ee_grasp_guard,
+                q_base_ee_grasps[index],
+                "open_gripper",
+                {"gripper_action": open_gripper_action},
+            )
+            manip_list.append(cmd)
+
         # Grasp
-        cmd = (p_base_ee_grasps[index], q_base_ee_grasps[index], "open_gripper", {})
+        cmd = (
+            p_base_ee_pregrasps[index],
+            q_base_ee_pregrasps[index],
+            "update_specific",
+            {
+                "ignore_substring": grasp_ignore_substring,
+                "reference_prim_path": self.controller.reference_prim_path,
+                "gripper_action": open_gripper_action,
+            },
+        )
         manip_list.append(cmd)
-        cmd = (p_base_ee_grasps[index], q_base_ee_grasps[index], self.gripper_cmd, {})
-        manip_list.extend(
-            [cmd] * self.skill_cfg.get("gripper_change_steps", 40)
-        )  # Default we use 40 steps to make sure the gripper is fully closed
-        ignore_substring = deepcopy(self.controller.ignore_substring + self.skill_cfg.get("ignore_substring", []))
+        cmd = (p_base_ee_grasps[index], q_base_ee_grasps[index], "open_gripper", self._grasp_arrival_params())
+        manip_list.append(cmd)
+        self._append_gripper_hold(
+            manip_list,
+            p_base_ee_grasps[index],
+            q_base_ee_grasps[index],
+            "open_gripper",
+        )
+        self._append_gripper_transition(
+            manip_list,
+            p_base_ee_grasps[index],
+            q_base_ee_grasps[index],
+            self.gripper_cmd,
+        )
+        self._append_gripper_hold(
+            manip_list,
+            p_base_ee_grasps[index],
+            q_base_ee_grasps[index],
+            self.gripper_cmd,
+            steps=self.skill_cfg.get("post_close_hold_steps", 12),
+        )
         cmd = (
             p_base_ee_grasps[index],
             q_base_ee_grasps[index],
             "update_specific",
-            {"ignore_substring": ignore_substring, "reference_prim_path": self.controller.reference_prim_path},
+            {"ignore_substring": base_ignore_substring, "reference_prim_path": self.controller.reference_prim_path},
         )
         manip_list.append(cmd)
         cmd = (
             p_base_ee_grasps[index],
             q_base_ee_grasps[index],
             "attach_obj",
-            {"obj_prim_path": self.pick_obj.mesh_prim_path},
+            {"obj_prim_path": self.pick_obj.mesh_prim_path, "skip_plan": True},
         )
         manip_list.append(cmd)
 
@@ -415,7 +621,12 @@ class Pick(BaseSkill):
         if post_grasp_offset:
             p_base_ee_postgrasps = deepcopy(p_base_ee_grasps)
             p_base_ee_postgrasps[index][2] += post_grasp_offset
-            cmd = (p_base_ee_postgrasps[index], q_base_ee_grasps[index], self.gripper_cmd, {})
+            cmd = (
+                p_base_ee_postgrasps[index],
+                q_base_ee_grasps[index],
+                self.gripper_cmd,
+                {"gripper_action": self._gripper_action_for_state(self.gripper_cmd)},
+            )
             manip_list.append(cmd)
 
         # Whether return to pre-grasp
@@ -435,12 +646,60 @@ class Pick(BaseSkill):
                 "sample_debug": self._sample_debug,
                 "geometry_debug": self._collect_geometry_debug(),
                 "candidate_results": candidate_results,
+                "candidate_rank_debug": self._candidate_rank_debug,
                 "manip_command_sequence": [self._manip_cmd_to_debug(cmd) for cmd in self.manip_list],
             },
         )
         print(f"[pick-debug] Wrote pick planning snapshot: {self._plan_debug_path}")
         if not success_found:
             print("[pick-debug] No candidate passed pregrasp+grasp screening; using fallback selected candidate.")
+
+    def _record_execution_step(self):
+        if not self.manip_list:
+            return
+
+        current_cmd = self.manip_list[0]
+        action = getattr(self.controller, "_action", {}) or {}
+        gripper_action = action.get("gripper_action", None)
+        qpos = self.robot.get_joints_state().positions
+        gripper_indices = getattr(self.controller, "gripper_indices", np.array([], dtype=int))
+        try:
+            actual_gripper_position = qpos[gripper_indices]
+        except Exception:
+            actual_gripper_position = []
+
+        obj_t, obj_q = self._get_object_world_pose()
+        ee_t, ee_q = self.controller.get_ee_pose()
+        self._execution_trace.append(
+            {
+                "step": len(self._execution_trace),
+                "remaining_commands": len(self.manip_list),
+                "current_command": self._manip_cmd_to_debug(current_cmd),
+                "controller_gripper_state": getattr(self.controller, "_gripper_state", None),
+                "action_gripper": gripper_action,
+                "actual_gripper_position": actual_gripper_position,
+                "ee_translation": ee_t,
+                "ee_orientation": ee_q,
+                "object_world_translation": obj_t,
+                "object_world_orientation": obj_q,
+            }
+        )
+
+        if len(self._execution_trace) % 25 == 0:
+            self._execution_trace_path = self._write_debug_artifact(
+                "pick_execution_trace.json",
+                {"steps": self._execution_trace, "plan_snapshot_path": self._plan_debug_path},
+            )
+
+    def update(self):
+        self._record_execution_step()
+
+    def _flush_execution_trace(self):
+        if self._execution_trace:
+            self._execution_trace_path = self._write_debug_artifact(
+                "pick_execution_trace.json",
+                {"steps": self._execution_trace, "plan_snapshot_path": self._plan_debug_path},
+            )
 
     def sample_ee_pose(self, max_length=CUROBO_BATCH_SIZE):
         T_base_ee = self.get_ee_poses("armbase")
@@ -589,38 +848,109 @@ class Pick(BaseSkill):
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
         p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        p_base_ee, q_base_ee, *_ = self.manip_list[0]
+        p_base_ee, q_base_ee, gripper_fn, params = self.manip_list[0]
         diff_trans = np.linalg.norm(p_base_ee_cur - p_base_ee)
         diff_ori = 2 * np.arccos(min(abs(np.dot(q_base_ee_cur, q_base_ee)), 1.0))
         pose_flag = np.logical_and(
             diff_trans < t_eps,
             diff_ori < o_eps,
         )
+        if bool(params.get("skip_plan", False)) or gripper_fn in {"update_pose_cost_metric", "update_specific"}:
+            self.plan_flag = True
+            return True
         self.plan_flag = self.controller.num_last_cmd > 10
         return np.logical_or(pose_flag, self.plan_flag)
 
     def is_done(self):
         if len(self.manip_list) == 0:
             return True
-        if self.is_subtask_done(t_eps=self.skill_cfg.get("t_eps", 1e-3), o_eps=self.skill_cfg.get("o_eps", 5e-3)):
+        params = self.manip_list[0][3]
+        if self.is_subtask_done(
+            t_eps=params.get("t_eps", self.skill_cfg.get("t_eps", 1e-3)),
+            o_eps=params.get("o_eps", self.skill_cfg.get("o_eps", 5e-3)),
+        ):
             self.manip_list.pop(0)
         return len(self.manip_list) == 0
 
     def is_success(self):
-        flag = True
+        self._flush_execution_trace()
+        contact, indices = self.get_contact()
+        contact_count = int(len(indices))
+        contact_required = self.gripper_cmd == "close_gripper"
+        contact_valid = (contact_count >= 1) if contact_required else True
+        flag = contact_valid
 
-        _, indices = self.get_contact()
-        if self.gripper_cmd == "close_gripper":
-            flag = len(indices) >= 1
+        joint_velocity_max = float(np.max(np.abs(self.robot.get_joints_state().velocities)))
+        object_linear_velocity_max = float(np.max(np.abs(self.pick_obj.get_linear_velocity())))
 
         if self.skill_cfg.get("process_valid", True):
-            self.process_valid = np.max(np.abs(self.robot.get_joints_state().velocities)) < 5 and (
-                np.max(np.abs(self.pick_obj.get_linear_velocity())) < 5
-            )
+            self.process_valid = joint_velocity_max < 5 and object_linear_velocity_max < 5
         flag = flag and self.process_valid
 
+        lift_threshold = float(self.skill_cfg.get("lift_th", 0.0))
+        object_position = deepcopy(self.pick_obj.get_local_pose()[0])
+        lift_delta = float(object_position[2] - self.obj_init_trans[2])
+        lift_valid = True
         if self.skill_cfg.get("lift_th", 0.0) > 0.0:
-            p_world_obj = deepcopy(self.pick_obj.get_local_pose()[0])
-            flag = flag and ((p_world_obj[2] - self.obj_init_trans[2]) > self.skill_cfg.get("lift_th", 0.0))
+            lift_valid = lift_delta > lift_threshold
+            flag = flag and lift_valid
+
+        failure_reasons = []
+        if not contact_valid:
+            failure_reasons.append("no_gripper_object_contact")
+        if not self.process_valid:
+            failure_reasons.append("process_velocity_invalid")
+        if not lift_valid:
+            failure_reasons.append("lift_below_threshold")
+
+        self._last_success_check_debug = {
+            "robot": self.robot.name,
+            "object": self.pick_obj.name,
+            "lr_arm": self.lr_arm,
+            "success": bool(flag),
+            "failure_reasons": failure_reasons,
+            "contact": {
+                "required": bool(contact_required),
+                "valid": bool(contact_valid),
+                "count": contact_count,
+                "indices": [int(idx) for idx in indices.tolist()],
+                "threshold": 0.0,
+                "max_force_sum": float(np.max(contact)) if np.size(contact) else 0.0,
+                "force_sums": contact,
+            },
+            "process_valid": {
+                "enabled": bool(self.skill_cfg.get("process_valid", True)),
+                "valid": bool(self.process_valid),
+                "joint_velocity_max": joint_velocity_max,
+                "object_linear_velocity_max": object_linear_velocity_max,
+                "threshold": 5.0,
+            },
+            "lift": {
+                "enabled": bool(lift_threshold > 0.0),
+                "valid": bool(lift_valid),
+                "delta": lift_delta,
+                "threshold": lift_threshold,
+                "initial_position": self.obj_init_trans,
+                "current_position": object_position,
+            },
+            "selected_candidate": self._selected_candidate_debug,
+            "plan_snapshot_path": self._plan_debug_path,
+        }
+
+        if not flag:
+            self.failure_reason = "pick_success_check_failed:" + ",".join(failure_reasons)
+            self.error_message = (
+                "Pick completed but success check failed. "
+                f"contact_count={contact_count}, lift_delta={lift_delta:.6f}, "
+                f"joint_velocity_max={joint_velocity_max:.6f}, "
+                f"object_linear_velocity_max={object_linear_velocity_max:.6f}"
+            )
+            if not self._success_check_snapshot_written:
+                self._success_check_debug_path = self._write_debug_artifact(
+                    "pick_success_check_snapshot.json",
+                    self._last_success_check_debug,
+                )
+                self._success_check_snapshot_written = True
+                print(f"[pick-debug] Wrote pick success check snapshot: {self._success_check_debug_path}")
 
         return flag

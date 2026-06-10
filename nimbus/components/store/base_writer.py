@@ -138,6 +138,7 @@ class BaseWriter(Iterator):
                     f"generate failed but partial output was kept. success rate: {self.success_case}/{self.total_case}"
                 )
                 self.scene.update_generate_status(success=False)
+                self._reset_scene_after_failed_generation()
             self.collect_io_frame_info(flush_length, time.time() - io_start_time)
             self.status_reporter.update_status(ComponentStatus.COMPLETED)
             return None
@@ -166,6 +167,18 @@ class BaseWriter(Iterator):
             if isinstance(data, dict) and "generate_success" in data:
                 return bool(data["generate_success"])
         return True
+
+    def _reset_scene_after_failed_generation(self):
+        if self.scene is None or self.scene.wf is None:
+            return
+        reset_fn = getattr(self.scene.wf, "reset_after_failed_generation", None)
+        if not callable(reset_fn):
+            return
+        try:
+            self.logger.info("Reset workflow state after failed generation.")
+            reset_fn()
+        except Exception:
+            self.logger.exception("Failed to reset workflow state after failed generation.")
 
     def __del__(self):
         for thread in self.flush_threads:

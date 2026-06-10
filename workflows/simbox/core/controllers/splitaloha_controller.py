@@ -37,14 +37,18 @@ class SplitAlohaController(TemplateController):
     def forward(self, manip_cmd, eps=5e-3):
         ee_trans, ee_ori = manip_cmd[0:2]
         gripper_fn = manip_cmd[2]
-        params = manip_cmd[3]
+        params = dict(manip_cmd[3])
+        skip_plan = bool(params.pop("skip_plan", False))
+        gripper_action = params.pop("gripper_action", None)
+        params.pop("t_eps", None)
+        params.pop("o_eps", None)
         assert hasattr(self, gripper_fn)
         method = getattr(self, gripper_fn)
         if gripper_fn in ["in_plane_rotation", "mobile_move", "dummy_forward", "joint_ctrl"]:
             return method(**params)
         elif gripper_fn in ["update_pose_cost_metric", "update_specific"]:
             method(**params)
-            return self.ee_forward(ee_trans, ee_ori, eps=eps, skip_plan=True)
+            return self.ee_forward(ee_trans, ee_ori, eps=eps, skip_plan=True, gripper_action=gripper_action)
         else:
             method(**params)
-            return self.ee_forward(ee_trans, ee_ori, eps=eps)
+            return self.ee_forward(ee_trans, ee_ori, eps=eps, skip_plan=skip_plan, gripper_action=gripper_action)

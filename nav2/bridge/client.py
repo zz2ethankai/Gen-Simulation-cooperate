@@ -233,7 +233,12 @@ class Nav2BridgeClient:
         if self._latest_odom_xy is not None and self._latest_odom_yaw is not None:
             return self._latest_odom_xy[0], self._latest_odom_xy[1], self._latest_odom_yaw
         translation, orientation = self._get_robot_base_pose()
-        return float(translation[0]), float(translation[1]), self._yaw_from_wxyz(orientation)
+        x = float(translation[0])
+        y = float(translation[1])
+        yaw = self._yaw_from_wxyz(orientation)
+        if not all(math.isfinite(value) for value in (x, y, yaw)):
+            return 0.0, 0.0, 0.0
+        return x, y, yaw
 
     def _publish_json(self, publisher, payload: dict[str, Any]):
         msg = self._String()
@@ -272,6 +277,9 @@ class Nav2BridgeClient:
             msg.pose.pose.orientation.z,
             msg.pose.pose.orientation.w,
         )
+        if not all(math.isfinite(value) for value in (x, y, yaw)):
+            LOGGER.warning("ignore non-finite odom robot=%s x=%s y=%s yaw=%s", self._robot_name, x, y, yaw)
+            return
         self._latest_odom_xy = (x, y)
         self._latest_odom_yaw = yaw
         self._append_odom_trace(x=x, y=y, yaw=yaw)

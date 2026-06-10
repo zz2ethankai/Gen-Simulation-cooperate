@@ -1,3 +1,6 @@
+import json
+import os
+import time
 from copy import deepcopy
 
 import numpy as np
@@ -61,6 +64,14 @@ class Place(BaseSkill):
         self.align_plane_x_axis = self.skill_cfg.get("align_plane_x_axis", None)
         self.align_plane_y_axis = self.skill_cfg.get("align_plane_y_axis", None)
         self.align_obj_tol = self.skill_cfg.get("align_obj_tol", None)
+        self.output_root = str(self.skill_cfg.get("output_root", "output/ros_bridge/skills"))
+        self.debug_tag = f"{robot.name}_place_{self.pick_obj.name}_to_{self.place_obj.name}_{int(time.time() * 1000)}"
+        self.debug_dir = os.path.join(self.output_root, self.debug_tag)
+        self._success_check_debug_path = None
+        self._success_check_snapshot_written = False
+        self._last_success_check_debug = {}
+        self.failure_reason = ""
+        self.error_message = ""
 
     @staticmethod
     def _get_world_pose_from_path(prim_path):
@@ -80,6 +91,50 @@ class Place(BaseSkill):
         if callable(get_obj_world_pose):
             return tf_matrix_from_pose(*get_obj_world_pose())
         return tf_matrix_from_pose(*obj.get_local_pose())
+
+    def _json_ready(self, value):
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, (np.floating, np.integer, np.bool_)):
+            return value.item()
+        if type(value).__module__.startswith("pxr") and type(value).__name__.startswith("Vec"):
+            return [self._json_ready(v) for v in value]
+        if isinstance(value, (list, tuple)):
+            return [self._json_ready(v) for v in value]
+        if isinstance(value, dict):
+            return {str(k): self._json_ready(v) for k, v in value.items()}
+        return value
+
+    def _write_debug_artifact(self, filename: str, payload: dict):
+        os.makedirs(self.debug_dir, exist_ok=True)
+        output_path = os.path.join(self.debug_dir, filename)
+        with open(output_path, "w", encoding="utf-8") as handle:
+            json.dump(self._json_ready(payload), handle, indent=2, ensure_ascii=False)
+        return output_path
+
+    def _record_success_check_debug(self, *, success: bool, failure_reasons: list[str], details: dict):
+        self._last_success_check_debug = {
+            "robot": self.robot.name,
+            "skill": self.name,
+            "pick_object": self.pick_obj.name,
+            "place_object": self.place_obj.name,
+            "place_prim_path": self.place_prim_path,
+            "success_mode": self.skill_cfg.get("success_mode", "3diou"),
+            "success": bool(success),
+            "failure_reasons": failure_reasons,
+            "details": details,
+        }
+        if success:
+            return
+        self.failure_reason = "place_success_check_failed:" + ",".join(failure_reasons)
+        self.error_message = "Place completed but success check failed."
+        if not self._success_check_snapshot_written:
+            self._success_check_debug_path = self._write_debug_artifact(
+                "place_success_check_snapshot.json",
+                self._last_success_check_debug,
+            )
+            self._success_check_snapshot_written = True
+            print(f"[place-debug] Wrote place success check snapshot: {self._success_check_debug_path}")
 
     def simple_generate_manip_cmds(self):
         manip_list = []
@@ -398,41 +453,123 @@ class Place(BaseSkill):
         return len(self.manip_list) == 0
 
     def is_success(self, th=0.0):
-        if self.skill_cfg.get("success_mode", "3diou") == "3diou":
+        success_mode = self.skill_cfg.get("success_mode", "3diou")
+        if success_mode == "3diou":
             bbox_pick_obj = compute_bbox(self.pick_obj.prim)
             bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
             iou = IoU(
                 Box(get_bbox_center_and_corners(bbox_pick_obj)), Box(get_bbox_center_and_corners(bbox_place_obj))
             ).iou()
             print(iou)
-            return iou > th
-        elif self.skill_cfg.get("success_mode", "3diou") == "height":
+            success = bool(iou > th)
+            self._record_success_check_debug(
+                success=success,
+                failure_reasons=[] if success else ["iou_below_threshold"],
+                details={
+                    "iou": float(iou),
+                    "threshold": float(th),
+                    "pick_bbox_min": bbox_pick_obj.min,
+                    "pick_bbox_max": bbox_pick_obj.max,
+                    "place_bbox_min": bbox_place_obj.min,
+                    "place_bbox_max": bbox_place_obj.max,
+                },
+            )
+            return success
+        elif success_mode == "height":
             T_o2r = get_relative_transform(
                 get_prim_at_path(self.pick_obj.prim_path), get_prim_at_path(self.robot_base_path)
             )
             T_o2r_trans = T_o2r[:3, 3]
-            return T_o2r_trans[2] < self.place_ee_trans[2] - 0.4
-        elif self.skill_cfg.get("success_mode", "3diou") == "xybbox":
-            bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
-            pick_x, pick_y = self.pick_obj.get_local_pose()[0][:2]
-            place_xy_min = bbox_place_obj.min[:2]
-            place_xy_max = bbox_place_obj.max[:2]
-            return ((place_xy_min[0] + 0.015) < pick_x < (place_xy_max[0] - 0.015)) and (
-                (place_xy_min[1] + 0.015) < pick_y < (place_xy_max[1] - 0.015)
+            threshold = float(self.place_ee_trans[2] - 0.4)
+            success = bool(T_o2r_trans[2] < threshold)
+            self._record_success_check_debug(
+                success=success,
+                failure_reasons=[] if success else ["height_not_below_threshold"],
+                details={
+                    "object_to_robot_translation": T_o2r_trans,
+                    "z": float(T_o2r_trans[2]),
+                    "threshold": threshold,
+                    "place_ee_trans": self.place_ee_trans,
+                },
             )
-        elif self.skill_cfg.get("success_mode", "3diou") == "left":
+            return success
+        elif success_mode == "xybbox":
+            bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
+            pick_x, pick_y = [float(value) for value in self.pick_obj.get_local_pose()[0][:2]]
+            place_xy_min = np.asarray(bbox_place_obj.min[:2], dtype=float)
+            place_xy_max = np.asarray(bbox_place_obj.max[:2], dtype=float)
+            margin = float(self.skill_cfg.get("success_xy_margin", 0.015))
+            valid_min = place_xy_min + margin
+            valid_max = place_xy_max - margin
+            x_valid = bool(valid_min[0] < pick_x < valid_max[0])
+            y_valid = bool(valid_min[1] < pick_y < valid_max[1])
+            success = bool(x_valid and y_valid)
+            failure_reasons = []
+            if not x_valid:
+                failure_reasons.append("x_outside_place_bbox")
+            if not y_valid:
+                failure_reasons.append("y_outside_place_bbox")
+            self._record_success_check_debug(
+                success=success,
+                failure_reasons=failure_reasons,
+                details={
+                    "pick_xy": [float(pick_x), float(pick_y)],
+                    "place_xy_min": place_xy_min,
+                    "place_xy_max": place_xy_max,
+                    "margin": margin,
+                    "valid_xy_min": valid_min,
+                    "valid_xy_max": valid_max,
+                    "x_valid": x_valid,
+                    "y_valid": y_valid,
+                    "distance_to_valid_min": [float(pick_x - valid_min[0]), float(pick_y - valid_min[1])],
+                    "distance_to_valid_max": [float(valid_max[0] - pick_x), float(valid_max[1] - pick_y)],
+                    "pick_local_pose": self.pick_obj.get_local_pose()[0],
+                    "place_bbox_min": bbox_place_obj.min,
+                    "place_bbox_max": bbox_place_obj.max,
+                },
+            )
+            return success
+        elif success_mode == "left":
             bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
             pick_x, pick_y = self.pick_obj.get_local_pose()[0][:2]
             place_xy_min = bbox_place_obj.min[:2]
             place_xy_max = bbox_place_obj.max[:2]
-            return pick_x < place_xy_min[0] - self.skill_cfg.get("threshold", 0.03)
-        elif self.skill_cfg.get("success_mode", "3diou") == "right":
+            threshold = float(self.skill_cfg.get("threshold", 0.03))
+            limit = float(place_xy_min[0] - threshold)
+            success = bool(pick_x < limit)
+            self._record_success_check_debug(
+                success=success,
+                failure_reasons=[] if success else ["x_not_left_of_place_bbox"],
+                details={
+                    "pick_xy": [float(pick_x), float(pick_y)],
+                    "place_xy_min": place_xy_min,
+                    "place_xy_max": place_xy_max,
+                    "threshold": threshold,
+                    "x_limit": limit,
+                },
+            )
+            return success
+        elif success_mode == "right":
             bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
             pick_x, pick_y = self.pick_obj.get_local_pose()[0][:2]
             place_xy_min = bbox_place_obj.min[:2]
             place_xy_max = bbox_place_obj.max[:2]
-            return pick_x > place_xy_max[0] + self.skill_cfg.get("threshold", 0.03)
-        elif self.skill_cfg.get("success_mode", "3diou") == "flower":
+            threshold = float(self.skill_cfg.get("threshold", 0.03))
+            limit = float(place_xy_max[0] + threshold)
+            success = bool(pick_x > limit)
+            self._record_success_check_debug(
+                success=success,
+                failure_reasons=[] if success else ["x_not_right_of_place_bbox"],
+                details={
+                    "pick_xy": [float(pick_x), float(pick_y)],
+                    "place_xy_min": place_xy_min,
+                    "place_xy_max": place_xy_max,
+                    "threshold": threshold,
+                    "x_limit": limit,
+                },
+            )
+            return success
+        elif success_mode == "flower":
             bbox_pick_obj = compute_bbox(self.pick_obj.prim)
             bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
             iou = IoU(
@@ -444,11 +581,30 @@ class Place(BaseSkill):
             x_min, y_min, _ = bbox_place_obj.min
             x_max, y_max, _ = bbox_place_obj.max
             x_middle, y_middle, _ = middle[0], middle[1], middle[2]
-            if x_min < x_middle < x_max and y_min < y_middle < y_max:
-                return iou > th
-            else:
-                return False
-        elif self.skill_cfg.get("success_mode", "3diou") == "cup":
+            center_valid = bool(x_min < x_middle < x_max and y_min < y_middle < y_max)
+            iou_valid = bool(iou > th)
+            success = bool(center_valid and iou_valid)
+            failure_reasons = []
+            if not center_valid:
+                failure_reasons.append("center_outside_place_bbox")
+            if not iou_valid:
+                failure_reasons.append("iou_below_threshold")
+            self._record_success_check_debug(
+                success=success,
+                failure_reasons=failure_reasons,
+                details={
+                    "iou": float(iou),
+                    "threshold": float(th),
+                    "center": middle,
+                    "center_valid": center_valid,
+                    "place_bbox_min": bbox_place_obj.min,
+                    "place_bbox_max": bbox_place_obj.max,
+                    "pick_bbox_min": bbox_pick_obj.min,
+                    "pick_bbox_max": bbox_pick_obj.max,
+                },
+            )
+            return success
+        elif success_mode == "cup":
             bbox_pick_obj = compute_bbox(self.pick_obj.prim)
             bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
             iou = IoU(
@@ -461,4 +617,35 @@ class Place(BaseSkill):
             print("x_cup, y_cup, z_cup", x_cup, y_cup, z_cup)
             print("x_shelf, y_shelf, z_shelf", x_shelf, y_shelf, z_shelf)
 
-            return (z_cup > z_shelf + 0.05) and (iou > self.skill_cfg.get("success_th", 0.0))
+            z_valid = bool(z_cup > z_shelf + 0.05)
+            threshold = float(self.skill_cfg.get("success_th", 0.0))
+            iou_valid = bool(iou > threshold)
+            success = bool(z_valid and iou_valid)
+            failure_reasons = []
+            if not z_valid:
+                failure_reasons.append("cup_z_below_shelf_threshold")
+            if not iou_valid:
+                failure_reasons.append("iou_below_threshold")
+            self._record_success_check_debug(
+                success=success,
+                failure_reasons=failure_reasons,
+                details={
+                    "iou": float(iou),
+                    "threshold": threshold,
+                    "z_cup": float(z_cup),
+                    "z_shelf": float(z_shelf),
+                    "z_threshold": float(z_shelf + 0.05),
+                    "pick_bbox_min": bbox_pick_obj.min,
+                    "pick_bbox_max": bbox_pick_obj.max,
+                    "place_bbox_min": bbox_place_obj.min,
+                    "place_bbox_max": bbox_place_obj.max,
+                },
+            )
+            return success
+
+        self._record_success_check_debug(
+            success=False,
+            failure_reasons=["unsupported_success_mode"],
+            details={"success_mode": success_mode},
+        )
+        return False

@@ -72,4 +72,4 @@ services:
     volumes:
       - ..:/workspace/InterndataEngine:rw
     working_dir: /workspace/InterndataEngine
-    entrypoint: ["/entrypoint.sh"]
+    entrypoint: ["/workspace/InterndataEngine/docker/nav2/entrypoint.sh"]

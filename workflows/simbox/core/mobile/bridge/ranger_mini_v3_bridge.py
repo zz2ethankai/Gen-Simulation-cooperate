@@ -17,6 +17,10 @@ class RangerMiniV3Bridge(BaseBridge):
         self._module_positions = np.zeros((4, 2), dtype=np.float32)
         self._body_twist_deadband = 0.0
         self._module_speed_deadband = 0.0
+        self._steering_alignment_full_speed_error = 0.12
+        self._steering_alignment_stop_error = 0.45
+        self._steering_alignment_scale_power = 2.0
+        self._steering_alignment_stop_velocity = 12.0
         super().__init__(robot=robot, node_name=node_name, driver=driver)
 
     def _validate_bridge_configuration(self, *, steering_count: int, wheel_count: int):
@@ -42,6 +46,22 @@ class RangerMiniV3Bridge(BaseBridge):
             raise KeyError("Missing required numeric config: module_speed_deadband")
         self._body_twist_deadband = float(self.base_cfg["body_twist_deadband"])
         self._module_speed_deadband = float(self.base_cfg["module_speed_deadband"])
+        self._steering_alignment_full_speed_error = max(
+            float(self.base_cfg.get("steering_alignment_full_speed_error", 0.12)),
+            0.0,
+        )
+        self._steering_alignment_stop_error = max(
+            float(self.base_cfg.get("steering_alignment_stop_error", 0.45)),
+            self._steering_alignment_full_speed_error,
+        )
+        self._steering_alignment_scale_power = max(
+            float(self.base_cfg.get("steering_alignment_scale_power", 2.0)),
+            1.0,
+        )
+        self._steering_alignment_stop_velocity = max(
+            float(self.base_cfg.get("steering_alignment_stop_velocity", 12.0)),
+            0.0,
+        )
 
     def _map_command(self, command: BaseCommand) -> tuple[np.ndarray, np.ndarray]:
         current_steering = self._last_applied_steering.astype(np.float32).copy()
@@ -80,6 +100,81 @@ class RangerMiniV3Bridge(BaseBridge):
         if peak_wheel_velocity > self._wheel_velocity_limit > 0.0:
             wheel_velocities *= float(self._wheel_velocity_limit / peak_wheel_velocity)
         return requested_steering.astype(np.float32), wheel_velocities.astype(np.float32)
+
+    def _shape_wheel_velocities_for_applied_steering(
+        self,
+        *,
+        command: BaseCommand,
+        requested_steering: np.ndarray,
+        applied_steering: np.ndarray,
+        requested_wheel_velocities: np.ndarray,
+    ) -> np.ndarray:
+        del command
+        requested_steering = np.asarray(requested_steering, dtype=np.float32).reshape(-1)
+        applied_steering = np.asarray(applied_steering, dtype=np.float32).reshape(-1)
+        requested_wheel_velocities = np.asarray(requested_wheel_velocities, dtype=np.float32).reshape(-1)
+        if requested_steering.size != 4 or applied_steering.size != 4 or requested_wheel_velocities.size != 4:
+            self._last_wheel_shaping_debug = {"mode": "invalid_size", "common_alignment": 0.0}
+            return np.zeros(4, dtype=np.float32)
+
+        steering_error = np.asarray(
+            [
+                self._wrap_to_pi(float(requested) - float(applied))
+                for requested, applied in zip(requested_steering, applied_steering)
+            ],
+            dtype=np.float32,
+        )
+        abs_error = np.abs(steering_error)
+        if self._steering_alignment_stop_error <= self._steering_alignment_full_speed_error:
+            slew_alignment = (abs_error <= self._steering_alignment_full_speed_error).astype(np.float32)
+        else:
+            slew_alignment = (
+                (self._steering_alignment_stop_error - abs_error)
+                / (self._steering_alignment_stop_error - self._steering_alignment_full_speed_error)
+            )
+            slew_alignment = np.clip(slew_alignment, 0.0, 1.0).astype(np.float32)
+            slew_alignment = slew_alignment ** self._steering_alignment_scale_power
+
+        direction_alignment = np.maximum(0.0, np.cos(steering_error)).astype(np.float32)
+        alignment = slew_alignment * direction_alignment
+
+        velocity_alignment = np.ones(4, dtype=np.float32)
+        try:
+            joint_state = self.robot.get_base_joint_state()
+            steering_velocities = np.asarray(joint_state["steering_velocities"], dtype=np.float32).reshape(-1)
+        except Exception:
+            steering_velocities = np.zeros(4, dtype=np.float32)
+        if steering_velocities.size == 4 and np.all(np.isfinite(steering_velocities)):
+            abs_velocity = np.abs(steering_velocities)
+            if self._steering_alignment_stop_velocity > 0.0:
+                velocity_alignment = np.clip(
+                    (self._steering_alignment_stop_velocity - abs_velocity)
+                    / self._steering_alignment_stop_velocity,
+                    0.0,
+                    1.0,
+                ).astype(np.float32)
+                alignment = alignment * velocity_alignment
+        else:
+            steering_velocities = np.zeros(4, dtype=np.float32)
+            alignment = np.zeros(4, dtype=np.float32)
+
+        common_alignment = float(np.min(alignment))
+        shaped_wheel_velocities = requested_wheel_velocities * common_alignment
+
+        peak_wheel_velocity = float(np.max(np.abs(shaped_wheel_velocities))) if shaped_wheel_velocities.size else 0.0
+        if peak_wheel_velocity > self._wheel_velocity_limit > 0.0:
+            shaped_wheel_velocities *= float(self._wheel_velocity_limit / peak_wheel_velocity)
+        self._last_wheel_shaping_debug = {
+            "mode": "ranger_common_steering_alignment",
+            "steering_error": [float(v) for v in steering_error.tolist()],
+            "steering_velocity": [float(v) for v in steering_velocities.tolist()],
+            "slew_alignment": [float(v) for v in slew_alignment.tolist()],
+            "direction_alignment": [float(v) for v in direction_alignment.tolist()],
+            "velocity_alignment": [float(v) for v in velocity_alignment.tolist()],
+            "per_wheel_alignment": [float(v) for v in alignment.tolist()],
+            "common_alignment": float(common_alignment),
+        }
+        return shaped_wheel_velocities.astype(np.float32)
 
     @staticmethod
     def _wrap_to_pi(angle: float) -> float:

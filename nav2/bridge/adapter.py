@@ -46,6 +46,7 @@ class Nav2BridgeAdapter:
         clear_global_costmap_service: str,
         clear_local_costmap_service: str,
         heartbeat_sec: float,
+        costmap_refresh_timeout_sec: float = 2.0,
     ):
         if not rclpy.ok():
             rclpy.init(args=None)
@@ -65,6 +66,7 @@ class Nav2BridgeAdapter:
         self.load_map_service = str(load_map_service)
         self.clear_global_costmap_service = str(clear_global_costmap_service)
         self.clear_local_costmap_service = str(clear_local_costmap_service)
+        self.costmap_refresh_timeout_sec = max(float(costmap_refresh_timeout_sec), 0.0)
 
         control_qos = QoSProfile(
             depth=10,
@@ -126,6 +128,8 @@ class Nav2BridgeAdapter:
         self._costmap_refresh_request_id = ""
         self._costmap_refresh_generation = 0
         self._costmap_refresh_baseline = {"global": 0, "local": 0}
+        self._costmap_refresh_started_monotonic = -1e9
+        self._costmap_refresh_warned_generation = 0
         self.node.create_timer(self._heartbeat_sec, self._publish_heartbeat)
 
     def run(self) -> int:
@@ -165,6 +169,8 @@ class Nav2BridgeAdapter:
         self._costmap_refresh_request_id = ""
         self._costmap_refresh_generation = 0
         self._costmap_refresh_baseline = dict(self._costmap_update_counts)
+        self._costmap_refresh_started_monotonic = -1e9
+        self._costmap_refresh_warned_generation = 0
         LOGGER.info("received map_update request_id=%s stack_id=%s map=%s", request_id, self._stack_id, map_yaml_path)
         self._publish_status(state=self._state, request_id=request_id, detail=self._detail)
 
@@ -508,6 +514,8 @@ class Nav2BridgeAdapter:
         self._costmap_refresh_request_id = str(request_id)
         self._costmap_refresh_generation = int(generation)
         self._costmap_refresh_baseline = dict(self._costmap_update_counts)
+        self._costmap_refresh_started_monotonic = time.monotonic()
+        self._costmap_refresh_warned_generation = 0
         self._state = "waiting_for_costmap_refresh"
         self._detail = "waiting_for_global_and_local_costmap_refresh"
         LOGGER.info(
@@ -518,6 +526,47 @@ class Nav2BridgeAdapter:
         self._publish_status(state=self._state, request_id=request_id, detail=self._detail)
         self._maybe_mark_costmaps_ready()
 
+    def _costmap_refresh_missing(self) -> list[str]:
+        return [
+            name
+            for name in ("global", "local")
+            if int(self._costmap_update_counts.get(name, 0)) <= int(self._costmap_refresh_baseline.get(name, 0))
+        ]
+
+    def _costmap_refresh_elapsed_sec(self) -> float:
+        if self._costmap_refresh_started_monotonic < 0.0:
+            return 0.0
+        return max(time.monotonic() - float(self._costmap_refresh_started_monotonic), 0.0)
+
+    def _costmap_refresh_debug(self) -> dict[str, Any]:
+        return {
+            "waiting": bool(self._waiting_costmap_refresh),
+            "request_id": str(self._costmap_refresh_request_id),
+            "generation": int(self._costmap_refresh_generation),
+            "baseline": dict(self._costmap_refresh_baseline),
+            "counts": dict(self._costmap_update_counts),
+            "missing": self._costmap_refresh_missing() if self._waiting_costmap_refresh else [],
+            "elapsed_sec": self._costmap_refresh_elapsed_sec(),
+            "timeout_sec": float(self.costmap_refresh_timeout_sec),
+            "latest": {
+                "global": dict(self._latest_costmap_debug.get("global", {})),
+                "local": dict(self._latest_costmap_debug.get("local", {})),
+            },
+        }
+
+    def _mark_map_ready(self, *, request_id: str, detail: str):
+        self._waiting_costmap_refresh = False
+        self._state = "ready"
+        self._detail = str(detail)
+        LOGGER.info(
+            "map ready request_id=%s detail=%s global_costmap=%s local_costmap=%s",
+            request_id,
+            self._detail,
+            self._latest_costmap_debug.get("global", {}),
+            self._latest_costmap_debug.get("local", {}),
+        )
+        self._publish_status(state=self._state, request_id=request_id, detail=self._detail)
+
     def _maybe_mark_costmaps_ready(self):
         if not self._waiting_costmap_refresh:
             return
@@ -527,23 +576,26 @@ class Nav2BridgeAdapter:
         ):
             self._waiting_costmap_refresh = False
             return
-        if any(
-            int(self._costmap_update_counts.get(name, 0)) <= int(self._costmap_refresh_baseline.get(name, 0))
-            for name in ("global", "local")
-        ):
+        missing = self._costmap_refresh_missing()
+        request_id = str(self._costmap_refresh_request_id)
+        if not missing:
+            self._mark_map_ready(request_id=request_id, detail="map_loaded_costmaps_refreshed")
             return
 
-        request_id = str(self._costmap_refresh_request_id)
-        self._waiting_costmap_refresh = False
-        self._state = "ready"
-        self._detail = "map_loaded_costmaps_refreshed"
-        LOGGER.info(
-            "map ready request_id=%s global_costmap=%s local_costmap=%s",
-            request_id,
-            self._latest_costmap_debug.get("global", {}),
-            self._latest_costmap_debug.get("local", {}),
-        )
-        self._publish_status(state=self._state, request_id=request_id, detail=self._detail)
+        elapsed_sec = self._costmap_refresh_elapsed_sec()
+        if elapsed_sec < float(self.costmap_refresh_timeout_sec):
+            return
+
+        if int(self._costmap_refresh_warned_generation) != int(self._costmap_refresh_generation):
+            self._costmap_refresh_warned_generation = int(self._costmap_refresh_generation)
+            LOGGER.warning(
+                "costmap refresh still waiting request_id=%s missing=%s baseline=%s counts=%s elapsed=%.3fs",
+                request_id,
+                missing,
+                self._costmap_refresh_baseline,
+                self._costmap_update_counts,
+                elapsed_sec,
+            )
 
     def _on_goal_response(self, future, *, request_id: str, generation: int):
         if not self._is_current_request(request_id=request_id, generation=generation):
@@ -629,6 +681,7 @@ class Nav2BridgeAdapter:
 
     def _publish_heartbeat(self):
         now = time.monotonic()
+        self._maybe_mark_costmaps_ready()
         if now - self._last_status_publish_monotonic < self._heartbeat_sec * 0.8:
             return
         self._publish_status(state=self._state, request_id=self._request_id, detail=self._detail)
@@ -646,6 +699,8 @@ class Nav2BridgeAdapter:
         self._costmap_refresh_request_id = ""
         self._costmap_refresh_generation = 0
         self._costmap_refresh_baseline = dict(self._costmap_update_counts)
+        self._costmap_refresh_started_monotonic = -1e9
+        self._costmap_refresh_warned_generation = 0
 
     def _publish_status(self, *, state: str, request_id: str, detail: str):
         self._state = str(state)
@@ -658,6 +713,7 @@ class Nav2BridgeAdapter:
             "detail": self._detail,
             "stack_ready": self._stack_ready(),
             "reported_pose": dict(self._latest_odom_pose),
+            "costmap_refresh": self._costmap_refresh_debug(),
             "updated_at": time.time(),
         }
         self._publish_json(self._status_pub, payload)
@@ -674,6 +730,7 @@ class Nav2BridgeAdapter:
             "reported_pose": dict(self._latest_odom_pose),
             "planning": dict(self._latest_planning_debug),
             "action_result_debug": dict(self._latest_action_result_debug),
+            "costmap_refresh": self._costmap_refresh_debug(),
             "updated_at": time.time(),
         }
         self._publish_json(self._result_pub, payload)
@@ -894,6 +951,7 @@ def main() -> int:
     parser.add_argument("--clear-global-costmap-service", default="/global_costmap/clear_entirely_global_costmap")
     parser.add_argument("--clear-local-costmap-service", default="/local_costmap/clear_entirely_local_costmap")
     parser.add_argument("--heartbeat-sec", type=float, default=0.5)
+    parser.add_argument("--costmap-refresh-timeout-sec", type=float, default=2.0)
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -916,6 +974,7 @@ def main() -> int:
         clear_global_costmap_service=args.clear_global_costmap_service,
         clear_local_costmap_service=args.clear_local_costmap_service,
         heartbeat_sec=args.heartbeat_sec,
+        costmap_refresh_timeout_sec=args.costmap_refresh_timeout_sec,
     )
     return adapter.run()
 

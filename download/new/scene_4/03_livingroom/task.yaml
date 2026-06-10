@@ -1,0 +1,871 @@
+format: task
+version: 1
+name: 03_livingroom_task
+arena: arena.yaml
+task_objects:
+- name: remote_control__0__id9000
+  category: remote_control
+  usd_path: assets/basic/03_livingroom/small_objects/remote_control/remote_control_0_id9000/Aligned_obj.usd
+  obj_path: assets/basic/03_livingroom/small_objects/remote_control/remote_control_0_id9000/Aligned_obj.obj
+  size:
+  - 0.108423
+  - 0.059924
+  - 0.16
+  asset_source_mode: obj_converted
+  metadata: assets/basic/03_livingroom/small_objects/remote_control/remote_control_0_id9000/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: coffee_table__0__id2
+  spawn_region: remote_control__0__id9000_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 270.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: remote_control__0__id9000_candidate_region
+- name: phone__0__id9001
+  category: phone
+  usd_path: assets/basic/03_livingroom/small_objects/phone/phone_0_id9001/Aligned_obj.usd
+  obj_path: assets/basic/03_livingroom/small_objects/phone/phone_0_id9001/Aligned_obj.obj
+  size:
+  - 0.061094
+  - 0.15
+  - 0.04236
+  asset_source_mode: original_usd_inherited
+  metadata: assets/basic/03_livingroom/small_objects/phone/phone_0_id9001/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: coffee_table__0__id2
+  spawn_region: phone__0__id9001_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 270.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: phone__0__id9001_candidate_region
+- name: tissue_box__0__id9002
+  category: tissue_box
+  usd_path: assets/basic/03_livingroom/small_objects/tissue_box/tissue_box_0_id9002/Aligned_obj.usd
+  obj_path: assets/basic/03_livingroom/small_objects/tissue_box/tissue_box_0_id9002/Aligned_obj.obj
+  size:
+  - 0.185881
+  - 0.129724
+  - 0.22
+  asset_source_mode: original_usd_inherited
+  metadata: assets/basic/03_livingroom/small_objects/tissue_box/tissue_box_0_id9002/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: coffee_table__0__id2
+  spawn_region: tissue_box__0__id9002_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 0.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: tissue_box__0__id9002_candidate_region
+- name: magazine_a__0__id9003
+  category: magazine
+  usd_path: assets/basic/03_livingroom/small_objects/magazine/magazine_a_0_id9003/Aligned_obj.usd
+  obj_path: assets/basic/03_livingroom/small_objects/magazine/magazine_a_0_id9003/Aligned_obj.obj
+  size:
+  - 0.013767
+  - 0.28
+  - 0.221143
+  asset_source_mode: original_usd_inherited
+  metadata: assets/basic/03_livingroom/small_objects/magazine/magazine_a_0_id9003/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: coffee_table__0__id2
+  spawn_region: magazine_a__0__id9003_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 270.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: magazine_a__0__id9003_candidate_region
+- name: glasses_case__0__id9004
+  category: glasses_case
+  usd_path: assets/basic/03_livingroom/small_objects/glasses_case/glasses_case_0_id9004/Aligned_obj.usd
+  obj_path: assets/basic/03_livingroom/small_objects/glasses_case/glasses_case_0_id9004/Aligned_obj.obj
+  size:
+  - 0.152382
+  - 0.050603
+  - 0.16
+  asset_source_mode: obj_converted
+  metadata: assets/basic/03_livingroom/small_objects/glasses_case/glasses_case_0_id9004/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: coffee_table__0__id2
+  spawn_region: glasses_case__0__id9004_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 0.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: glasses_case__0__id9004_candidate_region
+- name: livingroom_mug__0__id9005
+  category: mug
+  usd_path: assets/basic/03_livingroom/small_objects/mug/livingroom_mug_0_id9005/Aligned_obj.usd
+  obj_path: assets/basic/03_livingroom/small_objects/mug/livingroom_mug_0_id9005/Aligned_obj.obj
+  size:
+  - 0.1
+  - 0.062256
+  - 0.076638
+  asset_source_mode: original_usd_inherited
+  metadata: assets/basic/03_livingroom/small_objects/mug/livingroom_mug_0_id9005/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: coffee_table__0__id2
+  spawn_region: livingroom_mug__0__id9005_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 270.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: livingroom_mug__0__id9005_candidate_region
+- name: round_coaster_a__0__id9006
+  category: coaster
+  usd_path: assets/basic/03_livingroom/small_objects/coaster/round_coaster_a_0_id9006/Aligned_obj.usd
+  obj_path: assets/basic/03_livingroom/small_objects/coaster/round_coaster_a_0_id9006/Aligned_obj.obj
+  size:
+  - 0.089996
+  - 0.002651
+  - 0.09
+  asset_source_mode: original_usd_inherited
+  metadata: assets/basic/03_livingroom/small_objects/coaster/round_coaster_a_0_id9006/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: coffee_table__0__id2
+  spawn_region: round_coaster_a__0__id9006_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 270.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: round_coaster_a__0__id9006_candidate_region
+- name: round_coaster_b__0__id9007
+  category: coaster
+  usd_path: assets/basic/03_livingroom/small_objects/coaster/round_coaster_b_0_id9007/Aligned_obj.usd
+  obj_path: assets/basic/03_livingroom/small_objects/coaster/round_coaster_b_0_id9007/Aligned_obj.obj
+  size:
+  - 0.089996
+  - 0.002651
+  - 0.09
+  asset_source_mode: original_usd_inherited
+  metadata: assets/basic/03_livingroom/small_objects/coaster/round_coaster_b_0_id9007/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: coffee_table__0__id2
+  spawn_region: round_coaster_b__0__id9007_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 270.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: round_coaster_b__0__id9007_candidate_region
+- name: storage_basket__0__id9008
+  category: storage_basket
+  usd_path: assets/basic/03_livingroom/small_objects/storage_basket/storage_basket_0_id9008/Aligned_obj.usd
+  obj_path: assets/basic/03_livingroom/small_objects/storage_basket/storage_basket_0_id9008/Aligned_obj.obj
+  size:
+  - 0.19297
+  - 0.32
+  - 0.192971
+  asset_source_mode: original_usd_inherited
+  metadata: assets/basic/03_livingroom/small_objects/storage_basket/storage_basket_0_id9008/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: open_storage_shelf__0__id5
+  spawn_region: storage_basket__0__id9008_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 180.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: storage_basket__0__id9008_candidate_region
+- name: snack_can__0__id9009
+  category: snack_can
+  usd_path: assets/basic/03_livingroom/small_objects/snack_can/snack_can_0_id9009/Aligned_obj.usd
+  obj_path: assets/basic/03_livingroom/small_objects/snack_can/snack_can_0_id9009/Aligned_obj.obj
+  size:
+  - 0.130206
+  - 0.15
+  - 0.130208
+  asset_source_mode: original_usd_inherited
+  metadata: assets/basic/03_livingroom/small_objects/snack_can/snack_can_0_id9009/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: open_storage_shelf__0__id5
+  spawn_region: snack_can__0__id9009_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 180.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: snack_can__0__id9009_candidate_region
+- name: magazine_b__0__id9010
+  category: magazine
+  usd_path: assets/basic/03_livingroom/small_objects/magazine/magazine_b_0_id9010/Aligned_obj.usd
+  obj_path: assets/basic/03_livingroom/small_objects/magazine/magazine_b_0_id9010/Aligned_obj.obj
+  size:
+  - 0.013767
+  - 0.28
+  - 0.221143
+  asset_source_mode: original_usd_inherited
+  metadata: assets/basic/03_livingroom/small_objects/magazine/magazine_b_0_id9010/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: side_cabinet__0__id4
+  spawn_region: magazine_b__0__id9010_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 180.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: magazine_b__0__id9010_candidate_region
+- name: water_bottle__0__id9011
+  category: water_bottle
+  usd_path: assets/basic/03_livingroom/small_objects/water_bottle/water_bottle_0_id9011/Aligned_obj.usd
+  obj_path: assets/basic/03_livingroom/small_objects/water_bottle/water_bottle_0_id9011/Aligned_obj.obj
+  size:
+  - 0.082236
+  - 0.22
+  - 0.082283
+  asset_source_mode: original_usd_inherited
+  metadata: assets/basic/03_livingroom/small_objects/water_bottle/water_bottle_0_id9011/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: side_cabinet__0__id4
+  spawn_region: water_bottle__0__id9011_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 180.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: water_bottle__0__id9011_candidate_region
+- name: small_cushion__0__id9013
+  category: small_cushion
+  usd_path: assets/basic/03_livingroom/small_objects/small_cushion/small_cushion_0_id9013/Aligned_obj.usd
+  obj_path: assets/basic/03_livingroom/small_objects/small_cushion/small_cushion_0_id9013/Aligned_obj.obj
+  size:
+  - 0.164037
+  - 0.048996
+  - 0.3
+  asset_source_mode: obj_converted
+  metadata: assets/basic/03_livingroom/small_objects/small_cushion/small_cushion_0_id9013/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: coffee_table__0__id2
+  spawn_region: small_cushion__0__id9013_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 270.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: small_cushion__0__id9013_candidate_region
+- name: small_plant__0__id9017
+  category: plant_pot
+  usd_path: assets/basic/03_livingroom/small_objects/plant_pot/small_plant_0_id9017/Aligned_obj.usd
+  obj_path: assets/basic/03_livingroom/small_objects/plant_pot/small_plant_0_id9017/Aligned_obj.obj
+  size:
+  - 0.18
+  - 0.13814
+  - 0.18
+  asset_source_mode: original_usd_inherited
+  metadata: assets/basic/03_livingroom/small_objects/plant_pot/small_plant_0_id9017/metadata.json
+  target_class: TaskObject
+  rigidbody: true
+  collider: convex_decomposition
+  friction: 0.8
+  parent_fixture: tv_cabinet__0__id3
+  spawn_region: small_plant__0__id9017_candidate_region
+  initial_pose:
+    rotation:
+    - 0.0
+    - 90.0
+    - 0.0
+    keep_upright: true
+  collision: true
+  physics:
+    rigid_body: true
+    collision_enabled: true
+    mass_source: asset_metadata_or_default
+  placement:
+    defined_by: regions
+    spawn_region: small_plant__0__id9017_candidate_region
+spawn_logic:
+  default: A_on_B_region_sampler
+  preserve_support_parent: true
+  reject_on_collision: true
+  settle_with_gravity: true
+  max_attempts_per_object: 64
+regions:
+- name: remote_control__0__id9000_candidate_region
+  type: A_on_B_region_sampler
+  A: remote_control__0__id9000
+  B: coffee_table__0__id2
+  center:
+  - 1.6
+  - 3.05
+  size:
+  - 0.35
+  - 0.48
+  support_surface_y: 0.44
+  yaw_range:
+  - 270.0
+  - 270.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: phone__0__id9001_candidate_region
+  type: A_on_B_region_sampler
+  A: phone__0__id9001
+  B: coffee_table__0__id2
+  center:
+  - 1.7325
+  - 1.9444
+  size:
+  - 0.35
+  - 0.45
+  support_surface_y: 0.44
+  yaw_range:
+  - 270.0
+  - 270.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: tissue_box__0__id9002_candidate_region
+  type: A_on_B_region_sampler
+  A: tissue_box__0__id9002
+  B: coffee_table__0__id2
+  center:
+  - 1.8025
+  - 2.4
+  size:
+  - 0.66
+  - 0.36
+  support_surface_y: 0.44
+  yaw_range:
+  - 0.0
+  - 0.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: magazine_a__0__id9003_candidate_region
+  type: A_on_B_region_sampler
+  A: magazine_a__0__id9003
+  B: coffee_table__0__id2
+  center:
+  - 1.4575
+  - 1.995
+  size:
+  - 0.63
+  - 0.84
+  support_surface_y: 0.44
+  yaw_range:
+  - 270.0
+  - 270.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: glasses_case__0__id9004_candidate_region
+  type: A_on_B_region_sampler
+  A: glasses_case__0__id9004
+  B: coffee_table__0__id2
+  center:
+  - 1.395
+  - 2.7125
+  size:
+  - 0.35
+  - 0.48
+  support_surface_y: 0.44
+  yaw_range:
+  - 0.0
+  - 0.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: livingroom_mug__0__id9005_candidate_region
+  type: A_on_B_region_sampler
+  A: livingroom_mug__0__id9005
+  B: coffee_table__0__id2
+  center:
+  - 1.3
+  - 2.4
+  size:
+  - 0.35
+  - 0.35
+  support_surface_y: 0.44
+  yaw_range:
+  - 270.0
+  - 270.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: round_coaster_a__0__id9006_candidate_region
+  type: A_on_B_region_sampler
+  A: round_coaster_a__0__id9006
+  B: coffee_table__0__id2
+  center:
+  - 1.6
+  - 2.4
+  size:
+  - 0.35
+  - 0.35
+  support_surface_y: 0.44
+  yaw_range:
+  - 270.0
+  - 270.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: round_coaster_b__0__id9007_candidate_region
+  type: A_on_B_region_sampler
+  A: round_coaster_b__0__id9007
+  B: coffee_table__0__id2
+  center:
+  - 1.4525
+  - 2.4
+  size:
+  - 0.35
+  - 0.35
+  support_surface_y: 0.44
+  yaw_range:
+  - 270.0
+  - 270.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: storage_basket__0__id9008_candidate_region
+  type: A_on_B_region_sampler
+  A: storage_basket__0__id9008
+  B: open_storage_shelf__0__id5
+  center:
+  - 1.4
+  - 3.78
+  size:
+  - 0.96
+  - 0.72
+  support_surface_y: 1.64
+  yaw_range:
+  - 180.0
+  - 180.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: snack_can__0__id9009_candidate_region
+  type: A_on_B_region_sampler
+  A: snack_can__0__id9009
+  B: open_storage_shelf__0__id5
+  center:
+  - 1.66
+  - 3.78
+  size:
+  - 0.35
+  - 0.35
+  support_surface_y: 1.64
+  yaw_range:
+  - 180.0
+  - 180.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: magazine_b__0__id9010_candidate_region
+  type: A_on_B_region_sampler
+  A: magazine_b__0__id9010
+  B: side_cabinet__0__id4
+  center:
+  - 4.4
+  - 3.76
+  size:
+  - 0.63
+  - 0.84
+  support_surface_y: 0.7
+  yaw_range:
+  - 180.0
+  - 180.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: water_bottle__0__id9011_candidate_region
+  type: A_on_B_region_sampler
+  A: water_bottle__0__id9011
+  B: side_cabinet__0__id4
+  center:
+  - 4.5863
+  - 3.76
+  size:
+  - 0.35
+  - 0.35
+  support_surface_y: 0.7
+  yaw_range:
+  - 180.0
+  - 180.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: small_cushion__0__id9013_candidate_region
+  type: A_on_B_region_sampler
+  A: small_cushion__0__id9013
+  B: coffee_table__0__id2
+  center:
+  - 1.6683
+  - 2.66
+  size:
+  - 0.9
+  - 0.9
+  support_surface_y: 0.44
+  yaw_range:
+  - 270.0
+  - 270.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: small_plant__0__id9017_candidate_region
+  type: A_on_B_region_sampler
+  A: small_plant__0__id9017
+  B: tv_cabinet__0__id3
+  center:
+  - 0.24
+  - 2.185
+  size:
+  - 0.35
+  - 0.35
+  support_surface_y: 0.45
+  yaw_range:
+  - 90.0
+  - 90.0
+  sampling:
+    mode: uniform
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    min_edge_clearance: 0.05
+    reject_on_collision: true
+- name: robot_initial_region
+  type: A_on_B_region_sampler
+  A: robot
+  B: floor
+  center:
+  - 3.65
+  - 2.15
+  size:
+  - 0.7
+  - 0.4
+  support_surface_y: 0.0
+  yaw_range:
+  - 180.0
+  - 180.0
+  sampling:
+    mode: fixed
+    sampler: A_on_B_region_sampler
+    keep_upright: true
+    reject_on_collision: true
+  center_xyz:
+  - 3.65
+  - 0.0
+  - 2.15
+  footprint_m:
+  - 0.7
+  - 0.4
+  clearance_requirement_m: 0.8
+  robot_base: Ranger Mini V3
+robot:
+  robot_config_file: workflows/simbox/core/configs/robots/genie1.yaml
+  waypoints:
+  - name: WP-LR-1_coffee_table_front
+    pose_xy_yaw:
+    - 2.5
+    - 1.05
+    - 180.0
+    purpose: coffee table tabletop grasping
+    clearance_radius: 0.35
+  - name: WP-LR-2_tv_cabinet_front
+    pose_xy_yaw:
+    - 2.5
+    - 3.05
+    - 0.0
+    purpose: TV cabinet placement and coaster retrieval
+    clearance_radius: 0.35
+  - name: WP-LR-3_shelf_front
+    pose_xy_yaw:
+    - 4.35
+    - 2.7
+    - 270.0
+    purpose: basket and snack can access area
+    clearance_radius: 0.35
+  - name: WP-LR-4_sofa_side
+    pose_xy_yaw:
+    - 0.9
+    - 2.0
+    - 90.0
+    purpose: pillow and scatter cushion access
+    clearance_radius: 0.35
+  - name: WP-LR-5_rug_edge
+    pose_xy_yaw:
+    - 2.5
+    - 1.45
+    - 180.0
+    purpose: toy block cleanup without driving onto toys
+    clearance_radius: 0.35
+  initial_region: robot_initial_region
+  base_model: Ranger Mini V3
+  base_footprint_m:
+  - 0.7
+  - 0.4
+cameras:
+- name: split_aloha_hand_left
+  translation:
+  - 0.0
+  - 0.08
+  - 0.05
+  orientation:
+  - 0.0
+  - 0.0
+  - 0.965
+  - 0.259
+  camera_axes: usd
+  camera_file: workflows/simbox/core/configs/cameras/realsense_d455.yaml
+  parent: ''
+  apply_randomization: false
+- name: split_aloha_hand_right
+  translation:
+  - 0.0
+  - -0.08
+  - 0.05
+  orientation:
+  - 0.0
+  - 0.0
+  - 0.259
+  - 0.965
+  camera_axes: usd
+  camera_file: workflows/simbox/core/configs/cameras/realsense_d455.yaml
+  parent: ''
+  apply_randomization: false
+- name: split_aloha_head
+  translation:
+  - 0.15
+  - 0.0
+  - 0.85
+  orientation:
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  camera_axes: usd
+  camera_file: workflows/simbox/core/configs/cameras/realsense_d455.yaml
+  parent: ''
+  apply_randomization: false
+skills:
+- genie1:
+  - left: []
+    right:
+    - name: pick
+      objects:
+      - remote_control__0__id9000
+      filter_y_dir:
+      - forward
+      - 60
+      filter_z_dir:
+      - downward
+      - 150
+      pre_grasp_offset: 0.05
+      gripper_change_steps: 10
+      t_eps: 0.025
+      o_eps: 1
+      process_valid: true
+      lift_th: 0.02
+      post_grasp_offset_min: 0.1
+      post_grasp_offset_max: 0.15
+    - name: place
+      objects:
+      - remote_control__0__id9000
+      - coffee_table__0__id2
+      place_direction: vertical
+data:
+  task_dir: runs/03_livingroom_task
+  language_instruction: Pick up the remote control and place it on the coffee table
+  detailed_language_instruction: Reach for the remote control;Grasp firmly;Move to
+    coffee table;Release
+  collect_info: ''
+  version: v1.0
+  update: true
+  max_episode_length: 1000
+metadata:
+  scene_name: 03_livingroom
+  room_size_m:
+  - 5.0
+  - 4.0
+  - 2.8
+  robot_footprint_m:
+  - 0.7
+  - 0.4
+  min_aisle_m: 0.8

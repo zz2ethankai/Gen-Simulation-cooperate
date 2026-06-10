@@ -16,8 +16,6 @@ if [ "${INTERNDATA_AUTOSTART_ROS_STACK:-1}" = "1" ]; then
   NAV2_ROBOT_CONFIG="${INTERNDATA_NAV2_ROBOT_CONFIG:?INTERNDATA_NAV2_ROBOT_CONFIG must be set}"
   NAV2_ROBOT_NAME="${INTERNDATA_NAV2_ROBOT_NAME:?INTERNDATA_NAV2_ROBOT_NAME must be set}"
   NAV2_ODOM_TOPIC="${INTERNDATA_NAV2_ODOM_TOPIC:-/odom}"
-  NAV2_WAIT_FOR_ODOM_TIMEOUT_SEC="${INTERNDATA_WAIT_FOR_ODOM_TIMEOUT_SEC:-300}"
-  NAV2_WAIT_FOR_ODOM_MIN_MESSAGES="${INTERNDATA_WAIT_FOR_ODOM_MIN_MESSAGES:-3}"
 
   python3 -m nav2.mapgen.prepare_stack \
     --robot-config "${NAV2_ROBOT_CONFIG}" \
@@ -36,7 +34,8 @@ if [ "${INTERNDATA_AUTOSTART_ROS_STACK:-1}" = "1" ]; then
     --action-name "${INTERNDATA_NAV2_ACTION_NAME:-/navigate_to_pose}" \
     --load-map-service "${INTERNDATA_NAV2_LOAD_MAP_SERVICE:-/map_server/load_map}" \
     --clear-global-costmap-service "${INTERNDATA_NAV2_CLEAR_GLOBAL_COSTMAP_SERVICE:-/global_costmap/clear_entirely_global_costmap}" \
-    --clear-local-costmap-service "${INTERNDATA_NAV2_CLEAR_LOCAL_COSTMAP_SERVICE:-/local_costmap/clear_entirely_local_costmap}" &
+    --clear-local-costmap-service "${INTERNDATA_NAV2_CLEAR_LOCAL_COSTMAP_SERVICE:-/local_costmap/clear_entirely_local_costmap}" \
+    --costmap-refresh-timeout-sec "${INTERNDATA_NAV2_COSTMAP_REFRESH_TIMEOUT_SEC:-2.0}" &
   pids+=($!)
 
   ros2 run tf2_ros static_transform_publisher \
@@ -53,11 +52,6 @@ if [ "${INTERNDATA_AUTOSTART_ROS_STACK:-1}" = "1" ]; then
     -p autostart:=true \
     -p node_names:="['map_server']" &
   pids+=($!)
-
-  python3 -m nav2.bridge.wait_for_odom \
-    --topic "${NAV2_ODOM_TOPIC}" \
-    --timeout-sec "${NAV2_WAIT_FOR_ODOM_TIMEOUT_SEC}" \
-    --min-messages "${NAV2_WAIT_FOR_ODOM_MIN_MESSAGES}"
 
   ros2 launch nav2_bringup navigation_launch.py \
     use_sim_time:=true \
