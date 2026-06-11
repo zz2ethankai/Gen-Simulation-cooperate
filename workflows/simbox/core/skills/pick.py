@@ -546,6 +546,20 @@ class Pick(BaseSkill):
             )
             manip_list.append(cmd)
 
+        # Switch to grasp collision mode before guard so guard and grasp are planned
+        # with pick_obj ignored, matching the candidate validation.
+        cmd = (
+            p_base_ee_pregrasps[index],
+            q_base_ee_pregrasps[index],
+            "update_specific",
+            {
+                "ignore_substring": grasp_ignore_substring,
+                "reference_prim_path": self.controller.reference_prim_path,
+                "gripper_action": open_gripper_action,
+            },
+        )
+        manip_list.append(cmd)
+
         guard_offset = float(
             self.skill_cfg.get(
                 "grasp_guard_offset",
@@ -567,17 +581,6 @@ class Pick(BaseSkill):
             manip_list.append(cmd)
 
         # Grasp
-        cmd = (
-            p_base_ee_pregrasps[index],
-            q_base_ee_pregrasps[index],
-            "update_specific",
-            {
-                "ignore_substring": grasp_ignore_substring,
-                "reference_prim_path": self.controller.reference_prim_path,
-                "gripper_action": open_gripper_action,
-            },
-        )
-        manip_list.append(cmd)
         cmd = (p_base_ee_grasps[index], q_base_ee_grasps[index], "open_gripper", self._grasp_arrival_params())
         manip_list.append(cmd)
         self._append_gripper_hold(

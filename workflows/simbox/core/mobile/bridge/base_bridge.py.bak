@@ -655,21 +655,11 @@ class BaseBridge(ABC):
         if not self._pose_is_finite(translation, orientation):
             self._mark_non_finite_state("non_finite_base_pose")
             return
-
-        # Path-B fix: keep side effects of _get_actual_base_twist (updates internal tracking),
-        # but use the *nominal* command twist for odometry feedback to preserve semantic
-        # consistency between Nav2's motion model and the bridge's control intent.
         linear_velocity, angular_velocity = self._get_actual_base_twist(translation, orientation)
         linear_velocity_body = self._world_linear_velocity_to_body(linear_velocity, orientation)
         if not np.all(np.isfinite(linear_velocity_body)) or not np.all(np.isfinite(angular_velocity)):
             self._mark_non_finite_state("non_finite_base_twist")
             return
-
-        # Nominal twist from the last commanded step (semantic odometry)
-        command = self._last_step_command
-        nominal_vx = float(command.vx_body) if math.isfinite(command.vx_body) else 0.0
-        nominal_vy = float(command.vy_body) if math.isfinite(command.vy_body) else 0.0
-        nominal_wz = float(command.wz_body) if math.isfinite(command.wz_body) else 0.0
 
         odom_msg = Odometry()
         odom_msg.header.stamp = self.node.get_clock().now().to_msg()
@@ -682,12 +672,12 @@ class BaseBridge(ABC):
         odom_msg.pose.pose.orientation.y = float(orientation[2])
         odom_msg.pose.pose.orientation.z = float(orientation[3])
         odom_msg.pose.pose.orientation.w = float(orientation[0])
-        odom_msg.twist.twist.linear.x = nominal_vx
-        odom_msg.twist.twist.linear.y = nominal_vy
-        odom_msg.twist.twist.linear.z = 0.0
-        odom_msg.twist.twist.angular.x = 0.0
-        odom_msg.twist.twist.angular.y = 0.0
-        odom_msg.twist.twist.angular.z = nominal_wz
+        odom_msg.twist.twist.linear.x = float(linear_velocity_body[0])
+        odom_msg.twist.twist.linear.y = float(linear_velocity_body[1])
+        odom_msg.twist.twist.linear.z = float(linear_velocity_body[2])
+        odom_msg.twist.twist.angular.x = float(angular_velocity[0])
+        odom_msg.twist.twist.angular.y = float(angular_velocity[1])
+        odom_msg.twist.twist.angular.z = float(angular_velocity[2])
 
         self._odom_pub.publish(odom_msg)
         self._last_published_pose_debug = {
@@ -695,10 +685,8 @@ class BaseBridge(ABC):
             "y": float(translation[1]),
             "z": float(translation[2]),
             "yaw": float(self._yaw_from_wxyz(orientation)),
-            "linear_velocity_body": [nominal_vx, nominal_vy, 0.0],
-            "angular_velocity_world": [0.0, 0.0, nominal_wz],
-            "actual_linear_velocity_body": [float(v) for v in list(linear_velocity_body)],
-            "actual_angular_velocity_world": [float(v) for v in list(angular_velocity)],
+            "linear_velocity_body": [float(v) for v in list(linear_velocity_body)],
+            "angular_velocity_world": [float(v) for v in list(angular_velocity)],
         }
 
         if self.ros_cfg["tf_enabled"]:

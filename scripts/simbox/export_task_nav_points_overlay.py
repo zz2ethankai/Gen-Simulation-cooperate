@@ -228,6 +228,27 @@ def resolve_positions(task: dict[str, Any]) -> dict[str, Any]:
     raise KeyError("Could not find positions in task YAML")
 
 
+def infer_task_name(task: Any, task_path: Path) -> str:
+    if isinstance(task, list):
+        for item in task:
+            if isinstance(item, dict) and item.get("name"):
+                return str(item["name"])
+    if isinstance(task, dict):
+        if task.get("name"):
+            return str(task["name"])
+        nested = task.get("task")
+        if isinstance(nested, dict) and nested.get("name"):
+            return str(nested["name"])
+        tasks = task.get("tasks")
+        if isinstance(tasks, list):
+            for item in tasks:
+                if isinstance(item, dict) and item.get("name"):
+                    return str(item["name"])
+    if task_path.stem == "simbox_task":
+        return task_path.parent.name
+    return task_path.stem
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", type=Path, default=DEFAULT_TASK)
@@ -235,13 +256,25 @@ def main() -> int:
     parser.add_argument("--base", type=Path, default=DEFAULT_BASE)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--pixels-per-meter", type=int, default=240)
+    parser.add_argument("--pick-target", type=str, default="",
+                        help="Pick target world layout xy, e.g. '3.4,0.74'")
+    parser.add_argument("--place-target", type=str, default="",
+                        help="Place target world layout xy, e.g. '1.43,0.33'")
+    parser.add_argument("--reachability-radius", type=float, default=0.9,
+                        help="Arm reachability radius in meters to draw around nav points")
     args = parser.parse_args()
 
     task = load_yaml(args.task)
     arena = load_yaml(args.arena)
     base = load_yaml(args.base)
 
-    room_bounds = arena["coordinate_frame"]["room_bounds_xz"]
+    # Resolve room bounds from either coordinate_frame or floor source_metadata
+    if "coordinate_frame" in arena and "room_bounds_xz" in arena["coordinate_frame"]:
+        room_bounds = arena["coordinate_frame"]["room_bounds_xz"]
+    else:
+        floor = next(f for f in arena["fixtures"] if f["name"] == "floor")
+        meta = floor.get("source_metadata", {})
+        room_bounds = meta.get("layout_extent_xz", floor.get("size", [0, 1, 0, 1]))
     bounds = (
         float(room_bounds[0]),
         float(room_bounds[1]),
@@ -307,12 +340,13 @@ def main() -> int:
         )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    stem = args.task.stem.replace("simbox_task", "kitchen_apple_to_tray")
+    task_name = infer_task_name(task, args.task)
+    stem = task_name
     overlay_path = args.output_dir / f"{stem}_nav_points_obstacle_overlay.png"
     obstacle_path = args.output_dir / f"{stem}_obstacle_map.png"
     json_path = args.output_dir / f"{stem}_nav_points_overlay.json"
 
-    title = "kitchen_apple_to_tray nav points over config obstacle map"
+    title = f"{task_name} nav points over config obstacle map"
     canvas = Canvas(bounds, ppm=args.pixels_per_meter)
     draw_grid(canvas, title)
 
@@ -370,14 +404,72 @@ def main() -> int:
         )
         canvas.text_world(wx + 0.08, wy + 0.12, text, fill=color, font=canvas.font)
 
+    # Draw reachability circles around nav points
+    reach_r = args.reachability_radius
+    for name, point in nav_points.items():
+        wx = point["world_x"]
+        wy = point["world_y"]
+        # Approximate circle as polygon
+        circle_pts = []
+        for i in range(64):
+            angle = 2 * math.pi * i / 64
+            circle_pts.append((wx + reach_r * math.cos(angle), wy + reach_r * math.sin(angle)))
+        canvas.line_world(circle_pts + [circle_pts[0]], fill=(255, 200, 50), width=2)
+
+    # Draw pick / place targets
+    def parse_target(s: str) -> tuple[float, float] | None:
+        if not s:
+            return None
+        parts = s.split(",")
+        if len(parts) >= 2:
+            return float(parts[0]), float(parts[1])
+        return None
+
+    pick_xy = parse_target(args.pick_target)
+    place_xy = parse_target(args.place_target)
+
+    def draw_target_circle(canvas: Canvas, wx: float, wy: float, radius_m: float, fill, outline, width: int):
+        x0, y0 = canvas.xy(wx - radius_m, wy - radius_m)
+        x1, y1 = canvas.xy(wx + radius_m, wy + radius_m)
+        # Ensure correct ordering for PIL (y0 <= y1 in pixel coords)
+        if y0 > y1:
+            y0, y1 = y1, y0
+        canvas.draw.ellipse((x0, y0, x1, y1), fill=fill, outline=outline, width=width)
+
+    if pick_xy:
+        px, py = pick_xy
+        draw_target_circle(canvas, px, py, 0.06, (255, 215, 0), (180, 140, 0), 3)
+        canvas.text_world(px + 0.05, py + 0.05, "pick_target", fill=(180, 140, 0), font=canvas.font)
+        if "nav_to_pick" in nav_points:
+            np = nav_points["nav_to_pick"]
+            dist = math.hypot(px - np["world_x"], py - np["world_y"])
+            mid_x = (px + np["world_x"]) / 2
+            mid_y = (py + np["world_y"]) / 2
+            canvas.text_world(mid_x, mid_y, f"d={dist:.2f}m", fill=(180, 140, 0), font=canvas.small_font)
+            canvas.line_world([(np["world_x"], np["world_y"]), (px, py)], fill=(255, 215, 0), width=2)
+
+    if place_xy:
+        px, py = place_xy
+        draw_target_circle(canvas, px, py, 0.06, (50, 205, 50), (20, 120, 20), 3)
+        canvas.text_world(px + 0.05, py + 0.05, "place_target", fill=(20, 120, 20), font=canvas.font)
+        if "nav_to_place" in nav_points:
+            np = nav_points["nav_to_place"]
+            dist = math.hypot(px - np["world_x"], py - np["world_y"])
+            mid_x = (px + np["world_x"]) / 2
+            mid_y = (py + np["world_y"]) / 2
+            canvas.text_world(mid_x, mid_y, f"d={dist:.2f}m", fill=(20, 120, 20), font=canvas.small_font)
+            canvas.line_world([(np["world_x"], np["world_y"]), (px, py)], fill=(50, 205, 50), width=2)
+
     legend_x = canvas.width - 430
     legend_y = 20
     legend_lines = [
         "Coordinates:",
-        "layout/world x-y: arena room [0,4] x [0,3]",
-        "floor/local: origin at floor center (2.00,1.50)",
+        "layout/world x-y: arena room frame",
+        "floor/local: origin at floor center",
         "nav point layout = floor center + task position",
         "outlined polygons: current Nav2 footprint at yaw",
+        "yellow circle: pick_target; green circle: place_target",
+        "yellow dashed circle: reachability radius around nav point",
     ]
     canvas.draw.rectangle(
         (legend_x - 12, legend_y - 8, canvas.width - 18, legend_y + 122),
@@ -391,7 +483,7 @@ def main() -> int:
     canvas.image.save(overlay_path)
 
     obstacle_canvas = Canvas(bounds, ppm=args.pixels_per_meter)
-    draw_grid(obstacle_canvas, "kitchen_apple_to_tray config obstacle map")
+    draw_grid(obstacle_canvas, f"{task_name} config obstacle map")
     obstacle_canvas.polygon_world(
         [(min_x, min_y), (max_x, min_y), (max_x, max_y), (min_x, max_y)],
         fill=None,
