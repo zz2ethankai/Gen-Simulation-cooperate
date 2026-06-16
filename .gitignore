@@ -8,6 +8,7 @@ output
 *.err
 *.out
 .cursor
+/InternDataAssets/
 assets
 curobo
 panda_drake
