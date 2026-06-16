@@ -50,16 +50,54 @@ Prerequisites:
 - NVIDIA Container Toolkit and a visible GPU on the host
 - Enough local disk space for Isaac caches under `.docker/isaac-sim/`
 
-Build and start the split stack from the repository root with:
+Build the split stack from the repository root with:
 
 ```bash
 docker compose -f docker/docker-compose.yml build
+```
+
+Start the default single-GPU stack with:
+
+```bash
 scripts/docker/up_nav2_stack.sh
 ```
 
-The helper script auto-generates a unique `INTERNDATA_NAV2_SESSION_UUID` when
-one is not provided, then passes it into `docker compose` so concurrent Nav2
-stacks do not share bootstrap/config/map directories.
+The helper script can be run directly. Its default settings live at the top of
+`scripts/docker/up_nav2_stack.sh`:
+
+```bash
+DEFAULT_LAUNCHER_CONFIG="configs/de_plan_with_render_template.yaml"
+DEFAULT_SINGLE_GPU_DEVICE_IDS="0"
+DEFAULT_ROS_DOMAIN_ID="0"
+DEFAULT_SERVICES=(isaac nav2)
+```
+
+Use `configs/de_plan_with_render_template.yaml` for plan-with-render runs, or
+change `DEFAULT_LAUNCHER_CONFIG` to `configs/de_pipe_template.yaml` for the
+pipeline template. The script exports the selected config into Compose; the
+choice is intentionally not hardcoded in `docker/docker-compose.yml`.
+
+Start multiple isolated GPU stacks with:
+
+```bash
+scripts/docker/up_nav2_stack_multi_gpu.sh
+```
+
+The multi-GPU defaults live at the top of
+`scripts/docker/up_nav2_stack_multi_gpu.sh`:
+
+```bash
+DEFAULT_LAUNCHER_CONFIG="configs/de_plan_with_render_template.yaml"
+DEFAULT_PARALLEL_GPU_COUNT="2"
+DEFAULT_PARALLEL_GPUS=""
+DEFAULT_ROS_DOMAIN_BASE="10"
+```
+
+When `DEFAULT_PARALLEL_GPUS` is empty, the script starts GPUs
+`0..DEFAULT_PARALLEL_GPU_COUNT-1`. To use a non-contiguous set, set it to a
+comma-separated list such as `0,2,3`. Each stack gets separate container names,
+Nav2 session IDs, ROS domain IDs, Isaac cache/log directories, and
+plan-with-render output names.
 
 Watch logs:
 
@@ -71,12 +109,16 @@ docker compose -f docker/docker-compose.yml logs -f nav2
 Stop the stack:
 
 ```bash
-docker compose -f docker/docker-compose.yml down
+scripts/docker/stop_all_docker.sh
 ```
 
-The default startup behavior is:
+By default, this stop script only stops containers named `isaac`, `nav2`,
+`isaac-*`, and `nav2-*`. To stop every running Docker container on the host,
+edit `DEFAULT_STOP_EVERY_RUNNING_CONTAINER="1"` at the top of the script.
 
-- `isaac` autostarts `launcher.py` with `configs/de_plan_with_render_template.yaml`
+The default single-stack startup behavior is:
+
+- `isaac` autostarts `launcher.py` with the config selected in `scripts/docker/up_nav2_stack.sh`
 - `nav2` autostarts the in-repo Nav2 bridge and bringup stack
 
 Generated data and logs are written to:
