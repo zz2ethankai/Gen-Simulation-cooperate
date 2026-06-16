@@ -36,7 +36,7 @@ docker compose -f docker/docker-compose.yml build
 直接运行：
 
 ```bash
-scripts/docker/up_nav2_stack.sh
+scripts/docker/up_nav2_stack_single_gpu.sh
 ```
 
 脚本顶部包含默认配置：
@@ -76,12 +76,14 @@ scripts/docker/up_nav2_stack_multi_gpu.sh
 
 ```bash
 DEFAULT_LAUNCHER_CONFIG="configs/de_plan_with_render_template.yaml"
-DEFAULT_PARALLEL_GPU_COUNT="2"
+DEFAULT_PARALLEL_GPU_COUNT="4"
 DEFAULT_PARALLEL_GPUS=""
+DEFAULT_STACKS_PER_GPU="2"
 DEFAULT_ROS_DOMAIN_BASE="10"
+DEFAULT_STOP_NAV2_WHEN_ISAAC_EXITS="1"
 ```
 
-当 `DEFAULT_PARALLEL_GPUS` 为空时，脚本会按 `DEFAULT_PARALLEL_GPU_COUNT` 生成连续 GPU 列表。例如默认值 `2` 会启动 GPU `0` 和 GPU `1` 两组容器。
+当 `DEFAULT_PARALLEL_GPUS` 为空时，脚本会按 `DEFAULT_PARALLEL_GPU_COUNT` 生成连续 GPU 列表。例如默认值 `4` 会启动 GPU `0`、`1`、`2`、`3` 四组容器。
 
 如果要启动 4 组，修改：
 
@@ -95,6 +97,21 @@ DEFAULT_PARALLEL_GPU_COUNT="4"
 DEFAULT_PARALLEL_GPUS="0,2,3"
 ```
 
+如果要在每张 GPU 上启动多组容器，修改：
+
+```bash
+DEFAULT_STACKS_PER_GPU="2"
+```
+
+例如：
+
+```bash
+DEFAULT_PARALLEL_GPUS="0,1"
+DEFAULT_STACKS_PER_GPU="2"
+```
+
+会启动四组容器，其中两组使用 GPU `0`，两组使用 GPU `1`。
+
 每组都会自动隔离：
 
 - Compose project
@@ -102,9 +119,12 @@ DEFAULT_PARALLEL_GPUS="0,2,3"
 - Nav2 session UUID
 - `ROS_DOMAIN_ID`
 - Isaac cache/log/config/data 目录
-- plan-with-render 输出名
 
-注意：多 GPU 脚本是一张宿主机 GPU 对应一个 Docker stack。容器内只暴露一张 GPU，因此 plan-with-render 的 `active_gpu` 和 `physics_gpu` 默认保持为容器内 `0`。
+输出目录不会自动加 `gpu0`、`gpu1` 之类的后缀。plan-with-render 会继续使用数据引擎配置里的 `name`，例如写到 `output/simbox_plan_with_render/`。
+
+默认情况下，脚本会在 Isaac 结束后自动停止对应的 Nav2 容器。若要让 Nav2 在 Isaac 结束后继续运行，把 `DEFAULT_STOP_NAV2_WHEN_ISAAC_EXITS="0"`。
+
+注意：多 GPU 脚本可以在每张宿主机 GPU 上启动多组 Docker stack。每个 stack 的容器内只暴露一张 GPU。
 
 ## 查看日志
 

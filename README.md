@@ -59,11 +59,11 @@ docker compose -f docker/docker-compose.yml build
 Start the default single-GPU stack with:
 
 ```bash
-scripts/docker/up_nav2_stack.sh
+scripts/docker/up_nav2_stack_single_gpu.sh
 ```
 
 The helper script can be run directly. Its default settings live at the top of
-`scripts/docker/up_nav2_stack.sh`:
+`scripts/docker/up_nav2_stack_single_gpu.sh`:
 
 ```bash
 DEFAULT_LAUNCHER_CONFIG="configs/de_plan_with_render_template.yaml"
@@ -88,16 +88,28 @@ The multi-GPU defaults live at the top of
 
 ```bash
 DEFAULT_LAUNCHER_CONFIG="configs/de_plan_with_render_template.yaml"
-DEFAULT_PARALLEL_GPU_COUNT="2"
+DEFAULT_PARALLEL_GPU_COUNT="4"
 DEFAULT_PARALLEL_GPUS=""
+DEFAULT_STACKS_PER_GPU="2"
 DEFAULT_ROS_DOMAIN_BASE="10"
+DEFAULT_STOP_NAV2_WHEN_ISAAC_EXITS="1"
 ```
 
 When `DEFAULT_PARALLEL_GPUS` is empty, the script starts GPUs
 `0..DEFAULT_PARALLEL_GPU_COUNT-1`. To use a non-contiguous set, set it to a
-comma-separated list such as `0,2,3`. Each stack gets separate container names,
-Nav2 session IDs, ROS domain IDs, Isaac cache/log directories, and
-plan-with-render output names.
+comma-separated list such as `0,2,3`. Set `DEFAULT_STACKS_PER_GPU` to run more
+than one stack on each selected GPU. For example, `DEFAULT_PARALLEL_GPUS="0,1"`
+and `DEFAULT_STACKS_PER_GPU="2"` starts four stacks: two on GPU 0 and two on
+GPU 1.
+
+Each stack gets separate container names, Nav2 session IDs, ROS domain IDs, and
+Isaac cache/log directories. The launcher output name is not suffixed per GPU,
+so generated data continues to use the output directory selected by the data
+engine config, such as `output/simbox_plan_with_render/`.
+
+By default, the scripts watch each Isaac container and stop the matching Nav2
+container after Isaac exits. Set `DEFAULT_STOP_NAV2_WHEN_ISAAC_EXITS="0"` in the
+script if you want Nav2 to keep running after Isaac finishes.
 
 Watch logs:
 
@@ -118,7 +130,7 @@ edit `DEFAULT_STOP_EVERY_RUNNING_CONTAINER="1"` at the top of the script.
 
 The default single-stack startup behavior is:
 
-- `isaac` autostarts `launcher.py` with the config selected in `scripts/docker/up_nav2_stack.sh`
+- `isaac` autostarts `launcher.py` with the config selected in `scripts/docker/up_nav2_stack_single_gpu.sh`
 - `nav2` autostarts the in-repo Nav2 bridge and bringup stack
 
 Generated data and logs are written to:
@@ -132,7 +144,7 @@ If you prefer to run from the `docker/` directory directly, the equivalent comma
 ```bash
 cd docker
 docker compose build
-../scripts/docker/up_nav2_stack.sh
+../scripts/docker/up_nav2_stack_single_gpu.sh
 ```
 
 By default, the Isaac workflow writes external Nav2 runtime requests to `output/ros_bridge/runtime_requests`, and the ROS service watches that directory to launch or refresh the corresponding Nav2 stack.

@@ -10,6 +10,7 @@ DEFAULT_LAUNCHER_CONFIG="configs/de_plan_with_render_template.yaml"
 DEFAULT_SINGLE_GPU_DEVICE_IDS="0"
 DEFAULT_ROS_DOMAIN_ID="0"
 DEFAULT_SERVICES=(isaac nav2)
+DEFAULT_STOP_NAV2_WHEN_ISAAC_EXITS="1"
 
 COMPOSE_FILE="${INTERNDATA_COMPOSE_FILE:-${REPO_ROOT}/docker/docker-compose.yml}"
 STACK_ID="${INTERNDATA_STACK_ID:-}"
@@ -63,6 +64,7 @@ fi
 
 export INTERNDATA_ISAAC_GPU_DEVICE_IDS="${INTERNDATA_ISAAC_GPU_DEVICE_IDS:-${DEFAULT_SINGLE_GPU_DEVICE_IDS}}"
 export INTERNDATA_LAUNCHER_EXTRA_ARGS="${INTERNDATA_LAUNCHER_EXTRA_ARGS:-}"
+STOP_NAV2_WHEN_ISAAC_EXITS="${INTERNDATA_STOP_NAV2_WHEN_ISAAC_EXITS:-${DEFAULT_STOP_NAV2_WHEN_ISAAC_EXITS}}"
 
 export INTERNDATA_LAUNCHER_CONFIG="${INTERNDATA_LAUNCHER_CONFIG:-${DEFAULT_LAUNCHER_CONFIG}}"
 
@@ -84,7 +86,32 @@ echo "Using INTERNDATA_ISAAC_GPU_DEVICE_IDS=${INTERNDATA_ISAAC_GPU_DEVICE_IDS}"
 echo "Using ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}"
 echo "Using INTERNDATA_LAUNCHER_CONFIG=${INTERNDATA_LAUNCHER_CONFIG}"
 echo "Using INTERNDATA_LAUNCHER_EXTRA_ARGS=${INTERNDATA_LAUNCHER_EXTRA_ARGS:-}"
+echo "Using INTERNDATA_STOP_NAV2_WHEN_ISAAC_EXITS=${STOP_NAV2_WHEN_ISAAC_EXITS}"
 echo "Compose file: ${COMPOSE_FILE}"
 echo "Services: $*"
 
-exec docker compose -f "${COMPOSE_FILE}" up -d "$@"
+docker compose -f "${COMPOSE_FILE}" up -d "$@"
+
+if [ "${STOP_NAV2_WHEN_ISAAC_EXITS}" = "1" ]; then
+  start_isaac_nav2_watchdog=false
+  has_isaac=false
+  has_nav2=false
+  for service in "$@"; do
+    if [ "${service}" = "isaac" ]; then
+      has_isaac=true
+    elif [ "${service}" = "nav2" ]; then
+      has_nav2=true
+    fi
+  done
+  if [ "${has_isaac}" = "true" ] && [ "${has_nav2}" = "true" ]; then
+    start_isaac_nav2_watchdog=true
+  fi
+
+  if [ "${start_isaac_nav2_watchdog}" = "true" ]; then
+    isaac_container="${INTERNDATA_ISAAC_CONTAINER_NAME:-isaac}"
+    nav2_container="${INTERNDATA_NAV2_CONTAINER_NAME:-nav2}"
+    echo "Watching ${isaac_container}; ${nav2_container} will be stopped after Isaac exits."
+    docker wait "${isaac_container}" >/dev/null 2>&1 || true
+    docker stop "${nav2_container}" >/dev/null 2>&1 || true
+  fi
+fi
