@@ -4,7 +4,7 @@ load_stage:
     type: env_loader
     args:
       workflow_type: SimBoxDualWorkFlow
-      cfg_path: workflows/simbox/assets/custom/scene_4/01_kitchen/assets/basic/kitchen_apple_to_try/simbox_task.yaml # Task config path
+      cfg_path: workflows/simbox/assets/custom/scene_4/01_kitchen/assets/basic/kitchen_apple_to_tray/simbox_task.yaml # Task config path
       simulator:
         physics_dt: 1/30                   # Physics update rate
         rendering_dt: 1/30                 # Render update rate
@@ -18,6 +18,22 @@ load_stage:
         physics_gpu: 0                     # Override via CLI: --load_stage.scene_loader.args.simulator.physics_gpu=1
         renderer: RayTracedLighting        # Isaac Sim 4.1 options: RayTracedLighting, PathTracing
         planning_step_render: true         # Nav2 base physics needs the same rendered world step path as plan_with_render
+
+        # Higher-quality RayTracedLighting settings:
+        rt_new_denoiser: true              # DLSS Ray Reconstruction / realtime denoiser
+        rt_shadows_enabled: true
+        rt_shadow_sample_count: 4
+        rt_reflections_enabled: true
+        rt_reflections_max_bounces: 2
+        rt_translucency_enabled: true
+        rt_translucency_max_refraction_bounces: 4
+        rt_fractional_cutout_opacity: true
+        rt_indirect_diffuse_enabled: true
+        rt_indirect_diffuse_spp: 2
+        rt_indirect_diffuse_max_bounces: 2
+        rt_ambient_occlusion_enabled: true
+        rt_ambient_occlusion_max_samples: 4
+
         # Optional higher-quality PathTracing settings:
         # renderer: PathTracing
         # denoiser: True
@@ -49,7 +65,7 @@ dedump_stage:
     type: env_loader
     args:
       workflow_type: SimBoxDualWorkFlow
-      cfg_path: workflows/simbox/assets/custom/scene_4/01_kitchen/assets/basic/kitchen_apple_to_try/simbox_task.yaml  # Must match load_stage cfg_path
+      cfg_path: workflows/simbox/assets/custom/scene_4/01_kitchen/assets/basic/kitchen_apple_to_tray/simbox_task.yaml  # Must match load_stage cfg_path
       simulator:
         physics_dt: 1/30                   # Physics update rate
         rendering_dt: 1/30                 # Render update rate
@@ -65,6 +81,21 @@ dedump_stage:
         # Renderer choices (Isaac Sim 4.1 SimulationApp):
         # renderer: RayTracedLighting      # Faster RTX real-time lighting, recommended for throughput
         # renderer: PathTracing            # Higher quality, much slower
+
+        # Optional higher-quality RayTracedLighting settings:
+        # rt_new_denoiser: true            # DLSS Ray Reconstruction / realtime denoiser
+        # rt_shadows_enabled: true
+        # rt_shadow_sample_count: 4
+        # rt_reflections_enabled: true
+        # rt_reflections_max_bounces: 2
+        # rt_translucency_enabled: true
+        # rt_translucency_max_refraction_bounces: 4
+        # rt_fractional_cutout_opacity: true
+        # rt_indirect_diffuse_enabled: true
+        # rt_indirect_diffuse_spp: 2
+        # rt_indirect_diffuse_max_bounces: 2
+        # rt_ambient_occlusion_enabled: true
+        # rt_ambient_occlusion_max_samples: 4
 
         # Resolution:
         # width: 1280

@@ -11,7 +11,7 @@ def configure_logging(exp_name, name=None, config=None):
     if pod_name is not None:
         exp_name = f"{exp_name}/{pod_name}"
     log_dir = os.path.join("./output", exp_name)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     if name is None:
         log_name = f"de_time_profile_{timestamp}.log"
     else:

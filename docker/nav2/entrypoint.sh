@@ -26,10 +26,12 @@ if [ "${INTERNDATA_AUTOSTART_ROS_STACK:-1}" = "1" ]; then
     --robot-name "${NAV2_ROBOT_NAME}" \
     --map-update-topic "${INTERNDATA_NAV2_BRIDGE_MAP_UPDATE_TOPIC:-/simbox/nav_bridge/map_update}" \
     --goal-topic "${INTERNDATA_NAV2_BRIDGE_GOAL_TOPIC:-/simbox/nav_bridge/goal}" \
+    --plan-topic "${INTERNDATA_NAV2_BRIDGE_PLAN_TOPIC:-/simbox/nav_bridge/plan}" \
     --cancel-topic "${INTERNDATA_NAV2_BRIDGE_CANCEL_TOPIC:-/simbox/nav_bridge/cancel}" \
     --reset-topic "${INTERNDATA_NAV2_BRIDGE_RESET_TOPIC:-/simbox/nav_bridge/reset}" \
     --status-topic "${INTERNDATA_NAV2_BRIDGE_STATUS_TOPIC:-/simbox/nav_bridge/status}" \
     --result-topic "${INTERNDATA_NAV2_BRIDGE_RESULT_TOPIC:-/simbox/nav_bridge/result}" \
+    --plan-result-topic "${INTERNDATA_NAV2_BRIDGE_PLAN_RESULT_TOPIC:-/simbox/nav_bridge/plan_result}" \
     --odom-topic "${NAV2_ODOM_TOPIC}" \
     --action-name "${INTERNDATA_NAV2_ACTION_NAME:-/navigate_to_pose}" \
     --load-map-service "${INTERNDATA_NAV2_LOAD_MAP_SERVICE:-/map_server/load_map}" \

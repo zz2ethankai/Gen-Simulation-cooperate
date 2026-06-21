@@ -35,10 +35,12 @@ class Nav2BridgeAdapter:
         robot_name: str,
         map_update_topic: str,
         goal_topic: str,
+        plan_topic: str,
         cancel_topic: str,
         reset_topic: str,
         status_topic: str,
         result_topic: str,
+        plan_result_topic: str,
         odom_topic: str,
         action_name: str,
         planner_action_name: str,
@@ -56,10 +58,12 @@ class Nav2BridgeAdapter:
         self.robot_name = str(robot_name)
         self.map_update_topic = str(map_update_topic)
         self.goal_topic = str(goal_topic)
+        self.plan_topic = str(plan_topic)
         self.cancel_topic = str(cancel_topic)
         self.reset_topic = str(reset_topic)
         self.status_topic = str(status_topic)
         self.result_topic = str(result_topic)
+        self.plan_result_topic = str(plan_result_topic)
         self.odom_topic = str(odom_topic)
         self.action_name = str(action_name)
         self.planner_action_name = str(planner_action_name)
@@ -86,9 +90,11 @@ class Nav2BridgeAdapter:
 
         self._status_pub = self.node.create_publisher(String, self.status_topic, control_qos)
         self._result_pub = self.node.create_publisher(String, self.result_topic, control_qos)
+        self._plan_result_pub = self.node.create_publisher(String, self.plan_result_topic, control_qos)
         self._tf_pub = self.node.create_publisher(TFMessage, "/tf", tf_qos)
         self.node.create_subscription(String, self.map_update_topic, self._on_map_update, control_qos)
         self.node.create_subscription(String, self.goal_topic, self._on_goal, control_qos)
+        self.node.create_subscription(String, self.plan_topic, self._on_plan_request, control_qos)
         self.node.create_subscription(String, self.cancel_topic, self._on_cancel, control_qos)
         self.node.create_subscription(String, self.reset_topic, self._on_reset, control_qos)
         self.node.create_subscription(Odometry, self.odom_topic, self._on_odom, odom_qos)
@@ -121,6 +127,7 @@ class Nav2BridgeAdapter:
         self._last_status_publish_monotonic = -1e9
         self._heartbeat_sec = max(float(heartbeat_sec), 0.2)
         self._latest_planning_debug: dict[str, Any] = {}
+        self._plan_request_debug: dict[str, dict[str, Any]] = {}
         self._latest_action_result_debug: dict[str, Any] = {}
         self._costmap_update_counts = {"global": 0, "local": 0}
         self._latest_costmap_debug: dict[str, dict[str, Any]] = {"global": {}, "local": {}}
@@ -339,6 +346,180 @@ class Nav2BridgeAdapter:
                 "planning_time_sec": planning_time,
                 "path": self._path_to_dict(path_msg) if path_msg is not None else {},
             }
+
+    def _on_plan_request(self, msg: String):
+        payload = self._parse_payload(msg.data)
+        if not self._payload_matches_robot(payload):
+            return
+
+        request_id = str(payload.get("request_id", "")).strip()
+        plan_request_id = str(payload.get("plan_request_id", "")).strip()
+        if not request_id or not plan_request_id:
+            self._publish_plan_result(
+                request_id=request_id,
+                plan_request_id=plan_request_id,
+                state="failed",
+                detail="plan request missing request_id or plan_request_id",
+                status_code=-1,
+                planning={},
+            )
+            return
+        if request_id != self._request_id:
+            self._publish_plan_result(
+                request_id=request_id,
+                plan_request_id=plan_request_id,
+                state="failed",
+                detail=f"plan request_id mismatch: active={self._request_id}",
+                status_code=-1,
+                planning={},
+            )
+            return
+        if self._state not in {"ready", "accepted", "running"}:
+            self._publish_plan_result(
+                request_id=request_id,
+                plan_request_id=plan_request_id,
+                state="failed",
+                detail=f"plan rejected while adapter state={self._state}",
+                status_code=-1,
+                planning={},
+            )
+            return
+
+        LOGGER.info("received plan request_id=%s plan_request_id=%s payload=%s", request_id, plan_request_id, payload.get("goal", {}))
+        goal_pose = self._goal_pose_from_payload(payload)
+        generation = int(self._request_generation)
+        self._request_plan_only(goal_pose, request_id=request_id, plan_request_id=plan_request_id, generation=generation)
+
+    def _request_plan_only(self, goal_pose: PoseStamped, *, request_id: str, plan_request_id: str, generation: int):
+        planning_debug = {
+            "source": "compute_path_to_pose",
+            "action_name": self.planner_action_name,
+            "requested_goal": self._pose_stamped_to_dict(goal_pose),
+            "requested_at": time.time(),
+            "state": "pending",
+        }
+        self._plan_request_debug[plan_request_id] = planning_debug
+        if not self._wait_for_planner_action_server():
+            planning_debug = {**planning_debug, "state": "planner_unavailable"}
+            self._plan_request_debug[plan_request_id] = planning_debug
+            self._publish_plan_result(
+                request_id=request_id,
+                plan_request_id=plan_request_id,
+                state="failed",
+                detail="planner action server unavailable",
+                status_code=-1,
+                planning=planning_debug,
+            )
+            return
+
+        plan_goal = ComputePathToPose.Goal()
+        plan_goal.goal = goal_pose
+        plan_goal.planner_id = "GridBased"
+        if self._latest_odom_pose:
+            plan_goal.start = self._current_start_pose(goal_pose.header.frame_id)
+            plan_goal.use_start = True
+            planning_debug["requested_start"] = self._pose_stamped_to_dict(plan_goal.start)
+        else:
+            plan_goal.use_start = False
+            planning_debug["requested_start"] = {}
+        self._plan_request_debug[plan_request_id] = planning_debug
+
+        future = self._planner_action_client.send_goal_async(plan_goal)
+        future.add_done_callback(
+            lambda future, request_id=request_id, plan_request_id=plan_request_id, generation=generation: (
+                self._on_plan_only_goal_response(
+                    future,
+                    request_id=request_id,
+                    plan_request_id=plan_request_id,
+                    generation=generation,
+                )
+            )
+        )
+
+    def _on_plan_only_goal_response(self, future, *, request_id: str, plan_request_id: str, generation: int):
+        if not self._is_current_request(request_id=request_id, generation=generation):
+            return
+        planning_debug = dict(self._plan_request_debug.get(plan_request_id, {}))
+        try:
+            goal_handle = future.result()
+        except Exception as exc:  # pylint: disable=broad-except
+            planning_debug = {**planning_debug, "state": "send_goal_failed", "error": str(exc)}
+            self._plan_request_debug[plan_request_id] = planning_debug
+            self._publish_plan_result(
+                request_id=request_id,
+                plan_request_id=plan_request_id,
+                state="failed",
+                detail=f"plan goal send failed: {exc}",
+                status_code=-1,
+                planning=planning_debug,
+            )
+            return
+        if goal_handle is None or not goal_handle.accepted:
+            planning_debug = {**planning_debug, "state": "rejected"}
+            self._plan_request_debug[plan_request_id] = planning_debug
+            self._publish_plan_result(
+                request_id=request_id,
+                plan_request_id=plan_request_id,
+                state="failed",
+                detail="ComputePathToPose goal rejected",
+                status_code=-1,
+                planning=planning_debug,
+            )
+            return
+
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(
+            lambda future, request_id=request_id, plan_request_id=plan_request_id, generation=generation: (
+                self._on_plan_only_result(
+                    future,
+                    request_id=request_id,
+                    plan_request_id=plan_request_id,
+                    generation=generation,
+                )
+            )
+        )
+
+    def _on_plan_only_result(self, future, *, request_id: str, plan_request_id: str, generation: int):
+        if not self._is_current_request(request_id=request_id, generation=generation):
+            return
+        planning_debug = dict(self._plan_request_debug.get(plan_request_id, {}))
+        try:
+            result = future.result()
+        except Exception as exc:  # pylint: disable=broad-except
+            planning_debug = {**planning_debug, "state": "result_failed", "error": str(exc)}
+            self._plan_request_debug[plan_request_id] = planning_debug
+            self._publish_plan_result(
+                request_id=request_id,
+                plan_request_id=plan_request_id,
+                state="failed",
+                detail=f"plan result failed: {exc}",
+                status_code=-1,
+                planning=planning_debug,
+            )
+            return
+
+        status_code = int(getattr(result, "status", -1))
+        wrapped_result = getattr(result, "result", None)
+        planning_time = self._duration_to_sec(getattr(wrapped_result, "planning_time", None))
+        path_msg = getattr(wrapped_result, "path", None)
+        path_payload = self._path_to_dict(path_msg) if path_msg is not None else {}
+        succeeded = status_code == 4 and bool(path_payload.get("num_poses", 0))
+        planning_debug = {
+            **planning_debug,
+            "state": "succeeded" if succeeded else "failed",
+            "status_code": status_code,
+            "planning_time_sec": planning_time,
+            "path": path_payload,
+        }
+        self._plan_request_debug[plan_request_id] = planning_debug
+        self._publish_plan_result(
+            request_id=request_id,
+            plan_request_id=plan_request_id,
+            state="succeeded" if succeeded else "failed",
+            detail="plan succeeded" if succeeded else f"plan failed with status_code={status_code}",
+            status_code=status_code,
+            planning=planning_debug,
+        )
 
     def _on_cancel(self, msg: String):
         payload = self._parse_payload(msg.data)
@@ -694,6 +875,7 @@ class Nav2BridgeAdapter:
         self._goal_handle = None
         self._result_future = None
         self._latest_planning_debug = {}
+        self._plan_request_debug = {}
         self._latest_action_result_debug = {}
         self._waiting_costmap_refresh = False
         self._costmap_refresh_request_id = ""
@@ -735,6 +917,30 @@ class Nav2BridgeAdapter:
         }
         self._publish_json(self._result_pub, payload)
 
+    def _publish_plan_result(
+        self,
+        *,
+        request_id: str,
+        plan_request_id: str,
+        state: str,
+        detail: str,
+        status_code: int,
+        planning: dict[str, Any],
+    ):
+        payload = {
+            "robot_name": self.robot_name,
+            "request_id": str(request_id),
+            "plan_request_id": str(plan_request_id),
+            "stack_id": self._stack_id,
+            "state": str(state),
+            "detail": str(detail),
+            "status_code": int(status_code),
+            "reported_pose": dict(self._latest_odom_pose),
+            "planning": dict(planning),
+            "updated_at": time.time(),
+        }
+        self._publish_json(self._plan_result_pub, payload)
+
     def _publish_terminal_failure(self, *, request_id: str, state: str, detail: str):
         self._goal_handle = None
         self._result_future = None
@@ -759,6 +965,8 @@ class Nav2BridgeAdapter:
     def _stack_ready(self) -> bool:
         if not self._action_client.server_is_ready():
             self._action_client.wait_for_server(timeout_sec=0.0)
+        if not self._planner_action_client.server_is_ready():
+            self._planner_action_client.wait_for_server(timeout_sec=0.0)
         if not self._load_map_client.service_is_ready():
             self._load_map_client.wait_for_service(timeout_sec=0.0)
         if not self._clear_global_costmap_client.service_is_ready():
@@ -767,6 +975,7 @@ class Nav2BridgeAdapter:
             self._clear_local_costmap_client.wait_for_service(timeout_sec=0.0)
         return bool(
             self._action_client.server_is_ready()
+            and self._planner_action_client.server_is_ready()
             and self._load_map_client.service_is_ready()
             and self._clear_global_costmap_client.service_is_ready()
             and self._clear_local_costmap_client.service_is_ready()
@@ -940,10 +1149,12 @@ def main() -> int:
     parser.add_argument("--robot-name", default="split_aloha")
     parser.add_argument("--map-update-topic", default="/simbox/nav_bridge/map_update")
     parser.add_argument("--goal-topic", default="/simbox/nav_bridge/goal")
+    parser.add_argument("--plan-topic", default="/simbox/nav_bridge/plan")
     parser.add_argument("--cancel-topic", default="/simbox/nav_bridge/cancel")
     parser.add_argument("--reset-topic", default="/simbox/nav_bridge/reset")
     parser.add_argument("--status-topic", default="/simbox/nav_bridge/status")
     parser.add_argument("--result-topic", default="/simbox/nav_bridge/result")
+    parser.add_argument("--plan-result-topic", default="/simbox/nav_bridge/plan_result")
     parser.add_argument("--odom-topic", default="/odom")
     parser.add_argument("--action-name", default="/navigate_to_pose")
     parser.add_argument("--planner-action-name", default="/compute_path_to_pose")
@@ -963,10 +1174,12 @@ def main() -> int:
         robot_name=args.robot_name,
         map_update_topic=args.map_update_topic,
         goal_topic=args.goal_topic,
+        plan_topic=args.plan_topic,
         cancel_topic=args.cancel_topic,
         reset_topic=args.reset_topic,
         status_topic=args.status_topic,
         result_topic=args.result_topic,
+        plan_result_topic=args.plan_result_topic,
         odom_topic=args.odom_topic,
         action_name=args.action_name,
         planner_action_name=args.planner_action_name,

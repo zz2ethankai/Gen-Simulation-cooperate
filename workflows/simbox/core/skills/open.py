@@ -1,4 +1,7 @@
 from copy import deepcopy
+import json
+import os
+import time
 
 import numpy as np
 from core.skills.base_skill import BaseSkill, register_skill
@@ -43,6 +46,28 @@ class Open(BaseSkill):
         ]
         self.collision_valid = True
         self.process_valid = True
+        self.output_root = str(self.skill_cfg.get("output_root", "output/ros_bridge/skills"))
+        self.debug_tag = f"{robot.name}_open_{art_obj_name}_{int(time.time() * 1000)}"
+        self.debug_dir = os.path.join(self.output_root, self.debug_tag)
+        self._plan_failure_debug_path = None
+
+    def _json_ready(self, value):
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, (np.floating, np.integer, np.bool_)):
+            return value.item()
+        if isinstance(value, (list, tuple)):
+            return [self._json_ready(v) for v in value]
+        if isinstance(value, dict):
+            return {str(k): self._json_ready(v) for k, v in value.items()}
+        return value
+
+    def _write_debug_artifact(self, filename: str, payload: dict):
+        os.makedirs(self.debug_dir, exist_ok=True)
+        output_path = os.path.join(self.debug_dir, filename)
+        with open(output_path, "w", encoding="utf-8") as handle:
+            json.dump(self._json_ready(payload), handle, indent=2, ensure_ascii=False)
+        return output_path
 
     def setup_kpam(self):
         self.planner = KPAMPlanner(
@@ -64,6 +89,18 @@ class Open(BaseSkill):
         traj_keyframes, sample_times = self.planner.get_keypose()
         if len(traj_keyframes) == 0 and len(sample_times) == 0:
             print("No keyframes found, return empty manip_list")
+            self._plan_failure_debug_path = self._write_debug_artifact(
+                "open_plan_failure_snapshot.json",
+                {
+                    "skill_name": self.name,
+                    "skill_id": self.skill_cfg.get("id"),
+                    "object_name": self.art_obj.object_name,
+                    "obj_info_path": self.skill_cfg.get("obj_info_path"),
+                    "planner_setting": self.planner_setting,
+                    "planner_debug_info": getattr(self.planner, "debug_info", {}),
+                },
+            )
+            print(f"[open-debug] Wrote open planning failure snapshot: {self._plan_failure_debug_path}")
             self.manip_list = []
             return
 

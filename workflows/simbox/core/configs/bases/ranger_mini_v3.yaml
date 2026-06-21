@@ -21,14 +21,24 @@ platform:
   profile: ranger_mini_v3
   nav2:
     footprint_points:
-      - [0.46, 0.24]
-      - [0.42, 0.29]
-      - [-0.32, 0.29]
-      - [-0.36, 0.24]
-      - [-0.36, -0.24]
-      - [-0.32, -0.29]
-      - [0.42, -0.29]
-      - [0.46, -0.24]
+      - [-0.395, 0.250]
+      - [0.055, 0.250]
+      - [0.055, 0.400]
+      - [0.600, 0.400]
+      - [0.600, 0.220]
+      - [0.423, 0.220]
+      - [0.423, -0.220]
+      - [0.600, -0.220]
+      - [0.600, -0.400]
+      - [0.055, -0.400]
+      - [0.055, -0.250]
+      - [-0.395, -0.250]
+    # Inflation radius was raised from 0.34 to improve footprint checking, but
+    # 0.75 m blocked narrow passages and made goals unreachable. Use 0.55 m as a
+    # compromise: it is below the circumscribed radius so Nav2 logs a warning and
+    # disables the possibly-inscribed shortcut, but the full footprint check still
+    # runs. This avoids both the old "plan through obstacles" bug and the new
+    # "no valid path" failure.
     inflation_radius_m: 0.34
     minimum_turning_radius_m: 0.47644
     max_steer_angle_ackermann: 0.6981

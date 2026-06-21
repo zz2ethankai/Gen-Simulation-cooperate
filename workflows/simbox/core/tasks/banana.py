@@ -136,7 +136,7 @@ class BananaBaseTask(BaseTask):
         self.cfg = update_articulated_objs(self.cfg)
         for cfg in self.cfg["objects"]:
             if cfg.get("apply_randomization", False):
-                delete_prim(os.path.dirname(self.objects[cfg["name"]].prim_path))
+                delete_prim(self._object_reload_root_path(self.objects[cfg["name"]], cfg))
                 self.objects[cfg["name"]] = self._load_obj(cfg)
                 self._task_objects[cfg["name"]] = self.objects[cfg["name"]]
 
@@ -205,6 +205,15 @@ class BananaBaseTask(BaseTask):
         if hasattr(obj, "set_angular_velocity"):
             obj.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
 
+    @staticmethod
+    def _object_reload_root_path(obj, cfg):
+        target_class = cfg.get("target_class")
+        if target_class == "RigidObject":
+            return getattr(obj, "base_prim_path", os.path.dirname(obj.prim_path))
+        if target_class == "ArticulatedObject":
+            return getattr(obj, "object_prim_path", obj.prim_path)
+        return obj.prim_path
+
     def individual_reset_from_mem(self):
         for cfg in self.cfg["arena"]["fixtures"]:
             if cfg.get("apply_randomization", False):
@@ -215,7 +224,7 @@ class BananaBaseTask(BaseTask):
         # Update objects
         for cfg in self.cfg["objects"]:
             if cfg.get("apply_randomization", False):
-                delete_prim(os.path.dirname(self.objects[cfg["name"]].prim_path))
+                delete_prim(self._object_reload_root_path(self.objects[cfg["name"]], cfg))
                 self.objects[cfg["name"]] = self._load_obj(cfg)
                 self._task_objects[cfg["name"]] = self.objects[cfg["name"]]
 
@@ -455,15 +464,43 @@ class BananaBaseTask(BaseTask):
                                     )
 
                                 if (object_name + "_forbid_collision") not in artcontact_views[robot_name][lr_name]:
+                                    art_obj = self._task_objects[object_name]
+                                    art_obj_cfg = getattr(art_obj, "cfg", {})
+                                    art_forbid_paths = art_obj_cfg.get(
+                                        "forbid_collision_paths", getattr(art_obj, "forbid_collision_paths", None)
+                                    )
+                                    if art_forbid_paths:
+                                        art_forbid_paths = [
+                                            path
+                                            if path.startswith("/")
+                                            else f"{art_obj.object_prim_path}/{path}"
+                                            for path in art_forbid_paths
+                                        ]
+                                        art_forbid_paths = self._collapse_contact_sensor_paths(art_forbid_paths)
+                                    else:
+                                        art_forbid_paths = art_obj.object_prim_path + "/instance/*"
                                     artcontact_views[robot_name][lr_name][
                                         object_name + "_forbid_collision"
                                     ] = RigidContactView(
-                                        prim_paths_expr=self._task_objects[object_name].object_prim_path
-                                        + "/instance/*",
+                                        prim_paths_expr=art_forbid_paths,
                                         filter_paths_expr=forbid_collision_paths,
                                     )
 
         return artcontact_views
+
+    @staticmethod
+    def _collapse_contact_sensor_paths(paths):
+        if isinstance(paths, str):
+            return paths
+        if not paths:
+            return paths
+        parents = {path.rsplit("/", 1)[0] for path in paths}
+        if len(parents) == 1:
+            return f"{parents.pop()}/*"
+        common_prefix = os.path.commonpath(paths)
+        if common_prefix in paths:
+            common_prefix = common_prefix.rsplit("/", 1)[0]
+        return f"{common_prefix}/*"
 
     def _set_pickcontact_view(self, cfg):
         pickcontact_views = {}

@@ -64,6 +64,7 @@ class KPAMPlanner:
         self.goal_joint = None
         self.kpam_success = False
         self.joint_plan_success = False
+        self.debug_info = {}
 
         if "franka" in self.robot.name:
             self.ee_name = "panda_hand"
@@ -583,6 +584,145 @@ class KPAMPlanner:
 
         return new_transform_matrix
 
+    def _vector_constraint_target(self, constraint, link2base):
+        if constraint["name"] == "fingers_orthogonal_to_link0":
+            target1_from_name = constraint["cross_target_axis1_from_keypoint_name"]
+            target1_to_name = constraint["cross_target_axis1_to_keypoint_name"]
+            target_vec1 = self.curr_object_keypoints[target1_to_name] - self.curr_object_keypoints[target1_from_name]
+            target_vec2 = link2base[:3, :3] @ constraint["target_axis"]
+            target_vec = np.cross(target_vec1, target_vec2)
+        else:
+            target_vec = link2base[:3, :3] @ constraint["target_axis"]
+
+        norm = np.linalg.norm(target_vec)
+        if norm < 1e-8:
+            return target_vec
+        return target_vec / norm
+
+    def _estimate_desired_hand_pose_from_constraints(self, constraint_dicts, link2base):
+        head_target = None
+        vector_targets = {}
+        for constraint in constraint_dicts:
+            name = constraint.get("name")
+            if name == "fingers_contact_with_link0":
+                head_target = self.curr_object_keypoints[constraint["target_keypoint_name"]]
+            elif name in (
+                "hand_parallel_to_link0_edge",
+                "hand_parallel_to_link0_move_axis",
+                "fingers_orthogonal_to_link0",
+            ):
+                target_vec = self._vector_constraint_target(constraint, link2base)
+                inner_product = constraint.get("target_inner_product", 1)
+                if inner_product == -1:
+                    target_vec = -target_vec
+                elif inner_product not in (1, -1):
+                    continue
+                from_name = constraint["axis_from_keypoint_name"]
+                to_name = constraint["axis_to_keypoint_name"]
+                vector_targets[(from_name, to_name)] = target_vec
+
+        if head_target is None:
+            return {"available": False, "reason": "missing_head_target"}
+
+        source_vectors = []
+        target_vectors = []
+        target_keypoints = {"tool_head": head_target}
+        for (from_name, to_name), target_vec in vector_targets.items():
+            if from_name != "tool_head":
+                continue
+            source_vec = self.tool_keypoints_in_hand[to_name] - self.tool_keypoints_in_hand[from_name]
+            source_norm = np.linalg.norm(source_vec)
+            target_norm = np.linalg.norm(target_vec)
+            if source_norm < 1e-8 or target_norm < 1e-8:
+                continue
+            source_vectors.append(source_vec / source_norm)
+            target_vectors.append(target_vec / target_norm)
+            target_keypoints[to_name] = head_target + target_vec / target_norm * source_norm
+
+        if len(source_vectors) < 2:
+            return {
+                "available": False,
+                "reason": "need_two_vector_constraints",
+                "target_keypoints": target_keypoints,
+                "vector_targets": {f"{k[0]}->{k[1]}": v for k, v in vector_targets.items()},
+            }
+
+        try:
+            rot, rssd = R.align_vectors(np.array(target_vectors), np.array(source_vectors))
+            rotation_matrix = rot.as_matrix()
+            translation = head_target - rotation_matrix @ self.tool_keypoints_in_hand["tool_head"]
+            pose = np.eye(4)
+            pose[:3, :3] = rotation_matrix
+            pose[:3, 3] = translation
+            return {
+                "available": True,
+                "estimated_hand_pose_in_arm_base": pose,
+                "estimated_tool_head_target_in_arm_base": head_target,
+                "target_keypoints_in_arm_base": target_keypoints,
+                "vector_targets_in_arm_base": {f"{k[0]}->{k[1]}": v for k, v in vector_targets.items()},
+                "align_rssd": rssd,
+            }
+        except Exception as exc:
+            return {
+                "available": False,
+                "reason": f"align_vectors_failed: {exc}",
+                "target_keypoints": target_keypoints,
+                "vector_targets": {f"{k[0]}->{k[1]}": v for k, v in vector_targets.items()},
+            }
+
+    def _build_kpam_debug_info(self, constraint_dicts, link2base):
+        constraints_debug = []
+        for constraint in constraint_dicts:
+            item = dict(constraint)
+            name = constraint.get("name")
+            if name == "fingers_contact_with_link0":
+                item["target_point_in_arm_base"] = self.curr_object_keypoints[constraint["target_keypoint_name"]]
+                item["tool_point_in_hand"] = self.tool_keypoints_in_hand[constraint["keypoint_name"]]
+            elif name in (
+                "hand_parallel_to_link0_edge",
+                "hand_parallel_to_link0_move_axis",
+                "fingers_orthogonal_to_link0",
+            ):
+                target_vec = self._vector_constraint_target(constraint, link2base)
+                if constraint.get("target_inner_product", 1) == -1:
+                    desired_vec = -target_vec
+                else:
+                    desired_vec = target_vec
+                item["resolved_target_vector_in_arm_base"] = target_vec
+                item["desired_tool_vector_in_arm_base"] = desired_vec
+                item["tool_vector_in_hand"] = (
+                    self.tool_keypoints_in_hand[constraint["axis_to_keypoint_name"]]
+                    - self.tool_keypoints_in_hand[constraint["axis_from_keypoint_name"]]
+                )
+            constraints_debug.append(item)
+
+        return {
+            "robot_name": self.robot.name,
+            "controller_robot_file": getattr(self.controller, "robot_file", None),
+            "ee_name": self.ee_name,
+            "robot_dof": self.robot_dof,
+            "base_pose_world_from_arm_base": self.base_pose,
+            "ee_pose_in_arm_base": self.ee_pose,
+            "tool_pose_in_arm_base": self.tool_pose,
+            "object_link_pose_in_arm_base": self.object_pose,
+            "object_keypoints_world": self.object_keypoint_in_world,
+            "object_keypoints_in_arm_base": self.curr_object_keypoints,
+            "tool_keypoints_world": self.tool_keypoint_in_world,
+            "tool_keypoints_in_arm_base": self.curr_tool_keypoints,
+            "tool_keypoints_in_hand": self.tool_keypoints_in_hand,
+            "tool_rel_pose_in_hand": self.tool_rel_pose,
+            "link2base": link2base,
+            "object_axes": {
+                "object_link0_contact_axis": getattr(self.object, "object_link0_contact_axis", None),
+                "object_link0_rot_axis": getattr(self.object, "object_link0_rot_axis", None),
+                "object_base_front_axis": getattr(self.object, "object_base_front_axis", None),
+            },
+            "joint_positions_seed_base": self.joint_positions.copy(),
+            "constraints": constraints_debug,
+            "estimated_desired_grasp": self._estimate_desired_hand_pose_from_constraints(constraint_dicts, link2base),
+            "ik_seed_results": [],
+        }
+
     def parse_constraints(self):
         """
         Parse constraints from YAML config file into list of constraint dictionaries
@@ -640,6 +780,10 @@ class KPAMPlanner:
         # 'tolerance': 0.01}]
 
         constraint_dicts = self.parse_constraints()
+        link2base = get_relative_transform(
+            get_prim_at_path(self.object.object_link_path), get_prim_at_path(self.robot.base_path)
+        )
+        self.debug_info = self._build_kpam_debug_info(constraint_dicts, link2base)
         # need to parse the kpam config file and create a kpam problem
         indexes = np.random.randint(len(anchor_seeds), size=(8,))
         # array([12, 10,  9, 11,  4,  6,  6,  6])
@@ -647,11 +791,9 @@ class KPAMPlanner:
             anchor_seeds[idx][: self.robot_dof] for idx in indexes
         ]
         solutions = []
-        for seed in random_seeds:
+        for seed_index, seed in enumerate(random_seeds):
             res = solve_ik_kpam(
-                get_relative_transform(
-                    get_prim_at_path(self.object.object_link_path), get_prim_at_path(self.robot.base_path)
-                ),
+                link2base,
                 constraint_dicts,
                 self.plant.GetFrameByName(self.ee_name),
                 self.tool_keypoints_in_hand,
@@ -666,7 +808,24 @@ class KPAMPlanner:
             )
 
             if res is not None:
-                solutions.append(res.get_x_val()[:9])
+                solution = res.get_x_val()[:9]
+                solutions.append(solution)
+                self.debug_info["ik_seed_results"].append(
+                    {
+                        "seed_index": seed_index,
+                        "success": True,
+                        "seed": seed.copy(),
+                        "solution": solution,
+                    }
+                )
+            else:
+                self.debug_info["ik_seed_results"].append(
+                    {
+                        "seed_index": seed_index,
+                        "success": False,
+                        "seed": seed.copy(),
+                    }
+                )
 
         # solutions example:
         #     [array([ 1.14329376e-06,  3.53816124e-01,  4.80939611e-06, -2.05026707e+00,
@@ -686,6 +845,8 @@ class KPAMPlanner:
             # raise ValueError("empty solution in kpam, target pose is unavailable")
             self.goal_joint = self.joint_positions[:9].copy()
             self.kpam_success = False
+            self.debug_info["kpam_success"] = False
+            self.debug_info["solution_count"] = 0
         else:
             self.kpam_success = True
             solutions = np.array(solutions)
@@ -693,6 +854,9 @@ class KPAMPlanner:
             dist_to_init_joints = np.linalg.norm(solutions - joint_positions.copy(), axis=-1)
             res = solutions[np.argmin(dist_to_init_joints)]
             self.goal_joint = res
+            self.debug_info["kpam_success"] = True
+            self.debug_info["solution_count"] = len(solutions)
+            self.debug_info["selected_goal_joint"] = self.goal_joint
 
             # select the best solution from solutions as res
             # res example:
@@ -718,6 +882,7 @@ class KPAMPlanner:
         #     )
 
         self.task_goal_hand_pose = np.array(self.task_goal_hand_pose.GetAsMatrix4())
+        self.debug_info["task_goal_hand_pose_before_random_in_arm_base"] = self.task_goal_hand_pose.copy()
 
         ### add random to keypose ###
         orientation_range = self.cfg["keypose_random_range"]["orientation"]
@@ -725,6 +890,7 @@ class KPAMPlanner:
         self.task_goal_hand_pose = self.add_random_to_keypose(
             self.task_goal_hand_pose, orientation_range, position_range
         )
+        self.debug_info["task_goal_hand_pose_after_random_in_arm_base"] = self.task_goal_hand_pose.copy()
         ### add random to keypose ###
 
         # self.task_goal_hand_pose example;
@@ -738,6 +904,7 @@ class KPAMPlanner:
         #             1.00000000e+00]])
 
         self.task_goal_tool_pose = self.task_goal_hand_pose @ self.tool_rel_pose
+        self.debug_info["task_goal_tool_pose_after_random_in_arm_base"] = self.task_goal_tool_pose.copy()
 
         # # Transform the keypoint
         # self.curr_solution_tool_keypoint_head = SE3_utils.transform_point(

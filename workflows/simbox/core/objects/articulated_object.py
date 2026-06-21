@@ -51,6 +51,7 @@ class ArticulatedObject(Articulation):
             self.object_keypoints[key] = np.append(item, [1.0], axis=0)
 
         self.object_scale = np.array(object_info["object_scale"])
+        self.forbid_collision_paths = object_info.get("forbid_collision_paths")
 
         for key, item in object_info.items():
             if key in prim_path_list:
@@ -82,6 +83,7 @@ class ArticulatedObject(Articulation):
         for key, item in self.object_keypoints.items():
             self.object_keypoints[key] = np.append(item, [1.0], axis=0)
         self.object_scale = np.array(object_info["object_scale"])
+        self.forbid_collision_paths = object_info.get("forbid_collision_paths")
         for key, item in object_info.items():
             if key in prim_path_list:
                 setattr(self, key, self._root_prim_path + object_info[key])

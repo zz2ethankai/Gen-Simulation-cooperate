@@ -79,24 +79,34 @@ class Nav2BridgeClient:
         self._odom_topic = str(self.ros_cfg.get("odom_topic", "/odom"))
         self._map_update_topic = str(self.nav2_cfg.get("bridge_map_update_topic", "/simbox/nav_bridge/map_update"))
         self._goal_topic = str(self.nav2_cfg.get("bridge_goal_topic", "/simbox/nav_bridge/goal"))
+        self._plan_topic = str(self.nav2_cfg.get("bridge_plan_topic", "/simbox/nav_bridge/plan"))
         self._cancel_topic = str(self.nav2_cfg.get("bridge_cancel_topic", "/simbox/nav_bridge/cancel"))
         self._reset_topic = str(self.nav2_cfg.get("bridge_reset_topic", "/simbox/nav_bridge/reset"))
         self._status_topic = str(self.nav2_cfg.get("bridge_status_topic", "/simbox/nav_bridge/status"))
         self._result_topic = str(self.nav2_cfg.get("bridge_result_topic", "/simbox/nav_bridge/result"))
+        self._plan_result_topic = str(self.nav2_cfg.get("bridge_plan_result_topic", "/simbox/nav_bridge/plan_result"))
         self._bridge_alive_timeout_sec = float(self.nav2_cfg.get("bridge_alive_timeout_sec", 3.0))
 
         self._map_update_pub = self.node.create_publisher(self._String, self._map_update_topic, control_qos)
         self._goal_pub = self.node.create_publisher(self._String, self._goal_topic, control_qos)
+        self._plan_pub = self.node.create_publisher(self._String, self._plan_topic, control_qos)
         self._cancel_pub = self.node.create_publisher(self._String, self._cancel_topic, control_qos)
         self._reset_pub = self.node.create_publisher(self._String, self._reset_topic, control_qos)
         self._status_sub = self.node.create_subscription(self._String, self._status_topic, self._on_status, control_qos)
         self._result_sub = self.node.create_subscription(self._String, self._result_topic, self._on_result, control_qos)
+        self._plan_result_sub = self.node.create_subscription(
+            self._String,
+            self._plan_result_topic,
+            self._on_plan_result,
+            control_qos,
+        )
         self._odom_sub = self.node.create_subscription(self._Odometry, self._odom_topic, self._on_odom, odom_qos)
 
         self._sim_time_sec = 0.0
         self._last_wall_time_sec = time.monotonic()
         self._latest_status: dict[str, Any] = {}
         self._latest_result: dict[str, Any] = {}
+        self._latest_plan_results: dict[str, dict[str, Any]] = {}
         self._last_status_wall_time_sec = -1e9
         self._last_result_wall_time_sec = -1e9
         self._latest_odom_xy = None
@@ -116,6 +126,7 @@ class Nav2BridgeClient:
     def clear_cached_bridge_state(self):
         self._latest_status = {}
         self._latest_result = {}
+        self._latest_plan_results = {}
         self._last_status_wall_time_sec = -1e9
         self._last_result_wall_time_sec = -1e9
 
@@ -193,6 +204,38 @@ class Nav2BridgeClient:
         )
         self._publish_json(self._goal_pub, payload)
 
+    def publish_plan_request(
+        self,
+        *,
+        request_id: str,
+        plan_request_id: str,
+        goal_x: float,
+        goal_y: float,
+        goal_yaw: float,
+    ):
+        payload = {
+            "robot_name": self._robot_name,
+            "request_id": str(request_id),
+            "plan_request_id": str(plan_request_id),
+            "frame_id": self._global_frame,
+            "goal": {
+                "x": float(goal_x),
+                "y": float(goal_y),
+                "yaw": float(goal_yaw),
+            },
+            "sent_at": time.time(),
+        }
+        LOGGER.info(
+            "publish plan robot=%s request_id=%s plan_request_id=%s goal=(%.3f, %.3f, %.3f)",
+            self._robot_name,
+            request_id,
+            plan_request_id,
+            goal_x,
+            goal_y,
+            goal_yaw,
+        )
+        self._publish_json(self._plan_pub, payload)
+
     def cancel_request(self, request_id: str = ""):
         payload = {
             "robot_name": self._robot_name,
@@ -224,6 +267,16 @@ class Nav2BridgeClient:
     def request_result(self, request_id: str) -> dict[str, Any]:
         payload = self._latest_result
         if str(payload.get("request_id", "")).strip() != str(request_id).strip():
+            return {}
+        if str(payload.get("robot_name", self._robot_name)).strip() != self._robot_name:
+            return {}
+        return dict(payload)
+
+    def request_plan_result(self, *, request_id: str, plan_request_id: str) -> dict[str, Any]:
+        payload = self._latest_plan_results.get(str(plan_request_id).strip(), {})
+        if str(payload.get("request_id", "")).strip() != str(request_id).strip():
+            return {}
+        if str(payload.get("plan_request_id", "")).strip() != str(plan_request_id).strip():
             return {}
         if str(payload.get("robot_name", self._robot_name)).strip() != self._robot_name:
             return {}
@@ -267,6 +320,25 @@ class Nav2BridgeClient:
         request_id = str(payload.get("request_id", "")).strip()
         if state:
             LOGGER.info("result update robot=%s request_id=%s state=%s", self._robot_name, request_id, state)
+
+    def _on_plan_result(self, msg):
+        payload = self._parse_json_message(msg.data)
+        if str(payload.get("robot_name", self._robot_name)).strip() != self._robot_name:
+            return
+        plan_request_id = str(payload.get("plan_request_id", "")).strip()
+        if not plan_request_id:
+            return
+        self._latest_plan_results[plan_request_id] = payload
+        state = str(payload.get("state", "")).strip()
+        request_id = str(payload.get("request_id", "")).strip()
+        if state:
+            LOGGER.info(
+                "plan result update robot=%s request_id=%s plan_request_id=%s state=%s",
+                self._robot_name,
+                request_id,
+                plan_request_id,
+                state,
+            )
 
     def _on_odom(self, msg):
         x = float(msg.pose.pose.position.x)

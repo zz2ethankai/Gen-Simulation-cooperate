@@ -3,6 +3,9 @@ Template robot class for manipulator robots with configurable parameters.
 All robot implementations (FR3, FrankaRobotiq85, Genie1, Lift2, SplitAloha) inherit from this class.
 """
 import json
+import os
+import time
+import traceback
 from copy import deepcopy
 
 import numpy as np
@@ -192,10 +195,182 @@ class TemplateRobot(Robot):
         qpos, qvel = joint_state.positions, joint_state.velocities
 
         T_base_ee_fl = get_relative_transform(get_prim_at_path(self.fl_ee_path), get_prim_at_path(self.fl_base_path))
-        T_world_base = tf_matrix_from_pose(*self.get_local_pose())
+        try:
+            base_translation, base_orientation = self.get_local_pose()
+        except Exception as exc:
+            self._write_observation_failure_debug(
+                exc,
+                stage="get_local_pose",
+                qpos=qpos,
+                qvel=qvel,
+            )
+            raise
+        T_world_base = tf_matrix_from_pose(base_translation, base_orientation)
 
         obs = self._build_observations(qpos, qvel, T_base_ee_fl, T_world_base)
         return obs
+
+    def _write_observation_failure_debug(self, exc: Exception, *, stage: str, qpos=None, qvel=None):
+        payload = {
+            "robot_name": str(getattr(self, "name", "")),
+            "robot_prim_path": str(getattr(self, "robot_prim_path", "")),
+            "stage": str(stage),
+            "exception_type": type(exc).__name__,
+            "exception": str(exc),
+            "traceback": traceback.format_exception(type(exc), exc, exc.__traceback__),
+            "joint_state_summary": {
+                "qpos": self._array_debug_summary(qpos),
+                "qvel": self._array_debug_summary(qvel),
+            },
+            "articulation": self._articulation_pose_debug(),
+            "base_bridge": self._base_bridge_debug(),
+        }
+        output_dir = os.environ.get("SIMBOX_DEBUG_OUTPUT_DIR", "output/simbox_debug")
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+            filename = f"robot_observation_failure_{self._safe_debug_name()}_{time.time_ns()}.json"
+            path = os.path.join(output_dir, filename)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self._json_safe(payload), f, indent=2)
+            print(f"[TemplateRobot] observation failure debug written to {path}", flush=True)
+        except Exception as dump_exc:  # pylint: disable=broad-except
+            print(
+                "[TemplateRobot] failed to write observation failure debug: "
+                f"{type(dump_exc).__name__}: {dump_exc}",
+                flush=True,
+            )
+
+    def _safe_debug_name(self) -> str:
+        name = str(getattr(self, "name", "") or self.cfg.get("name", "robot"))
+        return "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in name) or "robot"
+
+    def _articulation_pose_debug(self) -> dict:
+        view = getattr(self, "_articulation_view", None)
+        payload = {
+            "view_type": type(view).__name__ if view is not None else "",
+            "prim_paths": self._safe_get_attr(view, "prim_paths"),
+            "body_names": self._safe_get_attr(view, "body_names"),
+            "dof_names": self._safe_get_attr(view, "dof_names"),
+        }
+        if view is None:
+            return payload
+        for method_name in ("get_world_poses", "get_local_poses"):
+            method = getattr(view, method_name, None)
+            if not callable(method):
+                payload[method_name] = {"available": False}
+                continue
+            try:
+                positions, orientations = method()
+                orientations_array = np.asarray(orientations, dtype=np.float64)
+                norms = np.linalg.norm(orientations_array.reshape(-1, 4), axis=1)
+                zero_norm_indices = np.where(norms <= 1.0e-8)[0].astype(int).tolist()
+                payload[method_name] = {
+                    "positions": positions,
+                    "orientations": orientations,
+                    "orientation_norms": norms,
+                    "zero_norm_orientation_indices": zero_norm_indices,
+                }
+            except Exception as exc:  # pylint: disable=broad-except
+                payload[method_name] = {
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+        return payload
+
+    def _base_bridge_debug(self) -> dict:
+        bridge = getattr(self, "_simbox_ros_base_bridge", None)
+        if bridge is None:
+            return {"available": False}
+        payload = {
+            "available": True,
+            "type": type(bridge).__name__,
+        }
+        for name in ("get_logging_action_snapshot", "get_logging_state_snapshot"):
+            method = getattr(bridge, name, None)
+            if not callable(method):
+                continue
+            try:
+                payload[name] = method()
+            except Exception as exc:  # pylint: disable=broad-except
+                payload[name] = {
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+        for attr in (
+            "_navigation_active",
+            "_hold_after_navigation",
+            "_restore_after_navigation",
+            "_restore_waiting_for_wheel_stop",
+            "_last_requested_steering",
+            "_last_requested_wheel_velocities",
+            "_last_applied_wheel_velocities",
+            "_last_step_dt",
+            "_non_finite_state_detected",
+            "_non_finite_state_reason",
+        ):
+            payload[attr.lstrip("_")] = self._safe_get_attr(bridge, attr)
+        history = getattr(bridge, "_debug_command_history", None)
+        if history is not None:
+            try:
+                payload["debug_command_history_tail"] = list(history)[-8:]
+            except Exception as exc:  # pylint: disable=broad-except
+                payload["debug_command_history_tail"] = {
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+        return payload
+
+    @classmethod
+    def _array_debug_summary(cls, value) -> dict:
+        if value is None:
+            return {"available": False}
+        try:
+            array = np.asarray(value)
+            flat = array.reshape(-1)
+            return {
+                "available": True,
+                "shape": list(array.shape),
+                "dtype": str(array.dtype),
+                "finite": bool(np.all(np.isfinite(flat))) if flat.size else True,
+                "min": float(np.nanmin(flat)) if flat.size else None,
+                "max": float(np.nanmax(flat)) if flat.size else None,
+                "sample": flat[:24],
+            }
+        except Exception as exc:  # pylint: disable=broad-except
+            return {
+                "available": False,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+
+    @classmethod
+    def _safe_get_attr(cls, obj, attr):
+        try:
+            return getattr(obj, attr)
+        except Exception as exc:  # pylint: disable=broad-except
+            return {
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+
+    @classmethod
+    def _json_safe(cls, value):
+        if isinstance(value, dict):
+            return {str(key): cls._json_safe(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [cls._json_safe(item) for item in value]
+        if isinstance(value, np.ndarray):
+            return cls._json_safe(value.tolist())
+        if isinstance(value, np.generic):
+            return cls._json_safe(value.item())
+        if isinstance(value, (str, int, bool)) or value is None:
+            return value
+        if isinstance(value, float):
+            return value if np.isfinite(value) else None
+        try:
+            return cls._json_safe(list(value))
+        except TypeError:
+            return str(value)
 
     def _build_observations(self, qpos, qvel, T_base_ee_fl, T_world_base):
         obs = {

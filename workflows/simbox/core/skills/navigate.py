@@ -11,6 +11,7 @@ from omni.isaac.core.robots.robot import Robot
 from omni.isaac.core.tasks import BaseTask
 
 from nav2.runtime import configure_robot_for_nav2_skill
+from nav2.runtime.dynamic_goal import parse_approach_config
 
 
 def _wrap_to_pi(yaw: float) -> float:
@@ -30,7 +31,12 @@ class Navigate(BaseSkill):
         self.workflow = kwargs.get("workflow")
         self.skill_cfg = cfg
 
-        self.goal_x, self.goal_y, self.goal_yaw = self._resolve_goal_pose(task, cfg)
+        cfg_container = OmegaConf.to_container(cfg, resolve=True) if isinstance(cfg, DictConfig) else dict(cfg)
+        self.approach_config = parse_approach_config(cfg_container)
+        if self.approach_config is None:
+            self.goal_x, self.goal_y, self.goal_yaw = self._resolve_goal_pose(task, cfg)
+        else:
+            self.goal_x, self.goal_y, self.goal_yaw = 0.0, 0.0, 0.0
 
         legacy_position_tolerance_m = float(cfg.get("xy_goal_tolerance", cfg.get("skill_xy_goal_tolerance", 0.10)))
         legacy_yaw_tolerance_rad = float(cfg.get("yaw_goal_tolerance", cfg.get("skill_yaw_goal_tolerance", 0.10)))
@@ -179,6 +185,7 @@ class Navigate(BaseSkill):
                 goal_x=self.goal_x,
                 goal_y=self.goal_y,
                 goal_yaw=self.goal_yaw,
+                approach_config=self.approach_config,
                 nav2_position_tolerance_m=self.nav2_position_tolerance_m,
                 nav2_yaw_tolerance_rad=self.nav2_yaw_tolerance_rad,
                 position_tolerance_m=self.position_tolerance_m,

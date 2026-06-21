@@ -88,6 +88,7 @@ class BaseBridge(ABC):
         self._navigation_active = False
         self._hold_after_navigation = True
         self._restore_after_navigation = False
+        self._restore_waiting_for_wheel_stop = False
         self._restore_target_steering = np.zeros(steering_count, dtype=np.float32)
         self._restore_done_tolerance = float(self.base_cfg.get("restore_done_tolerance", 5.0e-3))
         self._restore_done_velocity_tolerance = float(
@@ -159,6 +160,7 @@ class BaseBridge(ABC):
         self._navigation_active = False
         self._hold_after_navigation = True
         self._restore_after_navigation = False
+        self._restore_waiting_for_wheel_stop = False
         self._last_received_cmd_vel = {
             "linear_x": 0.0,
             "linear_y": 0.0,
@@ -216,6 +218,7 @@ class BaseBridge(ABC):
         self._last_wheel_shaping_debug = {}
         self._restore_target_steering = self._get_restore_target_steering(steering_count)
         self._restore_after_navigation = True
+        self._restore_waiting_for_wheel_stop = True
         self._last_step_time_sec = now_sec
         self._last_step_dt = 1e-3
         self._publish_joint_state()
@@ -234,17 +237,30 @@ class BaseBridge(ABC):
         self._last_step_time_sec = now_sec
         self._last_step_dt = dt
 
+        steering_count = len(self.base_interface["steering_joint_names"])
         wheel_count = len(self.base_interface["wheel_joint_names"])
-        wheel_velocities = np.clip(
-            np.zeros(wheel_count, dtype=np.float32),
-            -self._wheel_velocity_limit,
-            self._wheel_velocity_limit,
+        requested_wheel_velocities = np.zeros(wheel_count, dtype=np.float32)
+        current_wheel_velocities = self._get_current_wheel_velocities(default=requested_wheel_velocities)
+        wheel_stop_reached = bool(
+            current_wheel_velocities.size == wheel_count
+            and np.all(np.isfinite(current_wheel_velocities))
+            and float(np.max(np.abs(current_wheel_velocities))) <= self._restore_done_velocity_tolerance
         )
-        requested_steering = self._restore_target_steering.copy()
-        steering_positions = self._apply_steering_limits(requested_steering, dt)
+
+        if self._restore_waiting_for_wheel_stop and not wheel_stop_reached:
+            requested_steering = self._get_current_steering_positions(
+                default=self._get_restore_target_steering(steering_count)
+            )
+            steering_positions = self._apply_steering_limits(requested_steering, dt)
+        else:
+            self._restore_waiting_for_wheel_stop = False
+            requested_steering = self._restore_target_steering.copy()
+            steering_positions = self._apply_steering_limits(requested_steering, dt)
+
+        wheel_velocities = requested_wheel_velocities.copy()
         self._last_step_command = BaseCommand.zero(received_time_sec=now_sec)
         self._last_requested_steering = requested_steering.astype(np.float32).copy()
-        self._last_requested_wheel_velocities = np.zeros_like(self._last_requested_wheel_velocities)
+        self._last_requested_wheel_velocities = requested_wheel_velocities.copy()
         self._last_applied_wheel_velocities = wheel_velocities.astype(np.float32).copy()
         self._last_wheel_shaping_debug = {}
         self.robot.apply_base_command(
@@ -265,6 +281,7 @@ class BaseBridge(ABC):
         done = self.restore_after_navigation_done()
         if done:
             self._restore_after_navigation = False
+            self._restore_waiting_for_wheel_stop = False
             self._hold_after_navigation = True
         rclpy.spin_once(self.node, timeout_sec=0.0)
         return done
@@ -273,23 +290,37 @@ class BaseBridge(ABC):
         if not self._restore_after_navigation:
             return True
         steering_count = len(self.base_interface["steering_joint_names"])
+        wheel_count = len(self.base_interface["wheel_joint_names"])
         try:
             joint_state = self.robot.get_base_joint_state()
             current_steering = np.asarray(joint_state["steering_positions"], dtype=np.float32).reshape(-1)
             steering_velocities = np.asarray(joint_state["steering_velocities"], dtype=np.float32).reshape(-1)
+            wheel_velocities = np.asarray(joint_state["wheel_velocities"], dtype=np.float32).reshape(-1)
         except Exception:
             current_steering = self._get_current_steering_positions(
                 default=self._get_restore_target_steering(steering_count),
             )
             steering_velocities = np.zeros(steering_count, dtype=np.float32)
+            wheel_velocities = np.zeros(wheel_count, dtype=np.float32)
         target_steering = self._get_restore_target_steering(steering_count)
-        if current_steering.size != target_steering.size or steering_velocities.size != target_steering.size:
+        if (
+            current_steering.size != target_steering.size
+            or steering_velocities.size != target_steering.size
+            or wheel_velocities.size != wheel_count
+        ):
             return False
-        if not np.all(np.isfinite(current_steering)) or not np.all(np.isfinite(steering_velocities)):
+        if (
+            not np.all(np.isfinite(current_steering))
+            or not np.all(np.isfinite(steering_velocities))
+            or not np.all(np.isfinite(wheel_velocities))
+        ):
             return False
+        if self._restore_waiting_for_wheel_stop:
+            return bool(float(np.max(np.abs(wheel_velocities))) <= self._restore_done_velocity_tolerance)
         return bool(
             np.allclose(current_steering, target_steering, atol=self._restore_done_tolerance)
             and float(np.max(np.abs(steering_velocities))) <= self._restore_done_velocity_tolerance
+            and float(np.max(np.abs(wheel_velocities))) <= self._restore_done_velocity_tolerance
         )
 
     def hold_after_navigation(self, step_dt: float | None = None):
@@ -330,6 +361,17 @@ class BaseBridge(ABC):
             mode="hold_after_navigation",
         )
         rclpy.spin_once(self.node, timeout_sec=0.0)
+
+    def _get_current_wheel_velocities(self, *, default: np.ndarray):
+        try:
+            joint_state = self.robot.get_base_joint_state()
+            current = np.asarray(joint_state["wheel_velocities"], dtype=np.float32).reshape(-1)
+        except Exception:
+            current = np.asarray(default, dtype=np.float32).reshape(-1)
+        expected = len(self.base_interface["wheel_joint_names"])
+        if current.size != expected or not np.all(np.isfinite(current)):
+            return np.asarray(default, dtype=np.float32).reshape(-1).copy()
+        return current.astype(np.float32).copy()
 
     def start_heading_alignment(
         self,

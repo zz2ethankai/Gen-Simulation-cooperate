@@ -16,23 +16,45 @@ ros:
     clear_local_costmap_service: /local_costmap/clear_entirely_local_costmap
     bridge_map_update_topic: /simbox/nav_bridge/map_update
     bridge_goal_topic: /simbox/nav_bridge/goal
+    bridge_plan_topic: /simbox/nav_bridge/plan
     bridge_cancel_topic: /simbox/nav_bridge/cancel
     bridge_reset_topic: /simbox/nav_bridge/reset
     bridge_status_topic: /simbox/nav_bridge/status
     bridge_result_topic: /simbox/nav_bridge/result
+    bridge_plan_result_topic: /simbox/nav_bridge/plan_result
     bridge_alive_timeout_sec: 3.0
 nav2_skill:
   local_goal_reached_hold_sec: 0.5
+  approach_footprint_padding: 0.06
   planner_server:
-    plugin: nav2_smac_planner/SmacPlanner2D
+    plugin: nav2_smac_planner/SmacPlannerLattice
     tolerance: 0.10
     allow_unknown: false
     downsample_costmap: false
     downsampling_factor: 1
     max_iterations: 1000000
-    max_on_approach_iterations: 1000
-    max_planning_time: 2.0
-    cost_travel_multiplier: 2.0
+    max_on_approach_iterations: 2000
+    max_planning_time: 3.0
+    smooth_path: true
+    reverse_penalty: 1.0
+    change_penalty: 0.0
+    non_straight_penalty: 1.05
+    cost_penalty: 2.0
+    rotation_penalty: 3.0
+    retrospective_penalty: 0.015
+    analytic_expansion_ratio: 3.5
+    analytic_expansion_max_length: 2.5
+    analytic_expansion_max_cost: 200.0
+    analytic_expansion_max_cost_override: false
+    cache_obstacle_heuristic: true
+    allow_reverse_expansion: false
+    lattice_filepath: /opt/ros/humble/share/nav2_smac_planner/sample_primitives/5cm_resolution/0.5m_turning_radius/omni/output.json
+    smoother:
+      tolerance: 1.0e-10
+      max_iterations: 1000
+      w_data: 0.2
+      w_smooth: 0.3
+      do_refinement: true
   controller_server:
     controller_frequency: 30.0
     min_x_velocity_threshold: 0.001
@@ -51,6 +73,7 @@ nav2_skill:
     follow_path:
       plugin: nav2_rotation_shim_controller::RotationShimController
       primary_controller: nav2_mppi_controller::MPPIController
+      rotate_to_heading_enabled: true
       angular_dist_threshold: 0.35
       forward_sampling_distance: 0.5
       rotate_to_heading_angular_vel: 0.22
@@ -148,7 +171,7 @@ nav2_skill:
     width: 6
     height: 6
     resolution: 0.02
-    footprint_padding: 0.03
+    footprint_padding: 0.10
     cost_scaling_factor: 3.0
     always_send_full_costmap: true
   global_costmap:

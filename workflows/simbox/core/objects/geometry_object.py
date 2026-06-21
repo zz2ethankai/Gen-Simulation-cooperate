@@ -47,9 +47,10 @@ class GeometryObject(GeometryPrim):
         if not bool(self.cfg.get("collision_enabled", False)):
             return
 
-        approximation = str(self.cfg.get("collision_approximation", "bbox"))
+        approximation = self._normalize_collision_approximation(self.cfg.get("collision_approximation", "bbox"))
         if approximation != "bbox":
-            raise ValueError(f"Unsupported GeometryObject collision_approximation: {approximation}")
+            self._apply_mesh_collision_approximation(approximation)
+            return
 
         stage = self.prim.GetStage()
         bbox_cache = UsdGeom.BBoxCache(
@@ -76,6 +77,42 @@ class GeometryObject(GeometryPrim):
 
         if not bool(self.cfg.get("collision_visible", False)):
             UsdGeom.Imageable(collision_prim).MakeInvisible()
+
+    @staticmethod
+    def _normalize_collision_approximation(approximation):
+        value = str(approximation).strip()
+        aliases = {
+            "convex_decomposition": "convexDecomposition",
+            "convexdecomposition": "convexDecomposition",
+            "convex_hull": "convexHull",
+            "convexhull": "convexHull",
+            "mesh_simplification": "meshSimplification",
+            "meshsimplification": "meshSimplification",
+        }
+        return aliases.get(value.replace("-", "_").lower(), value)
+
+    def _iter_mesh_prims(self):
+        def _walk(prim):
+            if prim.IsA(UsdGeom.Mesh):
+                yield prim
+            for child in prim.GetChildren():
+                yield from _walk(child)
+
+        yield from _walk(self.prim)
+
+    def _apply_mesh_collision_approximation(self, approximation):
+        mesh_prims = list(self._iter_mesh_prims())
+        if not mesh_prims:
+            raise ValueError(f"Cannot create mesh collision for {self.name}: no mesh prims found")
+
+        stage = self.prim.GetStage()
+        for mesh_prim in mesh_prims:
+            if not mesh_prim.HasAPI(UsdPhysics.CollisionAPI):
+                UsdPhysics.CollisionAPI.Apply(mesh_prim)
+            mesh_collision_api = UsdPhysics.MeshCollisionAPI.Get(stage, mesh_prim.GetPath())
+            if not mesh_collision_api:
+                mesh_collision_api = UsdPhysics.MeshCollisionAPI.Apply(mesh_prim)
+            mesh_collision_api.CreateApproximationAttr().Set(approximation)
 
     def get_observations(self):
         translation, orientation = self.get_local_pose()

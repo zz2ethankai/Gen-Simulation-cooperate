@@ -11,6 +11,23 @@ load_stage:
         stage_units_in_meters: 1.0         # Stage unit scale
         headless: True                     # Headless mode (no GUI)
         anti_aliasing: 0                   # Anti-aliasing level
+
+        # Optional higher-quality RayTracedLighting settings:
+        # renderer: RayTracedLighting
+        # rt_new_denoiser: true            # DLSS Ray Reconstruction / realtime denoiser
+        # rt_shadows_enabled: true
+        # rt_shadow_sample_count: 4
+        # rt_reflections_enabled: true
+        # rt_reflections_max_bounces: 2
+        # rt_translucency_enabled: true
+        # rt_translucency_max_refraction_bounces: 4
+        # rt_fractional_cutout_opacity: true
+        # rt_indirect_diffuse_enabled: true
+        # rt_indirect_diffuse_spp: 2
+        # rt_indirect_diffuse_max_bounces: 2
+        # rt_ambient_occlusion_enabled: true
+        # rt_ambient_occlusion_max_samples: 4
+
         # Optional higher-quality PathTracing settings:
         # renderer: PathTracing
         # denoiser: True

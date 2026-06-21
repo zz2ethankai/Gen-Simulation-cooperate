@@ -19,6 +19,16 @@ from .config import (
     generate_nav2_bringup_artifacts,
 )
 from .debug import Nav2SkillResult, TaskShim, runtime_control_debug_snapshot
+from .dynamic_goal import (
+    ApproachConfig,
+    check_footprint_static_collision,
+    load_static_map,
+    resolve_approach_footprint_padding_m,
+    resolve_nav2_footprint_points,
+    sample_approach_candidates,
+    sort_candidates_for_preflight,
+    write_candidates_debug,
+)
 from .utils import angle_diff_rad, safe_name, time_monotonic, yaw_from_wxyz
 
 LOGGER = logging.getLogger("simbox.nav2_skill")
@@ -30,6 +40,7 @@ class PersistentNav2RuntimeManager:
     STATE_IDLE = "idle"
     STATE_WAITING_FOR_STACK_READY = "waiting_for_stack_ready"
     STATE_WAITING_FOR_MAP_READY = "waiting_for_map_ready"
+    STATE_WAITING_FOR_DYNAMIC_PLAN = "waiting_for_dynamic_plan"
     STATE_WAITING_FOR_GOAL_ACCEPTED = "waiting_for_goal_accepted"
     STATE_RUNNING = "running"
     STATE_POST_SUCCESS_SETTLING = "post_success_settling"
@@ -53,6 +64,14 @@ class PersistentNav2RuntimeManager:
         self.goal_x = 0.0
         self.goal_y = 0.0
         self.goal_yaw = 0.0
+        self.approach_config: Optional[ApproachConfig] = None
+        self._approach_target_pose: dict = {}
+        self._dynamic_goal_selected: dict = {}
+        self._dynamic_goal_candidates: list[dict] = []
+        self._dynamic_goal_plan_index = 0
+        self._dynamic_goal_active_plan_request_id = ""
+        self._dynamic_goal_plan_deadline = None
+        self._dynamic_goal_debug_path = ""
         self.nav2_position_tolerance_m = NAV2_DEFAULT_POSITION_TOLERANCE_M
         self.nav2_yaw_tolerance_rad = NAV2_DEFAULT_YAW_TOLERANCE_RAD
         self.position_tolerance_m = NAV2_DEFAULT_POSITION_TOLERANCE_M
@@ -242,6 +261,7 @@ class PersistentNav2RuntimeManager:
         goal_x: float,
         goal_y: float,
         goal_yaw: float,
+        approach_config: Optional[ApproachConfig] = None,
         nav2_position_tolerance_m: float = NAV2_DEFAULT_POSITION_TOLERANCE_M,
         nav2_yaw_tolerance_rad: float = NAV2_DEFAULT_YAW_TOLERANCE_RAD,
         position_tolerance_m: float = NAV2_DEFAULT_POSITION_TOLERANCE_M,
@@ -252,6 +272,7 @@ class PersistentNav2RuntimeManager:
         self.goal_x = float(goal_x)
         self.goal_y = float(goal_y)
         self.goal_yaw = float(goal_yaw)
+        self.approach_config = approach_config
         self.nav2_position_tolerance_m = float(nav2_position_tolerance_m)
         self.nav2_yaw_tolerance_rad = float(nav2_yaw_tolerance_rad)
         self.position_tolerance_m = float(position_tolerance_m)
@@ -275,6 +296,13 @@ class PersistentNav2RuntimeManager:
         self._post_success_settle_started_at = None
         self._local_goal_reached_started_at = None
         self._post_success_trigger = ""
+        self._approach_target_pose = {}
+        self._dynamic_goal_selected = {}
+        self._dynamic_goal_candidates = []
+        self._dynamic_goal_plan_index = 0
+        self._dynamic_goal_active_plan_request_id = ""
+        self._dynamic_goal_plan_deadline = None
+        self._dynamic_goal_debug_path = ""
 
         bridge_client = self._ensure_bridge_client()
         bridge_client.reset_debug_trace()
@@ -306,6 +334,13 @@ class PersistentNav2RuntimeManager:
         self._post_success_settle_started_at = None
         self._local_goal_reached_started_at = None
         self._post_success_trigger = ""
+        self._approach_target_pose = {}
+        self._dynamic_goal_selected = {}
+        self._dynamic_goal_candidates = []
+        self._dynamic_goal_plan_index = 0
+        self._dynamic_goal_active_plan_request_id = ""
+        self._dynamic_goal_plan_deadline = None
+        self._dynamic_goal_debug_path = ""
 
     def step(self):
         if self.done or self.state == self.STATE_IDLE:
@@ -350,21 +385,39 @@ class PersistentNav2RuntimeManager:
 
         if self.state == self.STATE_WAITING_FOR_MAP_READY:
             if bridge_state == "ready":
-                self._start_robot_bridge_heading_alignment()
-                bridge_client.publish_goal(
-                    request_id=self._request_id,
-                    goal_x=self.goal_x,
-                    goal_y=self.goal_y,
-                    goal_yaw=self.goal_yaw,
-                )
-                self.state = self.STATE_WAITING_FOR_GOAL_ACCEPTED
-                self._goal_accept_deadline = time_monotonic() + min(self.startup_timeout_sec, 30.0)
+                if self.approach_config is not None:
+                    self._initialize_dynamic_goal_candidates()
+                    if self.done:
+                        return
+                    self.state = self.STATE_WAITING_FOR_DYNAMIC_PLAN
+                    self._publish_next_dynamic_plan_request(bridge_client)
+                else:
+                    self._publish_navigation_goal(bridge_client)
                 return
             if bridge_state in {"failed", "rejected", "aborted", "canceled"}:
                 self._fail("bridge_" + bridge_state, self._bridge_detail(status=status, result=result) or f"Bridge ended with {bridge_state}")
                 return
             if time_monotonic() >= float(self._startup_deadline):
                 self._fail("map_update_timeout", "Timed out waiting for bridge adapter to load the map.")
+            return
+
+        if self.state == self.STATE_WAITING_FOR_DYNAMIC_PLAN:
+            self._consume_dynamic_plan_result(bridge_client)
+            if self.done:
+                return
+            if self.state == self.STATE_WAITING_FOR_GOAL_ACCEPTED:
+                return
+            if self._dynamic_goal_plan_deadline is not None and time_monotonic() >= float(self._dynamic_goal_plan_deadline):
+                current = self._active_dynamic_candidate()
+                if current is not None:
+                    current["path_ok"] = False
+                    current["path_state"] = "timeout"
+                    current["path_detail"] = "timed out waiting for ComputePathToPose plan result"
+                    self._write_dynamic_goal_candidates_debug()
+                    self._dynamic_goal_plan_index += 1
+                    self._dynamic_goal_active_plan_request_id = ""
+                    self._dynamic_goal_plan_deadline = None
+                    self._publish_next_dynamic_plan_request(bridge_client)
             return
 
         if self.state == self.STATE_WAITING_FOR_GOAL_ACCEPTED:
@@ -596,6 +649,223 @@ class PersistentNav2RuntimeManager:
         except Exception:
             LOGGER.exception("failed to start base heading alignment gate")
 
+    def _publish_navigation_goal(self, bridge_client):
+        self._start_robot_bridge_heading_alignment()
+        bridge_client.publish_goal(
+            request_id=self._request_id,
+            goal_x=self.goal_x,
+            goal_y=self.goal_y,
+            goal_yaw=self.goal_yaw,
+        )
+        self.state = self.STATE_WAITING_FOR_GOAL_ACCEPTED
+        self._goal_accept_deadline = time_monotonic() + min(self.startup_timeout_sec, 30.0)
+
+    def _initialize_dynamic_goal_candidates(self):
+        assert self.approach_config is not None
+        try:
+            target = self._resolve_approach_target_pose()
+        except Exception as exc:  # pylint: disable=broad-except
+            self._fail("approach_target_unavailable", str(exc))
+            return
+        self._approach_target_pose = dict(target)
+        try:
+            static_map = load_static_map(str(self._map_info["yaml_path"]))
+            footprint_points = resolve_nav2_footprint_points(self._base_cfg)
+            footprint_padding_m = resolve_approach_footprint_padding_m(self._base_cfg, self.approach_config)
+        except Exception as exc:  # pylint: disable=broad-except
+            self._fail("approach_preflight_unavailable", f"Dynamic approach preflight unavailable: {exc}")
+            return
+
+        raw_candidates = sample_approach_candidates(
+            self.approach_config,
+            (float(target["x"]), float(target["y"])),
+        )
+        candidates = []
+        for candidate in raw_candidates:
+            static_result = check_footprint_static_collision(
+                static_map=static_map,
+                footprint_points=footprint_points,
+                x=float(candidate["x"]),
+                y=float(candidate["y"]),
+                yaw=float(candidate["yaw"]),
+                free_value_min=int(self.approach_config.static_free_value_min),
+                footprint_padding_m=float(footprint_padding_m),
+            )
+            candidate = {
+                **candidate,
+                "static_ok": bool(static_result.get("ok", False)),
+                "static_reason": str(static_result.get("reason", "")),
+                "static_check": static_result,
+                "path_ok": False,
+                "path_state": "not_requested",
+                "path_detail": "",
+                "path_length_m": float("inf"),
+            }
+            candidates.append(candidate)
+
+        self._dynamic_goal_candidates = sort_candidates_for_preflight(candidates)
+        self._dynamic_goal_plan_index = 0
+        self._dynamic_goal_active_plan_request_id = ""
+        self._dynamic_goal_plan_deadline = None
+        self._dynamic_goal_debug_path = os.path.join(self._goal_output_dir, "dynamic_goal_candidates.json")
+        self._write_dynamic_goal_candidates_debug()
+
+    def _resolve_approach_target_pose(self) -> dict:
+        assert self.approach_config is not None
+        target_name = str(self.approach_config.target_name)
+        task_objects = getattr(self.task, "_task_objects", {}) or {}
+        target = task_objects.get(target_name) if isinstance(task_objects, dict) else None
+        if target is None:
+            objects = getattr(self.task, "objects", {}) or {}
+            if isinstance(objects, dict):
+                target = objects.get(target_name)
+        if target is None:
+            fixtures = getattr(self.task, "fixtures", {}) or {}
+            if isinstance(fixtures, dict):
+                target = fixtures.get(target_name)
+        if target is None or not hasattr(target, "get_world_pose"):
+            raise KeyError(f"navigate approach target '{target_name}' was not found in task._task_objects")
+        translation, orientation = target.get_world_pose()
+        return {
+            "name": target_name,
+            "x": float(translation[0]),
+            "y": float(translation[1]),
+            "z": float(translation[2]) if len(translation) > 2 else 0.0,
+            "orientation_wxyz": [float(value) for value in list(orientation)[:4]],
+        }
+
+    def _publish_next_dynamic_plan_request(self, bridge_client):
+        while self._dynamic_goal_plan_index < len(self._dynamic_goal_candidates):
+            candidate = self._dynamic_goal_candidates[self._dynamic_goal_plan_index]
+            if not bool(candidate.get("static_ok", False)):
+                candidate["path_state"] = "skipped_static_rejected"
+                self._dynamic_goal_plan_index += 1
+                continue
+
+            plan_request_id = f"{self._request_id}_approach_{int(candidate['index'])}"
+            candidate["plan_request_id"] = plan_request_id
+            candidate["path_state"] = "pending"
+            self._dynamic_goal_active_plan_request_id = plan_request_id
+            self._dynamic_goal_plan_deadline = time_monotonic() + min(max(self.startup_timeout_sec, 1.0), 10.0)
+            self._write_dynamic_goal_candidates_debug()
+            bridge_client.publish_plan_request(
+                request_id=self._request_id,
+                plan_request_id=plan_request_id,
+                goal_x=float(candidate["x"]),
+                goal_y=float(candidate["y"]),
+                goal_yaw=float(candidate["yaw"]),
+            )
+            return
+
+        self._write_dynamic_goal_candidates_debug()
+        self._fail(
+            "approach_no_reachable_candidate",
+            "Dynamic approach found no candidate that passed static footprint and Nav2 ComputePathToPose checks.",
+        )
+        return
+
+    def _consume_dynamic_plan_result(self, bridge_client):
+        if not self._dynamic_goal_active_plan_request_id:
+            self._publish_next_dynamic_plan_request(bridge_client)
+            return
+        candidate = self._active_dynamic_candidate()
+        if candidate is None:
+            self._dynamic_goal_active_plan_request_id = ""
+            self._publish_next_dynamic_plan_request(bridge_client)
+            return
+
+        payload = bridge_client.request_plan_result(
+            request_id=self._request_id,
+            plan_request_id=self._dynamic_goal_active_plan_request_id,
+        )
+        if not payload:
+            return
+
+        planning = dict(payload.get("planning", {}))
+        path = dict(planning.get("path", {}))
+        path_length_m = float(path.get("path_length_m", float("inf")))
+        path_ok = str(payload.get("state", "")).strip().lower() == "succeeded" and math.isfinite(path_length_m)
+        candidate["path_ok"] = bool(path_ok)
+        candidate["path_state"] = str(payload.get("state", ""))
+        candidate["path_detail"] = str(payload.get("detail", ""))
+        candidate["path_status_code"] = int(payload.get("status_code", -1))
+        candidate["path_length_m"] = path_length_m
+        candidate["path_num_poses"] = int(path.get("num_poses", 0))
+        candidate["planning"] = planning
+        if path_ok:
+            self._dynamic_goal_selected = dict(candidate)
+            self.goal_x = float(candidate["x"])
+            self.goal_y = float(candidate["y"])
+            self.goal_yaw = float(candidate["yaw"])
+            self._dynamic_goal_active_plan_request_id = ""
+            self._dynamic_goal_plan_deadline = None
+            self._write_dynamic_goal_candidates_debug()
+            bridge_client.clear_cached_bridge_state()
+            self._publish_navigation_goal(bridge_client)
+            return
+
+        self._dynamic_goal_plan_index += 1
+        self._dynamic_goal_active_plan_request_id = ""
+        self._dynamic_goal_plan_deadline = None
+        self._write_dynamic_goal_candidates_debug()
+        self._publish_next_dynamic_plan_request(bridge_client)
+
+    def _active_dynamic_candidate(self) -> Optional[dict]:
+        if 0 <= self._dynamic_goal_plan_index < len(self._dynamic_goal_candidates):
+            return self._dynamic_goal_candidates[self._dynamic_goal_plan_index]
+        return None
+
+    def _write_dynamic_goal_candidates_debug(self):
+        if not self._dynamic_goal_debug_path:
+            return
+        payload = {
+            "approach": self._approach_debug_payload(),
+            "selected": dict(self._dynamic_goal_selected),
+            "candidates": self._json_safe(self._dynamic_goal_candidates),
+        }
+        try:
+            write_candidates_debug(self._dynamic_goal_debug_path, payload)
+        except Exception:
+            LOGGER.exception("failed to write dynamic goal candidates debug")
+
+    def _approach_debug_payload(self) -> dict:
+        if self.approach_config is None:
+            return {}
+        return {
+            "target_name": str(self.approach_config.target_name),
+            "target_pose": dict(self._approach_target_pose),
+            "min_distance": float(self.approach_config.min_distance),
+            "max_distance": float(self.approach_config.max_distance),
+            "sample_count": int(self.approach_config.sample_count),
+            "footprint_padding_m": float(resolve_approach_footprint_padding_m(self._base_cfg, self.approach_config)),
+            "sampling_random": bool(self.approach_config.sampling_random),
+            "sampling_seed": self.approach_config.sampling_seed,
+            "sampling_strategy": (
+                "uniform_random_radius_random_angle"
+                if bool(self.approach_config.sampling_random)
+                else "linear_radius_golden_angle"
+            ),
+            "debug_path": str(self._dynamic_goal_debug_path),
+        }
+
+    @classmethod
+    def _json_safe(cls, value):
+        if isinstance(value, dict):
+            return {str(key): cls._json_safe(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [cls._json_safe(item) for item in value]
+        if isinstance(value, tuple):
+            return [cls._json_safe(item) for item in value]
+        if isinstance(value, (str, int, bool)) or value is None:
+            return value
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        if math.isfinite(number):
+            return number
+        return None
+
     def _write_debug_snapshot(self, filename: str, reason: str, message: str):
         self._update_pose_result_fields()
         control_snapshot = runtime_control_debug_snapshot(self.robot)
@@ -613,6 +883,9 @@ class PersistentNav2RuntimeManager:
             "reason": str(reason),
             "message": str(message),
             "goal": {"x": float(self.goal_x), "y": float(self.goal_y), "yaw": float(self.goal_yaw)},
+            "goal_source": "approach" if self.approach_config is not None else "fixed",
+            "approach": self._approach_debug_payload(),
+            "dynamic_goal": dict(self._dynamic_goal_selected),
             "world_xy": list(self.result.final_world_xy),
             "world_yaw": float(self.result.final_world_yaw),
             "nav_xy": list(self.result.final_nav_xy),

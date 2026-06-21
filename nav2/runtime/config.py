@@ -301,10 +301,14 @@ def configure_base_cfg_for_nav2_skill(
     )
     nav2_cfg["bridge_map_update_topic"] = str(nav2_cfg.get("bridge_map_update_topic", "/simbox/nav_bridge/map_update"))
     nav2_cfg["bridge_goal_topic"] = str(nav2_cfg.get("bridge_goal_topic", "/simbox/nav_bridge/goal"))
+    nav2_cfg["bridge_plan_topic"] = str(nav2_cfg.get("bridge_plan_topic", "/simbox/nav_bridge/plan"))
     nav2_cfg["bridge_cancel_topic"] = str(nav2_cfg.get("bridge_cancel_topic", "/simbox/nav_bridge/cancel"))
     nav2_cfg["bridge_reset_topic"] = str(nav2_cfg.get("bridge_reset_topic", "/simbox/nav_bridge/reset"))
     nav2_cfg["bridge_status_topic"] = str(nav2_cfg.get("bridge_status_topic", "/simbox/nav_bridge/status"))
     nav2_cfg["bridge_result_topic"] = str(nav2_cfg.get("bridge_result_topic", "/simbox/nav_bridge/result"))
+    nav2_cfg["bridge_plan_result_topic"] = str(
+        nav2_cfg.get("bridge_plan_result_topic", "/simbox/nav_bridge/plan_result")
+    )
     nav2_cfg["bridge_alive_timeout_sec"] = float(nav2_cfg.get("bridge_alive_timeout_sec", 3.0))
 
     base_cfg.setdefault("nav2_skill", {})
@@ -514,7 +518,7 @@ def _build_nav2_params(
 
     follow_path_plugin = str(follow_path_cfg.get("plugin", "nav2_mppi_controller::MPPIController"))
     rotation_shim_plugin = "nav2_rotation_shim_controller::RotationShimController"
-    rotate_to_heading_enabled = bool(follow_path_cfg.get("rotate_to_heading_enabled", False))
+    rotate_to_heading_enabled = bool(follow_path_cfg.get("rotate_to_heading_enabled", True))
     if follow_path_plugin == rotation_shim_plugin and not rotate_to_heading_enabled:
         follow_path_plugin = str(
             follow_path_cfg.get("primary_controller", "nav2_mppi_controller::MPPIController")

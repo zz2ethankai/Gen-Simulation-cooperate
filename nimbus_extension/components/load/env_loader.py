@@ -55,9 +55,23 @@ def _resolve_experience(configured_path: str, *, headless: bool) -> str:
 def _apply_optional_setting(simulation_app, simulator: dict, key: str, setting_path: str, cast):
     if key not in simulator:
         return None
-    value = cast(simulator[key])
+    value = _cast_setting_value(simulator[key], cast)
     simulation_app.set_setting(setting_path, value)
     return value
+
+
+def _cast_setting_value(value, cast):
+    if cast is bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off"}:
+                return False
+        return bool(value)
+    return cast(value)
 
 
 def _resolve_torch_cuda_device(configured_device):
@@ -73,11 +87,47 @@ def _resolve_torch_cuda_device(configured_device):
     if configured_device < visible_count:
         return configured_device
 
-    cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
-    if cuda_visible_devices:
-        return 0
+    return None
 
-    return configured_device
+
+def _patch_curobo_quad_triangulation_launch_device(logger) -> None:
+    try:
+        import warp as wp
+    except Exception as exc:
+        logger.warning(f"Failed to import Warp for CuRobo launch-device patch: {exc}")
+        return
+
+    if getattr(wp.launch, "_simbox_curobo_quad_device_patch", False):
+        return
+
+    original_launch = wp.launch
+
+    def launch_with_matching_curobo_quad_device(*args, **kwargs):
+        kernel = args[0] if args else kwargs.get("kernel")
+        kernel_label = str(
+            getattr(kernel, "key", "")
+            or getattr(kernel, "name", "")
+            or getattr(getattr(kernel, "func", None), "__name__", "")
+            or kernel
+        )
+        has_positional_device = len(args) > 6
+        if "_triangulate_quads_kernel" in kernel_label and not has_positional_device and kwargs.get("device") is None:
+            inputs = kwargs.get("inputs")
+            if inputs is None and len(args) > 2:
+                inputs = args[2]
+            outputs = kwargs.get("outputs")
+            if outputs is None and len(args) > 3:
+                outputs = args[3]
+            for value in list(inputs or []) + list(outputs or []):
+                device = getattr(value, "device", None)
+                if device is not None:
+                    kwargs["device"] = device
+                    break
+        return original_launch(*args, **kwargs)
+
+    launch_with_matching_curobo_quad_device._simbox_curobo_quad_device_patch = True
+    wp.launch = launch_with_matching_curobo_quad_device
+    logger.info("Patched Warp launch device for CuRobo quad mesh triangulation")
 
 
 class EnvLoader(SceneLoader):
@@ -130,6 +180,7 @@ class EnvLoader(SceneLoader):
             rendering_dt = float(Fraction(rendering_dt))
 
         cuda_device = simulator.get("active_gpu", None)
+        torch_cuda_device = None
         if cuda_device is not None:
             import torch
 
@@ -180,8 +231,73 @@ class EnvLoader(SceneLoader):
                 self.simulation_app = SimulationApp(launch_config, experience=experience)
             else:
                 self.simulation_app = SimulationApp(launch_config)
+
+        # Align Warp's default device with Isaac's configured active_gpu. In
+        # pipe mode Ray may expose a single CUDA device to torch, but Isaac
+        # still launches with the absolute active_gpu from the config.
+        if cuda_device is not None:
+            try:
+                import warp as wp
+
+                warp_cuda_device = int(cuda_device)
+                wp.set_device(f"cuda:{warp_cuda_device}")
+                self.logger.info(
+                    f"Warp default CUDA device set to cuda:{warp_cuda_device}"
+                    f" (configured active_gpu={cuda_device}, torch_default_cuda={torch_cuda_device})"
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    f"Failed to set Warp default CUDA device to configured active_gpu cuda:{cuda_device}: {exc}"
+                )
+        _patch_curobo_quad_triangulation_launch_device(self.logger)
+
         applied_renderer_settings = {}
         optional_renderer_settings = (
+            # RayTracedLighting runtime settings. These are separate from the
+            # PathTracing-only SimulationApp launch options below.
+            ("rt_new_denoiser", "/rtx/newDenoiser/enabled", bool),
+            ("rt_shadows_enabled", "/rtx/shadows/enabled", bool),
+            ("rt_shadow_sample_count", "/rtx/shadows/sampleCount", int),
+            ("rt_direct_lighting_enabled", "/rtx/directLighting/enabled", bool),
+            ("rt_sampled_direct_lighting", "/rtx/directLighting/sampledLighting/enabled", bool),
+            ("rt_sampled_direct_lighting_spp", "/rtx/directLighting/sampledLighting/samplesPerPixel", int),
+            ("rt_sampled_direct_lighting_max_ray_intensity", "/rtx/directLighting/sampledLighting/maxRayIntensity", float),
+            ("rt_sampled_reflections_spp", "/rtx/reflections/sampledLighting/samplesPerPixel", int),
+            ("rt_sampled_reflections_max_ray_intensity", "/rtx/reflections/sampledLighting/maxRayIntensity", float),
+            ("rt_dome_lighting_enabled", "/rtx/directLighting/domeLight/enabled", bool),
+            ("rt_dome_lighting_in_reflections", "/rtx/directLighting/domeLight/enabledInReflections", bool),
+            ("rt_dome_lighting_sample_count", "/rtx/directLighting/domeLight/sampleCount", int),
+            ("rt_reflections_enabled", "/rtx/reflections/enabled", bool),
+            ("rt_reflections_max_roughness", "/rtx/reflections/maxRoughness", float),
+            ("rt_reflections_max_bounces", "/rtx/reflections/maxReflectionBounces", int),
+            ("rt_translucency_enabled", "/rtx/translucency/enabled", bool),
+            ("rt_translucency_max_refraction_bounces", "/rtx/translucency/maxRefractionBounces", int),
+            ("rt_translucency_reflect_at_all_bounces", "/rtx/translucency/reflectAtAllBounce", bool),
+            ("rt_translucency_reflection_throughput_threshold", "/rtx/translucency/reflectionThroughputThreshold", float),
+            ("rt_translucency_virtual_depth", "/rtx/translucency/virtualDepth", bool),
+            ("rt_translucency_virtual_motion", "/rtx/translucency/virtualMotion", bool),
+            ("rt_translucency_world_eps", "/rtx/translucency/worldEps", float),
+            ("rt_translucency_sample_roughness", "/rtx/translucency/sampleRoughness", bool),
+            ("rt_fractional_cutout_opacity", "/rtx/raytracing/fractionalCutoutOpacity", bool),
+            ("rt_indirect_diffuse_enabled", "/rtx/indirectDiffuse/enabled", bool),
+            ("rt_indirect_diffuse_spp", "/rtx/indirectDiffuse/fetchSampleCount", int),
+            ("rt_indirect_diffuse_max_bounces", "/rtx/indirectDiffuse/maxBounces", int),
+            ("rt_indirect_diffuse_intensity", "/rtx/indirectDiffuse/scalingFactor", float),
+            ("rt_indirect_diffuse_max_ray_intensity", "/rtx/indirectDiffuse/maxRayIntensity", float),
+            ("rt_ambient_occlusion_enabled", "/rtx/ambientOcclusion/enabled", bool),
+            ("rt_ambient_occlusion_ray_length", "/rtx/ambientOcclusion/rayLength", float),
+            ("rt_ambient_occlusion_min_samples", "/rtx/ambientOcclusion/minSamples", int),
+            ("rt_ambient_occlusion_max_samples", "/rtx/ambientOcclusion/maxSamples", int),
+            ("rt_ambient_light_intensity", "/rtx/sceneDb/ambientLightIntensity", float),
+            ("rt_caustics_enabled", "/rtx/caustics/enabled", bool),
+            ("rt_caustics_photon_count_multiplier", "/rtx/raytracing/caustics/photonCountMultiplier", int),
+            ("rt_caustics_photon_max_bounces", "/rtx/raytracing/caustics/photonMaxBounces", int),
+            ("rt_subsurface_enabled", "/rtx/raytracing/subsurface/enabled", bool),
+            ("rt_subsurface_max_samples_per_frame", "/rtx/raytracing/subsurface/maxSamplePerFrame", int),
+            ("rt_subsurface_firefly_filtering", "/rtx/raytracing/subsurface/fireflyFiltering/enabled", bool),
+            ("rt_subsurface_denoiser", "/rtx/raytracing/subsurface/denoiser/enabled", bool),
+            ("rt_eco_mode", "/rtx/ecoMode/enabled", bool),
+            ("rt_eco_mode_max_frames_without_change", "/rtx/ecoMode/maxFramesWithoutChange", int),
             ("total_spp", "/rtx/pathtracing/totalSpp", int),
             ("adaptive_sampling", "/rtx/pathtracing/adaptiveSampling/enabled", bool),
             ("adaptive_sampling_target_error", "/rtx/pathtracing/adaptiveSampling/targetError", float),

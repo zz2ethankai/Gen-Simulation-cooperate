@@ -1002,8 +1002,8 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         self._destroy_nav2_clock_publisher()
         self._destroy_ros_base_bridges()
 
-        self.world.reset()
         self.task.individual_reset()
+        self.world.reset()
         if hasattr(self.task, "reset_fixed_rigid_objects"):
             self.task.reset_fixed_rigid_objects()
         self.task.post_reset()
@@ -1126,6 +1126,16 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             skill.simple_generate_manip_cmds()
             if hasattr(skill, "visualize_target"):
                 skill.visualize_target(self.world)
+            if len(skill.manip_list) == 0 and skill.is_ready():
+                self._record_skill_failure(
+                    node["robot_name"],
+                    skill,
+                    fallback_reason="empty_manip_list",
+                    fallback_message="Skill planning produced no manipulation commands.",
+                )
+                node["state"] = "failed"
+                should_continue = False
+                continue
             node["state"] = "running"
             if len(skill.manip_list) == 0 and not skill.is_ready():
                 should_continue = True
@@ -1151,6 +1161,15 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 record_flag = False
 
             if skill.is_ready():
+                if not skill.manip_list:
+                    self._record_skill_failure(
+                        node["robot_name"],
+                        skill,
+                        fallback_reason="empty_manip_list",
+                        fallback_message="Running skill has no manipulation commands to execute.",
+                    )
+                    node["state"] = "failed"
+                    return {}, False, True
                 actions_by_robot[node["robot_name"]].append(skill.controller.forward(skill.manip_list[0]))
 
         action_dict = {}
@@ -1192,7 +1211,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             should_continue = self._start_dag_ready_skills(skills, should_continue)
 
         if any(node["state"] == "failed" for node in skills["nodes"]):
-            return episode_success, False
+            return False, False
         return episode_success, should_continue
 
     @staticmethod

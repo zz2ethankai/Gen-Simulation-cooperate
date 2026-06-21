@@ -12,6 +12,10 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import pickle
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +43,33 @@ def load_yaml(path: Path) -> Any:
 def load_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def load_base_trajectory(lmdb_path: Path | None) -> list[tuple[float, float, float]] | None:
+    """Load base pose trajectory [x, y, z, yaw] from LMDB states.base.pose."""
+    if lmdb_path is None or not lmdb_path.exists():
+        return None
+    tmpdir = tempfile.mkdtemp(prefix="nav_overlay_lmdb_")
+    try:
+        for fname in ("data.mdb", "info.json", "lock.mdb"):
+            src = lmdb_path / fname
+            if src.exists():
+                shutil.copy(src, tmpdir)
+        import lmdb
+
+        env = lmdb.open(tmpdir, readonly=True, lock=False)
+        with env.begin() as txn:
+            raw = txn.get(b"states.base.pose")
+            if raw is None:
+                return None
+            poses = pickle.loads(raw)
+        env.close()
+        return [(float(p[0]), float(p[1]), float(p[3])) for p in poses]
+    except Exception as exc:
+        print(f"Warning: could not load base trajectory from {lmdb_path}: {exc}")
+        return None
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def to_float_pair(values: list[Any]) -> tuple[float, float]:
@@ -262,11 +293,14 @@ def main() -> int:
                         help="Place target world layout xy, e.g. '1.43,0.33'")
     parser.add_argument("--reachability-radius", type=float, default=0.9,
                         help="Arm reachability radius in meters to draw around nav points")
+    parser.add_argument("--lmdb-path", type=Path, default=None,
+                        help="Path to episode LMDB directory; if given, overlay the actual base trajectory")
     args = parser.parse_args()
 
     task = load_yaml(args.task)
     arena = load_yaml(args.arena)
     base = load_yaml(args.base)
+    trajectory = load_base_trajectory(args.lmdb_path)
 
     # Resolve room bounds from either coordinate_frame or floor source_metadata
     if "coordinate_frame" in arena and "room_bounds_xz" in arena["coordinate_frame"]:
@@ -290,6 +324,11 @@ def main() -> int:
         for name, pos in positions.items()
         if name.startswith("nav_to_")
     }
+    if not nav_points:
+        nav_points = {
+            name: transform_task_position(pos, floor_center)
+            for name, pos in positions.items()
+        }
 
     footprint_points = [
         (float(x), float(y))
@@ -341,7 +380,7 @@ def main() -> int:
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     task_name = infer_task_name(task, args.task)
-    stem = task_name
+    stem = f"{task_name}_with_path" if trajectory else task_name
     overlay_path = args.output_dir / f"{stem}_nav_points_obstacle_overlay.png"
     obstacle_path = args.output_dir / f"{stem}_obstacle_map.png"
     json_path = args.output_dir / f"{stem}_nav_points_overlay.json"
@@ -403,6 +442,25 @@ def main() -> int:
             f"layout=({wx:.2f}, {wy:.2f}) yaw={yaw:.2f}"
         )
         canvas.text_world(wx + 0.08, wy + 0.12, text, fill=color, font=canvas.font)
+
+    # Draw actual base trajectory from LMDB
+    if trajectory:
+        path_points = [(x, y) for x, y, _yaw in trajectory]
+        canvas.line_world(path_points, fill=(220, 53, 69), width=3)
+        # start marker
+        sx, sy = path_points[0]
+        px, py = canvas.xy(sx, sy)
+        canvas.draw.ellipse((px - 6, py - 6, px + 6, py + 6), fill=(40, 167, 69), outline=(20, 20, 20), width=2)
+        canvas.text_world(sx + 0.06, sy + 0.06, "start", fill=(40, 167, 69), font=canvas.font)
+        # end marker
+        ex, ey = path_points[-1]
+        px, py = canvas.xy(ex, ey)
+        canvas.draw.ellipse((px - 6, py - 6, px + 6, py + 6), fill=(220, 53, 69), outline=(20, 20, 20), width=2)
+        canvas.text_world(ex + 0.06, ey + 0.06, "end", fill=(220, 53, 69), font=canvas.font)
+        # heading arrows every N frames
+        for i in range(0, len(trajectory), max(1, len(trajectory) // 20)):
+            x, y, yaw = trajectory[i]
+            draw_arrow(canvas, x, y, yaw, 0.20, fill=(220, 53, 69), width=3)
 
     # Draw reachability circles around nav points
     reach_r = args.reachability_radius
