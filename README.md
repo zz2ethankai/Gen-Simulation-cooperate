@@ -33,7 +33,97 @@ InternDataEngine is a synthetic data generation engine for embodied AI that powe
 
 ## 🚀 Quickstart
 
-Please refer to the [Installation](https://internrobotics.github.io/InternDataEngine-Docs/guides/installation.html) and [Usage](https://internrobotics.github.io/InternDataEngine-Docs/guides/quickstart.html) to start the installation and run your first synthetic data generation task.
+The local Docker workflow depends on the full `InternDataAssets/` directory.
+Install the repository in this order so the Docker build can find
+`InternDataAssets/curobo` and SimBox can resolve its asset links.
+
+### 1. System prerequisites
+
+- Linux host with an NVIDIA GPU and a working NVIDIA driver
+- Docker Engine with Compose v2
+- NVIDIA Container Toolkit
+- Python 3.10+ on the host for the asset download helper
+- `7z` command line tool
+- Enough disk space for the asset archive, extracted assets, Docker images, and
+  Isaac Sim caches. The current extracted `InternDataAssets/` tree is about
+  200 GB.
+
+Quick checks:
+
+```bash
+nvidia-smi
+docker compose version
+docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi
+7z
+```
+
+On Ubuntu, install missing host tools with:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y p7zip-full python3-pip
+python3 -m pip install -U modelscope
+```
+
+### 2. Download assets
+
+Download and extract the ModelScope split archive from the repository root:
+
+```bash
+python3 scripts/download_modelscope.py --token <MODEL_SCOPE_TOKEN>
+```
+
+The script downloads `MinMaxMex/InterndataAssets/InternDataAssets_7z`, extracts
+`InternDataAssets/`, and creates the required SimBox relative symlinks:
+
+```text
+workflows/simbox/assets -> ../../InternDataAssets/assets
+workflows/simbox/curobo -> ../../InternDataAssets/curobo
+workflows/simbox/panda_drake -> ../../InternDataAssets/panda_drake
+```
+
+It refuses to overwrite an existing `InternDataAssets/` directory. If you need
+to reinstall assets, move or remove the old directory first.
+
+### 3. Verify the checkout
+
+Run these checks before building Docker images:
+
+```bash
+test -d InternDataAssets/assets
+test -d InternDataAssets/curobo
+test -d InternDataAssets/panda_drake
+test -L workflows/simbox/assets
+test -L workflows/simbox/curobo
+test -L workflows/simbox/panda_drake
+```
+
+If `docker/isaac/entrypoint.sh` is not executable on your checkout, fix it
+before building:
+
+```bash
+chmod +x docker/isaac/entrypoint.sh docker/nav2/entrypoint.sh
+```
+
+### 4. Build and start
+
+Build the split Isaac/Nav2 stack:
+
+```bash
+docker compose -f docker/docker-compose.yml build
+```
+
+Start the default single-GPU stack:
+
+```bash
+scripts/docker/up_nav2_stack_single_gpu.sh
+```
+
+Stop the stack:
+
+```bash
+scripts/docker/stop_all_docker.sh
+```
 
 For more details, please check [Documentation](https://internrobotics.github.io/InternDataEngine-Docs/).
 
@@ -148,32 +238,6 @@ docker compose build
 ```
 
 By default, the Isaac workflow writes external Nav2 runtime requests to `output/ros_bridge/runtime_requests`, and the ROS service watches that directory to launch or refresh the corresponding Nav2 stack.
-
-## Agent Docker
-
-The repository also includes a separate Docker setup for running the code under `agent/` without reusing the Isaac/Nav2 stack:
-
-- `docker/agent/Dockerfile`: lightweight Python image for `agent/task_generator.py`
-- `docker/docker-compose.agent.yml`: standalone Compose project for the agent service
-
-This setup is intentionally isolated from `docker/docker-compose.yml` to avoid mixing LLM task generation with the simulation containers.
-
-Before running it, make sure `agent/config.yaml` is configured and `agent/.env` contains the provider credentials required by the active provider.
-
-Build and run the agent container from the repository root with:
-
-```bash
-docker compose -f docker/docker-compose.agent.yml build
-docker compose -f docker/docker-compose.agent.yml up
-```
-
-Or run it as a one-shot task:
-
-```bash
-docker compose -f docker/docker-compose.agent.yml run --rm agent
-```
-
-The container mounts the repository root to `/workspace`, so generated files continue to be written to the paths configured in `agent/config.yaml`, such as `agent/output/`.
 
 ## License and Citation
 All the code within this repo are under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/). Please consider citing our papers if it helps your research.
