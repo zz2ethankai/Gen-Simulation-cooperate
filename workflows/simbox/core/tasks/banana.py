@@ -1,4 +1,5 @@
 import glob
+import inspect
 import os
 import random
 from copy import deepcopy
@@ -196,7 +197,8 @@ class BananaBaseTask(BaseTask):
         if "sub_tgt_prim" in region_cfg:
             target = XFormPrim(prim_path=target.prim_path + region_cfg["sub_tgt_prim"])
 
-        return RandomRegionSampler.A_on_B_region_sampler(obj, target, **random_config)
+        sampler_fn = RandomRegionSampler.A_on_B_region_sampler
+        return sampler_fn(obj, target, **self._filter_sampler_random_config(sampler_fn, random_config))
 
     @staticmethod
     def _zero_object_velocity(obj):
@@ -280,6 +282,7 @@ class BananaBaseTask(BaseTask):
     def post_reset(self):
         for _, robot in self.robots.items():
             robot.initialize()
+        self.set_fixed_robot_start_poses()
         for cfg in self.cfg["objects"]:
             if cfg["target_class"] == "ArticulatedObject":
                 self.objects[cfg["name"]].initialize()
@@ -531,6 +534,13 @@ class BananaBaseTask(BaseTask):
         random_region_list = deepcopy(self.random_region_list)
         for cfg in self.cfg["regions"]:
             obj = self._task_objects[cfg["object"]]
+            if cfg.get("placement_mode") == "fixed_from_robot_start_position" and cfg["object"] in self.robots:
+                robot_cfg = self._robot_cfg_by_name(cfg["object"])
+                obj.set_mobile_base_world_pose(
+                    robot_cfg.get("translation", [0.0, 0.0, 0.0]),
+                    get_orientation(robot_cfg.get("euler"), robot_cfg.get("quaternion")),
+                )
+                continue
             tgt = self._task_objects[cfg["target"]]
             if "sub_tgt_prim" in cfg:
                 tgt = XFormPrim(prim_path=tgt.prim_path + cfg["sub_tgt_prim"])
@@ -541,7 +551,7 @@ class BananaBaseTask(BaseTask):
                     idx = random.randint(0, len(random_region_list) - 1)
                 random_config = (random_region_list.pop(idx))["random_config"]
                 sampler_fn = getattr(RandomRegionSampler, cfg["random_type"])
-                pose = sampler_fn(obj, tgt, **random_config)
+                pose = sampler_fn(obj, tgt, **self._filter_sampler_random_config(sampler_fn, random_config))
                 obj.set_local_pose(*pose)
             elif "container" in cfg:
                 container = self._task_objects[cfg["container"]]
@@ -554,12 +564,38 @@ class BananaBaseTask(BaseTask):
             elif "target2" in cfg:
                 tgt2 = self._task_objects[cfg["target2"]]
                 sampler_fn = getattr(RandomRegionSampler, cfg["random_type"])
-                pose = sampler_fn(obj, tgt, tgt2, **cfg["random_config"])
+                pose = sampler_fn(obj, tgt, tgt2, **self._filter_sampler_random_config(sampler_fn, cfg["random_config"]))
                 obj.set_local_pose(*pose)
             else:
                 sampler_fn = getattr(RandomRegionSampler, cfg["random_type"])
-                pose = sampler_fn(obj, tgt, **cfg["random_config"])
+                pose = sampler_fn(obj, tgt, **self._filter_sampler_random_config(sampler_fn, cfg["random_config"]))
                 obj.set_local_pose(*pose)
+
+    def set_fixed_robot_start_poses(self):
+        for region_cfg in self.cfg.get("regions", []):
+            robot_name = region_cfg.get("object")
+            if region_cfg.get("placement_mode") != "fixed_from_robot_start_position" or robot_name not in self.robots:
+                continue
+            robot_cfg = self._robot_cfg_by_name(robot_name)
+            self.robots[robot_name].reset_mobile_base_world_state(
+                robot_cfg.get("translation", [0.0, 0.0, 0.0]),
+                get_orientation(robot_cfg.get("euler"), robot_cfg.get("quaternion")),
+            )
+
+    @staticmethod
+    def _filter_sampler_random_config(sampler_fn, random_config):
+        """Pass only parameters declared by the region sampler."""
+        signature = inspect.signature(sampler_fn)
+        if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()):
+            return random_config
+        accepted = set(signature.parameters)
+        return {key: value for key, value in random_config.items() if key in accepted}
+
+    def _robot_cfg_by_name(self, robot_name):
+        for robot_cfg in self.cfg["robots"]:
+            if robot_cfg["name"] == robot_name:
+                return robot_cfg
+        raise KeyError(f"Robot region references unknown robot config: {robot_name}")
 
     def _set_fixture_textures(self):
         """Apply or randomize textures for arena fixtures (table, floor, background)."""
@@ -582,8 +618,15 @@ class BananaBaseTask(BaseTask):
         """Randomize or reset the environment map (HDR dome light)."""
         cfg = self.cfg["env_map"]
         if cfg.get("light_type", "DomeLight") == "DomeLight":
-            envmap_hdr_path_list = glob.glob(os.path.join(self.asset_root, cfg["envmap_lib"], "*.hdr"))
+            envmap_dir = os.path.join(self.asset_root, cfg["envmap_lib"])
+            envmap_hdr_path_list = glob.glob(os.path.join(envmap_dir, "*.hdr"))
             envmap_hdr_path_list.sort()
+            if not envmap_hdr_path_list:
+                raise FileNotFoundError(
+                    "No HDR envmap files found for task "
+                    f"{self.cfg.get('name')!r}: asset_root={self.asset_root!r}, "
+                    f"envmap_lib={cfg['envmap_lib']!r}, searched={os.path.abspath(envmap_dir)!r}"
+                )
             if cfg.get("apply_randomization", False):
                 envmap_id = random.randint(0, len(envmap_hdr_path_list) - 1)
                 intensity = random.uniform(cfg["intensity_range"][0], cfg["intensity_range"][1])

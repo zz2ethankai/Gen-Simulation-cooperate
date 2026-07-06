@@ -45,6 +45,24 @@ def _resolve_repo_path(path_value: str) -> Path:
     return (REPO_ROOT / path).resolve()
 
 
+def _iter_config_refs(value, *, field_name: str, robot_config_path: Path) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        refs = [value]
+    elif isinstance(value, list):
+        refs = value
+    else:
+        raise TypeError(f"{field_name} must be a string or list in {robot_config_path}")
+
+    normalized_refs = []
+    for ref in refs:
+        if not isinstance(ref, str) or not ref.strip():
+            raise TypeError(f"{field_name} entries must be non-empty strings in {robot_config_path}")
+        normalized_refs.append(ref.strip())
+    return normalized_refs
+
+
 def _load_robot_base_cfg(robot_config_path: Path) -> dict:
     robot_cfg = _load_yaml(robot_config_path)
     base_cfg = deepcopy(robot_cfg.get("base", {}))
@@ -52,12 +70,17 @@ def _load_robot_base_cfg(robot_config_path: Path) -> dict:
         raise TypeError(f"robot config base must be a dict: {robot_config_path}")
 
     merged_base_cfg: dict = {}
-    base_config_file = str(base_cfg.get("base_config_file", "")).strip()
-    nav_config_file = str(base_cfg.get("nav_config_file", "")).strip()
-
-    if base_config_file:
+    for base_config_file in _iter_config_refs(
+        base_cfg.get("base_config_file"),
+        field_name="base.base_config_file",
+        robot_config_path=robot_config_path,
+    ):
         _deep_update_dict(merged_base_cfg, _load_yaml(_resolve_repo_path(base_config_file)))
-    if nav_config_file:
+    for nav_config_file in _iter_config_refs(
+        base_cfg.get("nav_config_file"),
+        field_name="base.nav_config_file",
+        robot_config_path=robot_config_path,
+    ):
         _deep_update_dict(merged_base_cfg, _load_yaml(_resolve_repo_path(nav_config_file)))
 
     _deep_update_dict(merged_base_cfg, base_cfg)

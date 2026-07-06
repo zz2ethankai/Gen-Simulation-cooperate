@@ -14,6 +14,7 @@ from omni.isaac.core.robots.robot import Robot
 from omni.isaac.core.utils.prims import create_prim, get_prim_at_path
 from omni.isaac.core.utils.transformations import (
     get_relative_transform,
+    pose_from_tf_matrix,
     tf_matrix_from_pose,
 )
 from scipy.interpolate import interp1d
@@ -185,6 +186,70 @@ class TemplateRobot(Robot):
             self._articulation_view.set_joint_positions(
                 np.array(positions).reshape(1, -1),
                 joint_indices=np.array(indices),
+            )
+
+    def set_mobile_base_world_pose(self, translation, orientation):
+        """Place the robot so its mobile base frame matches the requested world pose."""
+        if not hasattr(self, "get_mobile_base_pose"):
+            raise AttributeError(f"{type(self).__name__} must define get_mobile_base_pose()")
+
+        root_translation, root_orientation = self.get_world_pose()
+        mobile_translation, mobile_orientation = self.get_mobile_base_pose()
+        world_root = tf_matrix_from_pose(root_translation, root_orientation)
+        world_mobile = tf_matrix_from_pose(mobile_translation, mobile_orientation)
+        root_mobile = np.linalg.inv(world_root) @ world_mobile
+
+        desired_mobile = tf_matrix_from_pose(
+            np.asarray(translation, dtype=np.float32),
+            np.asarray(orientation, dtype=np.float32),
+        )
+        desired_root = desired_mobile @ np.linalg.inv(root_mobile)
+        desired_translation, desired_orientation = pose_from_tf_matrix(desired_root)
+        self.set_world_pose(position=desired_translation, orientation=desired_orientation)
+
+    def reset_mobile_base_world_state(self, translation, orientation):
+        """Reset the mobile base pose and clear physical base velocities."""
+        self.set_mobile_base_world_pose(translation, orientation)
+        self.set_world_velocity(np.zeros(6, dtype=np.float32))
+        if getattr(self, "num_dof", 0):
+            zero_dof = np.zeros((1, int(self.num_dof)), dtype=np.float32)
+            self._articulation_view.set_joint_velocities(zero_dof)
+
+        base_interface = self.get_base_interface()
+        steering_indices = list(base_interface["steering_joint_indices"])
+        wheel_indices = list(base_interface["wheel_joint_indices"])
+
+        if steering_indices:
+            target_steering = np.asarray(
+                self.get_base_initial_steering_positions(),
+                dtype=np.float32,
+            ).reshape(-1)
+            if target_steering.size != len(steering_indices) or not np.all(np.isfinite(target_steering)):
+                raise ValueError("Initial steering positions must match steering joints and be finite")
+            steering_joint_indices = np.asarray(steering_indices, dtype=np.int32)
+            self._articulation_view.set_joint_positions(
+                target_steering.reshape(1, -1),
+                joint_indices=steering_joint_indices,
+            )
+            self._articulation_view.set_joint_position_targets(
+                target_steering.reshape(1, -1),
+                joint_indices=steering_joint_indices,
+            )
+            self._articulation_view.set_joint_velocities(
+                np.zeros((1, len(steering_indices)), dtype=np.float32),
+                joint_indices=steering_joint_indices,
+            )
+
+        if wheel_indices:
+            wheel_joint_indices = np.asarray(wheel_indices, dtype=np.int32)
+            zero_wheel = np.zeros((1, len(wheel_indices)), dtype=np.float32)
+            self._articulation_view.set_joint_velocity_targets(
+                zero_wheel,
+                joint_indices=wheel_joint_indices,
+            )
+            self._articulation_view.set_joint_velocities(
+                zero_wheel,
+                joint_indices=wheel_joint_indices,
             )
 
     def apply_action(self, joint_positions, joint_indices, *args, **kwargs):

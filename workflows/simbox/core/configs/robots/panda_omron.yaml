@@ -1,0 +1,90 @@
+# PandaOmron mobile manipulator configuration
+
+target_class: PandaOmron
+path: "panda_omron/robot.usd"
+
+robot_file:
+  - workflows/simbox/curobo/src/curobo/content/configs/robot/panda_omron_left_arm.yml
+
+gripper_max_width: 0.08
+gripper_min_width: 0.0
+tcp_offset: 0.1043
+
+solver_position_iteration_count: 128
+solver_velocity_iteration_count: 4
+stabilization_threshold: 0.005
+arm_drive_stiffness: 10000000.0
+arm_drive_damping: 100000.0
+arm_drive_max_force: 1000000.0
+gripper_drive_stiffness: 100000.0
+gripper_drive_damping: 1000.0
+gripper_drive_max_force: 100.0
+
+left_joint_names:
+  - robot0_joint1
+  - robot0_joint2
+  - robot0_joint3
+  - robot0_joint4
+  - robot0_joint5
+  - robot0_joint6
+  - robot0_joint7
+left_gripper_joint_names:
+  - gripper0_right_finger_joint1
+  - gripper0_right_finger_joint2
+
+# Isaac 4.1 DOF order after scripts/simbox/postprocess_panda_omron_usd.py:
+# 2 drive wheels, 12 passive support DOFs, 7 Panda joints, 2 gripper joints.
+# PandaOmron still resolves these from names after articulation initialization.
+left_joint_indices: [14, 15, 16, 17, 18, 19, 20]
+left_gripper_indices: [21, 22]
+
+mobile_base_path: "robot0_base/mobilebase0_base"
+fl_ee_path: "robot0_base/robot0_right_hand"
+fl_base_path: "robot0_base/robot0_link0"
+fl_base_mount_translation: [0.0, 0.0, 0.7]
+fl_base_mount_orientation: [1.0, 0.0, 0.0, 0.0]
+
+fl_gripper_keypoints:
+  tool_head: [0.0, 0.0, 0.1034, 1]
+  tool_tail: [0.0, 0.0, 0.0584, 1]
+  tool_side: [0.0, 0.04, 0.1034, 1]
+
+fl_filter_paths:
+  - "robot0_base/gripper0_right_leftfinger"
+  - "robot0_base/gripper0_right_rightfinger"
+  - "robot0_base/gripper0_right_finger_joint1_tip"
+  - "robot0_base/gripper0_right_finger_joint2_tip"
+fl_forbid_collision_paths:
+  - "robot0_base/robot0_link2"
+  - "robot0_base/robot0_link3"
+  - "robot0_base/robot0_link4"
+  - "robot0_base/robot0_link5"
+  - "robot0_base/robot0_link6"
+  - "robot0_base/robot0_link7"
+  - "robot0_base/robot0_right_hand"
+  - "robot0_base/gripper0_right_right_gripper"
+
+R_ee_graspnet: [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]]
+ee_axis: "z"
+
+left_joint_home: [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
+left_joint_home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+left_gripper_home: [0.04, -0.04]
+
+base:
+  base_config_file: workflows/simbox/core/configs/bases/omron_diff_drive.yaml
+  nav_config_file:
+    - workflows/simbox/core/configs/nav/default_nav.yaml
+    - workflows/simbox/core/configs/nav/panda_omron_nav.yaml
+  steering_joint_names: []
+  wheel_joint_names:
+    - left_wheel_joint
+    - right_wheel_joint
+  left_wheel_joint_names:
+    - left_wheel_joint
+  right_wheel_joint_names:
+    - right_wheel_joint
+  wheel_link_names:
+    - left_wheel_link
+    - right_wheel_link
+  wheel_velocity_command_signs: [1.0, 1.0]

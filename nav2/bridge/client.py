@@ -381,6 +381,9 @@ class Nav2BridgeClient:
         self._last_trace_append_wall_time_sec = wall_now
 
     def _get_robot_base_pose(self):
+        getter = getattr(self.robot, "get_nav_base_pose", None)
+        if callable(getter):
+            return getter()
         getter = getattr(self.robot, "get_mobile_base_pose", None)
         if callable(getter):
             return getter()

@@ -19,17 +19,18 @@ class MobileBasePlatform(ABC):
 
     def normalize_base_cfg(self, base_cfg: dict) -> dict:
         normalized = deepcopy(base_cfg)
-        normalized["ackermann_split_steering"] = self.default_ackermann_split_steering(normalized)
-        normalized["ackermann_split_wheel_speeds"] = self.default_ackermann_split_wheel_speeds(normalized)
+        normalized["ackermann_split_steering"] = self._require_bool(normalized, "ackermann_split_steering")
+        normalized["ackermann_split_wheel_speeds"] = self._require_bool(normalized, "ackermann_split_wheel_speeds")
         return normalized
 
-    def default_ackermann_split_steering(self, base_cfg: dict) -> bool:
-        del base_cfg
-        return True
-
-    def default_ackermann_split_wheel_speeds(self, base_cfg: dict) -> bool:
-        del base_cfg
-        return True
+    @staticmethod
+    def _require_bool(mapping: dict, key: str) -> bool:
+        if key not in mapping:
+            raise KeyError(f"Missing required bool config: {key}")
+        value = mapping[key]
+        if not isinstance(value, bool):
+            raise TypeError(f"Config must be a bool: {key}")
+        return value
 
     @abstractmethod
     def default_nav2_footprint_points(self, base_cfg: dict) -> list[list[float]]:

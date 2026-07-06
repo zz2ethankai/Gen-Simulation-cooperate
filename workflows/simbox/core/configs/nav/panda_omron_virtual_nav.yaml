@@ -1,0 +1,19 @@
+nav2_skill:
+  approach_footprint_padding: 0.10
+  planner_server:
+    minimum_turning_radius: 0.0
+    allow_reverse_expansion: true
+    lattice_filepath: /opt/ros/humble/share/nav2_smac_planner/sample_primitives/5cm_resolution/0.5m_turning_radius/omni/output.json
+  controller_server:
+    min_y_velocity_threshold: 0.001
+    follow_path:
+      plugin: nav2_mppi_controller::MPPIController
+      motion_model: Omni
+      open_loop: false
+      closed_loop: true
+      vx_std: 0.45
+      vy_std: 0.45
+      wz_std: 0.75
+  velocity_smoother:
+    feedback: CLOSED_LOOP
+    deadband_velocity: [0.0, 0.0, 0.0]

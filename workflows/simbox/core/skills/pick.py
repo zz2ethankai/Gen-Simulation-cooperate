@@ -93,6 +93,10 @@ class Pick(BaseSkill):
             self.fixed_orientation = np.array(self.fixed_orientation)
 
     def _get_armbase_transform_in_task(self):
+        armbase_tf_getter = getattr(self.robot, "get_armbase_world_transform", None)
+        if callable(armbase_tf_getter):
+            return armbase_tf_getter()
+
         reference_prim_path = str(getattr(self.controller, "reference_prim_path", "")).strip()
         if reference_prim_path:
             reference_prim = get_prim_at_path(reference_prim_path)
@@ -664,8 +668,16 @@ class Pick(BaseSkill):
         current_cmd = self.manip_list[0]
         action = getattr(self.controller, "_action", {}) or {}
         gripper_action = action.get("gripper_action", None)
+        arm_action = action.get("arm_action", None)
+        action_joint_positions = action.get("joint_positions", None)
+        action_joint_indices = action.get("joint_indices", None)
         qpos = self.robot.get_joints_state().positions
+        arm_indices = getattr(self.controller, "arm_indices", np.array([], dtype=int))
         gripper_indices = getattr(self.controller, "gripper_indices", np.array([], dtype=int))
+        try:
+            actual_arm_position = qpos[arm_indices]
+        except Exception:
+            actual_arm_position = []
         try:
             actual_gripper_position = qpos[gripper_indices]
         except Exception:
@@ -673,13 +685,27 @@ class Pick(BaseSkill):
 
         obj_t, obj_q = self._get_object_world_pose()
         ee_t, ee_q = self.controller.get_ee_pose()
+        target_t = current_cmd[0]
+        target_q = current_cmd[1]
+        diff_trans = float(np.linalg.norm(np.asarray(ee_t) - np.asarray(target_t)))
+        diff_ori = float(2 * np.arccos(min(abs(float(np.dot(ee_q, target_q))), 1.0)))
         self._execution_trace.append(
             {
                 "step": len(self._execution_trace),
                 "remaining_commands": len(self.manip_list),
                 "current_command": self._manip_cmd_to_debug(current_cmd),
+                "target_diff_trans": diff_trans,
+                "target_diff_ori": diff_ori,
                 "controller_gripper_state": getattr(self.controller, "_gripper_state", None),
+                "controller_cmd_plan_active": getattr(self.controller, "cmd_plan", None) is not None,
+                "controller_cmd_idx": getattr(self.controller, "cmd_idx", None),
+                "controller_num_last_cmd": getattr(self.controller, "num_last_cmd", None),
+                "controller_num_plan_failed": getattr(self.controller, "num_plan_failed", None),
+                "action_joint_indices": action_joint_indices,
+                "action_joint_positions": action_joint_positions,
+                "action_arm": arm_action,
                 "action_gripper": gripper_action,
+                "actual_arm_position": actual_arm_position,
                 "actual_gripper_position": actual_gripper_position,
                 "ee_translation": ee_t,
                 "ee_orientation": ee_q,
@@ -861,8 +887,8 @@ class Pick(BaseSkill):
         if bool(params.get("skip_plan", False)) or gripper_fn in {"update_pose_cost_metric", "update_specific"}:
             self.plan_flag = True
             return True
-        self.plan_flag = self.controller.num_last_cmd > 10
-        return np.logical_or(pose_flag, self.plan_flag)
+        self.plan_flag = False
+        return pose_flag
 
     def is_done(self):
         if len(self.manip_list) == 0:

@@ -51,6 +51,18 @@ def runtime_control_debug_snapshot(robot) -> dict:
             "last_published_pose": dict(getattr(bridge, "_last_published_pose_debug", {}) or {}),
             "recent_command_history": list(getattr(bridge, "_debug_command_history", []))[-20:],
         }
+        action_snapshot_fn = getattr(bridge, "get_logging_action_snapshot", None)
+        if callable(action_snapshot_fn):
+            try:
+                action_snapshot = action_snapshot_fn()
+                bridge_info["action_snapshot"] = action_snapshot
+                if isinstance(action_snapshot, dict) and "joint_mapping" in action_snapshot:
+                    bridge_info["joint_mapping"] = action_snapshot["joint_mapping"]
+            except Exception as exc:  # pylint: disable=broad-except
+                bridge_info["action_snapshot_error"] = {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                }
         active_command = getattr(bridge, "_command", None)
         if active_command is not None:
             bridge_info["active_command"] = {
@@ -60,6 +72,37 @@ def runtime_control_debug_snapshot(robot) -> dict:
                 "received_time_sec": float(getattr(active_command, "received_time_sec", 0.0)),
             }
         snapshot["bridge"] = bridge_info
+
+    view = getattr(robot, "_articulation_view", None)
+    dof_names = list(getattr(view, "dof_names", []) or [])
+    base_indices = list(getattr(robot, "base_steering_joint_indices", []) or []) + list(
+        getattr(robot, "base_wheel_joint_indices", []) or []
+    )
+    arm_indices = list(getattr(robot, "left_joint_indices", []) or []) + list(
+        getattr(robot, "right_joint_indices", []) or []
+    )
+    gripper_indices = list(getattr(robot, "left_gripper_indices", []) or []) + list(
+        getattr(robot, "right_gripper_indices", []) or []
+    )
+    if dof_names or base_indices or arm_indices or gripper_indices:
+        snapshot["robot_joint_mapping"] = {
+            "articulation_dof_names": dof_names,
+            "base_steering_joint_names": list(getattr(robot, "base_steering_joint_names", []) or []),
+            "base_wheel_joint_names": list(getattr(robot, "base_wheel_joint_names", []) or []),
+            "base_steering_joint_indices": [
+                int(v) for v in list(getattr(robot, "base_steering_joint_indices", []) or [])
+            ],
+            "base_wheel_joint_indices": [
+                int(v) for v in list(getattr(robot, "base_wheel_joint_indices", []) or [])
+            ],
+            "left_joint_indices": [int(v) for v in list(getattr(robot, "left_joint_indices", []) or [])],
+            "right_joint_indices": [int(v) for v in list(getattr(robot, "right_joint_indices", []) or [])],
+            "left_gripper_indices": [int(v) for v in list(getattr(robot, "left_gripper_indices", []) or [])],
+            "right_gripper_indices": [int(v) for v in list(getattr(robot, "right_gripper_indices", []) or [])],
+            "base_manipulator_index_overlap": sorted(
+                {int(v) for v in base_indices} & {int(v) for v in arm_indices + gripper_indices}
+            ),
+        }
 
     return snapshot
 

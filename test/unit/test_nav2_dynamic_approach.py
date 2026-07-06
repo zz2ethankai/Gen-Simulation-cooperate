@@ -13,7 +13,9 @@ import numpy as np
 
 from nav2.runtime.dynamic_goal import (
     ApproachConfig,
+    build_armbase_target_context,
     check_footprint_static_collision,
+    check_path_static_collision,
     choose_best_reachable_candidate,
     parse_approach_config,
     resolve_approach_footprint_padding_m,
@@ -105,6 +107,61 @@ class DynamicApproachTests(unittest.TestCase):
         self.assertTrue(cfg.sampling_random)
         self.assertIsInstance(cfg.sampling_seed, int)
 
+    def test_parse_approach_config_accepts_armbase_target(self):
+        cfg = parse_approach_config(
+            {
+                "approach": "apple",
+                "approach_arm": "left",
+                "approach_object_armbase_xy": [0.575, -0.12],
+            }
+        )
+
+        self.assertEqual(cfg.arm, "left")
+        self.assertEqual(cfg.object_armbase_xy, (0.575, -0.12))
+
+    def test_armbase_target_requires_arm(self):
+        with self.assertRaisesRegex(ValueError, "requires approach_arm"):
+            parse_approach_config(
+                {
+                    "approach": "apple",
+                    "approach_object_armbase_xy": [0.575, -0.12],
+                }
+            )
+
+    def test_armbase_target_context_uses_arm_mount(self):
+        cfg = ApproachConfig("apple", arm="left", object_armbase_xy=(0.575, -0.12))
+        context = build_armbase_target_context(
+            {
+                "fl_base_mount_translation": [0.36848, 0.306, 0.6527],
+                "fl_base_mount_orientation": [1.0, 0.0, 0.0, 0.0],
+            },
+            cfg,
+        )
+
+        self.assertEqual(context["arm"], "left")
+        self.assertAlmostEqual(context["object_mobile_xy"][0], 0.94348)
+        self.assertAlmostEqual(context["object_mobile_xy"][1], 0.186)
+        self.assertAlmostEqual(context["object_mobile_angle"], math.atan2(0.186, 0.94348))
+
+    def test_sample_approach_candidates_can_bias_target_into_armbase_xy(self):
+        cfg = ApproachConfig("apple", min_distance=1.0, max_distance=1.0, sample_count=1)
+        context = {
+            "object_armbase_xy": [0.575, -0.12],
+            "object_mobile_xy": [0.94348, 0.186],
+        }
+
+        candidate = sample_approach_candidates(cfg, (3.0, 1.0), armbase_target_context=context)[0]
+        dx = 3.0 - candidate["x"]
+        dy = 1.0 - candidate["y"]
+        yaw = candidate["yaw"]
+        obj_mobile_x = math.cos(yaw) * dx + math.sin(yaw) * dy
+        obj_mobile_y = -math.sin(yaw) * dx + math.cos(yaw) * dy
+
+        self.assertEqual(candidate["approach_yaw_strategy"], "object_armbase_xy")
+        self.assertAlmostEqual(obj_mobile_y / obj_mobile_x, 0.186 / 0.94348)
+        self.assertIn("approach_score", candidate)
+        self.assertIn("approach_armbase_prediction", candidate)
+
     def test_static_footprint_collision_free_occupied_unknown_and_bounds(self):
         static_map = {
             "image": np.full((20, 20), 254, dtype=np.int16),
@@ -187,6 +244,31 @@ class DynamicApproachTests(unittest.TestCase):
         self.assertEqual(padded["footprint_blocked_cells"], 0)
         self.assertGreater(padded["padding_blocked_cells"], 0)
 
+    def test_path_static_collision_reports_first_blocked_pose(self):
+        static_map = {
+            "image": np.full((20, 20), 254, dtype=np.int16),
+            "resolution": 0.1,
+            "origin": [0.0, 0.0, 0.0],
+        }
+        static_map["image"][9:12, 9:12] = 0
+        footprint = [[-0.05, -0.05], [0.05, -0.05], [0.05, 0.05], [-0.05, 0.05]]
+
+        result = check_path_static_collision(
+            static_map=static_map,
+            footprint_points=footprint,
+            path_poses=[
+                {"x": 0.5, "y": 0.5, "yaw": 0.0},
+                {"x": 1.0, "y": 1.0, "yaw": 0.0},
+                {"x": 1.5, "y": 1.5, "yaw": 0.0},
+            ],
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["num_poses"], 3)
+        self.assertEqual(result["first_blocked_index"], 1)
+        self.assertGreater(result["blocked_pose_count"], 0)
+        self.assertEqual(result["first_blocked_result"]["reason"], "static_footprint_collision")
+
     def test_approach_footprint_padding_defaults_to_nav2_skill_padding(self):
         base_cfg = {
             "nav2_skill": {
@@ -224,6 +306,17 @@ class DynamicApproachTests(unittest.TestCase):
 
         self.assertEqual([candidate["index"] for candidate in ordered], [1, 2, 0])
         self.assertEqual([candidate["preflight_rank"] for candidate in ordered], [0, 1, 2])
+
+    def test_preflight_candidate_order_prefers_approach_score_when_present(self):
+        candidates = [
+            {"index": 0, "distance_to_target": 0.9, "approach_score": 3.0},
+            {"index": 1, "distance_to_target": 0.5, "approach_score": 2.0},
+            {"index": 2, "distance_to_target": 0.7, "approach_score": 1.0},
+        ]
+
+        ordered = sort_candidates_for_preflight(candidates)
+
+        self.assertEqual([candidate["index"] for candidate in ordered], [2, 1, 0])
 
     def test_dynamic_plan_stops_on_first_successful_preflight_candidate(self):
         from nav2.runtime.runtime import PersistentNav2RuntimeManager
@@ -282,6 +375,205 @@ class DynamicApproachTests(unittest.TestCase):
         self.assertTrue(bridge.cleared)
         self.assertEqual(manager._dynamic_goal_candidates[1]["path_state"], "not_requested")
 
+    def test_dynamic_plan_uses_planned_terminal_pose_as_effective_goal(self):
+        from nav2.runtime.runtime import PersistentNav2RuntimeManager
+
+        manager = PersistentNav2RuntimeManager.__new__(PersistentNav2RuntimeManager)
+        manager._dynamic_goal_active_plan_request_id = "req_approach_1"
+        manager._dynamic_goal_plan_index = 0
+        manager._dynamic_goal_plan_deadline = 123.0
+        manager._dynamic_goal_candidates = [
+            {
+                "index": 1,
+                "x": 1.0,
+                "y": 2.0,
+                "yaw": 0.3,
+                "static_ok": True,
+                "distance_to_target": 0.5,
+                "path_ok": False,
+            }
+        ]
+        manager._request_id = "req"
+        manager.nav2_position_tolerance_m = 0.1
+        manager.nav2_yaw_tolerance_rad = 0.1
+        manager.position_tolerance_m = 0.1
+        manager.yaw_tolerance_rad = 0.1
+        manager._write_dynamic_goal_candidates_debug = lambda: None
+        manager._dynamic_goal_static_map = None
+        manager._dynamic_goal_footprint_points = []
+        manager._dynamic_goal_footprint_padding_m = 0.0
+
+        def publish_navigation_goal(bridge_client):
+            del bridge_client
+            manager._published_goal = (manager.goal_x, manager.goal_y, manager.goal_yaw)
+
+        manager._publish_navigation_goal = publish_navigation_goal
+
+        bridge = _FakePlanBridge(
+            {
+                "state": "succeeded",
+                "detail": "",
+                "status_code": 0,
+                "planning": {
+                    "path": {
+                        "path_length_m": 4.0,
+                        "num_poses": 2,
+                        "poses": [
+                            {"x": 0.0, "y": 0.0, "yaw": 0.0},
+                            {"x": 1.02, "y": 2.01, "yaw": 0.35},
+                        ],
+                    }
+                },
+            }
+        )
+
+        PersistentNav2RuntimeManager._consume_dynamic_plan_result(manager, bridge)
+
+        selected = manager._dynamic_goal_selected
+        self.assertEqual(selected["index"], 1)
+        self.assertEqual(manager._published_goal, (1.02, 2.01, 0.35))
+        self.assertTrue(selected["effective_goal"]["ok"])
+        self.assertEqual(selected["effective_goal"]["source"], "planned_path_terminal")
+
+    def test_dynamic_plan_rejects_terminal_pose_outside_tolerance(self):
+        from nav2.runtime.runtime import PersistentNav2RuntimeManager
+
+        manager = PersistentNav2RuntimeManager.__new__(PersistentNav2RuntimeManager)
+        manager._dynamic_goal_active_plan_request_id = "req_approach_1"
+        manager._dynamic_goal_plan_index = 0
+        manager._dynamic_goal_plan_deadline = 123.0
+        manager._dynamic_goal_candidates = [
+            {
+                "index": 1,
+                "x": 1.0,
+                "y": 2.0,
+                "yaw": 0.3,
+                "static_ok": True,
+                "distance_to_target": 0.5,
+                "path_ok": False,
+            },
+            {
+                "index": 2,
+                "x": 1.5,
+                "y": 2.5,
+                "yaw": 0.4,
+                "static_ok": True,
+                "distance_to_target": 0.7,
+                "path_ok": False,
+                "path_state": "not_requested",
+            },
+        ]
+        manager._request_id = "req"
+        manager.startup_timeout_sec = 60.0
+        manager.nav2_position_tolerance_m = 0.1
+        manager.nav2_yaw_tolerance_rad = 0.1
+        manager.position_tolerance_m = 0.1
+        manager.yaw_tolerance_rad = 0.1
+        manager._write_dynamic_goal_candidates_debug = lambda: None
+        manager._dynamic_goal_static_map = None
+        manager._dynamic_goal_footprint_points = []
+        manager._dynamic_goal_footprint_padding_m = 0.0
+
+        bridge = _FakePlanBridge(
+            {
+                "state": "succeeded",
+                "detail": "",
+                "status_code": 0,
+                "planning": {
+                    "path": {
+                        "path_length_m": 4.0,
+                        "num_poses": 2,
+                        "poses": [
+                            {"x": 0.0, "y": 0.0, "yaw": 0.0},
+                            {"x": 1.0, "y": 2.0, "yaw": 0.45},
+                        ],
+                    }
+                },
+            }
+        )
+
+        PersistentNav2RuntimeManager._consume_dynamic_plan_result(manager, bridge)
+
+        rejected = manager._dynamic_goal_candidates[0]
+        self.assertFalse(rejected["path_ok"])
+        self.assertEqual(rejected["path_state"], "path_terminal_rejected")
+        self.assertFalse(rejected["path_terminal_check"]["ok"])
+        self.assertGreater(rejected["path_terminal_check"]["yaw_delta_rad"], 0.1)
+        self.assertEqual(manager._dynamic_goal_plan_index, 1)
+        self.assertEqual(manager._dynamic_goal_active_plan_request_id, "req_approach_2")
+        self.assertFalse(bridge.cleared)
+
+    def test_dynamic_plan_rejects_path_with_static_footprint_collision(self):
+        from nav2.runtime.runtime import PersistentNav2RuntimeManager
+
+        manager = PersistentNav2RuntimeManager.__new__(PersistentNav2RuntimeManager)
+        manager.approach_config = ApproachConfig("obj")
+        manager._dynamic_goal_active_plan_request_id = "req_approach_1"
+        manager._dynamic_goal_plan_index = 0
+        manager._dynamic_goal_plan_deadline = 123.0
+        manager._dynamic_goal_candidates = [
+            {
+                "index": 1,
+                "x": 1.0,
+                "y": 2.0,
+                "yaw": 0.3,
+                "static_ok": True,
+                "distance_to_target": 0.5,
+                "path_ok": False,
+            },
+            {
+                "index": 2,
+                "x": 1.5,
+                "y": 2.5,
+                "yaw": 0.4,
+                "static_ok": True,
+                "distance_to_target": 0.7,
+                "path_ok": False,
+                "path_state": "not_requested",
+            },
+        ]
+        manager._request_id = "req"
+        manager.startup_timeout_sec = 60.0
+        manager._write_dynamic_goal_candidates_debug = lambda: None
+        manager._dynamic_goal_static_map = {
+            "image": np.full((20, 20), 254, dtype=np.int16),
+            "resolution": 0.1,
+            "origin": [0.0, 0.0, 0.0],
+        }
+        manager._dynamic_goal_static_map["image"][9:12, 9:12] = 0
+        manager._dynamic_goal_footprint_points = [[-0.05, -0.05], [0.05, -0.05], [0.05, 0.05], [-0.05, 0.05]]
+        manager._dynamic_goal_footprint_padding_m = 0.0
+
+        bridge = _FakePlanBridge(
+            {
+                "state": "succeeded",
+                "detail": "",
+                "status_code": 0,
+                "planning": {
+                    "path": {
+                        "path_length_m": 4.0,
+                        "num_poses": 2,
+                        "poses": [
+                            {"x": 0.5, "y": 0.5, "yaw": 0.0},
+                            {"x": 1.0, "y": 1.0, "yaw": 0.0},
+                        ],
+                    }
+                },
+            }
+        )
+
+        PersistentNav2RuntimeManager._consume_dynamic_plan_result(manager, bridge)
+
+        rejected = manager._dynamic_goal_candidates[0]
+        self.assertFalse(rejected["path_ok"])
+        self.assertEqual(rejected["path_state"], "path_static_rejected")
+        self.assertFalse(rejected["path_static_ok"])
+        self.assertEqual(rejected["path_static_check"]["first_blocked_index"], 1)
+        self.assertEqual(manager._dynamic_goal_plan_index, 1)
+        self.assertEqual(manager._dynamic_goal_active_plan_request_id, "req_approach_2")
+        self.assertEqual(bridge.published_plan_requests, [("req", "req_approach_2", 1.5, 2.5, 0.4)])
+        self.assertFalse(bridge.cleared)
+
     def test_navigate_fixed_goal_unchanged_and_approach_skips_positions(self):
         with mock.patch.dict(sys.modules, _navigate_import_stubs()):
             sys.modules.pop("workflows.simbox.core.skills.navigate", None)
@@ -321,6 +613,49 @@ class DynamicApproachTests(unittest.TestCase):
             self.assertEqual(skill.approach_config.target_name, "apple_0_id9008")
             self.assertEqual((skill.goal_x, skill.goal_y, skill.goal_yaw), (0.0, 0.0, 0.0))
 
+    def test_navigate_skill_goal_tolerances_override_nav2_goal_checker(self):
+        with mock.patch.dict(sys.modules, _navigate_import_stubs()):
+            sys.modules.pop("workflows.simbox.core.skills.navigate", None)
+            navigate_path = Path(__file__).resolve().parents[2] / "workflows/simbox/core/skills/navigate.py"
+            spec = importlib.util.spec_from_file_location("_test_navigate_skill_module", navigate_path)
+            navigate_mod = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(navigate_mod)
+            captured = {}
+
+            def configure_robot_for_nav2_skill(robot, **kwargs):
+                del robot
+                captured.update(kwargs)
+                return {}
+
+            navigate_mod.configure_robot_for_nav2_skill = configure_robot_for_nav2_skill
+            Navigate = navigate_mod.Navigate
+
+            task = types.SimpleNamespace(
+                cfg={"positions": {"pick": {"x": 0.5, "y": -0.25, "yaw": 0.1}}},
+                fixtures={"floor": _PoseObject((2.0, 1.5, 0.0), (1.0, 0.0, 0.0, 0.0))},
+            )
+            robot = types.SimpleNamespace(base_cfg={})
+            Navigate(
+                robot,
+                object(),
+                task,
+                {
+                    "name": "navigate",
+                    "goal": "pick",
+                    "rotate_to_heading_enabled": False,
+                    "xy_goal_tolerance": 0.12,
+                    "yaw_goal_tolerance": 0.34,
+                },
+                world=object(),
+            )
+
+            overrides = captured["nav2_skill_overrides"]
+            controller_cfg = overrides["controller_server"]
+            self.assertFalse(controller_cfg["follow_path"]["rotate_to_heading_enabled"])
+            self.assertEqual(controller_cfg["goal_checker"]["xy_goal_tolerance"], 0.12)
+            self.assertEqual(controller_cfg["goal_checker"]["yaw_goal_tolerance"], 0.34)
+
     def test_approach_target_resolution_uses_task_objects_table(self):
         from nav2.runtime.runtime import PersistentNav2RuntimeManager
 
@@ -353,11 +688,17 @@ class _FakePlanBridge:
     def __init__(self, payload):
         self.payload = payload
         self.plan_result_requests = []
+        self.published_plan_requests = []
         self.cleared = False
 
     def request_plan_result(self, *, request_id, plan_request_id):
         self.plan_result_requests.append((request_id, plan_request_id))
         return self.payload
+
+    def publish_plan_request(self, *, request_id, plan_request_id, goal_x, goal_y, goal_yaw):
+        self.published_plan_requests.append(
+            (request_id, plan_request_id, float(goal_x), float(goal_y), float(goal_yaw))
+        )
 
     def clear_cached_bridge_state(self):
         self.cleared = True

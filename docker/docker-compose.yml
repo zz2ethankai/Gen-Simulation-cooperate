@@ -28,7 +28,7 @@ services:
       ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
       FASTDDS_BUILTIN_TRANSPORTS: UDPv4
       LIVESTREAM: ${LIVESTREAM:-0}
-      INTERNDATA_AUTOSTART_LAUNCHER: "1"
+      INTERNDATA_AUTOSTART_LAUNCHER: ${INTERNDATA_AUTOSTART_LAUNCHER:-1}
       INTERNDATA_LAUNCHER_CONFIG: ${INTERNDATA_LAUNCHER_CONFIG:?INTERNDATA_LAUNCHER_CONFIG must be set by scripts/docker/up_nav2_stack.sh}
       INTERNDATA_LAUNCHER_EXTRA_ARGS: ${INTERNDATA_LAUNCHER_EXTRA_ARGS:-}
     volumes:
@@ -65,10 +65,10 @@ services:
       INTERNDATA_NAV2_SESSION_UUID: ${INTERNDATA_NAV2_SESSION_UUID:-nav2_default}
       # Startup selection is injected from compose instead of being hardcoded
       # in docker/nav2/entrypoint.sh.
-      INTERNDATA_NAV2_ROBOT_CONFIG: ${INTERNDATA_NAV2_ROBOT_CONFIG:-workflows/simbox/core/configs/robots/split_aloha.yaml}
-      INTERNDATA_NAV2_ROBOT_NAME: ${INTERNDATA_NAV2_ROBOT_NAME:-split_aloha}
+      INTERNDATA_NAV2_ROBOT_CONFIG: ${INTERNDATA_NAV2_ROBOT_CONFIG:-}
+      INTERNDATA_NAV2_ROBOT_NAME: ${INTERNDATA_NAV2_ROBOT_NAME:-}
       INTERNDATA_NAV2_SKILL_OVERRIDES_JSON: ${INTERNDATA_NAV2_SKILL_OVERRIDES_JSON:-}
-      INTERNDATA_BASE_CONFIG: workflows/simbox/core/configs/bases/ranger_mini_v3.yaml
+      INTERNDATA_BASE_CONFIG: ${INTERNDATA_BASE_CONFIG:-}
       # The remaining bootstrap/config paths are derived from the UUID inside
       # the container unless you explicitly override them.
     volumes:

@@ -103,6 +103,7 @@ class TemplateController(BaseController):
         self._step_idx = 0
         self.num_last_cmd = 0
         self.ds_ratio = 1
+        self._last_arm_action = None
 
     def _get_default_ignore_substring(self) -> List[str]:
         return ["material", "Plane", "conveyor", "scene", "table"]
@@ -311,6 +312,9 @@ class TemplateController(BaseController):
         self.init_curobo = True
         self.cmd_plan = None
         self.cmd_idx = 0
+        self._step_idx = 0
+        self.num_last_cmd = 0
+        self._last_arm_action = None
         self.num_plan_failed = 0
         if self.lr_name == "left":
             self._gripper_state = 1.0 if self.robot.left_gripper_state == 1.0 else -1.0
@@ -432,6 +436,7 @@ class TemplateController(BaseController):
                 self.cmd_idx = 0
                 self._step_idx = 0
                 self.num_last_cmd = 0
+                self._last_arm_action = None
                 result = self.plan(ee_trans, ee_ori, sim_js, js_names)
                 if self.use_batch:
                     if result.success.any():
@@ -473,8 +478,10 @@ class TemplateController(BaseController):
                         self.num_plan_failed += 1
             if self.cmd_plan and self._step_idx % 1 == 0:
                 cmd_state = self.cmd_plan[self.cmd_idx]
+                arm_action = cmd_state.position.cpu().numpy()
+                self._last_arm_action = np.asarray(arm_action, dtype=float).copy()
                 art_action = ArticulationAction(
-                    cmd_state.position.cpu().numpy(),
+                    arm_action,
                     cmd_state.velocity.cpu().numpy() * 0.0,
                     joint_indices=self.idx_list,
                 )
@@ -484,9 +491,17 @@ class TemplateController(BaseController):
                     self.cmd_plan = None
             else:
                 self.num_last_cmd += 1
-                art_action = ArticulationAction(joint_positions=sim_js.positions[self.arm_indices])
+                if self._last_arm_action is None:
+                    arm_action = sim_js.positions[self.arm_indices]
+                else:
+                    arm_action = self._last_arm_action
+                art_action = ArticulationAction(joint_positions=arm_action)
         else:
-            art_action = ArticulationAction(joint_positions=sim_js.positions[self.arm_indices])
+            if self._last_arm_action is None:
+                arm_action = sim_js.positions[self.arm_indices]
+            else:
+                arm_action = self._last_arm_action
+            art_action = ArticulationAction(joint_positions=arm_action)
             self.num_last_cmd += 1
         self._step_idx += 1
         arm_action = art_action.joint_positions

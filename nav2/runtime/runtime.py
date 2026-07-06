@@ -21,7 +21,9 @@ from .config import (
 from .debug import Nav2SkillResult, TaskShim, runtime_control_debug_snapshot
 from .dynamic_goal import (
     ApproachConfig,
+    build_armbase_target_context,
     check_footprint_static_collision,
+    check_path_static_collision,
     load_static_map,
     resolve_approach_footprint_padding_m,
     resolve_nav2_footprint_points,
@@ -66,12 +68,16 @@ class PersistentNav2RuntimeManager:
         self.goal_yaw = 0.0
         self.approach_config: Optional[ApproachConfig] = None
         self._approach_target_pose: dict = {}
+        self._approach_armbase_target_context: dict = {}
         self._dynamic_goal_selected: dict = {}
         self._dynamic_goal_candidates: list[dict] = []
         self._dynamic_goal_plan_index = 0
         self._dynamic_goal_active_plan_request_id = ""
         self._dynamic_goal_plan_deadline = None
         self._dynamic_goal_debug_path = ""
+        self._dynamic_goal_static_map = None
+        self._dynamic_goal_footprint_points: list[list[float]] = []
+        self._dynamic_goal_footprint_padding_m = 0.0
         self.nav2_position_tolerance_m = NAV2_DEFAULT_POSITION_TOLERANCE_M
         self.nav2_yaw_tolerance_rad = NAV2_DEFAULT_YAW_TOLERANCE_RAD
         self.position_tolerance_m = NAV2_DEFAULT_POSITION_TOLERANCE_M
@@ -202,7 +208,10 @@ class PersistentNav2RuntimeManager:
             base_cfg=self._base_cfg,
             scene_name=self.scene_name,
         )
-        translation, orientation = self.robot.get_mobile_base_pose()
+        pose_getter = getattr(self.robot, "get_nav_base_pose", None)
+        if not callable(pose_getter):
+            pose_getter = self.robot.get_mobile_base_pose
+        translation, orientation = pose_getter()
         self._map_info = exporter.export_map(
             output_dir=self._base_cfg["ros"]["localization"]["map_output_dir"],
             clear_center_xy=(float(translation[0]), float(translation[1]), float(yaw_from_wxyz(orientation))),
@@ -214,6 +223,7 @@ class PersistentNav2RuntimeManager:
             map_yaml_path=str(self._map_info["yaml_path"]),
             position_tolerance_m=self.nav2_position_tolerance_m,
             yaw_tolerance_rad=self.nav2_yaw_tolerance_rad,
+            params_filename=f"{robot_tag}_nav2_skill_params.yaml",
         )
         self._params_path = str(artifacts["params_path"])
         self._stack_id = f"{robot_tag}::{scene_tag}::{self._session_uuid}::{self._stack_signature(artifacts['params'])}"
@@ -297,12 +307,16 @@ class PersistentNav2RuntimeManager:
         self._local_goal_reached_started_at = None
         self._post_success_trigger = ""
         self._approach_target_pose = {}
+        self._approach_armbase_target_context = {}
         self._dynamic_goal_selected = {}
         self._dynamic_goal_candidates = []
         self._dynamic_goal_plan_index = 0
         self._dynamic_goal_active_plan_request_id = ""
         self._dynamic_goal_plan_deadline = None
         self._dynamic_goal_debug_path = ""
+        self._dynamic_goal_static_map = None
+        self._dynamic_goal_footprint_points = []
+        self._dynamic_goal_footprint_padding_m = 0.0
 
         bridge_client = self._ensure_bridge_client()
         bridge_client.reset_debug_trace()
@@ -335,12 +349,16 @@ class PersistentNav2RuntimeManager:
         self._local_goal_reached_started_at = None
         self._post_success_trigger = ""
         self._approach_target_pose = {}
+        self._approach_armbase_target_context = {}
         self._dynamic_goal_selected = {}
         self._dynamic_goal_candidates = []
         self._dynamic_goal_plan_index = 0
         self._dynamic_goal_active_plan_request_id = ""
         self._dynamic_goal_plan_deadline = None
         self._dynamic_goal_debug_path = ""
+        self._dynamic_goal_static_map = None
+        self._dynamic_goal_footprint_points = []
+        self._dynamic_goal_footprint_padding_m = 0.0
 
     def step(self):
         if self.done or self.state == self.STATE_IDLE:
@@ -612,7 +630,10 @@ class PersistentNav2RuntimeManager:
         if callable(has_bad_state) and bool(has_bad_state()):
             return True
         try:
-            translation, orientation = self.robot.get_mobile_base_pose()
+            pose_getter = getattr(self.robot, "get_nav_base_pose", None)
+            if not callable(pose_getter):
+                pose_getter = self.robot.get_mobile_base_pose
+            translation, orientation = pose_getter()
             values = [float(translation[0]), float(translation[1]), float(translation[2])]
             values.extend(float(v) for v in list(orientation)[:4])
             return not all(math.isfinite(value) for value in values)
@@ -669,6 +690,14 @@ class PersistentNav2RuntimeManager:
             return
         self._approach_target_pose = dict(target)
         try:
+            self._approach_armbase_target_context = build_armbase_target_context(
+                getattr(self.robot, "cfg", {}),
+                self.approach_config,
+            ) or {}
+        except Exception as exc:  # pylint: disable=broad-except
+            self._fail("approach_config_invalid", str(exc))
+            return
+        try:
             static_map = load_static_map(str(self._map_info["yaml_path"]))
             footprint_points = resolve_nav2_footprint_points(self._base_cfg)
             footprint_padding_m = resolve_approach_footprint_padding_m(self._base_cfg, self.approach_config)
@@ -676,9 +705,14 @@ class PersistentNav2RuntimeManager:
             self._fail("approach_preflight_unavailable", f"Dynamic approach preflight unavailable: {exc}")
             return
 
+        self._dynamic_goal_static_map = static_map
+        self._dynamic_goal_footprint_points = list(footprint_points)
+        self._dynamic_goal_footprint_padding_m = float(footprint_padding_m)
+
         raw_candidates = sample_approach_candidates(
             self.approach_config,
             (float(target["x"]), float(target["y"])),
+            armbase_target_context=self._approach_armbase_target_context or None,
         )
         candidates = []
         for candidate in raw_candidates:
@@ -793,10 +827,37 @@ class PersistentNav2RuntimeManager:
         candidate["path_num_poses"] = int(path.get("num_poses", 0))
         candidate["planning"] = planning
         if path_ok:
+            path_static_check = self._check_dynamic_plan_path_static(path)
+            if path_static_check is not None:
+                candidate["path_static_check"] = path_static_check
+                candidate["path_static_ok"] = bool(path_static_check.get("ok", False))
+                candidate["path_static_blocked_pose_count"] = int(path_static_check.get("blocked_pose_count", 0))
+                if not bool(path_static_check.get("ok", False)):
+                    first_blocked = path_static_check.get("first_blocked_index")
+                    candidate["path_ok"] = False
+                    candidate["path_state"] = "path_static_rejected"
+                    candidate["path_detail"] = (
+                        "ComputePathToPose returned a path, but pose "
+                        f"{first_blocked} failed static footprint check with "
+                        f"{path_static_check.get('blocked_pose_count', 0)} blocked path poses."
+                    )
+                    path_ok = False
+        if path_ok:
+            effective_goal = self._dynamic_plan_effective_goal(candidate, path)
+            if not bool(effective_goal.get("ok", True)):
+                candidate["path_ok"] = False
+                candidate["path_state"] = "path_terminal_rejected"
+                candidate["path_detail"] = str(effective_goal.get("detail", "planned path terminal pose is outside goal tolerance"))
+                candidate["path_terminal_check"] = effective_goal
+                path_ok = False
+            elif effective_goal:
+                candidate["effective_goal"] = effective_goal
+        if path_ok:
             self._dynamic_goal_selected = dict(candidate)
-            self.goal_x = float(candidate["x"])
-            self.goal_y = float(candidate["y"])
-            self.goal_yaw = float(candidate["yaw"])
+            goal = dict(candidate.get("effective_goal", {}) or candidate)
+            self.goal_x = float(goal["x"])
+            self.goal_y = float(goal["y"])
+            self.goal_yaw = float(goal["yaw"])
             self._dynamic_goal_active_plan_request_id = ""
             self._dynamic_goal_plan_deadline = None
             self._write_dynamic_goal_candidates_debug()
@@ -809,6 +870,73 @@ class PersistentNav2RuntimeManager:
         self._dynamic_goal_plan_deadline = None
         self._write_dynamic_goal_candidates_debug()
         self._publish_next_dynamic_plan_request(bridge_client)
+
+    def _check_dynamic_plan_path_static(self, path: dict) -> Optional[dict]:
+        static_map = getattr(self, "_dynamic_goal_static_map", None)
+        footprint_points = getattr(self, "_dynamic_goal_footprint_points", [])
+        footprint_padding_m = float(getattr(self, "_dynamic_goal_footprint_padding_m", 0.0))
+        if static_map is None or not footprint_points:
+            return None
+        poses = path.get("poses", [])
+        if not isinstance(poses, list) or not poses:
+            return {
+                "ok": False,
+                "num_poses": 0,
+                "blocked_pose_count": 0,
+                "first_blocked_index": None,
+                "first_blocked_result": {},
+                "blocked_summary": [],
+                "free_value_min": int(self.approach_config.static_free_value_min if self.approach_config else 250),
+                "footprint_padding_m": footprint_padding_m,
+                "reason": "empty_path",
+            }
+        return check_path_static_collision(
+            static_map=static_map,
+            footprint_points=footprint_points,
+            path_poses=poses,
+            free_value_min=int(self.approach_config.static_free_value_min if self.approach_config else 250),
+            footprint_padding_m=footprint_padding_m,
+        )
+
+    def _dynamic_plan_effective_goal(self, candidate: dict, path: dict) -> dict:
+        poses = path.get("poses", [])
+        if not isinstance(poses, list) or not poses:
+            return {}
+        terminal = poses[-1]
+        try:
+            terminal_x = float(terminal["x"])
+            terminal_y = float(terminal["y"])
+            terminal_yaw = float(terminal["yaw"])
+        except (KeyError, TypeError, ValueError):
+            return {
+                "ok": False,
+                "source": "planned_path_terminal",
+                "detail": "planned path terminal pose is missing x/y/yaw",
+            }
+
+        requested_x = float(candidate["x"])
+        requested_y = float(candidate["y"])
+        requested_yaw = float(candidate["yaw"])
+        xy_delta = math.hypot(terminal_x - requested_x, terminal_y - requested_y)
+        yaw_delta = abs(angle_diff_rad(terminal_yaw, requested_yaw))
+        xy_tolerance = max(float(getattr(self, "nav2_position_tolerance_m", self.position_tolerance_m)), self.position_tolerance_m)
+        yaw_tolerance = max(float(getattr(self, "nav2_yaw_tolerance_rad", self.yaw_tolerance_rad)), self.yaw_tolerance_rad)
+        ok = xy_delta <= xy_tolerance and yaw_delta <= yaw_tolerance
+        return {
+            "ok": bool(ok),
+            "source": "planned_path_terminal",
+            "x": terminal_x,
+            "y": terminal_y,
+            "yaw": terminal_yaw,
+            "requested_x": requested_x,
+            "requested_y": requested_y,
+            "requested_yaw": requested_yaw,
+            "xy_delta_m": float(xy_delta),
+            "yaw_delta_rad": float(yaw_delta),
+            "xy_tolerance_m": float(xy_tolerance),
+            "yaw_tolerance_rad": float(yaw_tolerance),
+            "detail": "" if ok else "planned path terminal pose is outside goal tolerance",
+        }
 
     def _active_dynamic_candidate(self) -> Optional[dict]:
         if 0 <= self._dynamic_goal_plan_index < len(self._dynamic_goal_candidates):
@@ -845,6 +973,13 @@ class PersistentNav2RuntimeManager:
                 if bool(self.approach_config.sampling_random)
                 else "linear_radius_golden_angle"
             ),
+            "arm": self.approach_config.arm,
+            "object_armbase_xy": (
+                list(self.approach_config.object_armbase_xy)
+                if self.approach_config.object_armbase_xy is not None
+                else None
+            ),
+            "armbase_target_context": dict(self._approach_armbase_target_context),
             "debug_path": str(self._dynamic_goal_debug_path),
         }
 
@@ -1030,12 +1165,11 @@ class PersistentNav2RuntimeManager:
             return
         try:
             bridge.reset(clear_debug_history=clear_debug_history)
-        except Exception:
-            LOGGER.exception(
-                "failed to reset base bridge for robot=%s clear_debug_history=%s",
-                getattr(self.robot, "name", "robot"),
-                clear_debug_history,
-            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"failed to reset base bridge for robot={getattr(self.robot, 'name', 'robot')} "
+                f"clear_debug_history={clear_debug_history}"
+            ) from exc
 
     def _prepare_robot_bridge_for_navigation(self):
         bridge = getattr(self.robot, "_simbox_ros_base_bridge", None)
@@ -1044,8 +1178,8 @@ class PersistentNav2RuntimeManager:
             return
         try:
             prepare_fn()
-        except Exception:
-            LOGGER.exception("failed to prepare base bridge for navigation")
+        except Exception as exc:
+            raise RuntimeError("failed to prepare base bridge for navigation") from exc
 
     def _start_robot_bridge_restore_after_navigation(self):
         if self._restore_after_nav_started:
@@ -1057,8 +1191,8 @@ class PersistentNav2RuntimeManager:
             return
         try:
             finalize_fn()
-        except Exception:
-            LOGGER.exception("failed to start base bridge restore after navigation")
+        except Exception as exc:
+            raise RuntimeError("failed to start base bridge restore after navigation") from exc
 
     def _robot_bridge_restore_after_navigation_done(self) -> bool:
         bridge = getattr(self.robot, "_simbox_ros_base_bridge", None)
@@ -1066,9 +1200,8 @@ class PersistentNav2RuntimeManager:
         if callable(done_fn):
             try:
                 return bool(done_fn())
-            except Exception:
-                LOGGER.exception("failed to query base bridge restore after navigation state")
-                return True
+            except Exception as exc:
+                raise RuntimeError("failed to query base bridge restore after navigation state") from exc
         if bridge is None:
             return True
         return not bool(getattr(bridge, "_restore_after_navigation", False))
@@ -1085,8 +1218,8 @@ class PersistentNav2RuntimeManager:
             try:
                 finalize_fn()
                 return
-            except Exception:
-                LOGGER.exception("failed to finalize base bridge after navigation")
+            except Exception as exc:
+                raise RuntimeError("failed to finalize base bridge after navigation") from exc
         self._reset_robot_bridge_state(clear_debug_history=False)
 
     def _update_pose_result_fields(self):
@@ -1128,9 +1261,9 @@ class PersistentNav2RuntimeManager:
         self.result.final_world_yaw = world_yaw
         self.result.final_nav_xy = nav_xy
         self.result.final_nav_yaw = nav_yaw
-        self.result.final_distance_to_goal = math.hypot(self.goal_x - world_xy[0], self.goal_y - world_xy[1])
+        self.result.final_distance_to_goal = math.hypot(self.goal_x - nav_xy[0], self.goal_y - nav_xy[1])
         self.result.final_nav_distance_to_goal = math.hypot(self.goal_x - nav_xy[0], self.goal_y - nav_xy[1])
-        self.result.final_yaw_error_rad = abs(angle_diff_rad(self.goal_yaw, world_yaw))
+        self.result.final_yaw_error_rad = abs(angle_diff_rad(self.goal_yaw, nav_yaw))
 
     def __del__(self):
         try:

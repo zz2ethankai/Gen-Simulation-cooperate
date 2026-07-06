@@ -4,7 +4,7 @@ load_stage:
     type: env_loader
     args:
       workflow_type: SimBoxDualWorkFlow
-      cfg_path: InternDataAssets/assets/custom/scene_4/01_kitchen/assets/basic/kitchen_apple_to_tray/simbox_task.yaml # Task config path
+      cfg_path: InternDataAssets/assets/custom/scene_8/01_kitchen/assets/basic/kitchen_apple_to_tray/simbox_task.yaml
       simulator:
         physics_dt: 1/30                   # Physics update rate
         rendering_dt: 1/30                 # Render update rate

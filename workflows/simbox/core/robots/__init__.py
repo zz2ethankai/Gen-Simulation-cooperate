@@ -9,6 +9,8 @@ from core.robots.fr3 import FR3
 from core.robots.franka_robotiq85 import FrankaRobotiq85
 from core.robots.genie1 import Genie1
 from core.robots.lift2 import Lift2
+from core.robots.panda_omron import PandaOmron
+from core.robots.panda_omron_virtual import PandaOmronVirtual
 from core.robots.split_aloha import SplitAloha
 
 __all__ = [
@@ -17,6 +19,8 @@ __all__ = [
     "FrankaRobotiq85",
     "Genie1",
     "Lift2",
+    "PandaOmron",
+    "PandaOmronVirtual",
     "SplitAloha",
 ]
 

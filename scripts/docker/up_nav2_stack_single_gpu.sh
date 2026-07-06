@@ -68,12 +68,68 @@ STOP_NAV2_WHEN_ISAAC_EXITS="${INTERNDATA_STOP_NAV2_WHEN_ISAAC_EXITS:-${DEFAULT_S
 
 export INTERNDATA_LAUNCHER_CONFIG="${INTERNDATA_LAUNCHER_CONFIG:-${DEFAULT_LAUNCHER_CONFIG}}"
 
+resolve_nav2_robot_env() {
+  python3 - "${REPO_ROOT}" "${INTERNDATA_LAUNCHER_CONFIG}" <<'PY'
+import shlex
+import sys
+from pathlib import Path
+
+import yaml
+
+repo_root = Path(sys.argv[1]).resolve()
+launcher_config = Path(sys.argv[2])
+if not launcher_config.is_absolute():
+    launcher_config = repo_root / launcher_config
+with launcher_config.open("r", encoding="utf-8") as handle:
+    launcher = yaml.safe_load(handle)
+
+cfg_path = launcher["load_stage"]["scene_loader"]["args"]["cfg_path"]
+task_path = Path(cfg_path)
+if not task_path.is_absolute():
+    task_path = repo_root / task_path
+with task_path.open("r", encoding="utf-8") as handle:
+    task_cfg = yaml.safe_load(handle)
+
+tasks = task_cfg["tasks"]
+if len(tasks) != 1:
+    raise SystemExit(f"Nav2 Docker stack requires exactly one task, got {len(tasks)} in {task_path}")
+robots = tasks[0]["robots"]
+if len(robots) != 1:
+    raise SystemExit(f"Nav2 Docker stack requires exactly one robot, got {len(robots)} in {task_path}")
+
+robot = robots[0]
+robot_name = str(robot["name"])
+robot_config = str(robot["robot_config_file"])
+robot_config_path = Path(robot_config)
+if not robot_config_path.is_absolute():
+    robot_config_path = repo_root / robot_config_path
+with robot_config_path.open("r", encoding="utf-8") as handle:
+    robot_cfg = yaml.safe_load(handle)
+base_config = str(robot_cfg["base"]["base_config_file"])
+
+print(f"export INTERNDATA_NAV2_ROBOT_NAME={shlex.quote(robot_name)}")
+print(f"export INTERNDATA_NAV2_ROBOT_CONFIG={shlex.quote(robot_config)}")
+print(f"export INTERNDATA_BASE_CONFIG={shlex.quote(base_config)}")
+PY
+}
+
 # INTERNDATA_NAV2_SKILL_OVERRIDES_JSON is intentionally left unset by default so
 # the footprint/inflation values from the robot base YAML are used. Set it
 # externally only when you need a temporary runtime override.
 
 if [ "$#" -eq 0 ]; then
   set -- "${DEFAULT_SERVICES[@]}"
+fi
+
+needs_nav2=false
+for service in "$@"; do
+  if [ "${service}" = "nav2" ]; then
+    needs_nav2=true
+    break
+  fi
+done
+if [ "${needs_nav2}" = "true" ]; then
+  eval "$(resolve_nav2_robot_env)"
 fi
 
 echo "Using INTERNDATA_NAV2_SESSION_UUID=${INTERNDATA_NAV2_SESSION_UUID}"
@@ -86,6 +142,9 @@ echo "Using INTERNDATA_ISAAC_GPU_DEVICE_IDS=${INTERNDATA_ISAAC_GPU_DEVICE_IDS}"
 echo "Using ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}"
 echo "Using INTERNDATA_LAUNCHER_CONFIG=${INTERNDATA_LAUNCHER_CONFIG}"
 echo "Using INTERNDATA_LAUNCHER_EXTRA_ARGS=${INTERNDATA_LAUNCHER_EXTRA_ARGS:-}"
+echo "Using INTERNDATA_NAV2_ROBOT_NAME=${INTERNDATA_NAV2_ROBOT_NAME:-}"
+echo "Using INTERNDATA_NAV2_ROBOT_CONFIG=${INTERNDATA_NAV2_ROBOT_CONFIG:-}"
+echo "Using INTERNDATA_BASE_CONFIG=${INTERNDATA_BASE_CONFIG:-}"
 echo "Using INTERNDATA_STOP_NAV2_WHEN_ISAAC_EXITS=${STOP_NAV2_WHEN_ISAAC_EXITS}"
 echo "Compose file: ${COMPOSE_FILE}"
 echo "Services: $*"

@@ -25,6 +25,8 @@ class ApproachConfig:
     footprint_padding_m: float | None = None
     sampling_random: bool = False
     sampling_seed: int | None = None
+    arm: str | None = None
+    object_armbase_xy: tuple[float, float] | None = None
 
 
 def wrap_to_pi(yaw: float) -> float:
@@ -37,13 +39,15 @@ def parse_approach_config(cfg: dict[str, Any]) -> ApproachConfig | None:
         return None
 
     min_distance = float(cfg.get("approach_min_distance", 0.55))
-    max_distance = float(cfg.get("approach_max_distance", 1.15))
+    max_distance = float(cfg.get("approach_max_distance", 1.35))
     sample_count = int(cfg.get("approach_sample_count", 512))
     footprint_padding_m = cfg.get("approach_footprint_padding", None)
     footprint_padding_m = None if footprint_padding_m is None else float(footprint_padding_m)
     sampling_random = _as_bool(cfg.get("approach_sampling_random", False))
     sampling_seed = cfg.get("approach_sampling_seed", None)
     sampling_seed = None if sampling_seed is None else int(sampling_seed)
+    arm = _parse_arm_name(cfg.get("approach_arm", None))
+    object_armbase_xy = _parse_optional_xy(cfg.get("approach_object_armbase_xy", None))
     if sampling_random and sampling_seed is None:
         sampling_seed = int.from_bytes(os.urandom(8), byteorder="big", signed=False)
     if min_distance <= 0.0:
@@ -54,6 +58,8 @@ def parse_approach_config(cfg: dict[str, Any]) -> ApproachConfig | None:
         raise ValueError("approach_sample_count must be positive")
     if footprint_padding_m is not None and footprint_padding_m < 0.0:
         raise ValueError("approach_footprint_padding must be non-negative")
+    if object_armbase_xy is not None and arm is None:
+        raise ValueError("approach_object_armbase_xy requires approach_arm to be 'left' or 'right'")
     return ApproachConfig(
         target_name=target_name,
         min_distance=min_distance,
@@ -62,10 +68,16 @@ def parse_approach_config(cfg: dict[str, Any]) -> ApproachConfig | None:
         footprint_padding_m=footprint_padding_m,
         sampling_random=sampling_random,
         sampling_seed=sampling_seed,
+        arm=arm,
+        object_armbase_xy=object_armbase_xy,
     )
 
 
-def sample_approach_candidates(config: ApproachConfig, target_xy: tuple[float, float]) -> list[dict[str, Any]]:
+def sample_approach_candidates(
+    config: ApproachConfig,
+    target_xy: tuple[float, float],
+    armbase_target_context: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     target_x, target_y = float(target_xy[0]), float(target_xy[1])
     rng = random.Random(int(config.sampling_seed)) if config.sampling_random else None
     candidates = []
@@ -75,16 +87,21 @@ def sample_approach_candidates(config: ApproachConfig, target_xy: tuple[float, f
         x = target_x + float(radius) * math.cos(angle)
         y = target_y + float(radius) * math.sin(angle)
         yaw = wrap_to_pi(math.atan2(target_y - y, target_x - x))
-        candidates.append(
-            {
-                "index": index,
-                "x": float(x),
-                "y": float(y),
-                "yaw": float(yaw),
-                "distance_to_target": float(math.hypot(target_x - x, target_y - y)),
-                "angle": float(angle),
-            }
-        )
+        candidate = {
+            "index": index,
+            "x": float(x),
+            "y": float(y),
+            "yaw": float(yaw),
+            "distance_to_target": float(math.hypot(target_x - x, target_y - y)),
+            "angle": float(angle),
+        }
+        if armbase_target_context is not None:
+            _apply_armbase_target_yaw(
+                candidate,
+                target_xy=(target_x, target_y),
+                context=armbase_target_context,
+            )
+        candidates.append(candidate)
     return candidates
 
 
@@ -218,6 +235,58 @@ def check_footprint_static_collision(
     }
 
 
+def check_path_static_collision(
+    *,
+    static_map: dict[str, Any],
+    footprint_points: list[list[float]],
+    path_poses: list[dict[str, Any]],
+    free_value_min: int = 250,
+    footprint_padding_m: float = 0.0,
+) -> dict[str, Any]:
+    blocked_results = []
+    for index, pose in enumerate(path_poses or []):
+        result = check_footprint_static_collision(
+            static_map=static_map,
+            footprint_points=footprint_points,
+            x=float(pose.get("x", 0.0)),
+            y=float(pose.get("y", 0.0)),
+            yaw=float(pose.get("yaw", 0.0)),
+            free_value_min=free_value_min,
+            footprint_padding_m=footprint_padding_m,
+        )
+        if not bool(result.get("ok", False)):
+            blocked_results.append(
+                {
+                    "index": int(index),
+                    "pose": {
+                        "x": float(pose.get("x", 0.0)),
+                        "y": float(pose.get("y", 0.0)),
+                        "yaw": float(pose.get("yaw", 0.0)),
+                    },
+                    "reason": str(result.get("reason", "")),
+                    "blocked_cells": int(result.get("blocked_cells", 0)),
+                    "footprint_blocked_cells": int(result.get("footprint_blocked_cells", 0)),
+                    "padding_blocked_cells": int(result.get("padding_blocked_cells", 0)),
+                    "unknown_cells": int(result.get("unknown_cells", 0)),
+                    "out_of_bounds_vertices": int(result.get("out_of_bounds_vertices", 0)),
+                    "padding_out_of_bounds": bool(result.get("padding_out_of_bounds", False)),
+                    "footprint_padding_m": float(result.get("footprint_padding_m", footprint_padding_m)),
+                    "footprint_padding_cells": int(result.get("footprint_padding_cells", 0)),
+                }
+            )
+
+    return {
+        "ok": len(blocked_results) == 0,
+        "num_poses": int(len(path_poses or [])),
+        "blocked_pose_count": int(len(blocked_results)),
+        "first_blocked_index": int(blocked_results[0]["index"]) if blocked_results else None,
+        "first_blocked_result": blocked_results[0] if blocked_results else {},
+        "blocked_summary": blocked_results[:20],
+        "free_value_min": int(free_value_min),
+        "footprint_padding_m": float(max(float(footprint_padding_m), 0.0)),
+    }
+
+
 def transform_footprint_points(
     footprint_points: list[list[float]],
     *,
@@ -247,6 +316,7 @@ def choose_best_reachable_candidate(candidates: list[dict[str, Any]]) -> dict[st
     return min(
         reachable,
         key=lambda candidate: (
+            float(candidate.get("approach_score", candidate.get("distance_to_target", float("inf")))),
             float(candidate.get("distance_to_target", float("inf"))),
             float(candidate.get("path_length_m", float("inf"))),
             int(candidate.get("index", 0)),
@@ -258,6 +328,7 @@ def sort_candidates_for_preflight(candidates: list[dict[str, Any]]) -> list[dict
     ordered = sorted(
         candidates,
         key=lambda candidate: (
+            float(candidate.get("approach_score", candidate.get("distance_to_target", float("inf")))),
             float(candidate.get("distance_to_target", float("inf"))),
             int(candidate.get("index", 0)),
         ),
@@ -265,6 +336,42 @@ def sort_candidates_for_preflight(candidates: list[dict[str, Any]]) -> list[dict
     for rank, candidate in enumerate(ordered):
         candidate["preflight_rank"] = int(rank)
     return ordered
+
+
+def build_armbase_target_context(robot_cfg: dict[str, Any], config: ApproachConfig) -> dict[str, Any] | None:
+    """Build arm-base target metadata from a robot config.
+
+    The returned context is intentionally plain data so it can be serialized in
+    dynamic-goal debug output and tested without Isaac imports.
+    """
+
+    if config.object_armbase_xy is None:
+        return None
+    if config.arm not in {"left", "right"}:
+        raise ValueError("approach_arm must be 'left' or 'right' when approach_object_armbase_xy is set")
+    robot_cfg = robot_cfg if isinstance(robot_cfg, dict) else {}
+    prefix = "fl" if config.arm == "left" else "fr"
+    translation = _parse_vec(robot_cfg.get(f"{prefix}_base_mount_translation"), 3, f"{prefix}_base_mount_translation")
+    orientation = _parse_vec(
+        robot_cfg.get(f"{prefix}_base_mount_orientation", [1.0, 0.0, 0.0, 0.0]),
+        4,
+        f"{prefix}_base_mount_orientation",
+    )
+    desired_mobile_xy = _armbase_xy_to_mobile_xy(
+        config.object_armbase_xy,
+        translation=translation,
+        orientation=orientation,
+    )
+    target_angle = math.atan2(float(desired_mobile_xy[1]), float(desired_mobile_xy[0]))
+    return {
+        "arm": str(config.arm),
+        "object_armbase_xy": [float(config.object_armbase_xy[0]), float(config.object_armbase_xy[1])],
+        "mobile_to_armbase_translation": [float(value) for value in translation],
+        "mobile_to_armbase_orientation": [float(value) for value in orientation],
+        "mobile_to_armbase_yaw": float(_quat_wxyz_yaw(orientation)),
+        "object_mobile_xy": [float(desired_mobile_xy[0]), float(desired_mobile_xy[1])],
+        "object_mobile_angle": float(target_angle),
+    }
 
 
 def write_candidates_debug(path: str, payload: dict[str, Any]):
@@ -294,6 +401,110 @@ def _as_bool(value) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return False
+
+
+def _parse_arm_name(value) -> str | None:
+    if value is None:
+        return None
+    arm = str(value).strip().lower()
+    if not arm:
+        return None
+    if arm in {"left", "right"}:
+        return arm
+    raise ValueError("approach_arm must be 'left' or 'right'")
+
+
+def _parse_optional_xy(value) -> tuple[float, float] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError("approach_object_armbase_xy must be a two-element list")
+    return float(value[0]), float(value[1])
+
+
+def _parse_vec(value, expected_len: int, field_name: str) -> list[float]:
+    if not isinstance(value, (list, tuple)) or len(value) != expected_len:
+        raise ValueError(f"{field_name} must be a {expected_len}-element list")
+    return [float(item) for item in value]
+
+
+def _quat_wxyz_yaw(orientation: list[float]) -> float:
+    w, x, y, z = (float(value) for value in orientation[:4])
+    return math.atan2(
+        2.0 * (w * z + x * y),
+        1.0 - 2.0 * (y * y + z * z),
+    )
+
+
+def _armbase_xy_to_mobile_xy(
+    object_armbase_xy: tuple[float, float],
+    *,
+    translation: list[float],
+    orientation: list[float],
+) -> tuple[float, float]:
+    mount_yaw = _quat_wxyz_yaw(orientation)
+    cos_yaw = math.cos(mount_yaw)
+    sin_yaw = math.sin(mount_yaw)
+    arm_x, arm_y = float(object_armbase_xy[0]), float(object_armbase_xy[1])
+    mobile_x = float(translation[0]) + arm_x * cos_yaw - arm_y * sin_yaw
+    mobile_y = float(translation[1]) + arm_x * sin_yaw + arm_y * cos_yaw
+    return mobile_x, mobile_y
+
+
+def _apply_armbase_target_yaw(
+    candidate: dict[str, Any],
+    *,
+    target_xy: tuple[float, float],
+    context: dict[str, Any],
+):
+    object_mobile_xy = context.get("object_mobile_xy")
+    if not isinstance(object_mobile_xy, (list, tuple)) or len(object_mobile_xy) != 2:
+        return
+    object_mobile_angle = math.atan2(float(object_mobile_xy[1]), float(object_mobile_xy[0]))
+    target_x, target_y = float(target_xy[0]), float(target_xy[1])
+    dx = target_x - float(candidate["x"])
+    dy = target_y - float(candidate["y"])
+    yaw = wrap_to_pi(math.atan2(dy, dx) - object_mobile_angle)
+    distance = float(math.hypot(dx, dy))
+    achieved_mobile_x = distance * math.cos(object_mobile_angle)
+    achieved_mobile_y = distance * math.sin(object_mobile_angle)
+    achieved_arm_x, achieved_arm_y = _mobile_xy_to_armbase_xy(
+        (achieved_mobile_x, achieved_mobile_y),
+        translation=context.get("mobile_to_armbase_translation", [0.0, 0.0, 0.0]),
+        yaw=float(context.get("mobile_to_armbase_yaw", 0.0)),
+    )
+    desired_arm_xy = context.get("object_armbase_xy")
+    if isinstance(desired_arm_xy, (list, tuple)) and len(desired_arm_xy) == 2:
+        score = (achieved_arm_x - float(desired_arm_xy[0])) ** 2 + (
+            achieved_arm_y - float(desired_arm_xy[1])
+        ) ** 2
+    else:
+        score = float(candidate.get("distance_to_target", distance))
+    candidate["yaw"] = float(yaw)
+    candidate["approach_yaw_strategy"] = "object_armbase_xy"
+    candidate["approach_score"] = float(score)
+    candidate["approach_armbase_prediction"] = {
+        "object_armbase_xy": [float(achieved_arm_x), float(achieved_arm_y)],
+        "object_mobile_xy": [float(achieved_mobile_x), float(achieved_mobile_y)],
+        "target_object_mobile_xy": [float(object_mobile_xy[0]), float(object_mobile_xy[1])],
+        "object_mobile_angle": float(object_mobile_angle),
+    }
+
+
+def _mobile_xy_to_armbase_xy(
+    object_mobile_xy: tuple[float, float],
+    *,
+    translation,
+    yaw: float,
+) -> tuple[float, float]:
+    translation = _parse_vec(translation, 3, "mobile_to_armbase_translation")
+    rel_x = float(object_mobile_xy[0]) - float(translation[0])
+    rel_y = float(object_mobile_xy[1]) - float(translation[1])
+    cos_yaw = math.cos(-float(yaw))
+    sin_yaw = math.sin(-float(yaw))
+    arm_x = rel_x * cos_yaw - rel_y * sin_yaw
+    arm_y = rel_x * sin_yaw + rel_y * cos_yaw
+    return arm_x, arm_y
 
 
 def _load_pgm_image(path: str) -> np.ndarray:

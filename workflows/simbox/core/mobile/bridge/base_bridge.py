@@ -4,17 +4,26 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections import deque
+import importlib
 import math
 
 import numpy as np
-import rclpy
-from geometry_msgs.msg import TransformStamped, Twist
-from nav_msgs.msg import Odometry
-from rclpy.node import Node
-from sensor_msgs.msg import JointState
-from tf2_msgs.msg import TFMessage
 
 from .types import BaseCommand
+
+
+def _load_ros_message_types():
+    geometry_msgs = importlib.import_module("geometry_msgs.msg")
+    nav_msgs = importlib.import_module("nav_msgs.msg")
+    sensor_msgs = importlib.import_module("sensor_msgs.msg")
+    tf2_msgs = importlib.import_module("tf2_msgs.msg")
+    return {
+        "TransformStamped": geometry_msgs.TransformStamped,
+        "Twist": geometry_msgs.Twist,
+        "Odometry": nav_msgs.Odometry,
+        "JointState": sensor_msgs.JointState,
+        "TFMessage": tf2_msgs.TFMessage,
+    }
 
 
 class BaseBridge(ABC):
@@ -34,11 +43,11 @@ class BaseBridge(ABC):
         if missing_fields:
             raise KeyError(f"Missing ROS base bridge config fields: {missing_fields}")
 
-        virtual_odom_cfg = self.ros_cfg.get("virtual_odom", {})
+        virtual_odom_cfg = self.ros_cfg["virtual_odom"]
         if not isinstance(virtual_odom_cfg, dict):
-            raise TypeError("ros.virtual_odom must be a dict when present")
-        if bool(virtual_odom_cfg.get("enabled", False)):
-            raise ValueError("virtual_odom is not supported for the direct /cmd_vel 4WIS bridge")
+            raise TypeError("ros.virtual_odom must be a dict")
+        if bool(virtual_odom_cfg["enabled"]):
+            raise ValueError("virtual_odom is not supported for the direct /cmd_vel bridge")
 
         self._command_timeout = float(self.base_cfg["command_timeout"])
         self._steering_limit = float(self.base_cfg["steering_limit"])
@@ -47,9 +56,7 @@ class BaseBridge(ABC):
         self._wheel_base = float(self.base_cfg["wheel_base"])
         self._track_width = float(self.base_cfg["track_width"])
         self._wheel_radius = float(self.base_cfg["wheel_radius"])
-        self._steering_command_sign = float(
-            self.base_cfg.get("steering_command_sign", self.ros_cfg.get("steering_command_sign", 1.0))
-        )
+        self._steering_command_sign = float(self.base_cfg["steering_command_sign"])
         self._min_body_velocity, self._max_body_velocity = self._load_body_velocity_limits()
         if abs(self._steering_command_sign) <= 1.0e-6:
             raise ValueError("steering_command_sign must be non-zero")
@@ -60,16 +67,30 @@ class BaseBridge(ABC):
         wheel_count = len(self.base_interface["wheel_joint_names"])
         self._validate_bridge_configuration(steering_count=steering_count, wheel_count=wheel_count)
 
+        from nav2.bridge.clock import ensure_isaac_ros2_bridge_ready
+
+        ros2_imports = ensure_isaac_ros2_bridge_ready(
+            max_wait_sec=float(self.ros_cfg.get("bridge_ready_timeout_sec", 90.0)),
+        )
+        ros_message_types = _load_ros_message_types()
+        self._rclpy = ros2_imports["rclpy"]
+        self._Node = ros2_imports["Node"]
+        self._TransformStamped = ros_message_types["TransformStamped"]
+        self._Twist = ros_message_types["Twist"]
+        self._Odometry = ros_message_types["Odometry"]
+        self._JointState = ros_message_types["JointState"]
+        self._TFMessage = ros_message_types["TFMessage"]
+
         self._owns_rclpy_context = False
-        if not rclpy.ok():
-            rclpy.init(args=None)
+        if not self._rclpy.ok():
+            self._rclpy.init(args=None)
             self._owns_rclpy_context = True
-        self.node = Node(node_name)
-        self._tf_pub = self.node.create_publisher(TFMessage, "/tf", 10)
-        self._joint_state_pub = self.node.create_publisher(JointState, self.ros_cfg["joint_state_topic"], 10)
-        self._odom_pub = self.node.create_publisher(Odometry, self.ros_cfg["odom_topic"], 10)
+        self.node = self._Node(node_name)
+        self._tf_pub = self.node.create_publisher(self._TFMessage, "/tf", 10)
+        self._joint_state_pub = self.node.create_publisher(self._JointState, self.ros_cfg["joint_state_topic"], 10)
+        self._odom_pub = self.node.create_publisher(self._Odometry, self.ros_cfg["odom_topic"], 10)
         self._cmd_vel_sub = self.node.create_subscription(
-            Twist,
+            self._Twist,
             self.ros_cfg["cmd_vel_topic"],
             self._on_cmd_vel,
             10,
@@ -90,16 +111,14 @@ class BaseBridge(ABC):
         self._restore_after_navigation = False
         self._restore_waiting_for_wheel_stop = False
         self._restore_target_steering = np.zeros(steering_count, dtype=np.float32)
-        self._restore_done_tolerance = float(self.base_cfg.get("restore_done_tolerance", 5.0e-3))
-        self._restore_done_velocity_tolerance = float(
-            self.base_cfg.get("restore_done_velocity_tolerance", 0.5)
-        )
+        self._restore_done_tolerance = float(self.base_cfg["restore_done_tolerance"])
+        self._restore_done_velocity_tolerance = float(self.base_cfg["restore_done_velocity_tolerance"])
         self._heading_gate_enabled = False
         self._heading_gate_target_yaw = 0.0
         self._heading_gate_tolerance_rad = 0.0
         self._heading_gate_rotate_vel = 0.0
 
-        history_size = max(int(self.base_cfg.get("debug_history_size", 256)), 1)
+        history_size = max(int(self.base_cfg["debug_history_size"]), 1)
         self._received_cmd_vel_count = 0
         self._driver_command_message_count = 0
         self._pending_driver_command_count = 0
@@ -135,8 +154,8 @@ class BaseBridge(ABC):
 
     def destroy(self):
         self.node.destroy_node()
-        if self._owns_rclpy_context and rclpy.ok():
-            rclpy.shutdown()
+        if self._owns_rclpy_context and self._rclpy.ok():
+            self._rclpy.shutdown()
 
     def reset(self, *, clear_debug_history: bool = False):
         self._spin_available_callbacks()
@@ -149,7 +168,7 @@ class BaseBridge(ABC):
 
         self._command = zero_command
         self._last_step_command = zero_command
-        current_steering = self._get_current_steering_positions(default=zero_steering)
+        current_steering = self._get_current_steering_positions()
         self._last_applied_steering = current_steering.copy()
         self._last_requested_steering = current_steering.copy()
         self._last_requested_wheel_velocities = zero_wheel.copy()
@@ -180,9 +199,10 @@ class BaseBridge(ABC):
             self._debug_cmd_vel_history.clear()
             self._debug_command_history.clear()
 
-        self.robot.apply_base_command(
+        self._apply_robot_base_command(
             steering_positions=current_steering,
             wheel_velocities=zero_wheel,
+            step_dt=1e-3,
         )
         translation, orientation = self._get_robot_base_pose()
         self._last_actual_translation = np.array(translation, dtype=np.float32)
@@ -191,7 +211,7 @@ class BaseBridge(ABC):
         self._last_actual_angular_velocity_world = np.zeros(3, dtype=np.float32)
         self._publish_joint_state()
         self._publish_odometry()
-        rclpy.spin_once(self.node, timeout_sec=0.0)
+        self._rclpy.spin_once(self.node, timeout_sec=0.0)
 
     def prepare_for_navigation(self):
         self._navigation_active = True
@@ -204,9 +224,7 @@ class BaseBridge(ABC):
         now_sec = self._now_sec()
         steering_count = len(self.base_interface["steering_joint_names"])
         wheel_count = len(self.base_interface["wheel_joint_names"])
-        current_steering = self._get_current_steering_positions(
-            default=np.zeros(steering_count, dtype=np.float32)
-        )
+        current_steering = self._get_current_steering_positions()
         self._command = BaseCommand.zero(received_time_sec=now_sec)
         self._last_step_command = self._command
         self._navigation_active = False
@@ -223,7 +241,7 @@ class BaseBridge(ABC):
         self._last_step_dt = 1e-3
         self._publish_joint_state()
         self._publish_odometry()
-        rclpy.spin_once(self.node, timeout_sec=0.0)
+        self._rclpy.spin_once(self.node, timeout_sec=0.0)
 
     def step_restore_after_navigation(self, step_dt: float | None = None) -> bool:
         if not self._restore_after_navigation:
@@ -240,17 +258,14 @@ class BaseBridge(ABC):
         steering_count = len(self.base_interface["steering_joint_names"])
         wheel_count = len(self.base_interface["wheel_joint_names"])
         requested_wheel_velocities = np.zeros(wheel_count, dtype=np.float32)
-        current_wheel_velocities = self._get_current_wheel_velocities(default=requested_wheel_velocities)
+        current_wheel_velocities = self._get_current_wheel_velocities()
         wheel_stop_reached = bool(
-            current_wheel_velocities.size == wheel_count
-            and np.all(np.isfinite(current_wheel_velocities))
-            and float(np.max(np.abs(current_wheel_velocities))) <= self._restore_done_velocity_tolerance
+            wheel_count == 0
+            or float(np.max(np.abs(current_wheel_velocities))) <= self._restore_done_velocity_tolerance
         )
 
         if self._restore_waiting_for_wheel_stop and not wheel_stop_reached:
-            requested_steering = self._get_current_steering_positions(
-                default=self._get_restore_target_steering(steering_count)
-            )
+            requested_steering = self._get_current_steering_positions()
             steering_positions = self._apply_steering_limits(requested_steering, dt)
         else:
             self._restore_waiting_for_wheel_stop = False
@@ -263,9 +278,10 @@ class BaseBridge(ABC):
         self._last_requested_wheel_velocities = requested_wheel_velocities.copy()
         self._last_applied_wheel_velocities = wheel_velocities.astype(np.float32).copy()
         self._last_wheel_shaping_debug = {}
-        self.robot.apply_base_command(
+        self._apply_robot_base_command(
             steering_positions=steering_positions,
             wheel_velocities=wheel_velocities,
+            step_dt=dt,
         )
         self._publish_joint_state()
         self._publish_odometry()
@@ -283,7 +299,7 @@ class BaseBridge(ABC):
             self._restore_after_navigation = False
             self._restore_waiting_for_wheel_stop = False
             self._hold_after_navigation = True
-        rclpy.spin_once(self.node, timeout_sec=0.0)
+        self._rclpy.spin_once(self.node, timeout_sec=0.0)
         return done
 
     def restore_after_navigation_done(self) -> bool:
@@ -291,17 +307,10 @@ class BaseBridge(ABC):
             return True
         steering_count = len(self.base_interface["steering_joint_names"])
         wheel_count = len(self.base_interface["wheel_joint_names"])
-        try:
-            joint_state = self.robot.get_base_joint_state()
-            current_steering = np.asarray(joint_state["steering_positions"], dtype=np.float32).reshape(-1)
-            steering_velocities = np.asarray(joint_state["steering_velocities"], dtype=np.float32).reshape(-1)
-            wheel_velocities = np.asarray(joint_state["wheel_velocities"], dtype=np.float32).reshape(-1)
-        except Exception:
-            current_steering = self._get_current_steering_positions(
-                default=self._get_restore_target_steering(steering_count),
-            )
-            steering_velocities = np.zeros(steering_count, dtype=np.float32)
-            wheel_velocities = np.zeros(wheel_count, dtype=np.float32)
+        joint_state = self.robot.get_base_joint_state()
+        current_steering = np.asarray(joint_state["steering_positions"], dtype=np.float32).reshape(-1)
+        steering_velocities = np.asarray(joint_state["steering_velocities"], dtype=np.float32).reshape(-1)
+        wheel_velocities = np.asarray(joint_state["wheel_velocities"], dtype=np.float32).reshape(-1)
         target_steering = self._get_restore_target_steering(steering_count)
         if (
             current_steering.size != target_steering.size
@@ -315,12 +324,20 @@ class BaseBridge(ABC):
             or not np.all(np.isfinite(wheel_velocities))
         ):
             return False
+        wheel_velocity_done = (
+            wheel_velocities.size == 0
+            or float(np.max(np.abs(wheel_velocities))) <= self._restore_done_velocity_tolerance
+        )
+        steering_velocity_done = (
+            steering_velocities.size == 0
+            or float(np.max(np.abs(steering_velocities))) <= self._restore_done_velocity_tolerance
+        )
         if self._restore_waiting_for_wheel_stop:
-            return bool(float(np.max(np.abs(wheel_velocities))) <= self._restore_done_velocity_tolerance)
+            return bool(wheel_velocity_done)
         return bool(
             np.allclose(current_steering, target_steering, atol=self._restore_done_tolerance)
-            and float(np.max(np.abs(steering_velocities))) <= self._restore_done_velocity_tolerance
-            and float(np.max(np.abs(wheel_velocities))) <= self._restore_done_velocity_tolerance
+            and steering_velocity_done
+            and wheel_velocity_done
         )
 
     def hold_after_navigation(self, step_dt: float | None = None):
@@ -345,9 +362,10 @@ class BaseBridge(ABC):
         self._last_requested_wheel_velocities = wheel_velocities.copy()
         self._last_applied_wheel_velocities = wheel_velocities.copy()
         self._last_wheel_shaping_debug = {}
-        self.robot.apply_base_command(
+        self._apply_robot_base_command(
             steering_positions=target_steering,
             wheel_velocities=wheel_velocities,
+            step_dt=dt,
         )
         self._publish_joint_state()
         self._publish_odometry()
@@ -360,17 +378,14 @@ class BaseBridge(ABC):
             dt=dt,
             mode="hold_after_navigation",
         )
-        rclpy.spin_once(self.node, timeout_sec=0.0)
+        self._rclpy.spin_once(self.node, timeout_sec=0.0)
 
-    def _get_current_wheel_velocities(self, *, default: np.ndarray):
-        try:
-            joint_state = self.robot.get_base_joint_state()
-            current = np.asarray(joint_state["wheel_velocities"], dtype=np.float32).reshape(-1)
-        except Exception:
-            current = np.asarray(default, dtype=np.float32).reshape(-1)
+    def _get_current_wheel_velocities(self):
+        joint_state = self.robot.get_base_joint_state()
+        current = np.asarray(joint_state["wheel_velocities"], dtype=np.float32).reshape(-1)
         expected = len(self.base_interface["wheel_joint_names"])
         if current.size != expected or not np.all(np.isfinite(current)):
-            return np.asarray(default, dtype=np.float32).reshape(-1).copy()
+            raise ValueError("Current wheel velocities must match wheel joints and be finite")
         return current.astype(np.float32).copy()
 
     def start_heading_alignment(
@@ -417,40 +432,39 @@ class BaseBridge(ABC):
         self._last_step_command = command
         steering_count = len(self.base_interface["steering_joint_names"])
         wheel_count = len(self.base_interface["wheel_joint_names"])
-        current_steering = self._get_current_steering_positions(
-            default=self._get_restore_target_steering(steering_count)
-        )
+        current_steering = self._get_current_steering_positions()
         self._last_applied_steering = current_steering.copy()
         requested_steering, requested_wheel_velocities = self._map_command(command)
-        requested_steering = self._as_finite_vector(
+        requested_steering = self._require_finite_vector(
             requested_steering,
             expected_size=steering_count,
-            fallback=self._last_applied_steering,
+            name="requested steering",
         )
-        requested_wheel_velocities = self._as_finite_vector(
+        requested_wheel_velocities = self._require_finite_vector(
             requested_wheel_velocities,
             expected_size=wheel_count,
-            fallback=np.zeros(wheel_count, dtype=np.float32),
+            name="requested wheel velocities",
         )
         self._last_requested_steering = requested_steering.astype(np.float32).copy()
         self._last_requested_wheel_velocities = requested_wheel_velocities.astype(np.float32).copy()
         steering_positions = self._apply_steering_limits(requested_steering, dt)
-        actual_steering = self._get_current_steering_positions(default=steering_positions)
+        actual_steering = self._get_current_steering_positions()
         wheel_velocities = self._shape_wheel_velocities_for_applied_steering(
             command=command,
             requested_steering=requested_steering,
             applied_steering=actual_steering,
             requested_wheel_velocities=requested_wheel_velocities,
         )
-        wheel_velocities = self._as_finite_vector(
+        wheel_velocities = self._require_finite_vector(
             wheel_velocities,
             expected_size=wheel_count,
-            fallback=np.zeros(wheel_count, dtype=np.float32),
+            name="applied wheel velocities",
         )
         self._last_applied_wheel_velocities = wheel_velocities.astype(np.float32).copy()
-        self.robot.apply_base_command(
+        self._apply_robot_base_command(
             steering_positions=steering_positions,
             wheel_velocities=wheel_velocities,
+            step_dt=dt,
         )
         self._publish_joint_state()
         self._publish_odometry()
@@ -462,7 +476,7 @@ class BaseBridge(ABC):
             now_sec=now_sec,
             dt=dt,
         )
-        rclpy.spin_once(self.node, timeout_sec=0.0)
+        self._rclpy.spin_once(self.node, timeout_sec=0.0)
 
     def _apply_heading_gate(self, command: BaseCommand, now_sec: float) -> BaseCommand:
         if not self._heading_gate_enabled:
@@ -479,7 +493,20 @@ class BaseBridge(ABC):
         rotate_vel = math.copysign(self._heading_gate_rotate_vel, yaw_error)
         return BaseCommand(vx_body=0.0, vy_body=0.0, wz_body=rotate_vel, received_time_sec=float(now_sec))
 
-    def _on_cmd_vel(self, msg: Twist):
+    def _apply_robot_base_command(
+        self,
+        *,
+        steering_positions: np.ndarray,
+        wheel_velocities: np.ndarray,
+        step_dt: float,
+    ) -> None:
+        del step_dt
+        self.robot.apply_base_command(
+            steering_positions=steering_positions,
+            wheel_velocities=wheel_velocities,
+        )
+
+    def _on_cmd_vel(self, msg):
         received_time_sec = self._now_sec()
         self._received_cmd_vel_count += 1
         self._driver_command_message_count += 1
@@ -491,11 +518,9 @@ class BaseBridge(ABC):
         }
         raw_command = BaseCommand.from_twist_message(msg, received_time_sec=received_time_sec)
         finite_command = self._is_finite_command(raw_command)
-        if finite_command:
-            command = self._clamp_command(raw_command)
-        else:
-            command = BaseCommand.zero(received_time_sec=received_time_sec)
-            self._command = command
+        if not finite_command:
+            raise ValueError("Received non-finite /cmd_vel")
+        command = self._clamp_command(raw_command)
         accepted = bool(self._navigation_active and finite_command)
         if accepted:
             self._command = command
@@ -519,7 +544,9 @@ class BaseBridge(ABC):
         )
 
     def _resolve_active_command(self, now_sec: float) -> BaseCommand:
-        if self._is_finite_command(self._command) and now_sec - self._command.received_time_sec <= self._command_timeout:
+        if not self._is_finite_command(self._command):
+            raise ValueError("Active base command is non-finite")
+        if now_sec - self._command.received_time_sec <= self._command_timeout:
             return self._command
         return BaseCommand.zero(received_time_sec=self._command.received_time_sec)
 
@@ -531,32 +558,30 @@ class BaseBridge(ABC):
         )
 
     @staticmethod
-    def _as_finite_vector(values, *, expected_size: int, fallback) -> np.ndarray:
+    def _require_finite_vector(values, *, expected_size: int, name: str) -> np.ndarray:
         vector = np.asarray(values, dtype=np.float32).reshape(-1)
-        fallback = np.asarray(fallback, dtype=np.float32).reshape(-1)
         if vector.size != expected_size or not np.all(np.isfinite(vector)):
-            if fallback.size == expected_size and np.all(np.isfinite(fallback)):
-                return fallback.astype(np.float32).copy()
-            return np.zeros(expected_size, dtype=np.float32)
+            raise ValueError(f"{name} must have size {expected_size} and contain only finite values")
         return vector.astype(np.float32).copy()
 
     def _load_body_velocity_limits(self) -> tuple[np.ndarray, np.ndarray]:
-        hard_limits = (
-            self.base_cfg.get("platform", {})
-            .get("nav2", {})
-            .get("controller_hard_limits", {})
-        )
-        min_velocity = hard_limits.get("min_velocity", [-float("inf"), -float("inf"), -float("inf")])
-        max_velocity = hard_limits.get("max_velocity", [float("inf"), float("inf"), float("inf")])
+        hard_limits = self.base_cfg["platform"]["nav2"]["controller_hard_limits"]
+        min_velocity = hard_limits["min_velocity"]
+        max_velocity = hard_limits["max_velocity"]
         min_velocity = np.asarray(min_velocity, dtype=np.float32).reshape(-1)
         max_velocity = np.asarray(max_velocity, dtype=np.float32).reshape(-1)
-        if min_velocity.size != 3 or max_velocity.size != 3:
+        if (
+            min_velocity.size != 3
+            or max_velocity.size != 3
+            or not np.all(np.isfinite(min_velocity))
+            or not np.all(np.isfinite(max_velocity))
+        ):
             raise ValueError("platform.nav2.controller_hard_limits velocity limits must be 3-element lists")
         return min_velocity, max_velocity
 
     def _clamp_command(self, command: BaseCommand) -> BaseCommand:
         if not self._is_finite_command(command):
-            return BaseCommand.zero(received_time_sec=self._now_sec())
+            raise ValueError("Cannot clamp non-finite base command")
         clamped = np.clip(
             np.asarray([command.vx_body, command.vy_body, command.wz_body], dtype=np.float32),
             self._min_body_velocity,
@@ -571,6 +596,7 @@ class BaseBridge(ABC):
 
     def get_logging_action_snapshot(self) -> dict:
         command = self._last_step_command
+        dof_names = list(getattr(getattr(self.robot, "_articulation_view", None), "dof_names", []))
         return {
             "vx_body": float(command.vx_body),
             "vy_body": float(command.vy_body),
@@ -585,6 +611,13 @@ class BaseBridge(ABC):
             "requested_wheel_velocities": [float(v) for v in self._last_requested_wheel_velocities.tolist()],
             "applied_wheel_velocities": [float(v) for v in self._last_applied_wheel_velocities.tolist()],
             "wheel_shaping": dict(self._last_wheel_shaping_debug),
+            "joint_mapping": {
+                "steering_joint_names": list(self.base_interface["steering_joint_names"]),
+                "wheel_joint_names": list(self.base_interface["wheel_joint_names"]),
+                "steering_joint_indices": [int(v) for v in self.base_interface["steering_joint_indices"]],
+                "wheel_joint_indices": [int(v) for v in self.base_interface["wheel_joint_indices"]],
+                "articulation_dof_names": dof_names,
+            },
         }
 
     def get_logging_state_snapshot(self) -> dict:
@@ -620,16 +653,15 @@ class BaseBridge(ABC):
 
     def _apply_steering_limits(self, requested_positions: np.ndarray, dt: float):
         steering_count = len(self.base_interface["steering_joint_names"])
-        fallback = self._get_current_steering_positions(default=self._get_restore_target_steering(steering_count))
-        self._last_applied_steering = self._as_finite_vector(
+        self._last_applied_steering = self._require_finite_vector(
             self._last_applied_steering,
             expected_size=steering_count,
-            fallback=fallback,
+            name="last applied steering",
         )
-        requested_positions = self._as_finite_vector(
+        requested_positions = self._require_finite_vector(
             requested_positions,
             expected_size=steering_count,
-            fallback=fallback,
+            name="requested steering positions",
         )
         requested_positions = np.clip(requested_positions, -self._steering_limit, self._steering_limit)
         max_delta = self._steering_rate_limit * dt
@@ -639,25 +671,25 @@ class BaseBridge(ABC):
         self._last_applied_steering = limited.astype(np.float32)
         return self._last_applied_steering.copy()
 
-    def _get_current_steering_positions(self, *, default: np.ndarray):
-        try:
-            joint_state = self.robot.get_base_joint_state()
-            current = np.asarray(joint_state["steering_positions"], dtype=np.float32).reshape(-1)
-        except Exception:
-            current = np.asarray(default, dtype=np.float32).reshape(-1)
+    def _get_current_steering_positions(self):
+        joint_state = self.robot.get_base_joint_state()
+        current = np.asarray(joint_state["steering_positions"], dtype=np.float32).reshape(-1)
         expected = len(self.base_interface["steering_joint_names"])
         if current.size != expected or not np.all(np.isfinite(current)):
-            return np.asarray(default, dtype=np.float32).reshape(-1).copy()
+            raise ValueError("Current steering positions must match steering joints and be finite")
         current = np.asarray([self._wrap_angle(float(value)) for value in current], dtype=np.float32)
         return np.clip(current, -self._steering_limit, self._steering_limit).astype(np.float32)
 
     def _get_restore_target_steering(self, steering_count: int):
+        if steering_count == 0:
+            return np.zeros(0, dtype=np.float32)
         getter = getattr(self.robot, "get_base_initial_steering_positions", None)
-        if callable(getter):
-            target = np.asarray(getter(), dtype=np.float32).reshape(-1)
-            if target.size == steering_count and np.all(np.isfinite(target)):
-                return np.clip(target, -self._steering_limit, self._steering_limit).astype(np.float32)
-        return np.zeros(steering_count, dtype=np.float32)
+        if not callable(getter):
+            raise ValueError("Robot must provide get_base_initial_steering_positions")
+        target = np.asarray(getter(), dtype=np.float32).reshape(-1)
+        if target.size != steering_count or not np.all(np.isfinite(target)):
+            raise ValueError("Initial steering target must match steering joints and be finite")
+        return np.clip(target, -self._steering_limit, self._steering_limit).astype(np.float32)
 
     def has_non_finite_state(self) -> bool:
         return bool(self._non_finite_state_detected)
@@ -679,9 +711,8 @@ class BaseBridge(ABC):
     def _publish_joint_state(self):
         joint_state = self.robot.get_base_joint_state()
         if not self._joint_state_is_finite(joint_state):
-            self._mark_non_finite_state("non_finite_joint_state")
-            return
-        msg = JointState()
+            raise ValueError("Base joint state is missing required finite vectors")
+        msg = self._JointState()
         msg.header.stamp = self.node.get_clock().now().to_msg()
         msg.name = self.base_interface["steering_joint_names"] + self.base_interface["wheel_joint_names"]
         msg.position = (
@@ -695,25 +726,14 @@ class BaseBridge(ABC):
     def _publish_odometry(self):
         translation, orientation = self._get_robot_base_pose()
         if not self._pose_is_finite(translation, orientation):
-            self._mark_non_finite_state("non_finite_base_pose")
-            return
+            raise ValueError("Base pose must be finite before publishing odometry")
 
-        # Path-B fix: keep side effects of _get_actual_base_twist (updates internal tracking),
-        # but use the *nominal* command twist for odometry feedback to preserve semantic
-        # consistency between Nav2's motion model and the bridge's control intent.
         linear_velocity, angular_velocity = self._get_actual_base_twist(translation, orientation)
         linear_velocity_body = self._world_linear_velocity_to_body(linear_velocity, orientation)
         if not np.all(np.isfinite(linear_velocity_body)) or not np.all(np.isfinite(angular_velocity)):
-            self._mark_non_finite_state("non_finite_base_twist")
-            return
+            raise ValueError("Base twist must be finite before publishing odometry")
 
-        # Nominal twist from the last commanded step (semantic odometry)
-        command = self._last_step_command
-        nominal_vx = float(command.vx_body) if math.isfinite(command.vx_body) else 0.0
-        nominal_vy = float(command.vy_body) if math.isfinite(command.vy_body) else 0.0
-        nominal_wz = float(command.wz_body) if math.isfinite(command.wz_body) else 0.0
-
-        odom_msg = Odometry()
+        odom_msg = self._Odometry()
         odom_msg.header.stamp = self.node.get_clock().now().to_msg()
         odom_msg.header.frame_id = self.ros_cfg["odom_frame"]
         odom_msg.child_frame_id = self.ros_cfg["base_frame"]
@@ -724,12 +744,12 @@ class BaseBridge(ABC):
         odom_msg.pose.pose.orientation.y = float(orientation[2])
         odom_msg.pose.pose.orientation.z = float(orientation[3])
         odom_msg.pose.pose.orientation.w = float(orientation[0])
-        odom_msg.twist.twist.linear.x = nominal_vx
-        odom_msg.twist.twist.linear.y = nominal_vy
+        odom_msg.twist.twist.linear.x = float(linear_velocity_body[0])
+        odom_msg.twist.twist.linear.y = float(linear_velocity_body[1])
         odom_msg.twist.twist.linear.z = 0.0
         odom_msg.twist.twist.angular.x = 0.0
         odom_msg.twist.twist.angular.y = 0.0
-        odom_msg.twist.twist.angular.z = nominal_wz
+        odom_msg.twist.twist.angular.z = float(angular_velocity[2])
 
         self._odom_pub.publish(odom_msg)
         self._last_published_pose_debug = {
@@ -737,14 +757,14 @@ class BaseBridge(ABC):
             "y": float(translation[1]),
             "z": float(translation[2]),
             "yaw": float(self._yaw_from_wxyz(orientation)),
-            "linear_velocity_body": [nominal_vx, nominal_vy, 0.0],
-            "angular_velocity_world": [0.0, 0.0, nominal_wz],
+            "linear_velocity_body": [float(v) for v in list(linear_velocity_body)],
+            "angular_velocity_world": [float(v) for v in list(angular_velocity)],
             "actual_linear_velocity_body": [float(v) for v in list(linear_velocity_body)],
             "actual_angular_velocity_world": [float(v) for v in list(angular_velocity)],
         }
 
         if self.ros_cfg["tf_enabled"]:
-            tf_msg = TransformStamped()
+            tf_msg = self._TransformStamped()
             tf_msg.header.stamp = odom_msg.header.stamp
             tf_msg.header.frame_id = self.ros_cfg["odom_frame"]
             tf_msg.child_frame_id = self.ros_cfg["base_frame"]
@@ -755,20 +775,22 @@ class BaseBridge(ABC):
             tf_msg.transform.rotation.y = float(orientation[2])
             tf_msg.transform.rotation.z = float(orientation[3])
             tf_msg.transform.rotation.w = float(orientation[0])
-            self._tf_pub.publish(TFMessage(transforms=[tf_msg]))
+            self._tf_pub.publish(self._TFMessage(transforms=[tf_msg]))
 
     def _get_robot_base_pose(self):
-        getter = getattr(self.robot, "get_mobile_base_pose", None)
+        getter = getattr(self.robot, "get_nav_base_pose", None)
         if callable(getter):
             return getter()
-        return self.robot.get_world_pose()
+        getter = getattr(self.robot, "get_mobile_base_pose", None)
+        if not callable(getter):
+            raise ValueError("Robot must provide get_mobile_base_pose for mobile base bridge")
+        return getter()
 
     def _get_actual_base_twist(self, translation, orientation):
         translation = np.asarray(translation, dtype=np.float32)
         yaw = float(self._yaw_from_wxyz(orientation))
         if not np.all(np.isfinite(translation)) or not math.isfinite(yaw):
-            self._mark_non_finite_state("non_finite_base_pose")
-            return np.zeros(3, dtype=np.float32), np.zeros(3, dtype=np.float32)
+            raise ValueError("Base pose must be finite before computing actual twist")
         dt = max(float(self._last_step_dt), 1e-3)
 
         linear_velocity = (translation - self._last_actual_translation) / dt
@@ -809,15 +831,6 @@ class BaseBridge(ABC):
             return float("nan")
         return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
-    def _mark_non_finite_state(self, reason: str):
-        self._non_finite_state_detected = True
-        self._non_finite_state_reason = str(reason)
-        self._command = BaseCommand.zero(received_time_sec=self._now_sec())
-        wheel_count = len(self.base_interface["wheel_joint_names"])
-        self._last_requested_wheel_velocities = np.zeros(wheel_count, dtype=np.float32)
-        self._last_applied_wheel_velocities = np.zeros(wheel_count, dtype=np.float32)
-        self._last_wheel_shaping_debug = {}
-
     @staticmethod
     def _pose_is_finite(translation, orientation) -> bool:
         translation = np.asarray(translation, dtype=np.float32).reshape(-1)
@@ -833,8 +846,10 @@ class BaseBridge(ABC):
     @staticmethod
     def _joint_state_is_finite(joint_state: dict) -> bool:
         for key in ("steering_positions", "wheel_positions", "steering_velocities", "wheel_velocities"):
-            value = np.asarray(joint_state.get(key, []), dtype=np.float32).reshape(-1)
-            if value.size and not np.all(np.isfinite(value)):
+            if key not in joint_state:
+                return False
+            value = np.asarray(joint_state[key], dtype=np.float32).reshape(-1)
+            if not np.all(np.isfinite(value)):
                 return False
         return True
 
@@ -900,5 +915,5 @@ class BaseBridge(ABC):
         callback_count = 0
         while callback_count < max(int(max_callbacks), 1):
             timeout_sec = 0.001 if callback_count == 0 else 0.0
-            rclpy.spin_once(self.node, timeout_sec=timeout_sec)
+            self._rclpy.spin_once(self.node, timeout_sec=timeout_sec)
             callback_count += 1

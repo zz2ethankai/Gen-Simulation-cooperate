@@ -167,7 +167,13 @@ class LmdbLogger(BaseLogger):
             meta_info["detailed_language_instruction"] = self.detailed_language_instruction[robot_idx]
             print("language_instruction :", meta_info["language_instruction"])
             print("detailed_language_instruction :", meta_info["detailed_language_instruction"])
-            json_meta = self.json_data_logger.get(robot_name, {})
+            json_data = self.json_data_logger.setdefault(robot_name, {})
+            scalar_data = self.scalar_data_logger.setdefault(robot_name, {})
+            proprio_data = self.proprio_data_logger[robot_name]
+            action_data = self.action_data_logger.setdefault(robot_name, {})
+            object_data = self.object_data_logger.setdefault(robot_name, {})
+
+            json_meta = json_data
             failed_skill = json_meta.get("failed_skill", "")
             failure_reason = json_meta.get("failure_reason", "")
             failure_message = json_meta.get("failure_message", "")
@@ -187,36 +193,35 @@ class LmdbLogger(BaseLogger):
 
             # Save json data
             with open(log_path_lmdb / "info.json", "w") as f:
-                json.dump(self.json_data_logger[robot_name], f)
-            txn.put("json_data".encode("utf-8"), pickle.dumps(self.json_data_logger[robot_name]))
+                json.dump(json_data, f)
+            txn.put("json_data".encode("utf-8"), pickle.dumps(json_data))
             meta_info["keys"]["json_data"] = ["json_data".encode("utf-8")]
 
             # Save scalar data
             meta_info["keys"]["scalar_data"] = []
-            for key, value in self.scalar_data_logger[robot_name].items():
+            for key, value in scalar_data.items():
                 txn.put(key.encode("utf-8"), pickle.dumps(value))
                 meta_info["keys"]["scalar_data"].append(key.encode("utf-8"))
 
             # Save proprios
             meta_info["keys"]["proprio_data"] = []
-            for key, value in self.proprio_data_logger[robot_name].items():
+            for key, value in proprio_data.items():
                 txn.put(key.encode("utf-8"), pickle.dumps(value))
                 meta_info["keys"]["proprio_data"].append(key.encode("utf-8"))
 
             # Save objects
             meta_info["keys"]["object_data"] = []
-            if robot_name in self.object_data_logger:
-                for key, value in self.object_data_logger[robot_name].items():
-                    if "robotiq" in robot_name and key == "states.gripper.position":
-                        value = [self.action_data_logger[robot_name]["master_actions.gripper.position"][0]] + (
-                            self.action_data_logger[robot_name]["master_actions.gripper.position"]
-                        )[:-1]
-                    txn.put(key.encode("utf-8"), pickle.dumps(value))
-                    meta_info["keys"]["object_data"].append(key.encode("utf-8"))
+            for key, value in object_data.items():
+                if "robotiq" in robot_name and key == "states.gripper.position":
+                    value = [action_data["master_actions.gripper.position"][0]] + (
+                        action_data["master_actions.gripper.position"]
+                    )[:-1]
+                txn.put(key.encode("utf-8"), pickle.dumps(value))
+                meta_info["keys"]["object_data"].append(key.encode("utf-8"))
 
             # Save master actions
             meta_info["keys"]["action_data"] = []
-            for key, value in self.action_data_logger[robot_name].items():
+            for key, value in action_data.items():
                 # Update gripper action
                 if "gripper.position" in key:
                     value.pop(0)
@@ -227,7 +232,7 @@ class LmdbLogger(BaseLogger):
 
             # Save actions
             # Here we use next robot state as action
-            for key, value in self.proprio_data_logger[robot_name].items():
+            for key, value in proprio_data.items():
                 if "states." in key:
                     new_key = key.replace("states.", "actions.")
                     value.pop(0)
@@ -235,21 +240,20 @@ class LmdbLogger(BaseLogger):
                     txn.put(new_key.encode("utf-8"), pickle.dumps(value))
                     meta_info["keys"]["action_data"].append(new_key.encode("utf-8"))
 
+            action_keys = action_data
             if (
-                "split_aloha" in robot_name
-                or "lift2" in robot_name
-                or "azure_loong" in robot_name
-                or "genie" in robot_name
+                "master_actions.left_gripper.openness" in action_keys
+                and "master_actions.right_gripper.openness" in action_keys
             ):
-                left_gripper_openness = self.action_data_logger[robot_name]["master_actions.left_gripper.openness"]
-                right_gripper_openness = self.action_data_logger[robot_name]["master_actions.right_gripper.openness"]
+                left_gripper_openness = action_data["master_actions.left_gripper.openness"]
+                right_gripper_openness = action_data["master_actions.right_gripper.openness"]
 
                 txn.put("actions.left_gripper.openness".encode("utf-8"), pickle.dumps(left_gripper_openness))
                 meta_info["keys"]["action_data"].append("actions.left_gripper.openness".encode("utf-8"))
                 txn.put("actions.right_gripper.openness".encode("utf-8"), pickle.dumps(right_gripper_openness))
                 meta_info["keys"]["action_data"].append("actions.right_gripper.openness".encode("utf-8"))
-            elif "franka" in robot_name:
-                gripper_openness = self.action_data_logger[robot_name]["master_actions.gripper.openness"]
+            elif "master_actions.gripper.openness" in action_keys:
+                gripper_openness = action_data["master_actions.gripper.openness"]
                 txn.put("actions.gripper.openness".encode("utf-8"), pickle.dumps(gripper_openness))
                 meta_info["keys"]["action_data"].append("actions.gripper.openness".encode("utf-8"))
 

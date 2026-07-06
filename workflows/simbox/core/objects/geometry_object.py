@@ -48,10 +48,21 @@ class GeometryObject(GeometryPrim):
             return
 
         approximation = self._normalize_collision_approximation(self.cfg.get("collision_approximation", "bbox"))
-        if approximation != "bbox":
+        if approximation == "none":
+            return
+        if approximation == "supportBodyBBox":
+            self._create_bbox_collision_proxy(clip_top_world_z=self._support_body_clip_top_world_z())
+            return
+        if approximation == "bbox":
+            self._create_bbox_collision_proxy()
+            return
+        if approximation in {"convexDecomposition", "convexHull", "meshSimplification"}:
             self._apply_mesh_collision_approximation(approximation)
             return
 
+        raise ValueError(f"Unsupported collision_approximation for {self.name}: {approximation}")
+
+    def _create_bbox_collision_proxy(self, clip_top_world_z=None):
         stage = self.prim.GetStage()
         bbox_cache = UsdGeom.BBoxCache(
             Usd.TimeCode.Default(),
@@ -59,8 +70,17 @@ class GeometryObject(GeometryPrim):
             useExtentsHint=False,
         )
         bbox = bbox_cache.ComputeLocalBound(self.prim).ComputeAlignedBox()
-        size = bbox.GetSize()
-        center = bbox.GetMidpoint()
+        min_point = bbox.GetMin()
+        max_point = bbox.GetMax()
+        min_x, min_y, min_z = float(min_point[0]), float(min_point[1]), float(min_point[2])
+        max_x, max_y, max_z = float(max_point[0]), float(max_point[1]), float(max_point[2])
+        if clip_top_world_z is not None:
+            translation = self.cfg.get("translation", [0.0, 0.0, 0.0])
+            local_clip_top_z = float(clip_top_world_z) - float(translation[2])
+            max_z = min(max_z, local_clip_top_z)
+
+        size = (max_x - min_x, max_y - min_y, max_z - min_z)
+        center = ((min_x + max_x) * 0.5, (min_y + max_y) * 0.5, (min_z + max_z) * 0.5)
         if min(size) <= 0.0:
             raise ValueError(f"Cannot create bbox collision for {self.name}: empty local bbox")
 
@@ -78,16 +98,28 @@ class GeometryObject(GeometryPrim):
         if not bool(self.cfg.get("collision_visible", False)):
             UsdGeom.Imageable(collision_prim).MakeInvisible()
 
+    def _support_body_clip_top_world_z(self):
+        if "support_surface_z" not in self.cfg:
+            raise ValueError(f"{self.name} uses supportBodyBBox but is missing support_surface_z")
+        clearance = float(self.cfg.get("support_body_top_clearance", 0.0))
+        if clearance < 0.0:
+            raise ValueError(f"{self.name} support_body_top_clearance must be non-negative")
+        return float(self.cfg["support_surface_z"]) - clearance
+
     @staticmethod
     def _normalize_collision_approximation(approximation):
         value = str(approximation).strip()
         aliases = {
+            "none": "none",
+            "no_collision": "none",
             "convex_decomposition": "convexDecomposition",
             "convexdecomposition": "convexDecomposition",
             "convex_hull": "convexHull",
             "convexhull": "convexHull",
             "mesh_simplification": "meshSimplification",
             "meshsimplification": "meshSimplification",
+            "support_body_bbox": "supportBodyBBox",
+            "supportbodybbox": "supportBodyBBox",
         }
         return aliases.get(value.replace("-", "_").lower(), value)
 

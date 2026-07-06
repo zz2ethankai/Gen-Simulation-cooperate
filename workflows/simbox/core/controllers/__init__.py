@@ -5,6 +5,8 @@ from core.controllers.fr3_controller import FR3Controller
 from core.controllers.frankarobotiq85_controller import FrankaRobotiq85Controller
 from core.controllers.genie1_controller import Genie1Controller
 from core.controllers.lift2_controller import Lift2Controller
+from core.controllers.panda_omron_controller import PandaOmronController
+from core.controllers.panda_omron_virtual_controller import PandaOmronVirtualController
 from core.controllers.splitaloha_controller import SplitAlohaController
 from core.controllers.template_controller import TemplateController
 
@@ -14,6 +16,8 @@ __all__ = [
     "FrankaRobotiq85Controller",
     "Genie1Controller",
     "Lift2Controller",
+    "PandaOmronController",
+    "PandaOmronVirtualController",
     "SplitAlohaController",
 ]
 

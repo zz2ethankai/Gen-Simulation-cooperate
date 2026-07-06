@@ -1,0 +1,52 @@
+wheel_base: 0.64
+track_width: 0.56
+wheel_radius: 0.085
+wheel_center_to_base_translation: [-0.20, 0.0, -0.085]
+ackermann_split_steering: false
+ackermann_split_wheel_speeds: false
+steering_limit: 0.0
+steering_rate_limit: 0.0
+wheel_velocity_limit: 18.0
+command_timeout: 0.25
+restore_done_tolerance: 0.005
+restore_done_velocity_tolerance: 0.5
+steering_command_sign: 1.0
+wheel_static_friction: 0.95
+wheel_dynamic_friction: 0.75
+wheel_restitution: 0.0
+wheel_drive_stiffness: 0.0
+wheel_drive_damping: 600.0
+wheel_drive_max_force: 300000.0
+body_twist_deadband: 0.0001
+debug_history_size: 4096
+platform:
+  profile: differential_drive
+  nav2:
+    footprint_points:
+      - [0.38, 0.32]
+      - [-0.38, 0.32]
+      - [-0.38, -0.32]
+      - [0.38, -0.32]
+    inflation_radius_m: 0.34
+    minimum_turning_radius_m: 0.0
+    max_steer_angle_ackermann: 0.0
+    controller_hard_limits:
+      max_velocity: [0.35, 0.0, 0.65]
+      min_velocity: [-0.25, 0.0, -0.65]
+      max_accel: [0.35, 0.0, 0.80]
+      max_decel: [-0.35, 0.0, -0.80]
+ros:
+  cmd_vel_topic: /cmd_vel
+  joint_state_topic: /joint_states
+  odom_topic: /odom
+  tf_enabled: true
+  base_frame: mobilebase0_base
+  odom_frame: odom
+  localization:
+    map_z_min: 0.0
+    map_z_max: 1.25
+  virtual_odom:
+    enabled: false
+    publish_twist: true
+    use_world_z: true
+    default_z: 0.0

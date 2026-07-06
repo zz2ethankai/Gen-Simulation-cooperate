@@ -151,6 +151,13 @@ class Navigate(BaseSkill):
             controller_cfg = overrides.setdefault("controller_server", {})
             follow_path_cfg = controller_cfg.setdefault("follow_path", {})
             follow_path_cfg["rotate_to_heading_enabled"] = bool(cfg.get("rotate_to_heading_enabled"))
+        if "xy_goal_tolerance" in cfg or "yaw_goal_tolerance" in cfg:
+            controller_cfg = overrides.setdefault("controller_server", {})
+            goal_checker_cfg = controller_cfg.setdefault("goal_checker", {})
+            if "xy_goal_tolerance" in cfg:
+                goal_checker_cfg["xy_goal_tolerance"] = float(cfg.get("xy_goal_tolerance"))
+            if "yaw_goal_tolerance" in cfg:
+                goal_checker_cfg["yaw_goal_tolerance"] = float(cfg.get("yaw_goal_tolerance"))
         return overrides
 
     def simple_generate_manip_cmds(self):

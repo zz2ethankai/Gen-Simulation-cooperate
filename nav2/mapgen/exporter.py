@@ -252,7 +252,9 @@ class IsaacStaticMapExporter:
         if not root_prim.IsValid():
             raise RuntimeError(f"Task root prim '{root_path}' is invalid, cannot rasterize static colliders")
 
-        robot_path = str(getattr(self.robot, "prim_path", "") or "")
+        robot_path = str(getattr(self.robot, "robot_prim_path", "") or "").rstrip("/")
+        if not robot_path:
+            raise RuntimeError("Robot must expose robot_prim_path for static-map self-collision exclusion")
         excluded_prim_paths = set(excluded_prim_paths or ())
         bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), includedPurposes=[UsdGeom.Tokens.default_])
         bbox_cache.Clear()

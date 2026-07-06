@@ -267,8 +267,8 @@ def configure_base_cfg_for_nav2_skill(
     localization_cfg["mode"] = "static_map_truth_pose"
     localization_cfg["map_resolution"] = float(map_resolution)
     localization_cfg["map_output_dir"] = str(map_output_dir)
-    localization_cfg["map_z_min"] = float(map_z_min)
-    localization_cfg["map_z_max"] = float(map_z_max)
+    localization_cfg["map_z_min"] = float(localization_cfg.get("map_z_min", map_z_min))
+    localization_cfg["map_z_max"] = float(localization_cfg.get("map_z_max", map_z_max))
     localization_cfg["map_include_visual_wall_geometry"] = bool(map_include_visual_wall_geometry)
     localization_cfg["map_frame"] = str(localization_cfg.get("map_frame", "map"))
     localization_cfg["odom_frame"] = str(localization_cfg.get("odom_frame", ros_cfg.get("odom_frame", "odom")))
@@ -353,7 +353,7 @@ def generate_nav2_bringup_artifacts(
     map_yaml_path: str,
     position_tolerance_m: float = NAV2_DEFAULT_POSITION_TOLERANCE_M,
     yaw_tolerance_rad: float = NAV2_DEFAULT_YAW_TOLERANCE_RAD,
-    params_filename: str = "split_aloha_nav2_skill_params.yaml",
+    params_filename: str = "nav2_skill_params.yaml",
 ) -> dict:
     os.makedirs(output_dir, exist_ok=True)
     nav_to_pose_bt, nav_through_poses_bt = _write_nav2_bt_files(output_dir, base_cfg)
@@ -524,6 +524,45 @@ def _build_nav2_params(
             follow_path_cfg.get("primary_controller", "nav2_mppi_controller::MPPIController")
         )
     if follow_path_plugin == "dwb_core::DWBLocalPlanner":
+        dwb_passthrough_keys = {
+            "plugin",
+            "rotate_to_heading_enabled",
+            "debug_trajectory_details",
+            "short_circuit_trajectory_evaluation",
+            "stateful",
+            "min_vel_x",
+            "max_vel_x",
+            "min_vel_y",
+            "max_vel_y",
+            "max_vel_theta",
+            "min_speed_xy",
+            "max_speed_xy",
+            "min_speed_theta",
+            "acc_lim_x",
+            "acc_lim_y",
+            "acc_lim_theta",
+            "decel_lim_x",
+            "decel_lim_y",
+            "decel_lim_theta",
+            "vx_samples",
+            "vy_samples",
+            "vtheta_samples",
+            "sim_time",
+            "linear_granularity",
+            "angular_granularity",
+            "transform_tolerance",
+            "critics",
+            "BaseObstacle.scale",
+            "PathAlign.scale",
+            "PathAlign.forward_point_distance",
+            "GoalAlign.scale",
+            "GoalAlign.forward_point_distance",
+            "PathDist.scale",
+            "GoalDist.scale",
+            "RotateToGoal.scale",
+            "RotateToGoal.slowing_factor",
+            "RotateToGoal.lookahead_time",
+        }
         follow_path_params = {
             "plugin": follow_path_plugin,
             "debug_trajectory_details": bool(follow_path_cfg.get("debug_trajectory_details", False)),
@@ -580,6 +619,69 @@ def _build_nav2_params(
             "RotateToGoal.scale": float(follow_path_cfg.get("RotateToGoal.scale", 18.0)),
             "RotateToGoal.slowing_factor": float(follow_path_cfg.get("RotateToGoal.slowing_factor", 4.0)),
             "RotateToGoal.lookahead_time": float(follow_path_cfg.get("RotateToGoal.lookahead_time", -1.0)),
+        }
+    elif follow_path_plugin == "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController":
+        rpp_passthrough_keys = {
+            "plugin",
+            "desired_linear_vel",
+            "lookahead_dist",
+            "min_lookahead_dist",
+            "max_lookahead_dist",
+            "lookahead_time",
+            "rotate_to_heading_angular_vel",
+            "transform_tolerance",
+            "use_velocity_scaled_lookahead_dist",
+            "min_approach_linear_velocity",
+            "approach_velocity_scaling_dist",
+            "use_collision_detection",
+            "max_allowed_time_to_collision_up_to_carrot",
+            "use_regulated_linear_velocity_scaling",
+            "use_cost_regulated_linear_velocity_scaling",
+            "regulated_linear_scaling_min_radius",
+            "regulated_linear_scaling_min_speed",
+            "use_rotate_to_heading",
+            "allow_reversing",
+            "rotate_to_heading_min_angle",
+            "max_angular_accel",
+            "max_robot_pose_search_dist",
+            "use_interpolation",
+        }
+        follow_path_params = {
+            "plugin": follow_path_plugin,
+            "desired_linear_vel": float(follow_path_cfg.get("desired_linear_vel", max_velocity[0])),
+            "lookahead_dist": float(follow_path_cfg.get("lookahead_dist", 0.35)),
+            "min_lookahead_dist": float(follow_path_cfg.get("min_lookahead_dist", 0.20)),
+            "max_lookahead_dist": float(follow_path_cfg.get("max_lookahead_dist", 0.55)),
+            "lookahead_time": float(follow_path_cfg.get("lookahead_time", 1.5)),
+            "rotate_to_heading_angular_vel": float(follow_path_cfg.get("rotate_to_heading_angular_vel", 0.35)),
+            "transform_tolerance": float(follow_path_cfg.get("transform_tolerance", 0.4)),
+            "use_velocity_scaled_lookahead_dist": bool(
+                follow_path_cfg.get("use_velocity_scaled_lookahead_dist", False)
+            ),
+            "min_approach_linear_velocity": float(follow_path_cfg.get("min_approach_linear_velocity", 0.04)),
+            "approach_velocity_scaling_dist": float(follow_path_cfg.get("approach_velocity_scaling_dist", 0.45)),
+            "use_collision_detection": bool(follow_path_cfg.get("use_collision_detection", True)),
+            "max_allowed_time_to_collision_up_to_carrot": float(
+                follow_path_cfg.get("max_allowed_time_to_collision_up_to_carrot", 1.0)
+            ),
+            "use_regulated_linear_velocity_scaling": bool(
+                follow_path_cfg.get("use_regulated_linear_velocity_scaling", True)
+            ),
+            "use_cost_regulated_linear_velocity_scaling": bool(
+                follow_path_cfg.get("use_cost_regulated_linear_velocity_scaling", False)
+            ),
+            "regulated_linear_scaling_min_radius": float(
+                follow_path_cfg.get("regulated_linear_scaling_min_radius", 0.45)
+            ),
+            "regulated_linear_scaling_min_speed": float(
+                follow_path_cfg.get("regulated_linear_scaling_min_speed", 0.04)
+            ),
+            "use_rotate_to_heading": bool(follow_path_cfg.get("use_rotate_to_heading", True)),
+            "allow_reversing": bool(follow_path_cfg.get("allow_reversing", False)),
+            "rotate_to_heading_min_angle": float(follow_path_cfg.get("rotate_to_heading_min_angle", 0.35)),
+            "max_angular_accel": float(follow_path_cfg.get("max_angular_accel", max_accel[2])),
+            "max_robot_pose_search_dist": float(follow_path_cfg.get("max_robot_pose_search_dist", 2.0)),
+            "use_interpolation": bool(follow_path_cfg.get("use_interpolation", True)),
         }
     elif follow_path_plugin == "nav2_mppi_controller::MPPIController":
         follow_path_params = _build_mppi_follow_path_params(
@@ -643,6 +745,13 @@ def _build_nav2_params(
     if follow_path_plugin != rotation_shim_plugin:
         internal_follow_path_keys.update(rotation_shim_only_keys)
     for key, value in follow_path_cfg.items():
+        if follow_path_plugin == "dwb_core::DWBLocalPlanner" and key not in dwb_passthrough_keys:
+            continue
+        if (
+            follow_path_plugin == "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+            and key not in rpp_passthrough_keys
+        ):
+            continue
         if key not in internal_follow_path_keys and key not in hard_limit_override_keys:
             follow_path_params[key] = value
 

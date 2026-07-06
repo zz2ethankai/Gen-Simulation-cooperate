@@ -68,6 +68,9 @@ class Dynamicpick(BaseSkill):
         return get_world_pose(prim_path)
 
     def _get_armbase_world_tf(self):
+        armbase_tf_getter = getattr(self.robot, "get_armbase_world_transform", None)
+        if callable(armbase_tf_getter):
+            return armbase_tf_getter()
         reference_prim_path = str(getattr(self.controller, "reference_prim_path", "")).strip()
         if reference_prim_path:
             return tf_matrix_from_pose(*self._get_world_pose_from_path(reference_prim_path))

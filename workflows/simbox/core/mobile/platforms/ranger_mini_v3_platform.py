@@ -9,31 +9,9 @@ class RangerMiniV3Platform(MobileBasePlatform):
     profile_name = "ranger_mini_v3"
     aliases = ("ranger_mini_v3_4wis", "ranger_mini", "split_aloha_base")
 
-    DEFAULT_NAV2_CFG = {
-        "footprint_points": [
-            [0.36, 0.24],
-            [0.32, 0.29],
-            [-0.32, 0.29],
-            [-0.36, 0.24],
-            [-0.36, -0.24],
-            [-0.32, -0.29],
-            [0.32, -0.29],
-            [0.36, -0.24],
-        ],
-        "inflation_radius_m": 0.34,
-        "minimum_turning_radius_m": 0.47644,
-        "max_steer_angle_ackermann": 0.6981,
-        "controller_hard_limits": {
-            "max_velocity": [0.45, 0.32, 0.75],
-            "min_velocity": [-0.45, -0.32, -0.75],
-            "max_accel": [0.45, 0.45, 0.90],
-            "max_decel": [-0.45, -0.45, -0.90],
-        },
-    }
-
     def normalize_base_cfg(self, base_cfg: dict) -> dict:
         normalized = super().normalize_base_cfg(base_cfg)
-        platform_cfg = normalized.setdefault("platform", {})
+        platform_cfg = self._require_mapping(normalized, "platform")
         platform_cfg["profile"] = self.profile_name
         ros_cfg = self._require_mapping(normalized, "ros")
         ranger_model = str(ros_cfg.get("ranger_model", self.profile_name)).strip().lower()
@@ -45,9 +23,11 @@ class RangerMiniV3Platform(MobileBasePlatform):
         ros_cfg.pop("command_type", None)
         ros_cfg.pop("internal_cmdvel_controller_enabled", None)
 
-        nav2_cfg = platform_cfg.setdefault("nav2", {})
-        for key, value in self.DEFAULT_NAV2_CFG.items():
-            nav2_cfg.setdefault(key, value if not isinstance(value, dict) else dict(value))
+        self.default_nav2_footprint_points(normalized)
+        self.default_nav2_inflation_radius_m(normalized)
+        self.default_nav2_minimum_turning_radius_m(normalized)
+        self.max_steer_angle_ackermann(normalized)
+        self.nav2_controller_hard_limits(normalized)
         return normalized
 
     @staticmethod

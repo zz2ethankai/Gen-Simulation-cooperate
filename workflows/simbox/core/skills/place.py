@@ -78,6 +78,9 @@ class Place(BaseSkill):
         return get_world_pose(prim_path)
 
     def _get_armbase_world_tf(self):
+        armbase_tf_getter = getattr(self.robot, "get_armbase_world_transform", None)
+        if callable(armbase_tf_getter):
+            return armbase_tf_getter()
         armbase_t, armbase_q = self._get_world_pose_from_path(self.robot_base_path)
         return tf_matrix_from_pose(armbase_t, armbase_q)
 

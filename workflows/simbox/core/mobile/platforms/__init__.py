@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from .base_platform import MobileBasePlatform
+from .differential_drive_platform import DifferentialDrivePlatform
 from .ranger_mini_v3_platform import RangerMiniV3Platform
+from .virtual_base_platform import VirtualBasePlatform
 
 
 def _profile_name_from_base_cfg(base_cfg: dict) -> str:
@@ -20,8 +22,12 @@ def _profile_name_from_base_cfg(base_cfg: dict) -> str:
 
 def get_mobile_base_platform(base_cfg: dict) -> MobileBasePlatform:
     profile_name = _profile_name_from_base_cfg(base_cfg)
+    if DifferentialDrivePlatform.matches(profile_name):
+        return DifferentialDrivePlatform()
     if RangerMiniV3Platform.matches(profile_name):
         return RangerMiniV3Platform()
+    if VirtualBasePlatform.matches(profile_name):
+        return VirtualBasePlatform()
     raise KeyError(f"Unsupported mobile base platform profile: {profile_name}")
 
 
@@ -33,8 +39,10 @@ def build_mobile_base_bridge(robot, *, node_name: str):
 
 
 __all__ = [
+    "DifferentialDrivePlatform",
     "MobileBasePlatform",
     "RangerMiniV3Platform",
+    "VirtualBasePlatform",
     "build_mobile_base_bridge",
     "get_mobile_base_platform",
 ]
