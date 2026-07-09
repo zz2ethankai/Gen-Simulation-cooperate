@@ -1,9 +1,45 @@
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover - fallback for older Python builds
+    ZoneInfo = None
 
 from nimbus.utils.config import save_config
+
+
+DEFAULT_LOG_TIMEZONE = "Asia/Shanghai"
+
+
+def _get_log_timezone():
+    tz_name = os.environ.get("INTERNDATA_LOG_TZ", DEFAULT_LOG_TIMEZONE)
+    if ZoneInfo is not None:
+        try:
+            return ZoneInfo(tz_name)
+        except Exception:
+            pass
+    if tz_name in {"Asia/Shanghai", "PRC", "CST", "UTC+8", "+08:00", "+0800"}:
+        return timezone(timedelta(hours=8), "CST")
+    return datetime.now().astimezone().tzinfo
+
+
+def _format_log_timestamp(log_tz):
+    return datetime.now(log_tz).strftime("%Y%m%d_%H%M%S_%f")
+
+
+class LocalTimezoneFormatter(logging.Formatter):
+    def __init__(self, fmt=None, datefmt=None, style="%", log_tz=None):
+        super().__init__(fmt=fmt, datefmt=datefmt, style=style)
+        self.log_tz = log_tz or _get_log_timezone()
+
+    def formatTime(self, record, datefmt=None):
+        dt = datetime.fromtimestamp(record.created, self.log_tz)
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
 
 
 def configure_logging(exp_name, name=None, config=None):
@@ -11,7 +47,8 @@ def configure_logging(exp_name, name=None, config=None):
     if pod_name is not None:
         exp_name = f"{exp_name}/{pod_name}"
     log_dir = os.path.join("./output", exp_name)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    log_tz = _get_log_timezone()
+    timestamp = _format_log_timestamp(log_tz)
     if name is None:
         log_name = f"de_time_profile_{timestamp}.log"
     else:
@@ -40,7 +77,7 @@ def configure_logging(exp_name, name=None, config=None):
     logger.setLevel(logging.INFO)
 
     fh = logging.FileHandler(log_file, mode="a")
-    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    formatter = LocalTimezoneFormatter("%(asctime)s - %(levelname)s - %(message)s", log_tz=log_tz)
     fh.setFormatter(formatter)
     logger.addHandler(fh)
     logger.info("Start Data Engine")

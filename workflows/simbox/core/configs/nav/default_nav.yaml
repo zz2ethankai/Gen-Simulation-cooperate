@@ -71,15 +71,7 @@ nav2_skill:
       xy_goal_tolerance: 0.10
       yaw_goal_tolerance: 0.10
     follow_path:
-      plugin: nav2_rotation_shim_controller::RotationShimController
-      primary_controller: nav2_mppi_controller::MPPIController
-      rotate_to_heading_enabled: false
-      angular_dist_threshold: 0.35
-      forward_sampling_distance: 0.5
-      rotate_to_heading_angular_vel: 0.22
-      max_angular_accel: 0.45
-      simulate_ahead_time: 1.0
-      rotate_to_goal_heading: true
+      plugin: nav2_mppi_controller::MPPIController
       closed_loop: true
       time_steps: 60
       model_dt: 0.03333333333333333
@@ -95,9 +87,14 @@ nav2_skill:
       regenerate_noises: false
       reset_period: 1.0
       retry_attempt_limit: 1
-      vx_std: 0.12
-      vy_std: 0.14
-      wz_std: 0.25
+      vx_max: 0.45
+      vx_min: -0.45
+      vy_max: 0.32
+      vy_min: -0.32
+      wz_max: 0.75
+      vx_std: 0.225
+      vy_std: 0.16
+      wz_std: 0.375
       TrajectoryVisualizer:
         trajectory_step: 5
         time_step: 3
@@ -198,9 +195,9 @@ nav2_skill:
       plugin: nav2_behaviors/Wait
     transform_tolerance: 0.2
     simulate_ahead_time: 2.0
-    max_rotational_vel: 0.45
-    min_rotational_vel: 0.1
-    rotational_acc_lim: 1.2
+    max_rotational_vel: 1.00
+    min_rotational_vel: 0.10
+    rotational_acc_lim: 3.00
   velocity_smoother:
     smoothing_frequency: 30.0
     scale_velocities: false

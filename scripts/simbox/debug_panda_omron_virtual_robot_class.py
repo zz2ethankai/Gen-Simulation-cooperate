@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from copy import deepcopy
 import json
+import math
 from pathlib import Path
 import sys
 
@@ -89,6 +90,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--physics-dt", type=float, default=1.0 / 60.0)
     parser.add_argument("--drive-steps", type=int, default=120)
     parser.add_argument("--settle-steps", type=int, default=30)
+    parser.add_argument("--initial-x", type=float, default=0.0)
+    parser.add_argument("--initial-y", type=float, default=0.0)
+    parser.add_argument("--initial-z", type=float, default=0.0)
+    parser.add_argument("--initial-yaw", type=float, default=0.0)
     return parser.parse_args()
 
 
@@ -115,7 +120,10 @@ def main() -> int:
             )
         )
         world.reset()
-        robot.set_mobile_base_world_pose([0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0])
+        initial_position = [float(args.initial_x), float(args.initial_y), float(args.initial_z)]
+        half_yaw = 0.5 * float(args.initial_yaw)
+        initial_orientation = [math.cos(half_yaw), 0.0, 0.0, math.sin(half_yaw)]
+        robot.set_mobile_base_world_pose(initial_position, initial_orientation)
         step_dt = float(args.physics_dt)
         for _ in range(max(int(args.settle_steps), 0)):
             robot.apply_base_command([], [0.0, 0.0, 0.0], step_dt=step_dt)

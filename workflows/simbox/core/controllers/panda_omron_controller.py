@@ -33,14 +33,14 @@ class PandaOmronController(TemplateController):
             "robot0_joint6",
             "robot0_joint7",
         ]
-        self.arm_indices = np.array(self.robot.cfg["left_joint_indices"])
-        self.gripper_indices = np.array(self.robot.cfg["left_gripper_indices"])
+        self.arm_indices = np.asarray(self.robot.left_joint_indices, dtype=np.int32)
+        self.gripper_indices = np.asarray(self.robot.left_gripper_indices, dtype=np.int32)
         self.reference_prim_path = self.task.robots[self.name].fl_base_path
         self.lr_name = "left"
         self._gripper_state = 1.0 if self.robot.left_gripper_state == 1.0 else -1.0
-        self._gripper_joint_position = np.array([0.04, -0.04], dtype=float)
+        self._gripper_joint_position = np.asarray(self.robot.left_gripper_home, dtype=float)
 
     def get_gripper_action(self):
         if self._gripper_state > 0.0:
             return self._gripper_joint_position.copy()
-        return np.zeros(2, dtype=float)
+        return np.zeros_like(self._gripper_joint_position, dtype=float)

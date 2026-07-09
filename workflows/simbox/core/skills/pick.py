@@ -48,6 +48,13 @@ class Pick(BaseSkill):
         self._last_success_check_debug = {}
         self._execution_trace = []
         self._execution_trace_path = None
+        self._execution_trace_write_stride = int(self.skill_cfg.get("execution_trace_write_stride", 250))
+        self._execution_trace_max_steps = int(self.skill_cfg.get("execution_trace_max_steps", 500))
+        self._execution_trace_total_steps = 0
+        self._stalled_command_step_limit = int(self.skill_cfg.get("stalled_command_step_limit", 450))
+        self._last_stall_command_signature = None
+        self._last_stall_command_started_at = 0
+        self._stalled_failure_written = False
         self._selected_candidate_debug = {}
         self._mobile_base_prim_path = getattr(self.robot, "mobile_base_prim_path", None)
         self._cached_mobile_to_armbase_tf = None
@@ -294,6 +301,14 @@ class Pick(BaseSkill):
         T_base_obj = np.linalg.inv(T_world_base) @ T_world_obj
         return pose_from_tf_matrix(T_base_obj)
 
+    def _get_grasp_side_projection(self, grasp_translation, obj_base_t):
+        obj_xy = np.asarray(obj_base_t[:2], dtype=float)
+        obj_norm = float(np.linalg.norm(obj_xy))
+        if obj_norm <= 1e-6:
+            return 0.0
+        rel_xy = np.asarray(grasp_translation[:2], dtype=float) - obj_xy
+        return float(np.dot(rel_xy, obj_xy / obj_norm))
+
     def _select_grasp_index(self, pre_result, result, p_base_ee_grasps, q_base_ee_grasps, T_base_ee_grasps):
         priority_index = select_index_by_priority_dual(pre_result, result)
         pre_success_mask = np.asarray(pre_result.success.detach().cpu().numpy()).reshape(-1).astype(bool)
@@ -317,6 +332,8 @@ class Pick(BaseSkill):
             target_grasp_orientation = np.asarray(target_grasp_orientation, dtype=float)
             target_grasp_orientation = target_grasp_orientation / np.linalg.norm(target_grasp_orientation)
         target_grasp_orientation_weight = float(self.skill_cfg.get("target_grasp_orientation_weight", 1.0))
+        side_preference = self.skill_cfg.get("grasp_side_preference", None)
+        grasp_side_weight = float(self.skill_cfg.get("grasp_side_weight", 2.0))
         priority_rank = {int(idx): rank for rank, idx in enumerate(candidate_indices.tolist())}
         scored = []
         for idx in candidate_indices:
@@ -330,7 +347,26 @@ class Pick(BaseSkill):
                 q = np.asarray(q_base_ee_grasps[idx], dtype=float)
                 q = q / np.linalg.norm(q)
                 orientation_penalty = 1.0 - abs(float(np.dot(q, target_grasp_orientation)))
-            score = height_penalty + xy_norm + vertical_penalty + orientation_penalty * target_grasp_orientation_weight
+            side_projection = None
+            side_penalty = 0.0
+            if side_preference is not None:
+                side_projection = self._get_grasp_side_projection(p_base_ee_grasps[idx], obj_base_t)
+                if side_preference == "toward_arm":
+                    preferred_side_projection = side_projection
+                elif side_preference == "away_from_arm":
+                    preferred_side_projection = -side_projection
+                else:
+                    raise NotImplementedError
+                wrong_side_penalty = max(0.0, preferred_side_projection)
+                preferred_side_bonus = min(0.0, preferred_side_projection)
+                side_penalty = wrong_side_penalty * grasp_side_weight + preferred_side_bonus * 0.25
+            score = (
+                height_penalty
+                + xy_norm
+                + vertical_penalty
+                + orientation_penalty * target_grasp_orientation_weight
+                + side_penalty
+            )
             scored.append(
                 (
                     score,
@@ -340,6 +376,8 @@ class Pick(BaseSkill):
                     xy_norm,
                     float(rel[2]),
                     orientation_penalty,
+                    side_projection,
+                    side_penalty,
                 )
             )
 
@@ -354,8 +392,13 @@ class Pick(BaseSkill):
                 "xy_norm": xy_norm,
                 "relative_grasp_z": rel_z,
                 "orientation_penalty": orientation_penalty,
+                "side_projection": side_projection,
+                "side_preference": side_preference,
+                "side_penalty": side_penalty,
             }
-            for score, rank, idx, rel, xy_norm, rel_z, orientation_penalty in scored[: min(len(scored), 16)]
+            for score, rank, idx, rel, xy_norm, rel_z, orientation_penalty, side_projection, side_penalty in scored[
+                : min(len(scored), 16)
+            ]
         ]
         print(
             "[pick-debug] Selected grasp candidate "
@@ -372,6 +415,10 @@ class Pick(BaseSkill):
         self._candidate_rank_debug = []
         self._execution_trace = []
         self._execution_trace_path = None
+        self._execution_trace_total_steps = 0
+        self._last_stall_command_signature = None
+        self._last_stall_command_started_at = 0
+        self._stalled_failure_written = False
 
         # Update
         p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
@@ -689,13 +736,25 @@ class Pick(BaseSkill):
         target_q = current_cmd[1]
         diff_trans = float(np.linalg.norm(np.asarray(ee_t) - np.asarray(target_t)))
         diff_ori = float(2 * np.arccos(min(abs(float(np.dot(ee_q, target_q))), 1.0)))
+        self._execution_trace_total_steps += 1
+        command_signature = (
+            len(self.manip_list),
+            self._json_ready(target_t),
+            self._json_ready(target_q),
+            str(current_cmd[2]),
+        )
+        if command_signature != self._last_stall_command_signature:
+            self._last_stall_command_signature = command_signature
+            self._last_stall_command_started_at = self._execution_trace_total_steps
+        command_age_steps = self._execution_trace_total_steps - self._last_stall_command_started_at
         self._execution_trace.append(
             {
-                "step": len(self._execution_trace),
+                "step": self._execution_trace_total_steps - 1,
                 "remaining_commands": len(self.manip_list),
                 "current_command": self._manip_cmd_to_debug(current_cmd),
                 "target_diff_trans": diff_trans,
                 "target_diff_ori": diff_ori,
+                "command_age_steps": int(command_age_steps),
                 "controller_gripper_state": getattr(self.controller, "_gripper_state", None),
                 "controller_cmd_plan_active": getattr(self.controller, "cmd_plan", None) is not None,
                 "controller_cmd_idx": getattr(self.controller, "cmd_idx", None),
@@ -713,12 +772,59 @@ class Pick(BaseSkill):
                 "object_world_orientation": obj_q,
             }
         )
+        max_trace_steps = max(int(self._execution_trace_max_steps), 1)
+        if len(self._execution_trace) > max_trace_steps:
+            self._execution_trace = self._execution_trace[-max_trace_steps:]
 
-        if len(self._execution_trace) % 25 == 0:
+        write_stride = max(int(self._execution_trace_write_stride), 0)
+        if write_stride > 0 and self._execution_trace_total_steps % write_stride == 0:
             self._execution_trace_path = self._write_debug_artifact(
                 "pick_execution_trace.json",
-                {"steps": self._execution_trace, "plan_snapshot_path": self._plan_debug_path},
+                {
+                    "steps": self._execution_trace,
+                    "plan_snapshot_path": self._plan_debug_path,
+                    "total_steps": int(self._execution_trace_total_steps),
+                    "retained_steps": int(len(self._execution_trace)),
+                    "max_steps": int(max_trace_steps),
+                },
             )
+
+        if (
+            self._stalled_command_step_limit > 0
+            and command_age_steps >= self._stalled_command_step_limit
+            and diff_trans > float(self.skill_cfg.get("t_eps", 1e-3))
+        ):
+            self.process_valid = False
+            self.failure_reason = "pick_command_stalled"
+            self.error_message = (
+                "Pick command did not converge before watchdog limit. "
+                f"command_age_steps={command_age_steps}, "
+                f"target_diff_trans={diff_trans:.6f}, target_diff_ori={diff_ori:.6f}, "
+                f"remaining_commands={len(self.manip_list)}"
+            )
+            if not self._stalled_failure_written:
+                self._runtime_failure_debug_path = self._write_debug_artifact(
+                    "pick_runtime_failure_snapshot.json",
+                    {
+                        "robot": self.robot.name,
+                        "object": self.pick_obj.name,
+                        "lr_arm": self.lr_arm,
+                        "reason": self.failure_reason,
+                        "message": self.error_message,
+                        "command_age_steps": int(command_age_steps),
+                        "stalled_command_step_limit": int(self._stalled_command_step_limit),
+                        "remaining_commands": int(len(self.manip_list)),
+                        "target_diff_trans": diff_trans,
+                        "target_diff_ori": diff_ori,
+                        "num_last_cmd": int(getattr(self.controller, "num_last_cmd", 0)),
+                        "current_command": self._manip_cmd_to_debug(current_cmd),
+                        "recent_execution_trace": self._execution_trace[-25:],
+                        "plan_snapshot_path": self._plan_debug_path,
+                    },
+                )
+                self._runtime_failure_snapshot_written = True
+                self._stalled_failure_written = True
+                print(f"[pick-debug] Wrote pick stalled-command snapshot: {self._runtime_failure_debug_path}")
 
     def update(self):
         self._record_execution_step()
@@ -727,7 +833,13 @@ class Pick(BaseSkill):
         if self._execution_trace:
             self._execution_trace_path = self._write_debug_artifact(
                 "pick_execution_trace.json",
-                {"steps": self._execution_trace, "plan_snapshot_path": self._plan_debug_path},
+                {
+                    "steps": self._execution_trace,
+                    "plan_snapshot_path": self._plan_debug_path,
+                    "total_steps": int(self._execution_trace_total_steps),
+                    "retained_steps": int(len(self._execution_trace)),
+                    "max_steps": int(max(int(self._execution_trace_max_steps), 1)),
+                },
             )
 
     def sample_ee_pose(self, max_length=CUROBO_BATCH_SIZE):
@@ -772,6 +884,7 @@ class Pick(BaseSkill):
                         flags[axis] = np.logical_and(
                             T_base_ee[:, row, col] <= cos_val1, T_base_ee[:, row, col] >= cos_val2
                         )
+        grasp_side_projection = None
         if self.skill_cfg.get("direction_to_obj", None) is not None:
             direction_to_obj = self.skill_cfg["direction_to_obj"]
             T_world_obj = tf_matrix_from_pose(*self._get_object_world_pose())
@@ -785,11 +898,39 @@ class Pick(BaseSkill):
             else:
                 raise NotImplementedError
 
+        if self.skill_cfg.get("grasp_side_preference", None) is not None:
+            grasp_side_preference = self.skill_cfg["grasp_side_preference"]
+            T_world_obj = tf_matrix_from_pose(*self._get_object_world_pose())
+            T_world_base = self._get_armbase_transform_in_task()
+            T_base_world = np.linalg.inv(T_world_base)
+            T_base_obj = T_base_world @ T_world_obj
+            object_xy = T_base_obj[:2, 3]
+            object_norm = float(np.linalg.norm(object_xy))
+            if object_norm <= 1e-6:
+                raise ValueError(
+                    "grasp_side_preference requires object to be offset from armbase in XY"
+                )
+            grasp_rel_xy = T_base_ee[:, :2, 3] - object_xy[None, :]
+            grasp_side_projection = np.dot(grasp_rel_xy, object_xy / object_norm)
+            if grasp_side_preference == "toward_arm":
+                flags["direction_to_obj"] = np.logical_and(
+                    flags["direction_to_obj"], grasp_side_projection <= 0.0
+                )
+            elif grasp_side_preference == "away_from_arm":
+                flags["direction_to_obj"] = np.logical_and(
+                    flags["direction_to_obj"], grasp_side_projection > 0.0
+                )
+            else:
+                raise NotImplementedError
+
         combined_flag = np.logical_and.reduce(list(flags.values()))
         if sum(combined_flag) == 0:
-            # idx_list = [i for i in range(max_length)]
-            idx_list = list(range(min(max_length, num_pose)))
-            sampled_scores = self.scores[idx_list]
+            if self.skill_cfg.get("grasp_side_preference", None) is not None:
+                idx_list = []
+                sampled_scores = []
+            else:
+                idx_list = list(range(min(max_length, num_pose)))
+                sampled_scores = self.scores[idx_list]
         else:
             tmp_scores = self.scores[combined_flag]
             tmp_idxs = np.arange(num_pose)[combined_flag]
@@ -817,6 +958,10 @@ class Pick(BaseSkill):
             "filter_pass_counts": {axis: int(np.sum(flag)) for axis, flag in flags.items()},
             "sampled_indices": [int(idx) for idx in idx_list],
             "sampled_scores": [float(score) for score in sampled_scores],
+            "grasp_side_preference": self.skill_cfg.get("grasp_side_preference", None),
+            "grasp_side_projection": [float(v) for v in grasp_side_projection[idx_list]]
+            if grasp_side_projection is not None and len(idx_list) > 0
+            else [],
             "max_length": int(max_length),
         }
         print(self.scores[idx_list])
@@ -852,7 +997,7 @@ class Pick(BaseSkill):
         return contact, indices
 
     def is_feasible(self, th=5):
-        feasible = self.controller.num_plan_failed <= th
+        feasible = self.controller.num_plan_failed <= th and bool(self.process_valid)
         if not feasible and not self._runtime_failure_snapshot_written:
             current_cmd = self.manip_list[0] if self.manip_list else None
             self._runtime_failure_debug_path = self._write_debug_artifact(
@@ -864,6 +1009,8 @@ class Pick(BaseSkill):
                     "num_plan_failed": int(self.controller.num_plan_failed),
                     "failure_threshold": int(th),
                     "num_last_cmd": int(self.controller.num_last_cmd),
+                    "failure_reason": getattr(self, "failure_reason", ""),
+                    "error_message": getattr(self, "error_message", ""),
                     "selected_candidate": self._selected_candidate_debug,
                     "geometry_debug": self._collect_geometry_debug(),
                     "current_command": self._manip_cmd_to_debug(current_cmd) if current_cmd is not None else None,

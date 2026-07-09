@@ -151,7 +151,7 @@ def _record_prim_poses(robot) -> dict:
         f"{robot.robot_prim_path}/robot0_base/mobilebase0_base/collisions/rear_left_support",
         f"{robot.robot_prim_path}/robot0_base/mobilebase0_base/collisions/rear_right_support",
         f"{robot.robot_prim_path}/robot0_base/robot0_link0",
-        f"{robot.robot_prim_path}/robot0_base/robot0_right_hand",
+        f"{robot.robot_prim_path}/robot0_base/panda_hand",
     ]
     poses = {}
     for prim_path in prim_paths:

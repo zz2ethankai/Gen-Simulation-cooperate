@@ -39,9 +39,43 @@ FIXED_SUPPORT_BODY = f"{ROBOT_ROOT}/mobilebase0_fixed_support"
 SUPPORT_BODY = f"{ROBOT_ROOT}/mobilebase0_support"
 WHEELED_BASE_BODY = f"{ROBOT_ROOT}/mobilebase0_wheeled_base"
 MANIPULATOR_MOUNT_BODY = f"{ROBOT_ROOT}/manipulator_mount"
-EEF_BODY = f"{ROBOT_ROOT}/gripper0_right_eef"
-LEFT_FINGER_TIP_BODY = f"{ROBOT_ROOT}/gripper0_right_finger_joint1_tip"
-RIGHT_FINGER_TIP_BODY = f"{ROBOT_ROOT}/gripper0_right_finger_joint2_tip"
+FRANKA_SOURCE_USD = Path(__file__).resolve().parents[2] / "InternDataAssets/assets/franka/robot.usd"
+FRANKA_SOURCE_ASSET_DIR = FRANKA_SOURCE_USD.parent
+FRANKA_GRIPPER_ASSET_FILES = (
+    "Materials/Materials.usd",
+    "Props/panda_hand.usd",
+    "Props/panda_leftfinger.usd",
+    "Props/panda_rightfinger.usd",
+)
+FRANKA_SOURCE_ROOT = "/panda/fr3"
+FRANKA_SOURCE_LINK7 = f"{FRANKA_SOURCE_ROOT}/panda_link7"
+FRANKA_SOURCE_LINK8 = f"{FRANKA_SOURCE_ROOT}/panda_link8"
+FRANKA_SOURCE_JOINT8 = f"{FRANKA_SOURCE_LINK7}/panda_joint8"
+FRANKA_LINK8 = f"{ROBOT_ROOT}/panda_link8"
+FRANKA_LINK8_JOINT = f"{JOINT_ROOT}/panda_joint8"
+FRANKA_HAND = f"{ROBOT_ROOT}/panda_hand"
+FRANKA_LEFT_FINGER = f"{ROBOT_ROOT}/panda_leftfinger"
+FRANKA_RIGHT_FINGER = f"{ROBOT_ROOT}/panda_rightfinger"
+FRANKA_HAND_JOINT = f"{FRANKA_LINK8}/panda_hand_joint"
+STALE_FRANKA_HAND_JOINT = f"{JOINT_ROOT}/panda_hand_joint"
+FRANKA_FINGER_JOINT1 = f"{FRANKA_HAND}/panda_finger_joint1"
+FRANKA_FINGER_JOINT2 = f"{FRANKA_HAND}/panda_finger_joint2"
+OLD_GRIPPER_PRIMS = (
+    f"{ROBOT_ROOT}/robot0_right_hand",
+    f"{ROBOT_ROOT}/gripper0_right_right_gripper",
+    f"{ROBOT_ROOT}/gripper0_right_eef",
+    f"{ROBOT_ROOT}/gripper0_right_leftfinger",
+    f"{ROBOT_ROOT}/gripper0_right_rightfinger",
+    f"{ROBOT_ROOT}/gripper0_right_finger_joint1_tip",
+    f"{ROBOT_ROOT}/gripper0_right_finger_joint2_tip",
+    f"{JOINT_ROOT}/robot0_right_hand",
+    f"{JOINT_ROOT}/gripper0_right_right_gripper",
+    f"{JOINT_ROOT}/gripper0_right_eef",
+    f"{JOINT_ROOT}/gripper0_right_finger_joint1",
+    f"{JOINT_ROOT}/gripper0_right_finger_joint2",
+    f"{JOINT_ROOT}/gripper0_right_finger_joint1_tip",
+    f"{JOINT_ROOT}/gripper0_right_finger_joint2_tip",
+)
 
 ROOT_FIXED_JOINT = f"{JOINT_ROOT}/rootJoint_robot0_base"
 VIRTUAL_BASE_JOINT = f"{JOINT_ROOT}/mobilebase0_base"
@@ -73,14 +107,18 @@ PASSIVE_SUPPORT_STATIC_FRICTION = 0.02
 PASSIVE_SUPPORT_DYNAMIC_FRICTION = 0.01
 ARM_DRIVE_STIFFNESS = 10000000.0
 ARM_DRIVE_DAMPING = 100000.0
-ARM_DRIVE_MAX_FORCE = 1000000.0
+ARM_DRIVE_MAX_FORCE = 600000000.0
 ARM_JOINT_NAMES = tuple(f"robot0_joint{i}" for i in range(1, 8))
-GRIPPER_DRIVE_STIFFNESS = 100000.0
+GRIPPER_DRIVE_STIFFNESS = 10000.0
 GRIPPER_DRIVE_DAMPING = 1000.0
-GRIPPER_DRIVE_MAX_FORCE = 100.0
-GRIPPER_JOINT_NAMES = (
-    "gripper0_right_finger_joint1",
-    "gripper0_right_finger_joint2",
+GRIPPER_DRIVE_MAX_FORCE = 600000000.0
+GRIPPER_STATIC_FRICTION = 10.0
+GRIPPER_DYNAMIC_FRICTION = 10.0
+ACTIVE_GRIPPER_JOINT_PATHS = (FRANKA_FINGER_JOINT1,)
+PASSIVE_GRIPPER_JOINT_PATHS = (FRANKA_FINGER_JOINT2,)
+GRIPPER_COLLISION_PRIMS = (
+    f"{FRANKA_LEFT_FINGER}/geometry/panda_leftfinger",
+    f"{FRANKA_RIGHT_FINGER}/geometry/panda_rightfinger",
 )
 
 WHEELS = (
@@ -112,6 +150,30 @@ def _set_rigid_body_xform_identity(prim: Usd.Prim, xyz: tuple[float, float, floa
     xform = UsdGeom.Xformable(prim)
     xform.AddTranslateOp(UsdGeom.XformOp.PrecisionFloat).Set(Gf.Vec3f(*xyz))
     xform.AddOrientOp(UsdGeom.XformOp.PrecisionFloat).Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+    xform.AddScaleOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(1.0, 1.0, 1.0))
+
+
+def _set_xform_from_transform(
+    prim: Usd.Prim,
+    *,
+    translation: Gf.Vec3d,
+    rotation: Gf.Quatd,
+) -> None:
+    _remove_xform_op_properties(prim)
+    xform = UsdGeom.Xformable(prim)
+    xform.AddTranslateOp(UsdGeom.XformOp.PrecisionFloat).Set(
+        Gf.Vec3f(float(translation[0]), float(translation[1]), float(translation[2]))
+    )
+    xform.AddOrientOp(UsdGeom.XformOp.PrecisionFloat).Set(
+        Gf.Quatf(
+            float(rotation.GetReal()),
+            Gf.Vec3f(
+                float(rotation.GetImaginary()[0]),
+                float(rotation.GetImaginary()[1]),
+                float(rotation.GetImaginary()[2]),
+            ),
+        )
+    )
     xform.AddScaleOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(1.0, 1.0, 1.0))
 
 
@@ -226,6 +288,15 @@ def _define_support_material(stage: Usd.Stage) -> UsdShade.Material:
     return material
 
 
+def _define_gripper_material(stage: Usd.Stage) -> UsdShade.Material:
+    material = UsdShade.Material.Define(stage, f"{ROBOT_ROOT}/Looks/panda_omron_gripper_physics_material")
+    physics_material = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+    physics_material.CreateStaticFrictionAttr().Set(GRIPPER_STATIC_FRICTION)
+    physics_material.CreateDynamicFrictionAttr().Set(GRIPPER_DYNAMIC_FRICTION)
+    physics_material.CreateRestitutionAttr().Set(0.0)
+    return material
+
+
 def _bind_material(prim: Usd.Prim, material: UsdShade.Material) -> None:
     UsdShade.MaterialBindingAPI.Apply(prim).Bind(material)
 
@@ -246,6 +317,126 @@ def _remove_drive_properties(prim: Usd.Prim, drive_name: str) -> None:
             prim.RemoveProperty(prop.GetName())
 
 
+def _clear_linear_drive(prim: Usd.Prim) -> None:
+    for drive_name in ("X", "linear"):
+        _remove_drive_properties(prim, drive_name)
+    for prop in list(prim.GetProperties()):
+        name = prop.GetName()
+        if (
+            name.startswith("drive:linear:physics:")
+            or name.startswith("physics:drive:linear:")
+            or name.startswith("physxMimicJoint:")
+        ):
+            prim.RemoveProperty(name)
+
+
+def _copy_prim_spec(source_stage: Usd.Stage, source_path: str, stage: Usd.Stage, target_path: str) -> None:
+    stage.RemovePrim(target_path)
+    if not Sdf.CopySpec(source_stage.GetRootLayer(), Sdf.Path(source_path), stage.GetRootLayer(), Sdf.Path(target_path)):
+        raise RuntimeError(f"Failed to copy USD prim {source_path} -> {target_path}")
+
+
+def _offset_copied_xform(stage: Usd.Stage, source_stage: Usd.Stage, source_path: str, target_path: str, offset: Gf.Vec3d) -> None:
+    source_prim = source_stage.GetPrimAtPath(source_path)
+    target_prim = stage.GetPrimAtPath(target_path)
+    if not source_prim.IsValid() or not target_prim.IsValid():
+        raise RuntimeError(f"Cannot offset copied gripper prim {source_path} -> {target_path}")
+    source_xform = UsdGeom.Xformable(source_prim)
+    transform = source_xform.GetLocalTransformation()
+    _set_xform_from_transform(
+        target_prim,
+        translation=transform.ExtractTranslation() + offset,
+        rotation=transform.ExtractRotationQuat(),
+    )
+
+
+def _set_joint_bodies(stage: Usd.Stage, joint_path: str, body0: str, body1: str) -> None:
+    prim = stage.GetPrimAtPath(joint_path)
+    if not prim.IsValid():
+        raise RuntimeError(f"Expected copied Franka gripper joint at {joint_path}")
+    joint = UsdPhysics.Joint(prim)
+    joint.CreateBody0Rel().SetTargets([Sdf.Path(body0)])
+    joint.CreateBody1Rel().SetTargets([Sdf.Path(body1)])
+
+
+def _replace_with_franka_gripper(stage: Usd.Stage) -> None:
+    source_stage = Usd.Stage.Open(str(FRANKA_SOURCE_USD))
+    if source_stage is None:
+        raise RuntimeError(f"Failed to open Franka source USD: {FRANKA_SOURCE_USD}")
+
+    target_link7 = f"{ROBOT_ROOT}/robot0_link7"
+    source_link7 = source_stage.GetPrimAtPath(FRANKA_SOURCE_LINK7)
+    source_link8 = source_stage.GetPrimAtPath(FRANKA_SOURCE_LINK8)
+    target_link = stage.GetPrimAtPath(target_link7)
+    if not source_link7.IsValid() or not source_link8.IsValid() or not target_link.IsValid():
+        raise RuntimeError(f"Cannot align Franka gripper: source={FRANKA_SOURCE_LINK7}/{FRANKA_SOURCE_LINK8}, target={target_link7}")
+    source_link7_t = UsdGeom.Xformable(source_link7).GetLocalTransformation().ExtractTranslation()
+    target_link_t = UsdGeom.Xformable(target_link).GetLocalTransformation().ExtractTranslation()
+    offset = target_link_t - source_link7_t
+
+    for path in OLD_GRIPPER_PRIMS + (
+        FRANKA_LINK8,
+        FRANKA_LINK8_JOINT,
+        STALE_FRANKA_HAND_JOINT,
+        FRANKA_HAND,
+        FRANKA_LEFT_FINGER,
+        FRANKA_RIGHT_FINGER,
+    ):
+        stage.RemovePrim(path)
+
+    _copy_prim_spec(source_stage, FRANKA_SOURCE_LINK8, stage, FRANKA_LINK8)
+    _copy_prim_spec(source_stage, FRANKA_SOURCE_JOINT8, stage, FRANKA_LINK8_JOINT)
+    _copy_prim_spec(source_stage, f"{FRANKA_SOURCE_ROOT}/panda_leftfinger", stage, FRANKA_LEFT_FINGER)
+    _copy_prim_spec(source_stage, f"{FRANKA_SOURCE_ROOT}/panda_rightfinger", stage, FRANKA_RIGHT_FINGER)
+    _copy_prim_spec(source_stage, f"{FRANKA_SOURCE_ROOT}/panda_hand", stage, FRANKA_HAND)
+
+    _offset_copied_xform(stage, source_stage, FRANKA_SOURCE_LINK8, FRANKA_LINK8, offset)
+    _offset_copied_xform(stage, source_stage, f"{FRANKA_SOURCE_ROOT}/panda_leftfinger", FRANKA_LEFT_FINGER, offset)
+    _offset_copied_xform(stage, source_stage, f"{FRANKA_SOURCE_ROOT}/panda_rightfinger", FRANKA_RIGHT_FINGER, offset)
+    _offset_copied_xform(stage, source_stage, f"{FRANKA_SOURCE_ROOT}/panda_hand", FRANKA_HAND, offset)
+
+    _set_joint_bodies(stage, FRANKA_LINK8_JOINT, target_link7, FRANKA_LINK8)
+    _set_joint_bodies(stage, FRANKA_HAND_JOINT, FRANKA_LINK8, FRANKA_HAND)
+    _set_joint_bodies(stage, FRANKA_FINGER_JOINT1, FRANKA_HAND, FRANKA_LEFT_FINGER)
+    _set_joint_bodies(stage, FRANKA_FINGER_JOINT2, FRANKA_HAND, FRANKA_RIGHT_FINGER)
+
+    mimic_joint = stage.GetPrimAtPath(FRANKA_FINGER_JOINT2)
+    mimic_joint.CreateRelationship("physxMimicJoint:rotX:referenceJoint").SetTargets([Sdf.Path(FRANKA_FINGER_JOINT1)])
+    mimic_joint.CreateAttribute("physxMimicJoint:rotX:gearing", Sdf.ValueTypeNames.Float).Set(-1.0)
+
+
+def _configure_franka_compatible_gripper(stage: Usd.Stage) -> None:
+    _replace_with_franka_gripper(stage)
+
+    for joint_path in ACTIVE_GRIPPER_JOINT_PATHS:
+        prim = stage.GetPrimAtPath(joint_path)
+        if not prim.IsValid():
+            continue
+        _clear_linear_drive(prim)
+        drive = UsdPhysics.DriveAPI.Apply(prim, "linear")
+        drive.CreateTypeAttr().Set(UsdPhysics.Tokens.force)
+        drive.CreateTargetPositionAttr().Set(0.04)
+        drive.CreateStiffnessAttr().Set(GRIPPER_DRIVE_STIFFNESS)
+        drive.CreateDampingAttr().Set(GRIPPER_DRIVE_DAMPING)
+        drive.CreateMaxForceAttr().Set(GRIPPER_DRIVE_MAX_FORCE)
+        drive.CreateTargetVelocityAttr().Set(0.0)
+
+    for joint_path in PASSIVE_GRIPPER_JOINT_PATHS:
+        prim = stage.GetPrimAtPath(joint_path)
+        if not prim.IsValid():
+            continue
+        _clear_linear_drive(prim)
+        drive = UsdPhysics.DriveAPI.Apply(prim, "linear")
+        drive.CreateTypeAttr().Set(UsdPhysics.Tokens.force)
+        drive.CreateStiffnessAttr().Set(0.0)
+        drive.CreateDampingAttr().Set(0.0)
+        drive.CreateMaxForceAttr().Set(float("inf"))
+        drive.CreateTargetPositionAttr().Set(0.0)
+        drive.CreateTargetVelocityAttr().Set(0.0)
+        prim.CreateRelationship("physxMimicJoint:rotX:referenceJoint").SetTargets([Sdf.Path(FRANKA_FINGER_JOINT1)])
+        prim.CreateAttribute("physxMimicJoint:rotX:gearing", Sdf.ValueTypeNames.Float).Set(-1.0)
+
+
 def _configure_arm_drives(stage: Usd.Stage) -> None:
     for joint_name in ARM_JOINT_NAMES:
         prim = stage.GetPrimAtPath(f"{JOINT_ROOT}/{joint_name}")
@@ -259,31 +450,35 @@ def _configure_arm_drives(stage: Usd.Stage) -> None:
         drive.CreateMaxForceAttr().Set(ARM_DRIVE_MAX_FORCE)
         drive.CreateTargetVelocityAttr().Set(0.0)
 
-    for joint_name in GRIPPER_JOINT_NAMES:
-        prim = stage.GetPrimAtPath(f"{JOINT_ROOT}/{joint_name}")
-        if not prim.IsValid():
+    _configure_franka_compatible_gripper(stage)
+
+
+def _bind_gripper_physics_material(stage: Usd.Stage) -> None:
+    material = UsdShade.Material.Get(stage, f"{ROBOT_ROOT}/Looks/panda_omron_gripper_physics_material")
+    if not material:
+        material = _define_gripper_material(stage)
+    for path in GRIPPER_COLLISION_PRIMS:
+        prim = stage.GetPrimAtPath(path)
+        if prim.IsValid():
+            _bind_physics_material(stage, prim, material)
+
+
+def _remove_invalid_source_material_bindings(stage: Usd.Stage) -> None:
+    for root_path in (FRANKA_HAND, FRANKA_LEFT_FINGER, FRANKA_RIGHT_FINGER):
+        root = stage.GetPrimAtPath(root_path)
+        if not root.IsValid():
             continue
-        _remove_drive_properties(prim, "X")
-        drive = UsdPhysics.DriveAPI.Apply(prim, "linear")
-        drive.CreateTypeAttr().Set(UsdPhysics.Tokens.force)
-        drive.CreateStiffnessAttr().Set(GRIPPER_DRIVE_STIFFNESS)
-        drive.CreateDampingAttr().Set(GRIPPER_DRIVE_DAMPING)
-        drive.CreateMaxForceAttr().Set(GRIPPER_DRIVE_MAX_FORCE)
-        drive.CreateTargetVelocityAttr().Set(0.0)
+        for prim in Usd.PrimRange(root):
+            for rel in list(prim.GetRelationships()):
+                if "material" not in rel.GetName().lower():
+                    continue
+                targets = rel.GetTargets()
+                if any(str(target).startswith("/panda/fr3/") for target in targets):
+                    prim.RemoveProperty(rel.GetName())
 
 
 def _demote_site_visuals(stage: Usd.Stage) -> None:
-    sites_root = stage.GetPrimAtPath(f"{ROBOT_ROOT}/gripper0_right_eef/sites")
-    if not sites_root.IsValid():
-        return
-    for prim in Usd.PrimRange(sites_root):
-        imageable = UsdGeom.Imageable(prim)
-        if not imageable:
-            continue
-        purpose_attr = imageable.GetPurposeAttr()
-        if not purpose_attr.IsValid():
-            purpose_attr = imageable.CreatePurposeAttr()
-        purpose_attr.Set(UsdGeom.Tokens.guide)
+    del stage
 
 
 def _define_wheel(stage: Usd.Stage, *, joint_name: str, link_name: str, x: float, y: float) -> None:
@@ -420,9 +615,6 @@ def _repair_imported_body_masses(stage: Usd.Stage) -> None:
         SUPPORT_BODY: (1.0, (-0.05, 0.0, -0.20), (0.02, 0.02, 0.01)),
         WHEELED_BASE_BODY: (35.0, (-0.20, 0.0, 0.04), (2.20, 1.80, 2.60)),
         MANIPULATOR_MOUNT_BODY: (1.0, (0.0, 0.0, 0.0), (0.01, 0.01, 0.01)),
-        EEF_BODY: (0.05, (0.0, 0.0, 0.0), (0.001, 0.001, 0.001)),
-        LEFT_FINGER_TIP_BODY: (0.05, (0.0, 0.0, 0.0), (0.001, 0.001, 0.001)),
-        RIGHT_FINGER_TIP_BODY: (0.05, (0.0, 0.0, 0.0), (0.001, 0.001, 0.001)),
     }
     for path, (mass, com, inertia) in body_specs.items():
         prim = stage.GetPrimAtPath(path)
@@ -486,6 +678,9 @@ def patch_stage(stage: Usd.Stage) -> dict:
     _define_wheel_material(stage)
     _define_visual_material(stage)
     _define_support_material(stage)
+    _define_gripper_material(stage)
+    _bind_gripper_physics_material(stage)
+    _remove_invalid_source_material_bindings(stage)
     _disable_grounding_chassis_collision(stage)
     for joint_name, link_name, x, y in WHEELS:
         _define_wheel(stage, joint_name=joint_name, link_name=link_name, x=x, y=y)
@@ -529,6 +724,16 @@ def patch_stage(stage: Usd.Stage) -> dict:
         "gripper_drive_stiffness": GRIPPER_DRIVE_STIFFNESS,
         "gripper_drive_damping": GRIPPER_DRIVE_DAMPING,
         "gripper_drive_max_force": GRIPPER_DRIVE_MAX_FORCE,
+        "gripper_source_usd": str(FRANKA_SOURCE_USD),
+        "gripper_copied_asset_files": list(FRANKA_GRIPPER_ASSET_FILES),
+        "gripper_hand_path": FRANKA_HAND,
+        "gripper_left_finger_path": FRANKA_LEFT_FINGER,
+        "gripper_right_finger_path": FRANKA_RIGHT_FINGER,
+        "gripper_active_joint_paths": list(ACTIVE_GRIPPER_JOINT_PATHS),
+        "gripper_passive_joint_paths": list(PASSIVE_GRIPPER_JOINT_PATHS),
+        "removed_imported_gripper_prims": list(OLD_GRIPPER_PRIMS),
+        "gripper_static_friction": GRIPPER_STATIC_FRICTION,
+        "gripper_dynamic_friction": GRIPPER_DYNAMIC_FRICTION,
         "wheel_joints": [joint_name for joint_name, _, _, _ in WHEELS],
         "wheel_links": [link_name for _, link_name, _, _ in WHEELS],
         "passive_supports": [name for name, _, _ in PASSIVE_SUPPORTS],
@@ -551,6 +756,17 @@ def patch_stage(stage: Usd.Stage) -> dict:
         ],
     }
     return metadata
+
+
+def _copy_franka_gripper_asset_files(output_path: Path) -> None:
+    target_asset_dir = output_path.parent
+    for relative_path in FRANKA_GRIPPER_ASSET_FILES:
+        source_path = FRANKA_SOURCE_ASSET_DIR / relative_path
+        target_path = target_asset_dir / relative_path
+        if not source_path.is_file():
+            raise FileNotFoundError(source_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
 
 
 def parse_args() -> argparse.Namespace:
@@ -586,6 +802,7 @@ def main() -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         if input_path != output_path:
             shutil.copy2(input_path, output_path)
+        _copy_franka_gripper_asset_files(output_path)
 
         stage = Usd.Stage.Open(str(output_path))
         if stage is None:

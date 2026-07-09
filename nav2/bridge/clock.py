@@ -21,11 +21,15 @@ def _load_ros2_imports():
     rclpy = importlib.import_module("rclpy")
     node_module = importlib.import_module("rclpy.node")
     parameter_module = importlib.import_module("rclpy.parameter")
+    qos_module = importlib.import_module("rclpy.qos")
     clock_module = importlib.import_module("rosgraph_msgs.msg")
     return {
         "rclpy": rclpy,
         "Node": node_module.Node,
         "Parameter": parameter_module.Parameter,
+        "QoSDurabilityPolicy": qos_module.QoSDurabilityPolicy,
+        "QoSProfile": qos_module.QoSProfile,
+        "QoSReliabilityPolicy": qos_module.QoSReliabilityPolicy,
         "Clock": clock_module.Clock,
     }
 
@@ -73,7 +77,12 @@ class SimClockPublisher:
             self._owns_context = True
         self.node = ros2_imports["Node"]("simbox_nav2_skill_clock_publisher")
         self.node.set_parameters([ros2_imports["Parameter"]("use_sim_time", value=False)])
-        self._clock_pub = self.node.create_publisher(self._Clock, "/clock", 10)
+        clock_qos = ros2_imports["QoSProfile"](
+            depth=1,
+            reliability=ros2_imports["QoSReliabilityPolicy"].BEST_EFFORT,
+            durability=ros2_imports["QoSDurabilityPolicy"].VOLATILE,
+        )
+        self._clock_pub = self.node.create_publisher(self._Clock, "/clock", clock_qos)
 
     def publish(self):
         sim_time = float(getattr(self.world, "current_time", 0.0))

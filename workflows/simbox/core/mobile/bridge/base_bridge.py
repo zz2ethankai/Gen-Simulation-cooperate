@@ -13,6 +13,7 @@ from .types import BaseCommand
 
 
 def _load_ros_message_types():
+    """延迟加载 ROS message 类型，避免模块导入阶段强依赖 Isaac ROS bridge。"""
     geometry_msgs = importlib.import_module("geometry_msgs.msg")
     nav_msgs = importlib.import_module("nav_msgs.msg")
     sensor_msgs = importlib.import_module("sensor_msgs.msg")
@@ -30,6 +31,7 @@ class BaseBridge(ABC):
     """将标准 /cmd_vel 直接桥接为 Isaac articulation 控制。"""
 
     def __init__(self, robot, node_name: str, driver=None):
+        """初始化 ROS 节点、/cmd_vel 订阅、状态发布器和底盘限幅参数。"""
         if driver is not None:
             raise ValueError("Internal driver translation is disabled; publish /cmd_vel directly to Isaac bridge.")
 
@@ -86,6 +88,7 @@ class BaseBridge(ABC):
             self._rclpy.init(args=None)
             self._owns_rclpy_context = True
         self.node = self._Node(node_name)
+        self.node.set_parameters([ros2_imports["Parameter"]("use_sim_time", value=True)])
         self._tf_pub = self.node.create_publisher(self._TFMessage, "/tf", 10)
         self._joint_state_pub = self.node.create_publisher(self._JointState, self.ros_cfg["joint_state_topic"], 10)
         self._odom_pub = self.node.create_publisher(self._Odometry, self.ros_cfg["odom_topic"], 10)
@@ -113,11 +116,6 @@ class BaseBridge(ABC):
         self._restore_target_steering = np.zeros(steering_count, dtype=np.float32)
         self._restore_done_tolerance = float(self.base_cfg["restore_done_tolerance"])
         self._restore_done_velocity_tolerance = float(self.base_cfg["restore_done_velocity_tolerance"])
-        self._heading_gate_enabled = False
-        self._heading_gate_target_yaw = 0.0
-        self._heading_gate_tolerance_rad = 0.0
-        self._heading_gate_rotate_vel = 0.0
-
         history_size = max(int(self.base_cfg["debug_history_size"]), 1)
         self._received_cmd_vel_count = 0
         self._driver_command_message_count = 0
@@ -153,11 +151,13 @@ class BaseBridge(ABC):
         """将车体级命令映射为关节转向角和轮角速度。"""
 
     def destroy(self):
+        """销毁 bridge ROS 节点，并在本对象初始化 rclpy 时负责关闭上下文。"""
         self.node.destroy_node()
         if self._owns_rclpy_context and self._rclpy.ok():
             self._rclpy.shutdown()
 
     def reset(self, *, clear_debug_history: bool = False):
+        """重置 bridge 缓存命令、调试状态和底盘输出到当前转向角加零轮速。"""
         self._spin_available_callbacks()
         now_sec = self._now_sec()
         steering_count = len(self.base_interface["steering_joint_names"])
@@ -186,7 +186,6 @@ class BaseBridge(ABC):
             "angular_z": 0.0,
             "received_time_sec": float(now_sec),
         }
-        self._heading_gate_enabled = False
         self._non_finite_state_detected = False
         self._non_finite_state_reason = ""
 
@@ -214,12 +213,13 @@ class BaseBridge(ABC):
         self._rclpy.spin_once(self.node, timeout_sec=0.0)
 
     def prepare_for_navigation(self):
+        """进入导航态，使 bridge 开始接受 Nav2 发来的 /cmd_vel。"""
         self._navigation_active = True
         self._hold_after_navigation = False
         self._restore_after_navigation = False
-        self._heading_gate_enabled = False
 
     def finalize_after_navigation(self):
+        """退出导航态，清零命令并启动导航后的转向回正流程。"""
         self._spin_available_callbacks()
         now_sec = self._now_sec()
         steering_count = len(self.base_interface["steering_joint_names"])
@@ -229,7 +229,6 @@ class BaseBridge(ABC):
         self._last_step_command = self._command
         self._navigation_active = False
         self._hold_after_navigation = True
-        self._heading_gate_enabled = False
         self._last_applied_steering = current_steering.copy()
         self._last_requested_wheel_velocities = np.zeros(wheel_count, dtype=np.float32)
         self._last_applied_wheel_velocities = np.zeros(wheel_count, dtype=np.float32)
@@ -244,6 +243,7 @@ class BaseBridge(ABC):
         self._rclpy.spin_once(self.node, timeout_sec=0.0)
 
     def step_restore_after_navigation(self, step_dt: float | None = None) -> bool:
+        """推进一次导航后回正：先等轮速停下，再把转向关节恢复到初始角。"""
         if not self._restore_after_navigation:
             return True
         self._spin_available_callbacks()
@@ -303,6 +303,7 @@ class BaseBridge(ABC):
         return done
 
     def restore_after_navigation_done(self) -> bool:
+        """检查导航后回正流程是否已经满足转向角和轮速收敛条件。"""
         if not self._restore_after_navigation:
             return True
         steering_count = len(self.base_interface["steering_joint_names"])
@@ -341,6 +342,7 @@ class BaseBridge(ABC):
         )
 
     def hold_after_navigation(self, step_dt: float | None = None):
+        """非导航态保持底盘静止，并持续发布 joint/odom 供外部状态同步。"""
         self._spin_available_callbacks()
         now_sec = self._now_sec()
         if step_dt is None:
@@ -381,6 +383,7 @@ class BaseBridge(ABC):
         self._rclpy.spin_once(self.node, timeout_sec=0.0)
 
     def _get_current_wheel_velocities(self):
+        """读取当前轮关节速度，并校验数量和有限性。"""
         joint_state = self.robot.get_base_joint_state()
         current = np.asarray(joint_state["wheel_velocities"], dtype=np.float32).reshape(-1)
         expected = len(self.base_interface["wheel_joint_names"])
@@ -388,29 +391,8 @@ class BaseBridge(ABC):
             raise ValueError("Current wheel velocities must match wheel joints and be finite")
         return current.astype(np.float32).copy()
 
-    def start_heading_alignment(
-        self,
-        *,
-        target_x: float,
-        target_y: float,
-        tolerance_rad: float = 0.12,
-        rotate_vel: float = 0.3,
-    ):
-        if not self._navigation_active:
-            self._heading_gate_enabled = False
-            return
-        translation, _orientation = self._get_robot_base_pose()
-        dx = float(target_x) - float(translation[0])
-        dy = float(target_y) - float(translation[1])
-        if math.hypot(dx, dy) <= 1.0e-6:
-            self._heading_gate_enabled = False
-            return
-        self._heading_gate_target_yaw = math.atan2(dy, dx)
-        self._heading_gate_tolerance_rad = max(float(tolerance_rad), 0.0)
-        self._heading_gate_rotate_vel = abs(float(rotate_vel))
-        self._heading_gate_enabled = self._heading_gate_rotate_vel > 0.0
-
     def step(self, step_dt: float | None = None):
+        """推进 bridge 一帧：接收回调、解析有效 /cmd_vel、映射并应用到底盘关节。"""
         if self._restore_after_navigation:
             self.step_restore_after_navigation(step_dt=step_dt)
             return
@@ -428,7 +410,7 @@ class BaseBridge(ABC):
         self._last_step_dt = dt
         self._restore_after_navigation = False
 
-        command = self._apply_heading_gate(self._resolve_active_command(now_sec), now_sec)
+        command = self._resolve_active_command(now_sec)
         self._last_step_command = command
         steering_count = len(self.base_interface["steering_joint_names"])
         wheel_count = len(self.base_interface["wheel_joint_names"])
@@ -478,21 +460,6 @@ class BaseBridge(ABC):
         )
         self._rclpy.spin_once(self.node, timeout_sec=0.0)
 
-    def _apply_heading_gate(self, command: BaseCommand, now_sec: float) -> BaseCommand:
-        if not self._heading_gate_enabled:
-            return command
-        _translation, orientation = self._get_robot_base_pose()
-        yaw = float(self._yaw_from_wxyz(orientation))
-        yaw_error = math.atan2(
-            math.sin(self._heading_gate_target_yaw - yaw),
-            math.cos(self._heading_gate_target_yaw - yaw),
-        )
-        if abs(yaw_error) <= self._heading_gate_tolerance_rad:
-            self._heading_gate_enabled = False
-            return command
-        rotate_vel = math.copysign(self._heading_gate_rotate_vel, yaw_error)
-        return BaseCommand(vx_body=0.0, vy_body=0.0, wz_body=rotate_vel, received_time_sec=float(now_sec))
-
     def _apply_robot_base_command(
         self,
         *,
@@ -500,6 +467,7 @@ class BaseBridge(ABC):
         wheel_velocities: np.ndarray,
         step_dt: float,
     ) -> None:
+        """把计算出的转向角和轮速发送给 robot，默认忽略 step_dt。"""
         del step_dt
         self.robot.apply_base_command(
             steering_positions=steering_positions,
@@ -507,6 +475,7 @@ class BaseBridge(ABC):
         )
 
     def _on_cmd_vel(self, msg):
+        """处理 Nav2 /cmd_vel：校验有限性、做硬限幅，并仅在导航态接收。"""
         received_time_sec = self._now_sec()
         self._received_cmd_vel_count += 1
         self._driver_command_message_count += 1
@@ -544,6 +513,7 @@ class BaseBridge(ABC):
         )
 
     def _resolve_active_command(self, now_sec: float) -> BaseCommand:
+        """返回未超时的当前命令；超时后返回零命令，避免继续执行旧 /cmd_vel。"""
         if not self._is_finite_command(self._command):
             raise ValueError("Active base command is non-finite")
         if now_sec - self._command.received_time_sec <= self._command_timeout:
@@ -552,6 +522,7 @@ class BaseBridge(ABC):
 
     @staticmethod
     def _is_finite_command(command: BaseCommand) -> bool:
+        """检查 BaseCommand 的速度和时间戳是否都是有限数。"""
         return all(
             math.isfinite(float(value))
             for value in (command.vx_body, command.vy_body, command.wz_body, command.received_time_sec)
@@ -559,12 +530,14 @@ class BaseBridge(ABC):
 
     @staticmethod
     def _require_finite_vector(values, *, expected_size: int, name: str) -> np.ndarray:
+        """把输入转换为固定长度 float32 向量，并拒绝 NaN/Inf。"""
         vector = np.asarray(values, dtype=np.float32).reshape(-1)
         if vector.size != expected_size or not np.all(np.isfinite(vector)):
             raise ValueError(f"{name} must have size {expected_size} and contain only finite values")
         return vector.astype(np.float32).copy()
 
     def _load_body_velocity_limits(self) -> tuple[np.ndarray, np.ndarray]:
+        """从配置读取 Nav2 controller hard limits，作为 bridge 侧唯一 body twist 限幅。"""
         hard_limits = self.base_cfg["platform"]["nav2"]["controller_hard_limits"]
         min_velocity = hard_limits["min_velocity"]
         max_velocity = hard_limits["max_velocity"]
@@ -580,6 +553,7 @@ class BaseBridge(ABC):
         return min_velocity, max_velocity
 
     def _clamp_command(self, command: BaseCommand) -> BaseCommand:
+        """按配置的 min/max body velocity 对 /cmd_vel 做逐轴硬限幅。"""
         if not self._is_finite_command(command):
             raise ValueError("Cannot clamp non-finite base command")
         clamped = np.clip(
@@ -595,6 +569,7 @@ class BaseBridge(ABC):
         )
 
     def get_logging_action_snapshot(self) -> dict:
+        """导出最近一次 bridge 命令、关节目标和映射信息，供 episode/action 日志使用。"""
         command = self._last_step_command
         dof_names = list(getattr(getattr(self.robot, "_articulation_view", None), "dof_names", []))
         return {
@@ -621,6 +596,7 @@ class BaseBridge(ABC):
         }
 
     def get_logging_state_snapshot(self) -> dict:
+        """导出当前底盘 pose/twist/joint state，供 episode/state 日志使用。"""
         translation, orientation = self._get_robot_base_pose()
         translation = np.asarray(translation, dtype=np.float32)
         yaw = float(self._yaw_from_wxyz(orientation))
@@ -652,6 +628,7 @@ class BaseBridge(ABC):
         }
 
     def _apply_steering_limits(self, requested_positions: np.ndarray, dt: float):
+        """对转向关节目标施加角度限幅和转向速率限幅。"""
         steering_count = len(self.base_interface["steering_joint_names"])
         self._last_applied_steering = self._require_finite_vector(
             self._last_applied_steering,
@@ -672,6 +649,7 @@ class BaseBridge(ABC):
         return self._last_applied_steering.copy()
 
     def _get_current_steering_positions(self):
+        """读取当前转向关节角，wrap 到 [-pi, pi] 后再按 steering_limit 截断。"""
         joint_state = self.robot.get_base_joint_state()
         current = np.asarray(joint_state["steering_positions"], dtype=np.float32).reshape(-1)
         expected = len(self.base_interface["steering_joint_names"])
@@ -681,6 +659,7 @@ class BaseBridge(ABC):
         return np.clip(current, -self._steering_limit, self._steering_limit).astype(np.float32)
 
     def _get_restore_target_steering(self, steering_count: int):
+        """读取机器人初始转向角，作为导航结束后的转向回正目标。"""
         if steering_count == 0:
             return np.zeros(0, dtype=np.float32)
         getter = getattr(self.robot, "get_base_initial_steering_positions", None)
@@ -692,9 +671,11 @@ class BaseBridge(ABC):
         return np.clip(target, -self._steering_limit, self._steering_limit).astype(np.float32)
 
     def has_non_finite_state(self) -> bool:
+        """返回 bridge 是否曾检测到底盘状态中存在非有限数。"""
         return bool(self._non_finite_state_detected)
 
     def non_finite_state_reason(self) -> str:
+        """返回最近一次非有限底盘状态的诊断原因。"""
         return str(self._non_finite_state_reason)
 
     def _shape_wheel_velocities_for_applied_steering(
@@ -705,10 +686,12 @@ class BaseBridge(ABC):
         applied_steering: np.ndarray,
         requested_wheel_velocities: np.ndarray,
     ) -> np.ndarray:
+        """给子类按实际转向角修正轮速的 hook；默认直接执行映射出的轮速。"""
         del command, requested_steering, applied_steering
         return np.asarray(requested_wheel_velocities, dtype=np.float32).copy()
 
     def _publish_joint_state(self):
+        """发布当前底盘 steering/wheel joint state 给 ROS/Nav2。"""
         joint_state = self.robot.get_base_joint_state()
         if not self._joint_state_is_finite(joint_state):
             raise ValueError("Base joint state is missing required finite vectors")
@@ -724,6 +707,7 @@ class BaseBridge(ABC):
         self._joint_state_pub.publish(msg)
 
     def _publish_odometry(self):
+        """从 Isaac 当前底盘位姿计算真实速度，并发布 odom 和可选 tf。"""
         translation, orientation = self._get_robot_base_pose()
         if not self._pose_is_finite(translation, orientation):
             raise ValueError("Base pose must be finite before publishing odometry")
@@ -778,6 +762,7 @@ class BaseBridge(ABC):
             self._tf_pub.publish(self._TFMessage(transforms=[tf_msg]))
 
     def _get_robot_base_pose(self):
+        """优先读取导航基座 pose，缺省退回移动底盘 pose。"""
         getter = getattr(self.robot, "get_nav_base_pose", None)
         if callable(getter):
             return getter()
@@ -787,6 +772,7 @@ class BaseBridge(ABC):
         return getter()
 
     def _get_actual_base_twist(self, translation, orientation):
+        """用连续两帧 pose 差分估计实际 world-frame 线速度和角速度。"""
         translation = np.asarray(translation, dtype=np.float32)
         yaw = float(self._yaw_from_wxyz(orientation))
         if not np.all(np.isfinite(translation)) or not math.isfinite(yaw):
@@ -805,6 +791,7 @@ class BaseBridge(ABC):
 
     @staticmethod
     def _world_linear_velocity_to_body(linear_velocity_world, orientation_wxyz):
+        """按当前 yaw 把 world-frame 线速度旋转到底盘 body-frame。"""
         linear_velocity_world = np.asarray(linear_velocity_world, dtype=np.float32)
         yaw = float(BaseBridge._yaw_from_wxyz(orientation_wxyz))
         cos_yaw = math.cos(yaw)
@@ -823,6 +810,7 @@ class BaseBridge(ABC):
 
     @staticmethod
     def _yaw_from_wxyz(q_wxyz):
+        """从 wxyz 四元数提取 yaw；输入非有限时返回 NaN。"""
         w = float(q_wxyz[0])
         x = float(q_wxyz[1])
         y = float(q_wxyz[2])
@@ -833,6 +821,7 @@ class BaseBridge(ABC):
 
     @staticmethod
     def _pose_is_finite(translation, orientation) -> bool:
+        """检查 pose 是否至少包含有限 xyz 和有效四元数。"""
         translation = np.asarray(translation, dtype=np.float32).reshape(-1)
         orientation = np.asarray(orientation, dtype=np.float32).reshape(-1)
         return (
@@ -845,6 +834,7 @@ class BaseBridge(ABC):
 
     @staticmethod
     def _joint_state_is_finite(joint_state: dict) -> bool:
+        """检查底盘 joint_state 是否包含所有必需字段且数值有限。"""
         for key in ("steering_positions", "wheel_positions", "steering_velocities", "wheel_velocities"):
             if key not in joint_state:
                 return False
@@ -855,6 +845,7 @@ class BaseBridge(ABC):
 
     @staticmethod
     def _wrap_angle(angle: float):
+        """把角度 wrap 到 [-pi, pi]。"""
         return math.atan2(math.sin(angle), math.cos(angle))
 
     def _record_debug_history(
@@ -868,6 +859,7 @@ class BaseBridge(ABC):
         dt: float,
         mode: str = "cmd_vel",
     ):
+        """记录 bridge 最近命令、关节目标、实际关节状态和 pose 调试历史。"""
         joint_state = self.robot.get_base_joint_state()
         history_item = {
             "time_sec": float(now_sec),
@@ -909,9 +901,11 @@ class BaseBridge(ABC):
         self._debug_command_history.append(history_item)
 
     def _now_sec(self):
+        """返回当前 ROS 节点时钟秒数；在 sim time 模式下跟随 /clock。"""
         return self.node.get_clock().now().nanoseconds * 1e-9
 
     def _spin_available_callbacks(self, max_callbacks: int = 8):
+        """短时间 spin ROS 回调，尽快接收 /cmd_vel 且不阻塞 Isaac 主循环。"""
         callback_count = 0
         while callback_count < max(int(max_callbacks), 1):
             timeout_sec = 0.001 if callback_count == 0 else 0.0

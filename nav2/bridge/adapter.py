@@ -120,6 +120,8 @@ class Nav2BridgeAdapter:
         self._request_generation = 0
         self._goal_handle = None
         self._result_future = None
+        self._goal_requested_wall_time_sec = -1.0
+        self._goal_accepted_wall_time_sec = -1.0
         self._latest_odom_pose = {}
         self._latest_odom_frame_id = ""
         self._latest_base_frame_id = ""
@@ -242,6 +244,8 @@ class Nav2BridgeAdapter:
 
         self._state = "goal_requested"
         self._detail = "waiting_for_goal_response"
+        self._goal_requested_wall_time_sec = time.time()
+        self._goal_accepted_wall_time_sec = -1.0
         self._publish_status(state=self._state, request_id=request_id, detail=self._detail)
         future = self._action_client.send_goal_async(goal)
         future.add_done_callback(
@@ -799,6 +803,7 @@ class Nav2BridgeAdapter:
             return
 
         self._goal_handle = goal_handle
+        self._goal_accepted_wall_time_sec = time.time()
         self._state = "accepted"
         self._detail = "goal accepted"
         LOGGER.info("goal accepted request_id=%s", request_id)
@@ -831,7 +836,7 @@ class Nav2BridgeAdapter:
 
         status_code = int(getattr(result, "status", -1))
         wrapped_result = getattr(result, "result", None)
-        self._latest_action_result_debug = self._result_message_to_dict(wrapped_result)
+        result_wall_time_sec = time.time()
         if status_code == 4:
             state = "succeeded"
         elif status_code == 5:
@@ -840,6 +845,25 @@ class Nav2BridgeAdapter:
             state = "aborted"
         else:
             state = "failed"
+        self._latest_action_result_debug = {
+            "status_code": status_code,
+            "state": state,
+            "requested_wall_time_sec": float(self._goal_requested_wall_time_sec),
+            "accepted_wall_time_sec": float(self._goal_accepted_wall_time_sec),
+            "finished_wall_time_sec": float(result_wall_time_sec),
+            "wall_duration_from_request_sec": (
+                float(result_wall_time_sec - self._goal_requested_wall_time_sec)
+                if self._goal_requested_wall_time_sec >= 0.0
+                else None
+            ),
+            "wall_duration_from_accept_sec": (
+                float(result_wall_time_sec - self._goal_accepted_wall_time_sec)
+                if self._goal_accepted_wall_time_sec >= 0.0
+                else None
+            ),
+            "adapter_ros_time_sec": self._node_time_sec(),
+            "result": self._result_message_to_dict(wrapped_result),
+        }
 
         self._goal_handle = None
         self._result_future = None
@@ -896,6 +920,7 @@ class Nav2BridgeAdapter:
             "stack_ready": self._stack_ready(),
             "reported_pose": dict(self._latest_odom_pose),
             "costmap_refresh": self._costmap_refresh_debug(),
+            "adapter_ros_time_sec": self._node_time_sec(),
             "updated_at": time.time(),
         }
         self._publish_json(self._status_pub, payload)
@@ -913,6 +938,7 @@ class Nav2BridgeAdapter:
             "planning": dict(self._latest_planning_debug),
             "action_result_debug": dict(self._latest_action_result_debug),
             "costmap_refresh": self._costmap_refresh_debug(),
+            "adapter_ros_time_sec": self._node_time_sec(),
             "updated_at": time.time(),
         }
         self._publish_json(self._result_pub, payload)
@@ -1075,6 +1101,12 @@ class Nav2BridgeAdapter:
         if duration_msg is None:
             return 0.0
         return float(getattr(duration_msg, "sec", 0)) + float(getattr(duration_msg, "nanosec", 0)) * 1.0e-9
+
+    def _node_time_sec(self) -> float:
+        try:
+            return float(self.node.get_clock().now().nanoseconds) * 1.0e-9
+        except Exception:  # pylint: disable=broad-except
+            return float("nan")
 
     @staticmethod
     def _path_to_dict(path_msg) -> dict[str, Any]:

@@ -8,7 +8,7 @@ from core.robots.base_robot import register_robot
 from core.robots.template_robot import TemplateRobot
 from omni.isaac.core.utils.prims import get_prim_at_path
 from omni.isaac.core.utils.transformations import get_relative_transform, pose_from_tf_matrix, tf_matrix_from_pose
-from pxr import Usd, UsdGeom, UsdPhysics
+from pxr import UsdPhysics
 
 
 # pylint: disable=line-too-long,unused-argument
@@ -108,11 +108,28 @@ class PandaOmron(TemplateRobot):
 
     def initialize(self, *args, **kwargs):
         super().initialize(*args, **kwargs)
+        self._setup_manipulator_joint_indices()
+        self._setup_joint_velocities()
+        self._set_initial_positions()
         self._configure_manipulator_drives()
         self._setup_base_joint_indices()
         self._configure_mobile_base_wheel_drives()
         self._validate_mobile_base_joint_partition()
         self._capture_base_initial_steering_positions()
+
+    def _setup_manipulator_joint_indices(self):
+        dof_names = list(self._articulation_view.dof_names)
+        arm_joint_names = list(self.cfg["left_joint_names"])
+        gripper_joint_names = list(self.cfg["left_gripper_joint_names"])
+        required_names = arm_joint_names + gripper_joint_names
+        missing = [name for name in required_names if name not in dof_names]
+        if missing:
+            raise KeyError(
+                "PandaOmron missing expected manipulator DOF names: "
+                f"{missing}; available={dof_names}"
+            )
+        self.left_joint_indices = [dof_names.index(name) for name in arm_joint_names]
+        self.left_gripper_indices = [dof_names.index(name) for name in gripper_joint_names]
 
     def _setup_base_joint_indices(self):
         dof_names = list(self._articulation_view.dof_names)
@@ -166,22 +183,13 @@ class PandaOmron(TemplateRobot):
         self._wheel_physics_material_path = f"{self.robot_prim_path}/robot0_base/Looks/panda_omron_wheel_physics_material"
 
     def _demote_imported_site_visuals(self):
-        sites_root = get_prim_at_path(f"{self.robot_prim_path}/robot0_base/gripper0_right_eef/sites")
-        if not sites_root.IsValid():
-            raise ValueError(f"PandaOmron imported site visual root does not exist: {sites_root.GetPath()}")
-        for prim in Usd.PrimRange(sites_root):
-            imageable = UsdGeom.Imageable(prim)
-            if imageable:
-                purpose_attr = imageable.GetPurposeAttr()
-                if not purpose_attr.IsValid():
-                    purpose_attr = imageable.CreatePurposeAttr()
-                purpose_attr.Set(UsdGeom.Tokens.guide)
+        return
 
     def _configure_mobile_base_wheel_drives(self):
         """Configure mobile-base drives in concrete subclasses."""
 
     def _configure_joint_drive(self, joint_name, drive_name, *, stiffness, damping, max_force):
-        joint_path = f"{self.robot_prim_path}/robot0_base/joints/{joint_name}"
+        joint_path = self._resolve_joint_prim_path(joint_name)
         prim = get_prim_at_path(joint_path)
         if not prim.IsValid():
             raise ValueError(f"PandaOmron joint prim does not exist: {joint_path}")
@@ -191,6 +199,19 @@ class PandaOmron(TemplateRobot):
         drive_api.CreateDampingAttr().Set(float(damping))
         drive_api.CreateMaxForceAttr().Set(float(max_force))
         drive_api.CreateTargetVelocityAttr().Set(0.0)
+
+    def _resolve_joint_prim_path(self, joint_name):
+        candidates = [
+            f"{self.robot_prim_path}/robot0_base/joints/{joint_name}",
+            f"{self.robot_prim_path}/robot0_base/panda_hand/{joint_name}",
+        ]
+        for joint_path in candidates:
+            if get_prim_at_path(joint_path).IsValid():
+                return joint_path
+        raise ValueError(
+            f"PandaOmron joint prim does not exist for {joint_name}; "
+            f"checked={candidates}"
+        )
 
     def _configure_manipulator_drives(self):
         arm_joint_names = list(self.cfg["left_joint_names"])

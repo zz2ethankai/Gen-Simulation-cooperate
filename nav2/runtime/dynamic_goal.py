@@ -313,10 +313,11 @@ def choose_best_reachable_candidate(candidates: list[dict[str, Any]]) -> dict[st
     ]
     if not reachable:
         return None
+    preferred_min_distance = _preferred_min_approach_distance(candidates)
     return min(
         reachable,
         key=lambda candidate: (
-            float(candidate.get("approach_score", candidate.get("distance_to_target", float("inf")))),
+            _approach_rank_score(candidate, preferred_min_distance),
             float(candidate.get("distance_to_target", float("inf"))),
             float(candidate.get("path_length_m", float("inf"))),
             int(candidate.get("index", 0)),
@@ -325,17 +326,53 @@ def choose_best_reachable_candidate(candidates: list[dict[str, Any]]) -> dict[st
 
 
 def sort_candidates_for_preflight(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    preferred_min_distance = _preferred_min_approach_distance(candidates)
     ordered = sorted(
         candidates,
         key=lambda candidate: (
-            float(candidate.get("approach_score", candidate.get("distance_to_target", float("inf")))),
+            _approach_rank_score(candidate, preferred_min_distance),
             float(candidate.get("distance_to_target", float("inf"))),
             int(candidate.get("index", 0)),
         ),
     )
     for rank, candidate in enumerate(ordered):
         candidate["preflight_rank"] = int(rank)
+        candidate["approach_rank_score"] = float(_approach_rank_score(candidate, preferred_min_distance))
+        candidate["approach_distance_shortfall_penalty"] = float(
+            _approach_distance_shortfall_penalty(candidate, preferred_min_distance)
+        )
     return ordered
+
+
+def _preferred_min_approach_distance(candidates: list[dict[str, Any]]) -> float:
+    distances = [
+        float(candidate["distance_to_target"])
+        for candidate in candidates
+        if _is_finite_number(candidate.get("distance_to_target"))
+    ]
+    if not distances:
+        return 0.0
+    min_distance = min(distances)
+    max_distance = max(distances)
+    return min_distance + 0.25 * max(max_distance - min_distance, 0.0)
+
+
+def _approach_rank_score(candidate: dict[str, Any], preferred_min_distance: float) -> float:
+    base_score = float(candidate.get("approach_score", candidate.get("distance_to_target", float("inf"))))
+    return float(base_score + _approach_distance_shortfall_penalty(candidate, preferred_min_distance))
+
+
+def _approach_distance_shortfall_penalty(candidate: dict[str, Any], preferred_min_distance: float) -> float:
+    distance = float(candidate.get("distance_to_target", float("inf")))
+    shortfall = max(float(preferred_min_distance) - distance, 0.0)
+    return float(5.0 * shortfall * shortfall)
+
+
+def _is_finite_number(value: Any) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
 
 
 def build_armbase_target_context(robot_cfg: dict[str, Any], config: ApproachConfig) -> dict[str, Any] | None:

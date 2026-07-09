@@ -5,7 +5,9 @@ Common functionality extracted from FR3, FrankaRobotiq85, Genie1, Lift2, SplitAl
 Subclasses implement _get_default_ignore_substring() and _configure_joint_indices().
 """
 
+import json
 import numbers
+import os
 import random
 import time
 from copy import deepcopy
@@ -104,6 +106,11 @@ class TemplateController(BaseController):
         self.num_last_cmd = 0
         self.ds_ratio = 1
         self._last_arm_action = None
+        self._curobo_plan_debug_counter = 0
+        self._curobo_plan_debug_dir = os.environ.get(
+            "SIMBOX_CUROBO_PLAN_DEBUG_DIR",
+            os.path.join("output", "ros_bridge", "skills", "curobo_plan_debug"),
+        )
 
     def _get_default_ignore_substring(self) -> List[str]:
         return ["material", "Plane", "conveyor", "scene", "table"]
@@ -247,6 +254,149 @@ class TemplateController(BaseController):
         else:
             pose_cost_metric = None
         self.plan_config.pose_cost_metric = pose_cost_metric
+
+    @staticmethod
+    def _debug_json_ready(value: Any):
+        if value is None or isinstance(value, (str, bool, int)):
+            return value
+        if isinstance(value, numbers.Real):
+            return float(value)
+        if isinstance(value, np.ndarray):
+            return TemplateController._debug_json_ready(value.tolist())
+        if isinstance(value, torch.Tensor):
+            return TemplateController._debug_json_ready(value.detach().cpu().numpy())
+        if isinstance(value, (list, tuple)):
+            return [TemplateController._debug_json_ready(v) for v in value]
+        if isinstance(value, dict):
+            return {str(k): TemplateController._debug_json_ready(v) for k, v in value.items()}
+        return str(value)
+
+    @staticmethod
+    def _debug_joint_state_to_dict(joint_state):
+        if joint_state is None:
+            return None
+        payload = {}
+        for field in ("position", "velocity", "acceleration", "jerk"):
+            if hasattr(joint_state, field):
+                payload[field] = TemplateController._debug_json_ready(getattr(joint_state, field))
+        if hasattr(joint_state, "joint_names"):
+            payload["joint_names"] = TemplateController._debug_json_ready(getattr(joint_state, "joint_names"))
+        if hasattr(joint_state, "shape"):
+            payload["shape"] = TemplateController._debug_json_ready(getattr(joint_state, "shape"))
+        return payload
+
+    @staticmethod
+    def _debug_norm_delta(a, b):
+        if a is None or b is None:
+            return None
+        a_arr = np.asarray(a, dtype=float).reshape(-1)
+        b_arr = np.asarray(b, dtype=float).reshape(-1)
+        if a_arr.shape != b_arr.shape:
+            return None
+        return float(np.linalg.norm(a_arr - b_arr))
+
+    def _write_curobo_plan_debug(
+        self,
+        *,
+        result,
+        sim_js,
+        js_names,
+        ee_trans,
+        ee_ori,
+        raw_plan,
+        ordered_cmd_plan,
+        branch: str,
+        selected_path_index=None,
+        selected_path_source: str = "",
+    ) -> None:
+        try:
+            os.makedirs(self._curobo_plan_debug_dir, exist_ok=True)
+            self._curobo_plan_debug_counter += 1
+            current_full = np.asarray(sim_js.positions, dtype=float).copy()
+            current_arm = current_full[self.arm_indices].copy()
+            first_ordered = None
+            last_ordered = None
+            if ordered_cmd_plan is not None and len(ordered_cmd_plan) > 0:
+                first_ordered = ordered_cmd_plan[0].position.detach().cpu().numpy()
+                last_ordered = ordered_cmd_plan[-1].position.detach().cpu().numpy()
+
+            cu_js = JointState(
+                position=self.tensor_args.to_device(sim_js.positions),
+                velocity=self.tensor_args.to_device(sim_js.velocities) * 0.0,
+                acceleration=self.tensor_args.to_device(sim_js.velocities) * 0.0,
+                jerk=self.tensor_args.to_device(sim_js.velocities) * 0.0,
+                joint_names=js_names,
+            )
+            cu_js_ordered = cu_js.get_ordered_joint_state(self.cmd_js_names)
+
+            timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+            filename = (
+                f"{timestamp}_{int((time.time() % 1) * 1000000):06d}_"
+                f"{self.name}_{self.lr_name}_plan_{self._curobo_plan_debug_counter:04d}.json"
+            )
+            output_path = os.path.join(self._curobo_plan_debug_dir, filename)
+
+            payload = {
+                "schema_version": 1,
+                "controller": {
+                    "name": self.name,
+                    "lr_name": self.lr_name,
+                    "robot_file": self.robot_file,
+                    "use_batch": bool(self.use_batch),
+                    "branch": branch,
+                    "selected_path_index": self._debug_json_ready(selected_path_index),
+                    "selected_path_source": selected_path_source,
+                },
+                "joint_mapping": {
+                    "robot_dof_names": self._debug_json_ready(js_names),
+                    "cmd_js_names": self._debug_json_ready(self.cmd_js_names),
+                    "raw_js_names": self._debug_json_ready(self.raw_js_names),
+                    "arm_indices": self._debug_json_ready(self.arm_indices),
+                    "gripper_indices": self._debug_json_ready(self.gripper_indices),
+                    "idx_list": self._debug_json_ready(self.idx_list),
+                },
+                "goal": {
+                    "ee_translation": self._debug_json_ready(ee_trans),
+                    "ee_orientation": self._debug_json_ready(ee_ori),
+                },
+                "input_current_state": {
+                    "sim_js": self._debug_joint_state_to_dict(sim_js),
+                    "current_arm_sim_order": self._debug_json_ready(current_arm),
+                    "curobo_input_ordered_cmd_js_names": self._debug_joint_state_to_dict(cu_js_ordered),
+                },
+                "result_summary": {
+                    "success": self._debug_json_ready(getattr(result, "success", None)),
+                    "status": self._debug_json_ready(getattr(result, "status", None)),
+                    "valid_query": self._debug_json_ready(getattr(result, "valid_query", None)),
+                    "position_error": self._debug_json_ready(getattr(result, "position_error", None)),
+                    "rotation_error": self._debug_json_ready(getattr(result, "rotation_error", None)),
+                    "cspace_error": self._debug_json_ready(getattr(result, "cspace_error", None)),
+                    "optimized_dt": self._debug_json_ready(getattr(result, "optimized_dt", None)),
+                    "interpolation_dt": self._debug_json_ready(getattr(result, "interpolation_dt", None)),
+                    "path_buffer_last_tstep": self._debug_json_ready(
+                        getattr(result, "path_buffer_last_tstep", None)
+                    ),
+                    "used_graph": self._debug_json_ready(getattr(result, "used_graph", None)),
+                    "attempts": self._debug_json_ready(getattr(result, "attempts", None)),
+                    "trajopt_attempts": self._debug_json_ready(getattr(result, "trajopt_attempts", None)),
+                },
+                "continuity": {
+                    "first_ordered_minus_current_arm_norm": self._debug_norm_delta(first_ordered, current_arm),
+                    "last_ordered_minus_current_arm_norm": self._debug_norm_delta(last_ordered, current_arm),
+                    "first_ordered_position": self._debug_json_ready(first_ordered),
+                    "last_ordered_position": self._debug_json_ready(last_ordered),
+                },
+                "raw_plan": self._debug_joint_state_to_dict(raw_plan),
+                "ordered_cmd_plan": self._debug_joint_state_to_dict(ordered_cmd_plan),
+            }
+            with open(output_path, "w", encoding="utf-8") as handle:
+                json.dump(self._debug_json_ready(payload), handle, indent=2, ensure_ascii=False)
+            print(
+                "[curobo-plan-debug] Wrote plan debug: "
+                f"{output_path}; first_delta={payload['continuity']['first_ordered_minus_current_arm_norm']}"
+            )
+        except Exception as exc:  # Debug writing must never break an episode.
+            print(f"[curobo-plan-debug] Failed to write plan debug: {exc}")
 
     @staticmethod
     def _signature_value(value: Any):
@@ -460,6 +610,18 @@ class TemplateController(BaseController):
                         cmd_plan = self.motion_gen.get_full_js(paths[sorted_indices[0]])
                         self.idx_list = list(range(len(self.raw_js_names)))
                         self.cmd_plan = cmd_plan.get_ordered_joint_state(self.raw_js_names)
+                        self._write_curobo_plan_debug(
+                            result=result,
+                            sim_js=sim_js,
+                            js_names=js_names,
+                            ee_trans=ee_trans,
+                            ee_ori=ee_ori,
+                            raw_plan=cmd_plan,
+                            ordered_cmd_plan=self.cmd_plan,
+                            branch="batch",
+                            selected_path_index=sorted_indices[0],
+                            selected_path_source="paths[sorted_indices[0]]",
+                        )
                         self.num_plan_failed = 0
                     else:
                         print("Plan did not converge to a solution.")
@@ -472,6 +634,18 @@ class TemplateController(BaseController):
                         cmd_plan = result.get_interpolated_plan()
                         self.idx_list = list(range(len(self.raw_js_names)))
                         self.cmd_plan = cmd_plan.get_ordered_joint_state(self.raw_js_names)
+                        self._write_curobo_plan_debug(
+                            result=result,
+                            sim_js=sim_js,
+                            js_names=js_names,
+                            ee_trans=ee_trans,
+                            ee_ori=ee_ori,
+                            raw_plan=cmd_plan,
+                            ordered_cmd_plan=self.cmd_plan,
+                            branch="single",
+                            selected_path_index=0,
+                            selected_path_source="result.get_interpolated_plan()",
+                        )
                         self.num_plan_failed = 0
                     else:
                         print("Plan did not converge to a solution.")
@@ -497,10 +671,8 @@ class TemplateController(BaseController):
                     arm_action = self._last_arm_action
                 art_action = ArticulationAction(joint_positions=arm_action)
         else:
-            if self._last_arm_action is None:
-                arm_action = sim_js.positions[self.arm_indices]
-            else:
-                arm_action = self._last_arm_action
+            arm_action = np.asarray(sim_js.positions[self.arm_indices], dtype=float).copy()
+            self._last_arm_action = arm_action.copy()
             art_action = ArticulationAction(joint_positions=arm_action)
             self.num_last_cmd += 1
         self._step_idx += 1
@@ -710,6 +882,10 @@ class TemplateController(BaseController):
         }
 
     def dummy_forward(self, arm_action, gripper_state, *args, **kwargs):
+        arm_action = np.asarray(arm_action, dtype=float).copy()
+        self.cmd_plan = None
+        self.cmd_idx = 0
+        self._last_arm_action = arm_action.copy()
         if gripper_state == 1.0:
             self.open_gripper()
         elif gripper_state == -1.0:

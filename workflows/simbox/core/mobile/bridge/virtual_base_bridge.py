@@ -1,4 +1,4 @@
-"""Direct /cmd_vel bridge for position-integrated virtual X/Y/yaw base joints."""
+"""Direct /cmd_vel bridge for velocity-target virtual X/Y/yaw base joints."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from .types import BaseCommand
 
 
 class VirtualBaseBridge(BaseBridge):
-    """Map body-frame twist directly to virtual base joint position integration."""
+    """Map body-frame twist directly to virtual base joint velocity targets."""
 
     def __init__(self, robot, node_name: str = "virtual_base_bridge", driver=None):
         self._body_twist_deadband = 0.0
@@ -44,7 +44,7 @@ class VirtualBaseBridge(BaseBridge):
         body_velocity = np.clip(body_velocity, self._min_body_velocity, self._max_body_velocity)
         base_joint_velocities = body_velocity * self._base_velocity_signs
         self._last_wheel_shaping_debug = {
-            "mode": "virtual_base_position_integrated",
+            "mode": "virtual_base_velocity_target",
             "body_velocity": [float(v) for v in body_velocity.tolist()],
             "base_velocity_command_signs": [float(v) for v in self._base_velocity_signs.tolist()],
         }

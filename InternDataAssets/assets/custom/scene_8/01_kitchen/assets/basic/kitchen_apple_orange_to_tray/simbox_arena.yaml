@@ -1,0 +1,902 @@
+name: 01_kitchen_kitchen_apple_to_tray_scene_clean_aligned
+format: arena
+version: 1
+coordinate_frame:
+  reference: floor
+  up_axis: Z
+  units: meter
+  room_bounds_xz:
+  - 0.0
+  - 4.0
+  - 0.0
+  - 3.0
+  layout_to_usd_mapping: layout [x,y,z] -> usd [x,z,y]
+texture_libs:
+  floor_textures:
+    root: texture_libs/floor_textures
+  wall_textures:
+    root: texture_libs/wall_textures
+navigation:
+  preferred_base_radius: 0.32
+  minimum_clearance: 0.8
+  keep_central_passage_open: true
+  robot_base: Ranger Mini V3
+  robot_footprint_m:
+  - 0.7
+  - 0.4
+  minimum_aisle_width_m: 0.8
+  layout_adjustments:
+  - prep_island__0__id4 removed to clear the central passage; prep items redistributed to storage_counter_base__0__id3 and tray_support__0__id5
+robot_waypoints:
+- name: WP-K-1_sink_counter_front
+  pose_xy_yaw:
+  - 1.0
+  - 1.1
+  - 180.0
+  purpose: sink-side cup, bowl, mug grasping
+  clearance_radius: 0.35
+- name: WP-K-2_prep_counter_front
+  pose_xy_yaw:
+  - 2.0
+  - 1.45
+  - 180.0
+  purpose: cutting board, fruit, and knife preparation
+  clearance_radius: 0.35
+- name: WP-K-3_stove_tray_front
+  pose_xy_yaw:
+  - 3.0
+  - 1.15
+  - 180.0
+  purpose: tray placement and cooktop utensil area
+  clearance_radius: 0.35
+- name: WP-K-4_storage_counter_front
+  pose_xy_yaw:
+  - 3.35
+  - 2.1
+  - 270.0
+  purpose: 'under-cabinet storage: salt, pepper, food container'
+  clearance_radius: 0.35
+- name: WP-K-5_fridge_counter_front
+  pose_xy_yaw:
+  - 3.45
+  - 0.8
+  - 270.0
+  purpose: fridge-side bread slice area
+  clearance_radius: 0.35
+fixtures:
+- name: floor
+  target_class: PlaneObject
+  size:
+  - 4.0
+  - 3.0
+  translation:
+  - 2.0
+  - 1.5
+  - 0
+  texture:
+    texture_lib: texture_libs/floor_textures
+    apply_randomization: true
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+  collision_enabled: true
+  collision_thickness: 0.02
+  rigidbody: true
+  kinematic: true
+  source_name: floor
+  source_metadata:
+    coordinate_role: layout_room_floor
+    layout_extent_xz:
+    - 0.0
+    - 4.0
+    - 0.0
+    - 3.0
+    note: PlaneObject is centered on the source layout room so fixture/object coordinates share the same positive layout frame.
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  static: true
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision: true
+  collider: plane
+  physics:
+    collision_enabled: true
+    rigid_body: true
+    kinematic: true
+- name: wall_north
+  target_class: PlaneObject
+  size:
+  - 4.0
+  - 2.8
+  translation:
+  - 2.0
+  - 3.0
+  - 1.4
+  euler:
+  - 90.0
+  - 0.0
+  - 0.0
+  texture:
+    texture_lib: texture_libs/wall_textures
+    apply_randomization: true
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+  role: wall
+  collision_enabled: true
+  collision_thickness: 0.02
+  rigidbody: true
+  kinematic: true
+  source_name: wall_north
+  static: true
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision: true
+  collider: thin_box
+  physics:
+    collision_enabled: true
+    rigid_body: true
+    kinematic: true
+- name: wall_south
+  target_class: PlaneObject
+  size:
+  - 4.0
+  - 2.8
+  translation:
+  - 2.0
+  - 0
+  - 1.4
+  euler:
+  - 90.0
+  - 0.0
+  - 0.0
+  texture:
+    texture_lib: texture_libs/wall_textures
+    apply_randomization: true
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+  role: wall
+  collision_enabled: true
+  collision_thickness: 0.02
+  rigidbody: true
+  kinematic: true
+  source_name: wall_south
+  static: true
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision: true
+  collider: thin_box
+  physics:
+    collision_enabled: true
+    rigid_body: true
+    kinematic: true
+- name: wall_west
+  target_class: PlaneObject
+  size:
+  - 3.0
+  - 2.8
+  translation:
+  - 0
+  - 1.5
+  - 1.4
+  euler:
+  - 90.0
+  - 0.0
+  - 90.0
+  texture:
+    texture_lib: texture_libs/wall_textures
+    apply_randomization: true
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+  role: wall
+  collision_enabled: true
+  collision_thickness: 0.02
+  rigidbody: true
+  kinematic: true
+  source_name: wall_west
+  static: true
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision: true
+  collider: thin_box
+  physics:
+    collision_enabled: true
+    rigid_body: true
+    kinematic: true
+- name: wall_east
+  target_class: PlaneObject
+  size:
+  - 3.0
+  - 2.8
+  translation:
+  - 4.0
+  - 1.5
+  - 1.4
+  euler:
+  - 90.0
+  - 0.0
+  - 90.0
+  texture:
+    texture_lib: texture_libs/wall_textures
+    apply_randomization: true
+    texture_id: 0
+    texture_scale:
+    - 1.0
+    - 1.0
+  role: wall
+  collision_enabled: true
+  collision_thickness: 0.02
+  rigidbody: true
+  kinematic: true
+  source_name: wall_east
+  static: true
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  collision: true
+  collider: thin_box
+  physics:
+    collision_enabled: true
+    rigid_body: true
+    kinematic: true
+- name: sink_counter_base_0_id1
+  target_class: GeometryObject
+  path: assets/basic/01_kitchen/fixtures/sink_counter_base/sink_counter_base_0_id1/Aligned_obj.usd
+  translation:
+  - 1.6
+  - 0.33
+  - 0.45
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  role: support_surface
+  support_surface: true
+  asset_category: sink_counter_base
+  description: ''
+  zone: ''
+  placement_layer: floor
+  parent_fixture: ''
+  collision_enabled: true
+  collision_approximation: supportBodyBBox
+  collision_visible: false
+  source_name: sink_counter_base__0__id1
+  source_metadata: assets/basic/01_kitchen/fixtures/sink_counter_base/sink_counter_base_0_id1/metadata.json
+  static: true
+  rigidbody: true
+  kinematic: true
+  collision: true
+  collider: support_body_bbox
+  physics:
+    collision_enabled: true
+    rigid_body: true
+    kinematic: true
+  support_surface_planes:
+  - sink_counter_base_0_id1__support_plane_z0900
+  support_surface_z_values:
+  - 0.882
+  support_surface_z: 0.882
+  support_surface_source: mesh_upward_face_area_cluster
+  support_body_top_clearance: 0.018
+  collision_note: Body collider is clipped below support_surface_z; tabletop contact is handled by the explicit support plane.
+- name: cooktop_counter_base_0_id2
+  target_class: GeometryObject
+  path: assets/basic/01_kitchen/fixtures/cooktop_counter_base/cooktop_counter_base_0_id2/Aligned_obj.usd
+  translation:
+  - 3.0
+  - 2.67
+  - 0.45
+  euler:
+  - 0.0
+  - 0.0
+  - 180.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  role: support_surface
+  support_surface: true
+  asset_category: cooktop_counter_base
+  description: ''
+  zone: ''
+  placement_layer: floor
+  parent_fixture: ''
+  collision_enabled: true
+  collision_approximation: supportBodyBBox
+  collision_visible: false
+  source_name: cooktop_counter_base__0__id2
+  source_metadata: assets/basic/01_kitchen/fixtures/cooktop_counter_base/cooktop_counter_base_0_id2/metadata.json
+  static: true
+  rigidbody: true
+  kinematic: true
+  collision: true
+  collider: support_body_bbox
+  physics:
+    collision_enabled: true
+    rigid_body: true
+    kinematic: true
+  support_surface_planes:
+  - cooktop_counter_base_0_id2__support_plane_z0900
+  support_surface_z_values:
+  - 0.893
+  support_surface_z: 0.893
+  support_surface_source: mesh_upward_face_area_cluster
+  support_body_top_clearance: 0.018
+  collision_note: Body collider is clipped below support_surface_z; tabletop contact is handled by the explicit support plane.
+- name: storage_counter_base_0_id3
+  target_class: GeometryObject
+  path: assets/basic/01_kitchen/fixtures/storage_counter_base/storage_counter_base_0_id3/Aligned_obj.usd
+  translation:
+  - 3.4
+  - 0.53
+  - 0.45
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  role: support_surface
+  support_surface: true
+  asset_category: storage_counter_base
+  description: ''
+  zone: ''
+  placement_layer: floor
+  parent_fixture: ''
+  collision_enabled: true
+  collision_approximation: supportBodyBBox
+  collision_visible: false
+  source_name: storage_counter_base__0__id3
+  source_metadata: assets/basic/01_kitchen/fixtures/storage_counter_base/storage_counter_base_0_id3/metadata.json
+  static: true
+  rigidbody: true
+  kinematic: true
+  collision: true
+  collider: support_body_bbox
+  physics:
+    collision_enabled: true
+    rigid_body: true
+    kinematic: true
+  support_surface_planes:
+  - storage_counter_base_0_id3__support_plane_z0900
+  support_surface_z_values:
+  - 0.841
+  support_surface_z: 0.841
+  support_surface_source: mesh_upward_face_area_cluster
+  support_body_top_clearance: 0.018
+  collision_note: Body collider is clipped below support_surface_z; tabletop contact is handled by the explicit support plane.
+- name: wall_oven_0_id8
+  target_class: GeometryObject
+  path: assets/basic/01_kitchen/fixtures/wall_oven/wall_oven_0_id8/Aligned_obj.usd
+  translation:
+  - 0.6
+  - 2.72
+  - 0.58
+  euler:
+  - 0.0
+  - 0.0
+  - 180.0
+  scale:
+  - 0.65
+  - 0.504882
+  - 0.602567
+  role: fixture
+  support_surface: false
+  asset_category: wall_oven
+  description: ''
+  zone: ''
+  placement_layer: floor
+  parent_fixture: ''
+  collision_enabled: true
+  collision_approximation: convexDecomposition
+  collision_visible: false
+  source_name: wall_oven__0__id8
+  source_metadata: assets/basic/01_kitchen/fixtures/wall_oven/wall_oven_0_id8/metadata.json
+  static: true
+  rigidbody: true
+  kinematic: true
+  manual_fix_note: Resized from wall-oven scale to compact microwave/small-oven footprint; previous depth was larger than counters.
+  collision: true
+  collider: convex_decomposition
+  physics:
+    collision_enabled: true
+    rigid_body: true
+    kinematic: true
+- name: pantry_tall_cabinet_0_id10
+  target_class: GeometryObject
+  path: assets/basic/01_kitchen/fixtures/pantry_tall_cabinet/pantry_tall_cabinet_0_id10/Aligned_obj.usd
+  translation:
+  - 3.76
+  - 2.0
+  - 1.05
+  euler:
+  - 0.0
+  - 0.0
+  - 90.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  role: support_surface
+  support_surface: true
+  asset_category: pantry_tall_cabinet
+  description: ''
+  zone: ''
+  placement_layer: floor
+  parent_fixture: ''
+  collision_enabled: true
+  collision_approximation: convexDecomposition
+  collision_visible: false
+  source_name: pantry_tall_cabinet__0__id10
+  source_metadata: assets/basic/01_kitchen/fixtures/pantry_tall_cabinet/pantry_tall_cabinet_0_id10/metadata.json
+  static: true
+  rigidbody: true
+  kinematic: true
+  collision: true
+  collider: convex_decomposition
+  physics:
+    collision_enabled: true
+    rigid_body: true
+    kinematic: true
+- name: refrigerator_0_id7
+  target_class: GeometryObject
+  path: assets/basic/01_kitchen/fixtures/refrigerator/refrigerator_0_id7/Aligned_obj.usd
+  translation:
+  - 0.44297
+  - 1.6
+  - 0.9
+  euler:
+  - 0.0
+  - 0.0
+  - 90.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  role: fixture
+  support_surface: false
+  asset_category: refrigerator
+  description: ''
+  zone: ''
+  placement_layer: floor
+  parent_fixture: ''
+  collision_enabled: true
+  collision_approximation: convexDecomposition
+  collision_visible: false
+  source_name: refrigerator__0__id7
+  source_metadata: assets/basic/01_kitchen/fixtures/refrigerator/refrigerator_0_id7/metadata.json
+  static: true
+  rigidbody: true
+  kinematic: true
+  collision: true
+  collider: convex_decomposition
+  physics:
+    collision_enabled: true
+    rigid_body: true
+    kinematic: true
+- name: fridge_side_counter_0_id6
+  target_class: GeometryObject
+  path: assets/basic/01_kitchen/fixtures/fridge_side_counter/fridge_side_counter_0_id6/Aligned_obj.usd
+  translation:
+  - 0.305
+  - 0.6
+  - 0.5249999684003693
+  euler:
+  - 0.0
+  - 0.0
+  - 90.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  role: support_surface
+  support_surface: true
+  asset_category: fridge_side_counter
+  description: ''
+  zone: ''
+  placement_layer: floor
+  parent_fixture: ''
+  collision_enabled: true
+  collision_approximation: supportBodyBBox
+  collision_visible: false
+  source_name: fridge_side_counter__0__id6
+  source_metadata: assets/basic/01_kitchen/fixtures/fridge_side_counter/fridge_side_counter_0_id6/metadata.json
+  static: true
+  rigidbody: true
+  kinematic: true
+  collision: true
+  collider: support_body_bbox
+  physics:
+    collision_enabled: true
+    rigid_body: true
+    kinematic: true
+  support_surface_planes:
+  - fridge_side_counter_0_id6__support_plane_z0675
+  support_surface_z_values:
+  - 0.894
+  support_surface_z: 0.894
+  support_surface_source: mesh_upward_face_area_cluster
+  support_body_top_clearance: 0.018
+  collision_note: Body collider is clipped below support_surface_z; tabletop contact is handled by the explicit support plane.
+- name: tray_support_0_id5
+  target_class: GeometryObject
+  path: assets/basic/01_kitchen/fixtures/tray_support/tray_support_0_id5/Aligned_obj.usd
+  translation:
+  - 1.5514
+  - 2.62
+  - 0.375
+  euler:
+  - 0.0
+  - 0.0
+  - 180.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  role: support_surface
+  support_surface: true
+  asset_category: tray_support
+  description: ''
+  zone: ''
+  placement_layer: floor
+  parent_fixture: ''
+  collision_enabled: true
+  collision_approximation: supportBodyBBox
+  collision_visible: false
+  source_name: tray_support__0__id5
+  source_metadata: assets/basic/01_kitchen/fixtures/tray_support/tray_support_0_id5/metadata.json
+  static: true
+  rigidbody: true
+  kinematic: true
+  collision: true
+  collider: support_body_bbox
+  physics:
+    collision_enabled: true
+    rigid_body: true
+    kinematic: true
+  support_surface_planes:
+  - tray_support_0_id5__support_plane_z0750
+  support_surface_z_values:
+  - 0.684
+  support_surface_z: 0.684
+  support_surface_source: mesh_upward_face_area_cluster
+  support_body_top_clearance: 0.018
+  collision_note: Body collider is clipped below support_surface_z; tabletop contact is handled by the explicit support plane.
+- name: sink
+  target_class: GeometryObject
+  path: assets/basic/01_kitchen/fixtures/sink/sink/Aligned_obj.usd
+  translation:
+  - 1.435
+  - 0.33
+  - 1.006
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  role: support_surface
+  support_surface: true
+  asset_category: sink
+  description: ''
+  zone: ''
+  placement_layer: floor
+  parent_fixture: ''
+  collision_enabled: true
+  collision_approximation: convexDecomposition
+  collision_visible: false
+  source_name: sink
+  source_metadata: assets/basic/01_kitchen/fixtures/sink/sink/metadata.json
+  static: true
+  rigidbody: true
+  kinematic: true
+  collision: true
+  collider: convex_decomposition
+  physics:
+    collision_enabled: true
+    rigid_body: true
+    kinematic: true
+- name: induction_cooktop
+  target_class: GeometryObject
+  path: assets/basic/01_kitchen/fixtures/cooktop/induction_cooktop/Aligned_obj.usd
+  translation:
+  - 3.33
+  - 2.67
+  - 0.956
+  euler:
+  - 0.0
+  - 0.0
+  - 180.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  role: support_surface
+  support_surface: true
+  asset_category: cooktop
+  description: ''
+  zone: ''
+  placement_layer: floor
+  parent_fixture: ''
+  collision_enabled: true
+  collision_approximation: convexDecomposition
+  collision_visible: false
+  source_name: induction_cooktop
+  source_metadata: assets/basic/01_kitchen/fixtures/cooktop/induction_cooktop/metadata.json
+  static: true
+  rigidbody: true
+  kinematic: true
+  collision: true
+  collider: convex_decomposition
+  physics:
+    collision_enabled: true
+    rigid_body: true
+    kinematic: true
+- name: wall_cabinet_display_0_id9
+  target_class: GeometryObject
+  path: assets/basic/01_kitchen/fixtures/wall_cabinet_display/wall_cabinet_display_0_id9/Aligned_obj.usd
+  translation:
+  - 1.5773
+  - 2.84
+  - 1.65
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  role: fixture
+  support_surface: false
+  asset_category: wall_cabinet_display
+  description: ''
+  zone: ''
+  placement_layer: floor
+  parent_fixture: ''
+  collision_enabled: true
+  collision_approximation: convexDecomposition
+  collision_visible: false
+  source_name: wall_cabinet_display__0__id9
+  source_metadata: assets/basic/01_kitchen/fixtures/wall_cabinet_display/wall_cabinet_display_0_id9/metadata.json
+  static: true
+  rigidbody: true
+  kinematic: true
+  collision: true
+  collider: convex_decomposition
+  physics:
+    collision_enabled: true
+    rigid_body: true
+    kinematic: true
+- name: range_hood_0_id11
+  target_class: GeometryObject
+  path: assets/basic/01_kitchen/fixtures/range_hood/range_hood_0_id11/Aligned_obj.usd
+  translation:
+  - 3.3569
+  - 2.86
+  - 1.555
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  role: fixture
+  support_surface: false
+  asset_category: range_hood
+  description: ''
+  zone: ''
+  placement_layer: floor
+  parent_fixture: ''
+  collision_enabled: true
+  collision_approximation: convexDecomposition
+  collision_visible: false
+  source_name: range_hood__0__id11
+  source_metadata: assets/basic/01_kitchen/fixtures/range_hood/range_hood_0_id11/metadata.json
+  static: true
+  rigidbody: true
+  kinematic: true
+  collision: true
+  collider: convex_decomposition
+  physics:
+    collision_enabled: true
+    rigid_body: true
+    kinematic: true
+- name: kitchen_outlet_panel_0_id12
+  target_class: GeometryObject
+  path: assets/basic/01_kitchen/fixtures/kitchen_outlet_panel/kitchen_outlet_panel_0_id12/Aligned_obj.usd
+  translation:
+  - 3.396362
+  - 0.01
+  - 1.06
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  role: fixture
+  support_surface: false
+  asset_category: kitchen_outlet_panel
+  description: ''
+  zone: ''
+  placement_layer: floor
+  parent_fixture: ''
+  collision_enabled: true
+  collision_approximation: convexDecomposition
+  collision_visible: false
+  source_name: kitchen_outlet_panel__0__id12
+  source_metadata: assets/basic/01_kitchen/fixtures/kitchen_outlet_panel/kitchen_outlet_panel_0_id12/metadata.json
+  static: true
+  rigidbody: true
+  kinematic: true
+  collision: true
+  collider: convex_decomposition
+  physics:
+    collision_enabled: true
+    rigid_body: true
+    kinematic: true
+- name: sink_counter_base_0_id1__support_plane_z0900
+  target_class: PlaneObject
+  size:
+  - 1.36
+  - 0.56
+  translation:
+  - 1.6
+  - 0.33
+  - 0.882
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  role: support_collision_plane
+  parent_fixture: sink_counter_base_0_id1
+  support_surface_z: 0.882
+  support_surface_source: mesh_upward_face_area_cluster
+  visible: false
+  collision_enabled: true
+  collision_thickness: 0.012
+  collision_visible: false
+  static: true
+  physics:
+    collision_enabled: true
+    rigid_body: false
+  support_surface_z_values:
+  - 0.881
+- name: cooktop_counter_base_0_id2__support_plane_z0900
+  target_class: PlaneObject
+  size:
+  - 1.56
+  - 0.56
+  translation:
+  - 3.0
+  - 2.67
+  - 0.893
+  euler:
+  - 0.0
+  - 0.0
+  - 180.0
+  role: support_collision_plane
+  parent_fixture: cooktop_counter_base_0_id2
+  support_surface_z: 0.893
+  support_surface_source: mesh_upward_face_area_cluster
+  visible: false
+  collision_enabled: true
+  collision_thickness: 0.012
+  collision_visible: false
+  static: true
+  physics:
+    collision_enabled: true
+    rigid_body: false
+  support_surface_z_values:
+  - 0.892
+- name: storage_counter_base_0_id3__support_plane_z0900
+  target_class: PlaneObject
+  size:
+  - 0.71
+  - 0.96
+  translation:
+  - 3.4
+  - 0.53
+  - 0.841
+  euler:
+  - 0.0
+  - 0.0
+  - 0.0
+  role: support_collision_plane
+  parent_fixture: storage_counter_base_0_id3
+  support_surface_z: 0.841
+  support_surface_source: mesh_upward_face_area_cluster
+  visible: false
+  collision_enabled: true
+  collision_thickness: 0.012
+  collision_visible: false
+  static: true
+  physics:
+    collision_enabled: true
+    rigid_body: false
+  support_surface_z_values:
+  - 0.841
+- name: tray_support_0_id5__support_plane_z0750
+  target_class: PlaneObject
+  size:
+  - 0.76
+  - 0.66
+  translation:
+  - 1.5514
+  - 2.62
+  - 0.684
+  euler:
+  - 0.0
+  - 0.0
+  - 180.0
+  role: support_collision_plane
+  parent_fixture: tray_support_0_id5
+  support_surface_z: 0.684
+  support_surface_source: mesh_upward_face_area_cluster
+  visible: false
+  collision_enabled: true
+  collision_thickness: 0.012
+  collision_visible: false
+  static: true
+  physics:
+    collision_enabled: true
+    rigid_body: false
+  support_surface_z_values:
+  - 0.684
+- name: fridge_side_counter_0_id6__support_plane_z0675
+  target_class: PlaneObject
+  size:
+  - 0.3218
+  - 0.3291
+  translation:
+  - 0.305
+  - 0.6
+  - 0.894
+  euler:
+  - 0.0
+  - 0.0
+  - 90.0
+  role: support_collision_plane
+  parent_fixture: fridge_side_counter_0_id6
+  support_surface_z: 0.894
+  support_surface_source: mesh_upward_face_area_cluster
+  visible: false
+  collision_enabled: true
+  collision_thickness: 0.012
+  collision_visible: false
+  static: true
+  physics:
+    collision_enabled: true
+    rigid_body: false
+  support_surface_z_values:
+  - 0.894

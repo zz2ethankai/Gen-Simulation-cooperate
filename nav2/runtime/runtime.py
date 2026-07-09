@@ -327,7 +327,7 @@ class PersistentNav2RuntimeManager:
         self._prepare_stack_artifacts()
         self._freeze_goal_debug_artifacts()
         self.state = self.STATE_WAITING_FOR_STACK_READY
-        self._startup_deadline = time_monotonic() + self.startup_timeout_sec
+        self._startup_deadline = self._sim_time() + self.startup_timeout_sec
 
     def prepare_for_reset(self):
         self._finalize_robot_bridge_after_navigation()
@@ -393,7 +393,7 @@ class PersistentNav2RuntimeManager:
                 )
                 self.state = self.STATE_WAITING_FOR_MAP_READY
                 return
-            if time_monotonic() >= float(self._startup_deadline):
+            if self._sim_time() >= float(self._startup_deadline):
                 self._fail("stack_not_ready", "Timed out waiting for Nav2 bridge heartbeat/action readiness.")
             return
 
@@ -415,7 +415,7 @@ class PersistentNav2RuntimeManager:
             if bridge_state in {"failed", "rejected", "aborted", "canceled"}:
                 self._fail("bridge_" + bridge_state, self._bridge_detail(status=status, result=result) or f"Bridge ended with {bridge_state}")
                 return
-            if time_monotonic() >= float(self._startup_deadline):
+            if self._sim_time() >= float(self._startup_deadline):
                 self._fail("map_update_timeout", "Timed out waiting for bridge adapter to load the map.")
             return
 
@@ -425,7 +425,7 @@ class PersistentNav2RuntimeManager:
                 return
             if self.state == self.STATE_WAITING_FOR_GOAL_ACCEPTED:
                 return
-            if self._dynamic_goal_plan_deadline is not None and time_monotonic() >= float(self._dynamic_goal_plan_deadline):
+            if self._dynamic_goal_plan_deadline is not None and self._sim_time() >= float(self._dynamic_goal_plan_deadline):
                 current = self._active_dynamic_candidate()
                 if current is not None:
                     current["path_ok"] = False
@@ -441,7 +441,7 @@ class PersistentNav2RuntimeManager:
         if self.state == self.STATE_WAITING_FOR_GOAL_ACCEPTED:
             if bridge_state in {"accepted", "running"}:
                 self.state = self.STATE_RUNNING
-                self._runtime_deadline = time_monotonic() + self.runtime_timeout_sec
+                self._runtime_deadline = self._sim_time() + self.runtime_timeout_sec
                 return
             if bridge_state == "succeeded":
                 self._enter_post_success_settling()
@@ -449,7 +449,7 @@ class PersistentNav2RuntimeManager:
             if bridge_state in {"failed", "rejected", "aborted", "canceled"}:
                 self._fail("bridge_" + bridge_state, self._bridge_detail(status=status, result=result) or f"Bridge ended with {bridge_state}")
                 return
-            if time_monotonic() >= float(self._goal_accept_deadline):
+            if self._sim_time() >= float(self._goal_accept_deadline):
                 bridge_client.cancel_request(self._request_id)
                 self._fail("goal_not_accepted", "Timed out waiting for bridge adapter to accept the goal.")
             return
@@ -466,7 +466,7 @@ class PersistentNav2RuntimeManager:
                 bridge_client.cancel_request(self._request_id)
                 self._enter_post_success_settling(trigger="local_goal_reached")
                 return
-            if time_monotonic() >= float(self._runtime_deadline):
+            if self._sim_time() >= float(self._runtime_deadline):
                 bridge_client.cancel_request(self._request_id)
                 self._fail("runtime_timeout", "Timed out while waiting for the navigation goal to finish.")
             return
@@ -649,29 +649,7 @@ class PersistentNav2RuntimeManager:
                 return reason
         return "non_finite_mobile_base_pose"
 
-    def _start_robot_bridge_heading_alignment(self):
-        bridge = getattr(self.robot, "_simbox_ros_base_bridge", None)
-        if bridge is None or not hasattr(bridge, "start_heading_alignment"):
-            return
-        follow_path_cfg = (
-            self._base_cfg.get("nav2_skill", {})
-            .get("controller_server", {})
-            .get("follow_path", {})
-        )
-        if not bool(follow_path_cfg.get("rotate_to_heading_enabled", False)):
-            return
-        try:
-            bridge.start_heading_alignment(
-                target_x=float(self.goal_x),
-                target_y=float(self.goal_y),
-                tolerance_rad=float(follow_path_cfg.get("angular_dist_threshold", 0.12)),
-                rotate_vel=float(follow_path_cfg.get("rotate_to_heading_angular_vel", 0.3)),
-            )
-        except Exception:
-            LOGGER.exception("failed to start base heading alignment gate")
-
     def _publish_navigation_goal(self, bridge_client):
-        self._start_robot_bridge_heading_alignment()
         bridge_client.publish_goal(
             request_id=self._request_id,
             goal_x=self.goal_x,
@@ -679,7 +657,7 @@ class PersistentNav2RuntimeManager:
             goal_yaw=self.goal_yaw,
         )
         self.state = self.STATE_WAITING_FOR_GOAL_ACCEPTED
-        self._goal_accept_deadline = time_monotonic() + min(self.startup_timeout_sec, 30.0)
+        self._goal_accept_deadline = self._sim_time() + min(self.startup_timeout_sec, 30.0)
 
     def _initialize_dynamic_goal_candidates(self):
         assert self.approach_config is not None
@@ -780,7 +758,7 @@ class PersistentNav2RuntimeManager:
             candidate["plan_request_id"] = plan_request_id
             candidate["path_state"] = "pending"
             self._dynamic_goal_active_plan_request_id = plan_request_id
-            self._dynamic_goal_plan_deadline = time_monotonic() + min(max(self.startup_timeout_sec, 1.0), 10.0)
+            self._dynamic_goal_plan_deadline = self._sim_time() + min(max(self.startup_timeout_sec, 1.0), 10.0)
             self._write_dynamic_goal_candidates_debug()
             bridge_client.publish_plan_request(
                 request_id=self._request_id,

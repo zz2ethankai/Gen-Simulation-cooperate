@@ -346,6 +346,10 @@ class BananaBaseTask(BaseTask):
             mount_paths = [cameras_root, camera_mount_path]
 
         camera_prim_path = os.path.join(camera_mount_path, "camera")
+        if is_prim_path_valid(camera_mount_path):
+            delete_prim(camera_mount_path)
+            self.cameras.pop(cfg["name"], None)
+            self.cameras_info.pop(cfg["name"], None)
 
         for path in mount_paths:
             if is_prim_path_valid(path):
