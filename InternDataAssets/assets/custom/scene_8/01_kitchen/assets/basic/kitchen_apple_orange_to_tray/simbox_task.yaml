@@ -2233,15 +2233,14 @@ tasks:
         - metal_tray_0_id9016
         position_constraint: object
         success_mode: xybbox
-        filter_x_dir: ["backward", 110]
-        filter_y_dir: ["downward", 120]
-        filter_z_dir: ["forward", 70]
+        filter_x_dir: ["forward", 45]
+        filter_z_dir: ["downward", 150]
         x_ratio_range:
-        - 0.42
-        - 0.48
+        - 0.50
+        - 0.90
         y_ratio_range:
-        - 0.46
-        - 0.54
+        - 0.10
+        - 0.40
         pre_place_z_offset: 0.1
         place_z_offset: 0.1
         gripper_change_steps: 20
@@ -2279,15 +2278,14 @@ tasks:
         - metal_tray_0_id9016
         position_constraint: object
         success_mode: xybbox
-        filter_x_dir: ["backward", 110]
-        filter_y_dir: ["downward", 120]
-        filter_z_dir: ["forward", 70]
+        filter_x_dir: ["forward", 45]
+        filter_z_dir: ["downward", 150]
         x_ratio_range:
-        - 0.56
-        - 0.62
+        - 0.50
+        - 0.90
         y_ratio_range:
-        - 0.46
-        - 0.54
+        - 0.60
+        - 0.90
         pre_place_z_offset: 0.1
         place_z_offset: 0.1
         gripper_change_steps: 20

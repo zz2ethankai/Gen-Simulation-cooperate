@@ -49,7 +49,7 @@
 
 - [ ] 确认 `navigate` skill 能从 `task.cfg["positions"]` 解析所有 `goal`。
 - [ ] 确认机器人配置仍使用 `workflows/simbox/core/configs/robots/split_aloha.yaml`，并能找到 `base_config_file` 和 `nav_config_file`。
-- [ ] 确认 Nav2 配置 `workflows/simbox/core/configs/nav/default_nav.yaml` 的 map 输出目录、ROS bridge 目录可写。
+- [ ] 确认 Nav2 配置 `nav2/config/default_nav.yaml` 的 map 输出目录、ROS bridge 目录可写。
 - [ ] 根据新场景高度调整 `navigate` skill 的 `map_z_min` / `map_z_max`，默认是 `0.0` 到 `0.35`。
 - [ ] 检查新增场景障碍物是否会被 controller 的 `ignore_substring` 误忽略，尤其是 `scene`、`table`、机器人名。
 - [ ] 检查 `pick` 的 `filter_x_dir` / `filter_y_dir` / `filter_z_dir` 是否适合新增物体的 grasp pose 分布。

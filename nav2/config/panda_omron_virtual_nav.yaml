@@ -1,0 +1,6 @@
+nav2_skill:
+  approach_footprint_padding: 0.04
+  planner_server:
+    minimum_turning_radius: 0.0
+  velocity_smoother:
+    feedback: CLOSED_LOOP

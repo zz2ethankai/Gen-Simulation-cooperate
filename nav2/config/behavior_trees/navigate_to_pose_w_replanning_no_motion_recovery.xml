@@ -1,0 +1,65 @@
+<!-- Holonomic Nav2 navigation with on-demand replanning and no motion recoveries. -->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="${navigation_retry_attempt_limit}" name="NavigateWithOnDemandReplanning">
+      <PipelineSequence name="FollowValidPath">
+        <RateController hz="${path_validity_check_hz}">
+          <RecoveryNode number_of_retries="${planner_retry_attempt_limit}" name="ComputePathIfNeeded">
+            <Fallback name="KeepValidPathOrReplan">
+              <ReactiveSequence name="CheckCurrentPath">
+                <Inverter>
+                  <GlobalUpdatedGoal/>
+                </Inverter>
+                <IsPathValid path="{path}"/>
+              </ReactiveSequence>
+              <Sequence name="PlanAndSmoothPath">
+                <ComputePathToPose goal="{goal}" path="{raw_path}" planner_id="GridBased"/>
+                <SmoothPath
+                  unsmoothed_path="{raw_path}"
+                  smoothed_path="{path}"
+                  smoother_id="simple_smoother"/>
+              </Sequence>
+            </Fallback>
+            <Sequence name="RecoverPathPlanning">
+              <ClearEntireCostmap
+                name="ClearGlobalCostmapForPathPlanning"
+                service_name="${clear_global_costmap_service}"/>
+              <Wait wait_duration="${costmap_clear_wait_sec}"/>
+            </Sequence>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="${follow_path_retry_attempt_limit}" name="RetryFollowPathLocally">
+          <FollowPath path="{path}" controller_id="FollowPath"/>
+          <Sequence name="RecoverLocalController">
+            <ClearEntireCostmap
+              name="ClearLocalCostmapForController"
+              service_name="${clear_local_costmap_service}"/>
+            <Wait wait_duration="${costmap_clear_wait_sec}"/>
+          </Sequence>
+        </RecoveryNode>
+      </PipelineSequence>
+      <RecoveryNode number_of_retries="${planner_retry_attempt_limit}" name="ReplanAfterControllerFailure">
+        <Sequence name="ForceGlobalReplan">
+          <ClearEntireCostmap
+            name="ClearLocalCostmapBeforeGlobalReplan"
+            service_name="${clear_local_costmap_service}"/>
+          <ClearEntireCostmap
+            name="ClearGlobalCostmapBeforeGlobalReplan"
+            service_name="${clear_global_costmap_service}"/>
+          <Wait wait_duration="${costmap_clear_wait_sec}"/>
+          <ComputePathToPose goal="{goal}" path="{raw_path}" planner_id="GridBased"/>
+          <SmoothPath
+            unsmoothed_path="{raw_path}"
+            smoothed_path="{path}"
+            smoother_id="simple_smoother"/>
+        </Sequence>
+        <Sequence name="RecoverForcedGlobalReplan">
+          <ClearEntireCostmap
+            name="ClearGlobalCostmapForForcedReplanRetry"
+            service_name="${clear_global_costmap_service}"/>
+          <Wait wait_duration="${costmap_clear_wait_sec}"/>
+        </Sequence>
+      </RecoveryNode>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

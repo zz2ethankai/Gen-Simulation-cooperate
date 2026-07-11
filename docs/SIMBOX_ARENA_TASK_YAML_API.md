@@ -276,7 +276,7 @@ robots:
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `base_config_file` | `str` | 无 | 移动底盘基础参数 YAML，例如 `configs/bases/ranger_mini_v3.yaml`。 |
-| `nav_config_file` | `str` | 无 | Nav2 参数 YAML，例如 `configs/nav/default_nav.yaml`。 |
+| `nav_config_file` | `str` | 无 | Nav2 参数 YAML，例如 `nav2/config/default_nav.yaml`。 |
 | `steering_joint_names` | `list[str]` | 无 | 底盘转向关节名。 |
 | `wheel_joint_names` | `list[str]` | 无 | 车轮关节名。 |
 | `wheel_base` | `float` | 基础配置提供 | 轴距。 |

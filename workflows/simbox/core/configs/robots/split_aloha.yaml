@@ -78,7 +78,7 @@ right_gripper_home: [0.05]
 
 base:
   base_config_file: workflows/simbox/core/configs/bases/ranger_mini_v3.yaml
-  nav_config_file: workflows/simbox/core/configs/nav/default_nav.yaml
+  nav_config_file: nav2/config/default_nav.yaml
   steering_joint_names:
     - fl_steering_joint
     - fr_steering_joint

@@ -1,9 +1,0 @@
-nav2_skill:
-  approach_footprint_padding: 0.10
-  planner_server:
-    minimum_turning_radius: 0.0
-    allow_reverse_expansion: true
-    lattice_filepath: /opt/ros/humble/share/nav2_smac_planner/sample_primitives/5cm_resolution/0.5m_turning_radius/omni/output.json
-  velocity_smoother:
-    feedback: CLOSED_LOOP
-    deadband_velocity: [0.0, 0.0, 0.0]

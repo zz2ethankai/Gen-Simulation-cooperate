@@ -1,0 +1,73 @@
+<!-- Holonomic Nav2 navigation through poses with on-demand replanning and no motion recoveries. -->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="${navigation_retry_attempt_limit}" name="NavigateThroughPosesWithOnDemandReplanning">
+      <PipelineSequence name="FollowValidPathThroughPoses">
+        <RateController hz="${path_validity_check_hz}">
+          <RecoveryNode number_of_retries="${planner_retry_attempt_limit}" name="ComputePathThroughPosesIfNeeded">
+            <Fallback name="KeepValidPathOrReplanThroughPoses">
+              <ReactiveSequence name="CheckCurrentPathThroughPoses">
+                <Inverter>
+                  <GlobalUpdatedGoal/>
+                </Inverter>
+                <IsPathValid path="{path}"/>
+              </ReactiveSequence>
+              <Sequence name="PlanAndSmoothPathThroughPoses">
+                <RemovePassedGoals
+                  input_goals="{goals}"
+                  output_goals="{goals}"
+                  radius="${remove_passed_goals_radius}"/>
+                <ComputePathThroughPoses goals="{goals}" path="{raw_path}" planner_id="GridBased"/>
+                <SmoothPath
+                  unsmoothed_path="{raw_path}"
+                  smoothed_path="{path}"
+                  smoother_id="simple_smoother"/>
+              </Sequence>
+            </Fallback>
+            <Sequence name="RecoverPathThroughPosesPlanning">
+              <ClearEntireCostmap
+                name="ClearGlobalCostmapForPathThroughPosesPlanning"
+                service_name="${clear_global_costmap_service}"/>
+              <Wait wait_duration="${costmap_clear_wait_sec}"/>
+            </Sequence>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="${follow_path_retry_attempt_limit}" name="RetryFollowPathThroughPosesLocally">
+          <FollowPath path="{path}" controller_id="FollowPath"/>
+          <Sequence name="RecoverLocalControllerThroughPoses">
+            <ClearEntireCostmap
+              name="ClearLocalCostmapForControllerThroughPoses"
+              service_name="${clear_local_costmap_service}"/>
+            <Wait wait_duration="${costmap_clear_wait_sec}"/>
+          </Sequence>
+        </RecoveryNode>
+      </PipelineSequence>
+      <RecoveryNode number_of_retries="${planner_retry_attempt_limit}" name="ReplanThroughPosesAfterControllerFailure">
+        <Sequence name="ForceGlobalReplanThroughPoses">
+          <ClearEntireCostmap
+            name="ClearLocalCostmapBeforeGlobalReplanThroughPoses"
+            service_name="${clear_local_costmap_service}"/>
+          <ClearEntireCostmap
+            name="ClearGlobalCostmapBeforeGlobalReplanThroughPoses"
+            service_name="${clear_global_costmap_service}"/>
+          <Wait wait_duration="${costmap_clear_wait_sec}"/>
+          <RemovePassedGoals
+            input_goals="{goals}"
+            output_goals="{goals}"
+            radius="${remove_passed_goals_radius}"/>
+          <ComputePathThroughPoses goals="{goals}" path="{raw_path}" planner_id="GridBased"/>
+          <SmoothPath
+            unsmoothed_path="{raw_path}"
+            smoothed_path="{path}"
+            smoother_id="simple_smoother"/>
+        </Sequence>
+        <Sequence name="RecoverForcedGlobalReplanThroughPoses">
+          <ClearEntireCostmap
+            name="ClearGlobalCostmapForForcedReplanThroughPosesRetry"
+            service_name="${clear_global_costmap_service}"/>
+          <Wait wait_duration="${costmap_clear_wait_sec}"/>
+        </Sequence>
+      </RecoveryNode>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

@@ -1,9 +1,11 @@
-"""Nav2 runtime configuration normalization and parameter generation."""
+"""Nav2 runtime configuration normalization and artifact generation."""
 
 from __future__ import annotations
 
 from copy import deepcopy
 import os
+from pathlib import Path
+from string import Template
 
 import yaml
 
@@ -11,22 +13,21 @@ from workflows.simbox.core.mobile.platforms import get_mobile_base_platform
 
 from .utils import footprint_inscribed_radius
 
-NAV2_DEFAULT_MAX_ACKERMANN_STEER_RAD = 0.6981
-NAV2_DEFAULT_POSITION_TOLERANCE_M = 0.10
-NAV2_DEFAULT_YAW_TOLERANCE_RAD = 0.10
 
-DEFAULT_NAV2_SKILL_FOOTPRINT_POINTS = [
-    [0.36, 0.24],
-    [0.32, 0.29],
-    [-0.32, 0.29],
-    [-0.36, 0.24],
-    [-0.36, -0.24],
-    [-0.32, -0.29],
-    [0.32, -0.29],
-    [0.36, -0.24],
-]
-DEFAULT_NAV2_SKILL_INFLATION_RADIUS_M = 0.34
-DEFAULT_NAV2_SKILL_MIN_TURN_RADIUS_M = 0.47644
+NAV2_CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
+NAV2_PARAMS_CONFIG_PATH = NAV2_CONFIG_DIR / "nav2_params.yaml"
+NAV2_DEFAULT_CONFIG_PATH = NAV2_CONFIG_DIR / "default_nav.yaml"
+NAV2_BT_CONFIG_DIR = NAV2_CONFIG_DIR / "behavior_trees"
+
+
+def _load_yaml_config(path: Path) -> dict:
+    with path.open("r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
+
+
+_NAV2_RUNTIME_DEFAULTS = _load_yaml_config(NAV2_DEFAULT_CONFIG_PATH)["nav2_runtime_defaults"]
+NAV2_DEFAULT_POSITION_TOLERANCE_M = float(_NAV2_RUNTIME_DEFAULTS["position_tolerance_m"])
+NAV2_DEFAULT_YAW_TOLERANCE_RAD = float(_NAV2_RUNTIME_DEFAULTS["yaw_tolerance_rad"])
 
 
 def format_nav2_footprint(points: list[list[float]]) -> str:
@@ -51,184 +52,9 @@ def _normalize_footprint_points(points) -> list[list[float]]:
         return []
     normalized = []
     for point in points:
-        if not isinstance(point, (list, tuple)) or len(point) < 2:
-            continue
-        normalized.append([float(point[0]), float(point[1])])
-    if len(normalized) < 3:
-        return []
-    return normalized
-
-
-def _build_mppi_follow_path_params(
-    follow_path_cfg: dict,
-    follow_path_plugin: str,
-    *,
-    max_velocity: tuple[float, float, float],
-    min_velocity: tuple[float, float, float],
-    max_accel: tuple[float, float, float],
-    max_decel: tuple[float, float, float],
-) -> dict:
-    return {
-        "plugin": follow_path_plugin,
-        "time_steps": int(follow_path_cfg.get("time_steps", 40)),
-        "model_dt": float(follow_path_cfg.get("model_dt", 0.05)),
-        "batch_size": int(follow_path_cfg.get("batch_size", 1200)),
-        "iteration_count": int(follow_path_cfg.get("iteration_count", 1)),
-        "prune_distance": float(follow_path_cfg.get("prune_distance", 1.8)),
-        "transform_tolerance": float(follow_path_cfg.get("transform_tolerance", 0.3)),
-        "temperature": float(follow_path_cfg.get("temperature", 0.3)),
-        "gamma": float(follow_path_cfg.get("gamma", 0.015)),
-        "motion_model": str(follow_path_cfg.get("motion_model", "Omni")),
-        "open_loop": bool(follow_path_cfg.get("open_loop", False)),
-        "visualize": bool(follow_path_cfg.get("visualize", False)),
-        "regenerate_noises": bool(follow_path_cfg.get("regenerate_noises", False)),
-        "reset_period": float(follow_path_cfg.get("reset_period", 1.0)),
-        "retry_attempt_limit": int(follow_path_cfg.get("retry_attempt_limit", 1)),
-        "vx_max": float(follow_path_cfg.get("vx_max", max_velocity[0])),
-        "vx_min": float(follow_path_cfg.get("vx_min", min_velocity[0])),
-        "vy_max": float(follow_path_cfg.get("vy_max", max_velocity[1])),
-        "vy_min": float(follow_path_cfg.get("vy_min", min_velocity[1])),
-        "wz_max": float(follow_path_cfg.get("wz_max", max_velocity[2])),
-        "ax_max": float(follow_path_cfg.get("ax_max", max_accel[0])),
-        "ax_min": float(follow_path_cfg.get("ax_min", max_decel[0])),
-        "ay_max": float(follow_path_cfg.get("ay_max", max_accel[1])),
-        "ay_min": float(follow_path_cfg.get("ay_min", max_decel[1])),
-        "az_max": float(follow_path_cfg.get("az_max", max_accel[2])),
-        "vx_std": float(follow_path_cfg.get("vx_std", 0.12)),
-        "vy_std": float(follow_path_cfg.get("vy_std", 0.14)),
-        "wz_std": float(follow_path_cfg.get("wz_std", 0.25)),
-        "TrajectoryVisualizer": dict(
-            follow_path_cfg.get(
-                "TrajectoryVisualizer",
-                {
-                    "trajectory_step": 5,
-                    "time_step": 3,
-                },
-            )
-        ),
-        "TrajectoryValidator": dict(
-            follow_path_cfg.get(
-                "TrajectoryValidator",
-                {
-                    "plugin": "mppi::DefaultOptimalTrajectoryValidator",
-                    "collision_lookahead_time": 2.0,
-                    "consider_footprint": True,
-                },
-            )
-        ),
-        "critics": list(
-            follow_path_cfg.get(
-                "critics",
-                [
-                    "ConstraintCritic",
-                    "CostCritic",
-                    "GoalCritic",
-                    "GoalAngleCritic",
-                    "PathAlignCritic",
-                    "PathFollowCritic",
-                    "PathAngleCritic",
-                    "TwirlingCritic",
-                ],
-            )
-        ),
-        "ConstraintCritic": dict(
-            follow_path_cfg.get(
-                "ConstraintCritic",
-                {
-                    "enabled": True,
-                    "cost_power": 1,
-                    "cost_weight": 4.0,
-                },
-            )
-        ),
-        "CostCritic": dict(
-            follow_path_cfg.get(
-                "CostCritic",
-                {
-                    "enabled": True,
-                    "cost_power": 1,
-                    "cost_weight": 3.8,
-                    "critical_cost": 300.0,
-                    "consider_footprint": True,
-                    "collision_cost": 1000000.0,
-                    "near_goal_distance": 0.4,
-                    "trajectory_point_step": 2,
-                },
-            )
-        ),
-        "GoalCritic": dict(
-            follow_path_cfg.get(
-                "GoalCritic",
-                {
-                    "enabled": True,
-                    "cost_power": 1,
-                    "cost_weight": 5.0,
-                    "threshold_to_consider": 1.4,
-                },
-            )
-        ),
-        "GoalAngleCritic": dict(
-            follow_path_cfg.get(
-                "GoalAngleCritic",
-                {
-                    "enabled": True,
-                    "cost_power": 1,
-                    "cost_weight": 3.0,
-                    "threshold_to_consider": 0.4,
-                },
-            )
-        ),
-        "PathAlignCritic": dict(
-            follow_path_cfg.get(
-                "PathAlignCritic",
-                {
-                    "enabled": True,
-                    "cost_power": 1,
-                    "cost_weight": 10.0,
-                    "threshold_to_consider": 0.8,
-                    "offset_from_furthest": 10,
-                    "max_path_occupancy_ratio": 0.2,
-                    "use_path_orientations": True,
-                },
-            )
-        ),
-        "PathFollowCritic": dict(
-            follow_path_cfg.get(
-                "PathFollowCritic",
-                {
-                    "enabled": True,
-                    "cost_power": 1,
-                    "cost_weight": 8.0,
-                    "threshold_to_consider": 1.4,
-                    "offset_from_furthest": 6,
-                },
-            )
-        ),
-        "PathAngleCritic": dict(
-            follow_path_cfg.get(
-                "PathAngleCritic",
-                {
-                    "enabled": True,
-                    "cost_power": 1,
-                    "cost_weight": 3.0,
-                    "threshold_to_consider": 0.8,
-                    "offset_from_furthest": 10,
-                    "max_angle_to_furthest": 0.78539816339,
-                    "mode": 2,
-                },
-            )
-        ),
-        "TwirlingCritic": dict(
-            follow_path_cfg.get(
-                "TwirlingCritic",
-                {
-                    "enabled": True,
-                    "cost_power": 1,
-                    "cost_weight": 8.0,
-                },
-            )
-        ),
-    }
+        if isinstance(point, (list, tuple)) and len(point) >= 2:
+            normalized.append([float(point[0]), float(point[1])])
+    return normalized if len(normalized) >= 3 else []
 
 
 def configure_base_cfg_for_nav2_skill(
@@ -257,65 +83,45 @@ def configure_base_cfg_for_nav2_skill(
     ros_cfg.pop("internal_cmdvel_controller_enabled", None)
     ros_cfg["max_steer_angle_ackermann"] = float(platform.max_steer_angle_ackermann(base_cfg))
     virtual_odom_cfg = ros_cfg.setdefault("virtual_odom", {})
-    virtual_odom_cfg["enabled"] = False
-    virtual_odom_cfg["publish_twist"] = True
-    virtual_odom_cfg["use_world_z"] = True
+    virtual_odom_cfg.update({"enabled": False, "publish_twist": True, "use_world_z": True})
     virtual_odom_cfg["default_z"] = float(virtual_odom_cfg.get("default_z", 0.0))
 
     localization_cfg = ros_cfg.setdefault("localization", {})
-    localization_cfg["enabled"] = True
-    localization_cfg["mode"] = "static_map_truth_pose"
-    localization_cfg["map_resolution"] = float(map_resolution)
-    localization_cfg["map_output_dir"] = str(map_output_dir)
+    localization_cfg.update(
+        {
+            "enabled": True,
+            "mode": "static_map_truth_pose",
+            "map_resolution": float(map_resolution),
+            "map_output_dir": str(map_output_dir),
+            "map_include_visual_wall_geometry": bool(map_include_visual_wall_geometry),
+        }
+    )
     localization_cfg["map_z_min"] = float(localization_cfg.get("map_z_min", map_z_min))
     localization_cfg["map_z_max"] = float(localization_cfg.get("map_z_max", map_z_max))
-    localization_cfg["map_include_visual_wall_geometry"] = bool(map_include_visual_wall_geometry)
-    localization_cfg["map_frame"] = str(localization_cfg.get("map_frame", "map"))
-    localization_cfg["odom_frame"] = str(localization_cfg.get("odom_frame", ros_cfg.get("odom_frame", "odom")))
-    localization_cfg["base_frame"] = str(localization_cfg.get("base_frame", ros_cfg.get("base_frame", "base_link")))
-    localization_cfg.setdefault(
-        "clear_footprint_points",
-        platform.default_nav2_footprint_points(base_cfg),
-    )
+    localization_cfg.setdefault("clear_footprint_points", platform.default_nav2_footprint_points(base_cfg))
     localization_cfg.setdefault("robot_clear_radius_m", 0.0)
 
-    nav2_cfg = ros_cfg.setdefault("nav2", {})
-    nav2_cfg["enabled"] = True
-    nav2_cfg["global_frame"] = str(localization_cfg.get("map_frame", "map"))
-    nav2_cfg["robot_base_frame"] = str(localization_cfg.get("base_frame", ros_cfg.get("base_frame", "base_link")))
-    nav2_cfg["skill_managed"] = True
-    nav2_cfg["runtime_mode"] = "external_compose"
-    nav2_cfg["stack_request_root"] = str(nav2_cfg.get("stack_request_root", "output/ros_bridge/runtime_requests"))
-    nav2_cfg["stack_status_root"] = str(nav2_cfg.get("stack_status_root", "output/ros_bridge/runtime_status"))
-    nav2_cfg["goal_request_root"] = str(nav2_cfg.get("goal_request_root", "output/ros_bridge/goal_requests"))
-    nav2_cfg["goal_status_root"] = str(nav2_cfg.get("goal_status_root", "output/ros_bridge/goal_status"))
-    nav2_cfg["goal_result_root"] = str(nav2_cfg.get("goal_result_root", "output/ros_bridge/goal_result"))
-    nav2_cfg["stack_reuse"] = bool(nav2_cfg.get("stack_reuse", True))
-    nav2_cfg["goal_transport"] = str(nav2_cfg.get("goal_transport", "ros_topic_bridge"))
-    nav2_cfg["load_map_service"] = str(nav2_cfg.get("load_map_service", "/map_server/load_map"))
-    nav2_cfg["clear_global_costmap_service"] = str(
-        nav2_cfg.get("clear_global_costmap_service", "/global_costmap/clear_entirely_global_costmap")
-    )
-    nav2_cfg["clear_local_costmap_service"] = str(
-        nav2_cfg.get("clear_local_costmap_service", "/local_costmap/clear_entirely_local_costmap")
-    )
-    nav2_cfg["bridge_map_update_topic"] = str(nav2_cfg.get("bridge_map_update_topic", "/simbox/nav_bridge/map_update"))
-    nav2_cfg["bridge_goal_topic"] = str(nav2_cfg.get("bridge_goal_topic", "/simbox/nav_bridge/goal"))
-    nav2_cfg["bridge_plan_topic"] = str(nav2_cfg.get("bridge_plan_topic", "/simbox/nav_bridge/plan"))
-    nav2_cfg["bridge_cancel_topic"] = str(nav2_cfg.get("bridge_cancel_topic", "/simbox/nav_bridge/cancel"))
-    nav2_cfg["bridge_reset_topic"] = str(nav2_cfg.get("bridge_reset_topic", "/simbox/nav_bridge/reset"))
-    nav2_cfg["bridge_status_topic"] = str(nav2_cfg.get("bridge_status_topic", "/simbox/nav_bridge/status"))
-    nav2_cfg["bridge_result_topic"] = str(nav2_cfg.get("bridge_result_topic", "/simbox/nav_bridge/result"))
-    nav2_cfg["bridge_plan_result_topic"] = str(
-        nav2_cfg.get("bridge_plan_result_topic", "/simbox/nav_bridge/plan_result")
-    )
-    nav2_cfg["bridge_alive_timeout_sec"] = float(nav2_cfg.get("bridge_alive_timeout_sec", 3.0))
+    map_frame = str(localization_cfg.get("map_frame", "map"))
+    odom_frame = str(localization_cfg.get("odom_frame", ros_cfg.get("odom_frame", "odom")))
+    base_frame = str(localization_cfg.get("base_frame", ros_cfg.get("base_frame", "base_link")))
+    localization_cfg.update({"map_frame": map_frame, "odom_frame": odom_frame, "base_frame": base_frame})
 
-    base_cfg.setdefault("nav2_skill", {})
+    nav2_cfg = ros_cfg.setdefault("nav2", {})
+    nav2_cfg.update(
+        {
+            "enabled": True,
+            "global_frame": map_frame,
+            "robot_base_frame": base_frame,
+            "skill_managed": True,
+            "runtime_mode": "external_compose",
+        }
+    )
+
+    skill_cfg = base_cfg.setdefault("nav2_skill", {})
     if isinstance(nav2_skill_overrides, dict):
-        _deep_update_dict(base_cfg["nav2_skill"], nav2_skill_overrides)
-    base_cfg["nav2_skill"]["position_tolerance_m"] = float(position_tolerance_m)
-    base_cfg["nav2_skill"]["yaw_tolerance_rad"] = float(yaw_tolerance_rad)
+        _deep_update_dict(skill_cfg, nav2_skill_overrides)
+    skill_cfg["position_tolerance_m"] = float(position_tolerance_m)
+    skill_cfg["yaw_tolerance_rad"] = float(yaw_tolerance_rad)
     return deepcopy(base_cfg)
 
 
@@ -376,81 +182,116 @@ def generate_nav2_bringup_artifacts(
     }
 
 
+def _behavior_tree_cfg(base_cfg: dict) -> dict:
+    skill_cfg = nav2_skill_cfg(base_cfg)
+    config = deepcopy(skill_cfg.get("bt_navigator", {}))
+    _deep_update_dict(config, skill_cfg.get("behavior_tree", {}))
+    return config
+
+
 def _write_nav2_bt_files(output_dir: str, base_cfg: dict) -> tuple[str, str]:
     os.makedirs(output_dir, exist_ok=True)
-    nav_to_pose_bt_path = os.path.join(output_dir, "navigate_to_pose_w_replanning_no_motion_recovery.xml")
-    nav_through_poses_bt_path = os.path.join(
-        output_dir,
+    bt_cfg = _behavior_tree_cfg(base_cfg)
+    nav2_cfg = base_cfg["ros"]["nav2"]
+    substitutions = {
+        **bt_cfg,
+        "clear_global_costmap_service": nav2_cfg["clear_global_costmap_service"],
+        "clear_local_costmap_service": nav2_cfg["clear_local_costmap_service"],
+    }
+
+    output_paths = []
+    for filename in (
+        "navigate_to_pose_w_replanning_no_motion_recovery.xml",
         "navigate_through_poses_w_replanning_no_motion_recovery.xml",
-    )
-    skill_cfg = nav2_skill_cfg(base_cfg)
-    bt_cfg = dict(skill_cfg.get("bt_navigator", {}))
-    nav2_cfg = dict(base_cfg.get("ros", {}).get("nav2", {}))
-    replanning_hz = float(bt_cfg.get("replanning_hz", 0.25))
-    replan_retry_attempt_limit = int(bt_cfg.get("replan_retry_attempt_limit", 3))
-    remove_passed_goals_radius = float(bt_cfg.get("remove_passed_goals_radius", 0.7))
-    clear_global_costmap_service = str(
-        nav2_cfg.get("clear_global_costmap_service", "/global_costmap/clear_entirely_global_costmap")
-    )
-    clear_local_costmap_service = str(
-        nav2_cfg.get("clear_local_costmap_service", "/local_costmap/clear_entirely_local_costmap")
-    )
-    nav_to_pose_bt = f"""<!-- Holonomic Nav2 navigation without recovery/fallback behaviors. -->
-<root main_tree_to_execute="MainTree">
-  <BehaviorTree ID="MainTree">
-    <PipelineSequence name="NavigateWithReplanning">
-      <RateController hz="{replanning_hz}">
-        <RecoveryNode number_of_retries="{replan_retry_attempt_limit}" name="ReplanToPose">
-          <ComputePathToPose goal="{{goal}}" path="{{raw_path}}" planner_id="GridBased"/>
-          <Sequence name="ReplanRecovery">
-            <ClearEntireCostmap
-              name="ClearGlobalCostmapForReplan"
-              service_name="{clear_global_costmap_service}"/>
-            <ClearEntireCostmap
-              name="ClearLocalCostmapForReplan"
-              service_name="{clear_local_costmap_service}"/>
-          </Sequence>
-        </RecoveryNode>
-      </RateController>
-      <SmoothPath unsmoothed_path="{{raw_path}}" smoothed_path="{{path}}" smoother_id="simple_smoother"/>
-      <FollowPath path="{{path}}" controller_id="FollowPath"/>
-    </PipelineSequence>
-  </BehaviorTree>
-</root>
-"""
+    ):
+        template_path = NAV2_BT_CONFIG_DIR / filename
+        rendered = Template(template_path.read_text(encoding="utf-8")).substitute(substitutions)
+        output_path = Path(output_dir) / filename
+        output_path.write_text(rendered, encoding="utf-8")
+        output_paths.append(str(output_path))
+    return output_paths[0], output_paths[1]
 
-    nav_through_poses_bt = f"""<!-- Holonomic Nav2 navigation through poses without recovery/fallback behaviors. -->
-<root main_tree_to_execute="MainTree">
-  <BehaviorTree ID="MainTree">
-    <PipelineSequence name="NavigateThroughPosesWithReplanning">
-      <RateController hz="{replanning_hz}">
-        <RecoveryNode number_of_retries="{replan_retry_attempt_limit}" name="ReplanThroughPoses">
-          <Sequence name="ComputePathThroughRemainingGoals">
-            <RemovePassedGoals input_goals="{{goals}}" output_goals="{{goals}}" radius="{remove_passed_goals_radius}"/>
-            <ComputePathThroughPoses goals="{{goals}}" path="{{raw_path}}" planner_id="GridBased"/>
-          </Sequence>
-          <Sequence name="ReplanRecovery">
-            <ClearEntireCostmap
-              name="ClearGlobalCostmapForReplan"
-              service_name="{clear_global_costmap_service}"/>
-            <ClearEntireCostmap
-              name="ClearLocalCostmapForReplan"
-              service_name="{clear_local_costmap_service}"/>
-          </Sequence>
-        </RecoveryNode>
-      </RateController>
-      <SmoothPath unsmoothed_path="{{raw_path}}" smoothed_path="{{path}}" smoother_id="simple_smoother"/>
-      <FollowPath path="{{path}}" controller_id="FollowPath"/>
-    </PipelineSequence>
-  </BehaviorTree>
-</root>
-"""
 
-    with open(nav_to_pose_bt_path, "w", encoding="utf-8") as file:
-        file.write(nav_to_pose_bt)
-    with open(nav_through_poses_bt_path, "w", encoding="utf-8") as file:
-        file.write(nav_through_poses_bt)
-    return nav_to_pose_bt_path, nav_through_poses_bt_path
+def _select_profile(profiles: dict, default_plugin: str, overrides: dict) -> dict:
+    plugin = str(overrides.get("plugin", default_plugin))
+    profile = deepcopy(profiles.get(plugin, {"plugin": plugin}))
+    _deep_update_dict(profile, overrides)
+    profile["plugin"] = plugin
+    return profile
+
+
+def _controller_params(template_cfg: dict, skill_cfg: dict, hard_limits: dict) -> tuple[dict, dict]:
+    controller_cfg = deepcopy(skill_cfg.get("controller_server", {}))
+    follow_path_cfg = controller_cfg.pop("follow_path", {})
+    progress_checker_cfg = controller_cfg.pop("progress_checker", {})
+    goal_checker_cfg = controller_cfg.pop("goal_checker", {})
+
+    profiles = template_cfg["controller_profiles"]
+    default_plugin = template_cfg["defaults"]["controller_plugin"]
+    rotation_shim_plugin = "nav2_rotation_shim_controller::RotationShimController"
+    rotate_to_heading = bool(follow_path_cfg.pop("rotate_to_heading_enabled", True))
+    if follow_path_cfg.get("plugin", default_plugin) == rotation_shim_plugin and not rotate_to_heading:
+        follow_path_cfg["plugin"] = follow_path_cfg.pop(
+            "primary_controller",
+            profiles[rotation_shim_plugin]["primary_controller"],
+        )
+        for key in (
+            "angular_dist_threshold",
+            "forward_sampling_distance",
+            "rotate_to_heading_angular_vel",
+            "max_angular_accel",
+            "simulate_ahead_time",
+            "rotate_to_goal_heading",
+        ):
+            follow_path_cfg.pop(key, None)
+
+    follow_path = _select_profile(profiles, default_plugin, follow_path_cfg)
+    dynamic_limits = {
+        "vx_max": hard_limits["max_velocity"][0],
+        "vx_min": hard_limits["min_velocity"][0],
+        "vy_max": hard_limits["max_velocity"][1],
+        "vy_min": hard_limits["min_velocity"][1],
+        "wz_max": hard_limits["max_velocity"][2],
+        "ax_max": hard_limits["max_accel"][0],
+        "ax_min": hard_limits["max_decel"][0],
+        "ay_max": hard_limits["max_accel"][1],
+        "ay_min": hard_limits["max_decel"][1],
+        "az_max": hard_limits["max_accel"][2],
+    }
+    for key, value in dynamic_limits.items():
+        if key in follow_path and follow_path[key] is None:
+            follow_path[key] = float(value)
+    if follow_path.get("max_angular_accel", False) is None:
+        follow_path["max_angular_accel"] = float(hard_limits["max_accel"][2])
+    return controller_cfg, {
+        "FollowPath": follow_path,
+        "progress_checker": progress_checker_cfg,
+        "general_goal_checker": goal_checker_cfg,
+    }
+
+
+def _planner_params(template_cfg: dict, skill_cfg: dict, minimum_turning_radius: float) -> tuple[dict, dict]:
+    planner_cfg = deepcopy(skill_cfg.get("planner_server", {}))
+    server_cfg = {}
+    if "expected_planner_frequency" in planner_cfg:
+        server_cfg["expected_planner_frequency"] = planner_cfg.pop("expected_planner_frequency")
+    planner = _select_profile(
+        template_cfg["planner_profiles"],
+        template_cfg["defaults"]["planner_plugin"],
+        planner_cfg,
+    )
+    if planner.get("minimum_turning_radius", False) is None:
+        planner["minimum_turning_radius"] = float(minimum_turning_radius)
+    return server_cfg, planner
+
+
+def _merge_costmap_config(target: dict, overrides: dict) -> None:
+    overrides = deepcopy(overrides)
+    if "cost_scaling_factor" in overrides:
+        overrides.setdefault("inflation_layer", {})["cost_scaling_factor"] = overrides.pop(
+            "cost_scaling_factor"
+        )
+    _deep_update_dict(target, overrides)
 
 
 def _build_nav2_params(
@@ -461,608 +302,117 @@ def _build_nav2_params(
     position_tolerance_m: float,
     yaw_tolerance_rad: float,
 ):
-    ros_cfg = dict(base_cfg.get("ros", {}))
-    platform = get_mobile_base_platform(base_cfg)
-    controller_hard_limits = platform.nav2_controller_hard_limits(base_cfg)
-    max_velocity = list(controller_hard_limits["max_velocity"])
-    min_velocity = list(controller_hard_limits["min_velocity"])
-    max_accel = list(controller_hard_limits["max_accel"])
-    max_decel = list(controller_hard_limits["max_decel"])
-    nav2_cfg = dict(ros_cfg.get("nav2", {}))
-    localization_cfg = dict(ros_cfg.get("localization", {}))
-    map_frame = str(localization_cfg.get("map_frame", nav2_cfg.get("global_frame", "map")))
-    odom_frame = str(localization_cfg.get("odom_frame", ros_cfg.get("odom_frame", "odom")))
-    base_frame = str(
-        localization_cfg.get("base_frame", nav2_cfg.get("robot_base_frame", ros_cfg.get("base_frame", "base_link")))
-    )
+    template_cfg = _load_yaml_config(NAV2_PARAMS_CONFIG_PATH)
+    params = deepcopy(template_cfg["params"])
     skill_cfg = nav2_skill_cfg(base_cfg)
+    ros_cfg = base_cfg["ros"]
+    nav2_cfg = ros_cfg["nav2"]
+    localization_cfg = ros_cfg["localization"]
+    platform = get_mobile_base_platform(base_cfg)
+    hard_limits = platform.nav2_controller_hard_limits(base_cfg)
+
+    controller_overrides, nested_controller_overrides = _controller_params(
+        template_cfg,
+        skill_cfg,
+        hard_limits,
+    )
+    controller_params = params["controller_server"]["ros__parameters"]
+    _deep_update_dict(controller_params, controller_overrides)
+    controller_params["general_goal_checker"].update(
+        {
+            "xy_goal_tolerance": float(position_tolerance_m),
+            "yaw_goal_tolerance": float(yaw_tolerance_rad),
+        }
+    )
+    for key, overrides in nested_controller_overrides.items():
+        if key == "FollowPath":
+            controller_params[key] = overrides
+        else:
+            _deep_update_dict(controller_params[key], overrides)
+
+    planner_server_overrides, planner = _planner_params(
+        template_cfg,
+        skill_cfg,
+        platform.default_nav2_minimum_turning_radius_m(base_cfg),
+    )
+    planner_params = params["planner_server"]["ros__parameters"]
+    _deep_update_dict(planner_params, planner_server_overrides)
+    planner_params["GridBased"] = planner
+
+    local_costmap = params["local_costmap"]["local_costmap"]["ros__parameters"]
+    global_costmap = params["global_costmap"]["global_costmap"]["ros__parameters"]
+    local_costmap_cfg = skill_cfg.get("local_costmap", {})
+    global_costmap_cfg = skill_cfg.get("global_costmap", {})
+    _merge_costmap_config(local_costmap, local_costmap_cfg)
+    _merge_costmap_config(global_costmap, global_costmap_cfg)
+
+    _deep_update_dict(
+        params["smoother_server"]["ros__parameters"]["simple_smoother"],
+        skill_cfg.get("smoother_server", {}),
+    )
+    for section in ("behavior_server", "waypoint_follower", "velocity_smoother"):
+        _deep_update_dict(params[section]["ros__parameters"], skill_cfg.get(section, {}))
+
+    bt_params = params["bt_navigator"]["ros__parameters"]
+    for key, value in skill_cfg.get("bt_navigator", {}).items():
+        if key in bt_params:
+            bt_params[key] = deepcopy(value)
+
+    map_frame = str(localization_cfg.get("map_frame", nav2_cfg["global_frame"]))
+    odom_frame = str(localization_cfg.get("odom_frame", ros_cfg.get("odom_frame", "odom")))
+    base_frame = str(localization_cfg.get("base_frame", nav2_cfg["robot_base_frame"]))
+    odom_topic = str(ros_cfg.get("odom_topic", "/odom"))
+    bt_params.update(
+        {
+            "global_frame": map_frame,
+            "robot_base_frame": base_frame,
+            "odom_topic": odom_topic,
+            "default_bt_xml_filename": nav_to_pose_bt,
+            "default_nav_to_pose_bt_xml": nav_to_pose_bt,
+            "default_nav_through_poses_bt_xml": nav_through_poses_bt,
+        }
+    )
+
     footprint_points = _normalize_footprint_points(skill_cfg.get("footprint_points"))
     if not footprint_points:
         footprint_points = platform.default_nav2_footprint_points(base_cfg)
     footprint = format_nav2_footprint(footprint_points)
-    inflation_radius = float(skill_cfg.get("inflation_radius_m", platform.default_nav2_inflation_radius_m(base_cfg)))
-    inscribed_radius = footprint_inscribed_radius(footprint_points)
-    inflation_radius = max(inflation_radius, inscribed_radius)
-    minimum_turning_radius = float(platform.default_nav2_minimum_turning_radius_m(base_cfg))
-    bt_cfg = dict(skill_cfg.get("bt_navigator", {}))
-    bt_plugins = list(
-        bt_cfg.get(
-            "plugin_lib_names",
-            [
-                "nav2_compute_path_to_pose_action_bt_node",
-                "nav2_compute_path_through_poses_action_bt_node",
-                "nav2_smooth_path_action_bt_node",
-                "nav2_follow_path_action_bt_node",
-                "nav2_clear_costmap_service_bt_node",
-                "nav2_goal_updated_condition_bt_node",
-                "nav2_remove_passed_goals_action_bt_node",
-                "nav2_rate_controller_bt_node",
-                "nav2_pipeline_sequence_bt_node",
-                "nav2_recovery_node_bt_node",
-                "nav2_navigate_to_pose_action_bt_node",
-                "nav2_navigate_through_poses_action_bt_node",
-            ],
-        )
+    inflation_radius = max(
+        float(skill_cfg.get("inflation_radius_m", platform.default_nav2_inflation_radius_m(base_cfg))),
+        footprint_inscribed_radius(footprint_points),
     )
-    controller_cfg = dict(skill_cfg.get("controller_server", {}))
-    progress_checker_cfg = dict(controller_cfg.get("progress_checker", {}))
-    goal_checker_cfg = dict(controller_cfg.get("goal_checker", {}))
-    follow_path_cfg = dict(controller_cfg.get("follow_path", {}))
-    local_costmap_cfg = dict(skill_cfg.get("local_costmap", {}))
-    global_costmap_cfg = dict(skill_cfg.get("global_costmap", {}))
-    planner_cfg = dict(skill_cfg.get("planner_server", {}))
-    smoother_cfg = dict(skill_cfg.get("smoother_server", {}))
-    behavior_cfg = dict(skill_cfg.get("behavior_server", {}))
-    waypoint_cfg = dict(skill_cfg.get("waypoint_follower", {}))
-    velocity_smoother_cfg = dict(skill_cfg.get("velocity_smoother", {}))
-
-    follow_path_plugin = str(follow_path_cfg.get("plugin", "nav2_mppi_controller::MPPIController"))
-    rotation_shim_plugin = "nav2_rotation_shim_controller::RotationShimController"
-    rotate_to_heading_enabled = bool(follow_path_cfg.get("rotate_to_heading_enabled", True))
-    if follow_path_plugin == rotation_shim_plugin and not rotate_to_heading_enabled:
-        follow_path_plugin = str(
-            follow_path_cfg.get("primary_controller", "nav2_mppi_controller::MPPIController")
-        )
-    if follow_path_plugin == "dwb_core::DWBLocalPlanner":
-        dwb_passthrough_keys = {
-            "plugin",
-            "rotate_to_heading_enabled",
-            "debug_trajectory_details",
-            "short_circuit_trajectory_evaluation",
-            "stateful",
-            "min_vel_x",
-            "max_vel_x",
-            "min_vel_y",
-            "max_vel_y",
-            "max_vel_theta",
-            "min_speed_xy",
-            "max_speed_xy",
-            "min_speed_theta",
-            "acc_lim_x",
-            "acc_lim_y",
-            "acc_lim_theta",
-            "decel_lim_x",
-            "decel_lim_y",
-            "decel_lim_theta",
-            "vx_samples",
-            "vy_samples",
-            "vtheta_samples",
-            "sim_time",
-            "linear_granularity",
-            "angular_granularity",
-            "transform_tolerance",
-            "critics",
-            "BaseObstacle.scale",
-            "PathAlign.scale",
-            "PathAlign.forward_point_distance",
-            "GoalAlign.scale",
-            "GoalAlign.forward_point_distance",
-            "PathDist.scale",
-            "GoalDist.scale",
-            "RotateToGoal.scale",
-            "RotateToGoal.slowing_factor",
-            "RotateToGoal.lookahead_time",
-        }
-        follow_path_params = {
-            "plugin": follow_path_plugin,
-            "debug_trajectory_details": bool(follow_path_cfg.get("debug_trajectory_details", False)),
-            "short_circuit_trajectory_evaluation": bool(
-                follow_path_cfg.get("short_circuit_trajectory_evaluation", True)
-            ),
-            "stateful": bool(follow_path_cfg.get("stateful", True)),
-            "min_vel_x": float(follow_path_cfg.get("min_vel_x", -0.35)),
-            "max_vel_x": float(follow_path_cfg.get("max_vel_x", 0.35)),
-            "min_vel_y": float(follow_path_cfg.get("min_vel_y", -0.25)),
-            "max_vel_y": float(follow_path_cfg.get("max_vel_y", 0.25)),
-            "max_vel_theta": float(follow_path_cfg.get("max_vel_theta", 0.60)),
-            "min_speed_xy": float(follow_path_cfg.get("min_speed_xy", 0.0)),
-            "max_speed_xy": float(follow_path_cfg.get("max_speed_xy", 0.40)),
-            "min_speed_theta": float(follow_path_cfg.get("min_speed_theta", 0.0)),
-            "acc_lim_x": float(follow_path_cfg.get("acc_lim_x", 0.35)),
-            "acc_lim_y": float(follow_path_cfg.get("acc_lim_y", 0.35)),
-            "acc_lim_theta": float(follow_path_cfg.get("acc_lim_theta", 0.70)),
-            "decel_lim_x": float(follow_path_cfg.get("decel_lim_x", -0.35)),
-            "decel_lim_y": float(follow_path_cfg.get("decel_lim_y", -0.35)),
-            "decel_lim_theta": float(follow_path_cfg.get("decel_lim_theta", -0.70)),
-            "vx_samples": int(follow_path_cfg.get("vx_samples", 15)),
-            "vy_samples": int(follow_path_cfg.get("vy_samples", 15)),
-            "vtheta_samples": int(follow_path_cfg.get("vtheta_samples", 20)),
-            "sim_time": float(follow_path_cfg.get("sim_time", 1.2)),
-            "linear_granularity": float(follow_path_cfg.get("linear_granularity", 0.05)),
-            "angular_granularity": float(follow_path_cfg.get("angular_granularity", 0.05)),
-            "transform_tolerance": float(follow_path_cfg.get("transform_tolerance", 0.4)),
-            "critics": list(
-                follow_path_cfg.get(
-                    "critics",
-                    [
-                        "BaseObstacle",
-                        "GoalAlign",
-                        "PathAlign",
-                        "PathDist",
-                        "GoalDist",
-                        "Oscillation",
-                        "RotateToGoal",
-                    ],
+    local_costmap.update(
+        {
+            "global_frame": str(
+                local_costmap_cfg.get(
+                    "global_frame",
+                    odom_frame if local_costmap["rolling_window"] else map_frame,
                 )
             ),
-            "BaseObstacle.scale": float(follow_path_cfg.get("BaseObstacle.scale", 0.06)),
-            "PathAlign.scale": float(follow_path_cfg.get("PathAlign.scale", 20.0)),
-            "PathAlign.forward_point_distance": float(
-                follow_path_cfg.get("PathAlign.forward_point_distance", 0.12)
-            ),
-            "GoalAlign.scale": float(follow_path_cfg.get("GoalAlign.scale", 16.0)),
-            "GoalAlign.forward_point_distance": float(
-                follow_path_cfg.get("GoalAlign.forward_point_distance", 0.12)
-            ),
-            "PathDist.scale": float(follow_path_cfg.get("PathDist.scale", 24.0)),
-            "GoalDist.scale": float(follow_path_cfg.get("GoalDist.scale", 20.0)),
-            "RotateToGoal.scale": float(follow_path_cfg.get("RotateToGoal.scale", 18.0)),
-            "RotateToGoal.slowing_factor": float(follow_path_cfg.get("RotateToGoal.slowing_factor", 4.0)),
-            "RotateToGoal.lookahead_time": float(follow_path_cfg.get("RotateToGoal.lookahead_time", -1.0)),
+            "robot_base_frame": base_frame,
+            "footprint": footprint,
         }
-    elif follow_path_plugin == "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController":
-        rpp_passthrough_keys = {
-            "plugin",
-            "desired_linear_vel",
-            "lookahead_dist",
-            "min_lookahead_dist",
-            "max_lookahead_dist",
-            "lookahead_time",
-            "rotate_to_heading_angular_vel",
-            "transform_tolerance",
-            "use_velocity_scaled_lookahead_dist",
-            "min_approach_linear_velocity",
-            "approach_velocity_scaling_dist",
-            "use_collision_detection",
-            "max_allowed_time_to_collision_up_to_carrot",
-            "use_regulated_linear_velocity_scaling",
-            "use_cost_regulated_linear_velocity_scaling",
-            "regulated_linear_scaling_min_radius",
-            "regulated_linear_scaling_min_speed",
-            "use_rotate_to_heading",
-            "allow_reversing",
-            "rotate_to_heading_min_angle",
-            "max_angular_accel",
-            "max_robot_pose_search_dist",
-            "use_interpolation",
-        }
-        follow_path_params = {
-            "plugin": follow_path_plugin,
-            "desired_linear_vel": float(follow_path_cfg.get("desired_linear_vel", max_velocity[0])),
-            "lookahead_dist": float(follow_path_cfg.get("lookahead_dist", 0.35)),
-            "min_lookahead_dist": float(follow_path_cfg.get("min_lookahead_dist", 0.20)),
-            "max_lookahead_dist": float(follow_path_cfg.get("max_lookahead_dist", 0.55)),
-            "lookahead_time": float(follow_path_cfg.get("lookahead_time", 1.5)),
-            "rotate_to_heading_angular_vel": float(follow_path_cfg.get("rotate_to_heading_angular_vel", 0.35)),
-            "transform_tolerance": float(follow_path_cfg.get("transform_tolerance", 0.4)),
-            "use_velocity_scaled_lookahead_dist": bool(
-                follow_path_cfg.get("use_velocity_scaled_lookahead_dist", False)
-            ),
-            "min_approach_linear_velocity": float(follow_path_cfg.get("min_approach_linear_velocity", 0.04)),
-            "approach_velocity_scaling_dist": float(follow_path_cfg.get("approach_velocity_scaling_dist", 0.45)),
-            "use_collision_detection": bool(follow_path_cfg.get("use_collision_detection", True)),
-            "max_allowed_time_to_collision_up_to_carrot": float(
-                follow_path_cfg.get("max_allowed_time_to_collision_up_to_carrot", 1.0)
-            ),
-            "use_regulated_linear_velocity_scaling": bool(
-                follow_path_cfg.get("use_regulated_linear_velocity_scaling", True)
-            ),
-            "use_cost_regulated_linear_velocity_scaling": bool(
-                follow_path_cfg.get("use_cost_regulated_linear_velocity_scaling", False)
-            ),
-            "regulated_linear_scaling_min_radius": float(
-                follow_path_cfg.get("regulated_linear_scaling_min_radius", 0.45)
-            ),
-            "regulated_linear_scaling_min_speed": float(
-                follow_path_cfg.get("regulated_linear_scaling_min_speed", 0.04)
-            ),
-            "use_rotate_to_heading": bool(follow_path_cfg.get("use_rotate_to_heading", True)),
-            "allow_reversing": bool(follow_path_cfg.get("allow_reversing", False)),
-            "rotate_to_heading_min_angle": float(follow_path_cfg.get("rotate_to_heading_min_angle", 0.35)),
-            "max_angular_accel": float(follow_path_cfg.get("max_angular_accel", max_accel[2])),
-            "max_robot_pose_search_dist": float(follow_path_cfg.get("max_robot_pose_search_dist", 2.0)),
-            "use_interpolation": bool(follow_path_cfg.get("use_interpolation", True)),
-        }
-    elif follow_path_plugin == "nav2_mppi_controller::MPPIController":
-        follow_path_params = _build_mppi_follow_path_params(
-            follow_path_cfg,
-            follow_path_plugin,
-            max_velocity=max_velocity,
-            min_velocity=min_velocity,
-            max_accel=max_accel,
-            max_decel=max_decel,
-        )
-    elif follow_path_plugin == rotation_shim_plugin:
-        primary_controller = str(
-            follow_path_cfg.get("primary_controller", "nav2_mppi_controller::MPPIController")
-        )
-        follow_path_params = _build_mppi_follow_path_params(
-            follow_path_cfg,
-            primary_controller,
-            max_velocity=max_velocity,
-            min_velocity=min_velocity,
-            max_accel=max_accel,
-            max_decel=max_decel,
-        )
-        follow_path_params.update(
-            {
-                "plugin": follow_path_plugin,
-                "primary_controller": primary_controller,
-                "angular_dist_threshold": float(follow_path_cfg.get("angular_dist_threshold", 0.35)),
-                "forward_sampling_distance": float(follow_path_cfg.get("forward_sampling_distance", 0.5)),
-                "rotate_to_heading_angular_vel": float(
-                    follow_path_cfg.get("rotate_to_heading_angular_vel", 0.3)
-                ),
-                "max_angular_accel": float(follow_path_cfg.get("max_angular_accel", max_accel[2])),
-                "simulate_ahead_time": float(follow_path_cfg.get("simulate_ahead_time", 1.0)),
-                "rotate_to_goal_heading": bool(follow_path_cfg.get("rotate_to_goal_heading", True)),
-            }
-        )
-    else:
-        follow_path_params = {"plugin": follow_path_plugin}
-    hard_limit_override_keys = {
-        "vx_max",
-        "vx_min",
-        "vy_max",
-        "vy_min",
-        "wz_max",
-        "ax_max",
-        "ax_min",
-        "ay_max",
-        "ay_min",
-        "az_max",
-    }
-    rotation_shim_only_keys = {
-        "primary_controller",
-        "angular_dist_threshold",
-        "forward_sampling_distance",
-        "rotate_to_heading_angular_vel",
-        "max_angular_accel",
-        "simulate_ahead_time",
-        "rotate_to_goal_heading",
-    }
-    internal_follow_path_keys = {"plugin", "rotate_to_heading_enabled"}
-    if follow_path_plugin != rotation_shim_plugin:
-        internal_follow_path_keys.update(rotation_shim_only_keys)
-    for key, value in follow_path_cfg.items():
-        if follow_path_plugin == "dwb_core::DWBLocalPlanner" and key not in dwb_passthrough_keys:
-            continue
-        if (
-            follow_path_plugin == "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-            and key not in rpp_passthrough_keys
-        ):
-            continue
-        if key not in internal_follow_path_keys and key not in hard_limit_override_keys:
-            follow_path_params[key] = value
-
-    local_costmap_frame = str(
-        local_costmap_cfg.get(
-            "global_frame",
-            odom_frame if bool(local_costmap_cfg.get("rolling_window", True)) else map_frame,
-        )
     )
-    local_costmap_plugins = list(local_costmap_cfg.get("plugins", ["static_layer", "inflation_layer"]))
-    global_costmap_frame = str(global_costmap_cfg.get("global_frame", map_frame))
-    global_costmap_plugins = list(global_costmap_cfg.get("plugins", ["static_layer", "inflation_layer"]))
+    global_costmap.update(
+        {
+            "global_frame": str(global_costmap_cfg.get("global_frame", map_frame)),
+            "robot_base_frame": base_frame,
+            "footprint": footprint,
+        }
+    )
+    local_costmap["inflation_layer"]["inflation_radius"] = inflation_radius
+    global_costmap["inflation_layer"]["inflation_radius"] = inflation_radius
 
-    planner_plugin = str(planner_cfg.get("plugin", "nav2_smac_planner/SmacPlannerLattice"))
-    planner_params = {
-        "plugin": planner_plugin,
-        "tolerance": float(planner_cfg.get("tolerance", 0.10)),
-        "allow_unknown": bool(planner_cfg.get("allow_unknown", False)),
-    }
-    planner_passthrough_keys = {"tolerance", "allow_unknown"}
-    if planner_plugin == "nav2_navfn_planner/NavfnPlanner":
-        planner_params["use_astar"] = bool(planner_cfg.get("use_astar", True))
-        planner_passthrough_keys.update({"use_astar"})
-    elif planner_plugin == "nav2_smac_planner/SmacPlanner2D":
-        planner_params.update(
-            {
-                "downsample_costmap": bool(planner_cfg.get("downsample_costmap", False)),
-                "downsampling_factor": int(planner_cfg.get("downsampling_factor", 1)),
-                "max_iterations": int(planner_cfg.get("max_iterations", 1000000)),
-                "max_on_approach_iterations": int(planner_cfg.get("max_on_approach_iterations", 1000)),
-                "max_planning_time": float(planner_cfg.get("max_planning_time", 2.0)),
-                "cost_travel_multiplier": float(planner_cfg.get("cost_travel_multiplier", 2.0)),
-            }
-        )
-        planner_passthrough_keys.update(
-            {
-                "downsample_costmap",
-                "downsampling_factor",
-                "max_iterations",
-                "max_on_approach_iterations",
-                "max_planning_time",
-                "cost_travel_multiplier",
-            }
-        )
-    elif planner_plugin == "nav2_smac_planner/SmacPlannerLattice":
-        planner_params.update(
-            {
-                "downsample_costmap": bool(planner_cfg.get("downsample_costmap", False)),
-                "downsampling_factor": int(planner_cfg.get("downsampling_factor", 1)),
-                "max_iterations": int(planner_cfg.get("max_iterations", 1000000)),
-                "max_on_approach_iterations": int(planner_cfg.get("max_on_approach_iterations", 2000)),
-                "max_planning_time": float(planner_cfg.get("max_planning_time", 3.0)),
-                "smooth_path": bool(planner_cfg.get("smooth_path", True)),
-                "minimum_turning_radius": float(planner_cfg.get("minimum_turning_radius", minimum_turning_radius)),
-                "reverse_penalty": float(planner_cfg.get("reverse_penalty", 1.0)),
-                "change_penalty": float(planner_cfg.get("change_penalty", 0.0)),
-                "non_straight_penalty": float(planner_cfg.get("non_straight_penalty", 1.05)),
-                "cost_penalty": float(planner_cfg.get("cost_penalty", 2.0)),
-                "rotation_penalty": float(planner_cfg.get("rotation_penalty", 3.0)),
-                "retrospective_penalty": float(planner_cfg.get("retrospective_penalty", 0.015)),
-                "analytic_expansion_ratio": float(planner_cfg.get("analytic_expansion_ratio", 3.5)),
-                "analytic_expansion_max_length": float(planner_cfg.get("analytic_expansion_max_length", 2.5)),
-                "analytic_expansion_max_cost": float(planner_cfg.get("analytic_expansion_max_cost", 200.0)),
-                "analytic_expansion_max_cost_override": bool(
-                    planner_cfg.get("analytic_expansion_max_cost_override", False)
-                ),
-                "cache_obstacle_heuristic": bool(planner_cfg.get("cache_obstacle_heuristic", True)),
-                "allow_reverse_expansion": bool(planner_cfg.get("allow_reverse_expansion", False)),
-                "lattice_filepath": str(
-                    planner_cfg.get(
-                        "lattice_filepath",
-                        "/opt/ros/humble/share/nav2_smac_planner/sample_primitives/5cm_resolution/0.5m_turning_radius/omni/output.json",
-                    )
-                ),
-                "smoother": dict(
-                    planner_cfg.get(
-                        "smoother",
-                        {
-                            "tolerance": 1.0e-10,
-                            "max_iterations": 1000,
-                            "w_data": 0.2,
-                            "w_smooth": 0.3,
-                            "do_refinement": True,
-                        },
-                    )
-                ),
-            }
-        )
-        planner_passthrough_keys.update(
-            {
-                "downsample_costmap",
-                "downsampling_factor",
-                "max_iterations",
-                "max_on_approach_iterations",
-                "max_planning_time",
-                "smooth_path",
-                "minimum_turning_radius",
-                "reverse_penalty",
-                "change_penalty",
-                "non_straight_penalty",
-                "cost_penalty",
-                "rotation_penalty",
-                "retrospective_penalty",
-                "analytic_expansion_ratio",
-                "analytic_expansion_max_length",
-                "analytic_expansion_max_cost",
-                "analytic_expansion_max_cost_override",
-                "cache_obstacle_heuristic",
-                "allow_reverse_expansion",
-                "lattice_filepath",
-                "smoother",
-            }
-        )
-    for key, value in planner_cfg.items():
-        if key == "plugin":
-            continue
-        if planner_plugin in {
-            "nav2_navfn_planner/NavfnPlanner",
-            "nav2_smac_planner/SmacPlanner2D",
-            "nav2_smac_planner/SmacPlannerLattice",
-        }:
-            if key in planner_passthrough_keys:
-                planner_params[key] = value
-        else:
-            planner_params[key] = value
-
-    return {
-        "bt_navigator": {
-            "ros__parameters": {
-                "use_sim_time": True,
-                "global_frame": map_frame,
-                "robot_base_frame": base_frame,
-                "odom_topic": str(ros_cfg.get("odom_topic", "/odom")),
-                "bt_loop_duration": int(bt_cfg.get("bt_loop_duration", 10)),
-                "default_server_timeout": int(bt_cfg.get("default_server_timeout", 20)),
-                "wait_for_service_timeout": int(bt_cfg.get("wait_for_service_timeout", 1000)),
-                "default_bt_xml_filename": nav_to_pose_bt,
-                "default_nav_to_pose_bt_xml": nav_to_pose_bt,
-                "default_nav_through_poses_bt_xml": nav_through_poses_bt,
-                "plugin_lib_names": bt_plugins,
-            }
-        },
-        "bt_navigator_navigate_to_pose_rclcpp_node": {"ros__parameters": {"use_sim_time": True}},
-        "controller_server": {
-            "ros__parameters": {
-                "use_sim_time": True,
-                "controller_frequency": float(controller_cfg.get("controller_frequency", 20.0)),
-                "min_x_velocity_threshold": float(controller_cfg.get("min_x_velocity_threshold", 0.001)),
-                "min_y_velocity_threshold": float(controller_cfg.get("min_y_velocity_threshold", 0.001)),
-                "min_theta_velocity_threshold": float(controller_cfg.get("min_theta_velocity_threshold", 0.001)),
-                "failure_tolerance": float(controller_cfg.get("failure_tolerance", 1.20)),
-                "progress_checker_plugin": "progress_checker",
-                "goal_checker_plugins": ["general_goal_checker"],
-                "controller_plugins": ["FollowPath"],
-                "progress_checker": {
-                    "plugin": str(progress_checker_cfg.get("plugin", "nav2_controller::SimpleProgressChecker")),
-                    "required_movement_radius": float(progress_checker_cfg.get("required_movement_radius", 0.05)),
-                    "movement_time_allowance": float(progress_checker_cfg.get("movement_time_allowance", 90.0)),
-                },
-                "general_goal_checker": {
-                    "stateful": bool(goal_checker_cfg.get("stateful", False)),
-                    "plugin": str(goal_checker_cfg.get("plugin", "nav2_controller::SimpleGoalChecker")),
-                    "xy_goal_tolerance": float(goal_checker_cfg.get("xy_goal_tolerance", position_tolerance_m)),
-                    "yaw_goal_tolerance": float(goal_checker_cfg.get("yaw_goal_tolerance", yaw_tolerance_rad)),
-                },
-                "FollowPath": follow_path_params,
-            }
-        },
-        "local_costmap": {
-            "local_costmap": {
-                "ros__parameters": {
-                    "use_sim_time": True,
-                    "update_frequency": float(local_costmap_cfg.get("update_frequency", 10.0)),
-                    "publish_frequency": float(local_costmap_cfg.get("publish_frequency", 4.0)),
-                    "global_frame": local_costmap_frame,
-                    "robot_base_frame": base_frame,
-                    "rolling_window": bool(local_costmap_cfg.get("rolling_window", True)),
-                    "width": int(local_costmap_cfg.get("width", 6)),
-                    "height": int(local_costmap_cfg.get("height", 6)),
-                    "resolution": float(local_costmap_cfg.get("resolution", 0.05)),
-                    "footprint": footprint,
-                    "footprint_padding": float(local_costmap_cfg.get("footprint_padding", 0.0)),
-                    "plugins": local_costmap_plugins,
-                    "static_layer": {
-                        "plugin": "nav2_costmap_2d::StaticLayer",
-                        "map_subscribe_transient_local": True,
-                    },
-                    "inflation_layer": {
-                        "plugin": "nav2_costmap_2d::InflationLayer",
-                        "cost_scaling_factor": float(local_costmap_cfg.get("cost_scaling_factor", 3.0)),
-                        "inflation_radius": inflation_radius,
-                    },
-                    "always_send_full_costmap": bool(local_costmap_cfg.get("always_send_full_costmap", True)),
-                }
-            }
-        },
-        "global_costmap": {
-            "global_costmap": {
-                "ros__parameters": {
-                    "use_sim_time": True,
-                    "update_frequency": float(global_costmap_cfg.get("update_frequency", 4.0)),
-                    "publish_frequency": float(global_costmap_cfg.get("publish_frequency", 2.0)),
-                    "global_frame": global_costmap_frame,
-                    "robot_base_frame": base_frame,
-                    "rolling_window": bool(global_costmap_cfg.get("rolling_window", False)),
-                    "resolution": float(global_costmap_cfg.get("resolution", 0.05)),
-                    "track_unknown_space": bool(global_costmap_cfg.get("track_unknown_space", False)),
-                    "footprint": footprint,
-                    "footprint_padding": float(global_costmap_cfg.get("footprint_padding", 0.0)),
-                    "plugins": global_costmap_plugins,
-                    "static_layer": {
-                        "plugin": "nav2_costmap_2d::StaticLayer",
-                        "map_subscribe_transient_local": True,
-                    },
-                    "inflation_layer": {
-                        "plugin": "nav2_costmap_2d::InflationLayer",
-                        "cost_scaling_factor": float(global_costmap_cfg.get("cost_scaling_factor", 3.0)),
-                        "inflation_radius": inflation_radius,
-                    },
-                    "always_send_full_costmap": bool(global_costmap_cfg.get("always_send_full_costmap", True)),
-                }
-            }
-        },
-        "planner_server": {
-            "ros__parameters": {
-                "use_sim_time": True,
-                "expected_planner_frequency": float(planner_cfg.get("expected_planner_frequency", 10.0)),
-                "planner_plugins": ["GridBased"],
-                "GridBased": planner_params,
-            }
-        },
-        "smoother_server": {
-            "ros__parameters": {
-                "use_sim_time": True,
-                "smoother_plugins": ["simple_smoother"],
-                "simple_smoother": {
-                    "plugin": str(smoother_cfg.get("plugin", "nav2_smoother::SimpleSmoother")),
-                    "tolerance": float(smoother_cfg.get("tolerance", 1.0e-10)),
-                    "max_its": int(smoother_cfg.get("max_its", 1000)),
-                    "do_refinement": bool(smoother_cfg.get("do_refinement", True)),
-                },
-            }
-        },
-        "behavior_server": {
-            "ros__parameters": {
-                "use_sim_time": True,
-                "costmap_topic": "local_costmap/costmap_raw",
-                "footprint_topic": "local_costmap/published_footprint",
-                "cycle_frequency": float(behavior_cfg.get("cycle_frequency", 10.0)),
-                "behavior_plugins": list(behavior_cfg.get("behavior_plugins", ["wait"])),
-                "spin": dict(behavior_cfg.get("spin", {"plugin": "nav2_behaviors/Spin"})),
-                "backup": dict(behavior_cfg.get("backup", {"plugin": "nav2_behaviors/BackUp"})),
-                "drive_on_heading": dict(
-                    behavior_cfg.get("drive_on_heading", {"plugin": "nav2_behaviors/DriveOnHeading"})
-                ),
-                "wait": dict(behavior_cfg.get("wait", {"plugin": "nav2_behaviors/Wait"})),
-                "global_frame": map_frame,
-                "robot_base_frame": base_frame,
-                "transform_tolerance": float(behavior_cfg.get("transform_tolerance", 0.2)),
-                "simulate_ahead_time": float(behavior_cfg.get("simulate_ahead_time", 2.0)),
-                "max_rotational_vel": float(behavior_cfg.get("max_rotational_vel", 0.35)),
-                "min_rotational_vel": float(behavior_cfg.get("min_rotational_vel", 0.1)),
-                "rotational_acc_lim": float(behavior_cfg.get("rotational_acc_lim", 1.0)),
-            }
-        },
-        "waypoint_follower": {
-            "ros__parameters": {
-                "use_sim_time": True,
-                "loop_rate": int(waypoint_cfg.get("loop_rate", 20)),
-                "stop_on_failure": bool(waypoint_cfg.get("stop_on_failure", False)),
-                "waypoint_task_executor_plugin": str(waypoint_cfg.get("waypoint_task_executor_plugin", "wait_at_waypoint")),
-                "wait_at_waypoint": dict(
-                    waypoint_cfg.get(
-                        "wait_at_waypoint",
-                        {
-                            "plugin": "nav2_waypoint_follower::WaitAtWaypoint",
-                            "enabled": True,
-                            "waypoint_pause_duration": 0,
-                        },
-                    )
-                ),
-            }
-        },
-        "velocity_smoother": {
-            "ros__parameters": {
-                "use_sim_time": True,
-                "smoothing_frequency": float(velocity_smoother_cfg.get("smoothing_frequency", 20.0)),
-                "scale_velocities": bool(velocity_smoother_cfg.get("scale_velocities", False)),
-                "feedback": str(velocity_smoother_cfg.get("feedback", "OPEN_LOOP")),
-                "max_velocity": list(max_velocity),
-                "min_velocity": list(min_velocity),
-                "max_accel": list(max_accel),
-                "max_decel": list(max_decel),
-                "odom_topic": str(ros_cfg.get("odom_topic", "/odom")),
-                "odom_duration": float(velocity_smoother_cfg.get("odom_duration", 0.1)),
-                "deadband_velocity": list(velocity_smoother_cfg.get("deadband_velocity", [0.0, 0.0, 0.0])),
-                "velocity_timeout": float(velocity_smoother_cfg.get("velocity_timeout", 1.0)),
-            }
-        },
-        "map_server": {
-            "ros__parameters": {
-                "use_sim_time": True,
-                "yaml_filename": str(localization_cfg.get("map_yaml_path", "")),
-            }
-        },
-        "global_costmap_client": {"ros__parameters": {"use_sim_time": True}},
-        "local_costmap_client": {"ros__parameters": {"use_sim_time": True}},
-        "planner_server_rclcpp_node": {"ros__parameters": {"use_sim_time": True}},
-        "controller_server_rclcpp_node": {"ros__parameters": {"use_sim_time": True}},
-        "behavior_server_rclcpp_node": {"ros__parameters": {"use_sim_time": True}},
-        "waypoint_follower_rclcpp_node": {"ros__parameters": {"use_sim_time": True}},
-        "amcl": {"ros__parameters": {"enabled": False}},
-        "amcl_rclcpp_node": {"ros__parameters": {"use_sim_time": True}},
-    }
+    behavior_params = params["behavior_server"]["ros__parameters"]
+    behavior_params.update({"global_frame": map_frame, "robot_base_frame": base_frame})
+    smoother_params = params["velocity_smoother"]["ros__parameters"]
+    smoother_params.update(
+        {
+            "max_velocity": list(hard_limits["max_velocity"]),
+            "min_velocity": list(hard_limits["min_velocity"]),
+            "max_accel": list(hard_limits["max_accel"]),
+            "max_decel": list(hard_limits["max_decel"]),
+            "odom_topic": odom_topic,
+        }
+    )
+    return params
