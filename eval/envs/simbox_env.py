@@ -39,9 +39,11 @@ class SimBoxEvalEnv:
         if self.env_args.get("randomize", True):
             print("[eval] simbox.randomization start", flush=True)
             self.workflow.randomization()
+            print("[eval] simbox.randomization done", flush=True)
         self.step_count = 0
         print("[eval] simbox.observe initial start", flush=True)
         self.initial_obs = self.observe()
+        print("[eval] simbox.observe initial done", flush=True)
         return self.initial_obs
 
     def observe(self) -> dict[str, Any]:
@@ -132,6 +134,10 @@ class SimBoxEvalEnv:
             return action["action_dict"]
 
         action_cfg = dict(self.env_args.get("action", {}))
+        action_mode = action_cfg.get("mode", "joint_positions")
+        if action_mode == "franka_eef_delta":
+            return self._franka_eef_delta_to_action_dict(action, action_cfg)
+
         robot_name = action_cfg.get("robot_name")
         joint_indices = action_cfg.get("joint_indices")
         if not robot_name or joint_indices is None:
@@ -139,15 +145,103 @@ class SimBoxEvalEnv:
 
         import numpy as np
 
-        if isinstance(action, dict):
-            action = action.get("actions", action.get("action"))
-        joint_positions = np.asarray(action, dtype=float)
+        joint_positions = np.asarray(_extract_action_array(action), dtype=float)
         return {
             robot_name: {
                 "joint_positions": joint_positions,
                 "joint_indices": np.asarray(joint_indices, dtype=int),
             }
         }
+
+    def _franka_eef_delta_to_action_dict(self, action: Any, action_cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        import numpy as np
+        from scipy.spatial.transform import Rotation as R
+
+        robot_name = action_cfg.get("robot_name", "franka")
+        arm_name = action_cfg.get("arm", "left")
+        controller = self.workflow.controllers[robot_name][arm_name]
+
+        action_array = np.asarray(_extract_action_array(action), dtype=float).reshape(-1)
+        if action_array.size < 7:
+            raise ValueError(f"franka_eef_delta action expects at least 7 values, got {action_array.size}.")
+
+        delta_pos = action_array[:3]
+        delta_rot = action_array[3:6]
+        gripper_close = float(action_array[6])
+
+        max_position_delta = action_cfg.get("max_position_delta")
+        if max_position_delta is not None:
+            delta_pos = np.clip(delta_pos, -float(max_position_delta), float(max_position_delta))
+        max_rotation_delta = action_cfg.get("max_rotation_delta")
+        if max_rotation_delta is not None:
+            delta_rot = np.clip(delta_rot, -float(max_rotation_delta), float(max_rotation_delta))
+
+        current_pos, current_quat = controller.get_ee_pose()
+        current_rot = R.from_quat(current_quat, scalar_first=True)
+
+        position_frame = action_cfg.get("position_frame", "base")
+        if position_frame == "eef":
+            delta_pos = current_rot.apply(delta_pos)
+        elif position_frame != "base":
+            raise ValueError(f"Unsupported franka_eef_delta position_frame: {position_frame}")
+        target_pos = np.asarray(current_pos, dtype=float) + delta_pos
+
+        delta_rotation = R.from_euler(
+            "xyz",
+            delta_rot,
+            degrees=bool(action_cfg.get("rotation_degrees", False)),
+        )
+        rotation_frame = action_cfg.get("rotation_frame", "base")
+        if rotation_frame == "eef":
+            target_rot = current_rot * delta_rotation
+        elif rotation_frame == "base":
+            target_rot = delta_rotation * current_rot
+        else:
+            raise ValueError(f"Unsupported franka_eef_delta rotation_frame: {rotation_frame}")
+        target_quat = target_rot.as_quat(scalar_first=True)
+
+        gripper_threshold = float(action_cfg.get("gripper_close_threshold", 0.5))
+        gripper_fn = "close_gripper" if gripper_close >= gripper_threshold else "open_gripper"
+        controller_action = controller.forward(
+            (target_pos, target_quat, gripper_fn, {}),
+            eps=float(action_cfg.get("controller_eps", 1e-4)),
+        )
+        controller_action = _select_controller_plan_action(
+            controller,
+            controller_action,
+            action_cfg.get("controller_plan_step"),
+        )
+        self._maybe_log_franka_eef_action(action_cfg, action_array, controller_action)
+        return {
+            robot_name: {
+                "joint_positions": controller_action["joint_positions"],
+                "joint_indices": controller_action["joint_indices"],
+                "raw_action": [controller_action],
+            }
+        }
+
+    def _maybe_log_franka_eef_action(
+        self,
+        action_cfg: dict[str, Any],
+        action_array: Any,
+        controller_action: dict[str, Any],
+    ) -> None:
+        log_every = int(action_cfg.get("debug_action_every", 0) or 0)
+        if log_every <= 0 or self.step_count % log_every != 0:
+            return
+
+        import numpy as np
+
+        arm_action = np.asarray(controller_action.get("arm_action", []), dtype=float)
+        gripper_action = np.asarray(controller_action.get("gripper_action", []), dtype=float)
+        print(
+            "[eval] franka_eef_delta "
+            f"step={self.step_count} "
+            f"delta={np.array2string(np.asarray(action_array[:7], dtype=float), precision=4, suppress_small=True)} "
+            f"arm_target={np.array2string(arm_action, precision=4, suppress_small=True)} "
+            f"gripper_target={np.array2string(gripper_action, precision=4, suppress_small=True)}",
+            flush=True,
+        )
 
     def _predicate_metrics(self) -> dict[str, Any]:
         predicate = dict(self.env_args.get("success_predicate", {"type": "none"}))
@@ -168,3 +262,50 @@ class SimBoxEvalEnv:
             "delta_z": delta,
             "min_delta_z": min_delta_z,
         }
+
+
+def _extract_action_array(action: Any) -> Any:
+    if isinstance(action, dict):
+        return action.get("actions", action.get("action"))
+    return action
+
+
+def _select_controller_plan_action(controller: Any, controller_action: dict[str, Any], plan_step: Any) -> dict[str, Any]:
+    if plan_step in (None, False, "default"):
+        return controller_action
+
+    cmd_plan = getattr(controller, "cmd_plan", None)
+    if not cmd_plan:
+        return controller_action
+
+    plan_len = len(cmd_plan)
+    if plan_len <= 0:
+        return controller_action
+
+    if plan_step == "next":
+        index = min(int(getattr(controller, "cmd_idx", 0)), plan_len - 1)
+    elif plan_step == "goal":
+        index = plan_len - 1
+    else:
+        index = int(plan_step)
+        if index < 0:
+            index = plan_len + index
+        index = max(0, min(index, plan_len - 1))
+
+    cmd_state = cmd_plan[index]
+    arm_action = cmd_state.position.cpu().numpy()
+    gripper_action = controller_action.get("gripper_action")
+    if gripper_action is None:
+        return controller_action
+
+    import numpy as np
+
+    selected = dict(controller_action)
+    selected["arm_action"] = arm_action
+    selected["joint_positions"] = np.concatenate([arm_action, gripper_action])
+
+    controller.cmd_idx = index + 1
+    if controller.cmd_idx >= plan_len:
+        controller.cmd_idx = 0
+        controller.cmd_plan = None
+    return selected

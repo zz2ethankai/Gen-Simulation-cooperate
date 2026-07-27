@@ -96,6 +96,10 @@ class BaseLogger(ABC):
             step_idx=step_idx,
         )
 
+    def add_video_frame(self, robot, key, value, step_idx=None):
+        """Append a frame to a video-only stream without retaining it in RAM."""
+        raise NotImplementedError(f"{type(self).__name__} does not implement video-only streams")
+
     def add_depth_image(self, robot, key, value, step_idx=None):
         self._add_image_data(
             self.depth_image_logger,

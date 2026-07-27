@@ -22,9 +22,12 @@ This module provides helper functions that operate on cuRobo planning results
   with sensible fallbacks when intersections are empty.
 """
 
+import logging
 import random
 
 import torch
+
+LOGGER = logging.getLogger("de_logger")
 
 
 def sort_by_difference_js(paths, weights=None):
@@ -122,11 +125,13 @@ def get_prioritized_indices(result):
     """
     if not torch.any(result.success):
         print("result failure")
+        LOGGER.info("[PlanDebug] result failure: no successful candidate")
         return []
 
     # Get absolute indices of successful samples
     success_indices = torch.nonzero(result.success, as_tuple=True)[0]
     print("success_indices :", success_indices)
+    LOGGER.info("[PlanDebug] success candidate count=%d indices=%s", len(success_indices), success_indices.cpu().tolist())
     paths = [result.get_paths()[idx] for idx in success_indices]
 
     # Apply error filters
@@ -174,16 +179,26 @@ def select_index_by_priority_dual(pre_result, result):
         for idx in prioritized_indices:
             if idx in both_success_set:
                 print("Pre and final both success, selected highest priority candidate.")
+                LOGGER.info(
+                    "[PlanDebug] selected candidate=%d with pre+final success; both_success_count=%d",
+                    idx,
+                    len(both_success_set),
+                )
                 return idx
 
         # Logically, the loop above should always find a match.
         # Fallback to random choice among common successes just in case.
         print("Pre and final both success, falling back to random choice.")
+        LOGGER.info("[PlanDebug] fallback random candidate from both_success_count=%d", len(both_success_set))
         return random.choice(list(both_success_set))
 
     # If no common successes exist, check if any final results succeeded
     if prioritized_indices:
         print("Only final success.")
+        LOGGER.info(
+            "[PlanDebug] no candidate succeeded in both pre+final; final_success_count=%d",
+            len(prioritized_indices),
+        )
         # Optionally return prioritized_indices[0] instead of random for better results
         return random.choice(prioritized_indices)
 

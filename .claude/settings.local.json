@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//home/bld/**)",
+      "Read(//home/bld/.claude/**)",
+      "Bash(git -C /home/bld/ykqin/InternDataEngine log --oneline --all -- .codex)",
+      "Bash(rm /home/bld/ykqin/InternDataEngine/.codex)",
+      "Bash(echo \".codex\")",
+      "Read(//tmp/codex-ipc/**)",
+      "Read(//tmp/**)",
+      "Bash(sudo rm -rf /tmp/codex-ipc)",
+      "Bash(mkdir /tmp/codex-ipc)",
+      "Bash(chmod 1777 /tmp/codex-ipc)",
+      "Bash(touch /tmp/codex-ipc/test-bld.tmp)",
+      "Bash(rm /tmp/codex-ipc/test-bld.tmp)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('VSCode版本:', d.get\\('version'\\), '\\\\ncommit:', d.get\\('commit'\\)\\)\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('扩展版本:', d.get\\('version'\\)\\); print\\('engines.vscode:', d.get\\('engines',{}\\).get\\('vscode'\\)\\); print\\('enabledApiProposals:', d.get\\('enabledApiProposals'\\)\\); print\\('extensionKind:', d.get\\('extensionKind'\\)\\)\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('版本:', d.get\\('version'\\)\\); print\\('engines.vscode:', d.get\\('engines',{}\\).get\\('vscode'\\)\\); print\\('enabledApiProposals:', d.get\\('enabledApiProposals'\\)\\)\")",
+      "Bash(env)",
+      "Bash(curl -v --max-time 10 http://127.0.0.1:7890)",
+      "Bash(curl -v --max-time 15 --proxy http://127.0.0.1:7890 https://api.openai.com/v1/models)",
+      "Bash(curl -v --max-time 15 --proxy http://127.0.0.1:7890 https://www.google.com)",
+      "Bash(netstat -tnp)",
+      "Bash(awk '{print $NF}')",
+      "Bash(sudo lsof -i :7890 -n -P)",
+      "Read(//proc/910675/net/**)",
+      "Bash(awk '{print $2, $3, $4}')",
+      "Bash(python3 -c ' *)"
+    ]
+  }
+}

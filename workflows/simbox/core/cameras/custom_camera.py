@@ -149,7 +149,7 @@ class CustomCamera(Camera):
             self._custom_annotators["IndirectDiffuse"] = None
         self._current_frame.pop("IndirectDiffuse", None)
 
-    def get_observations(self):
+    def _update_reference_pose(self):
         if self.reference_path:
             camera_mount2env_pose = get_relative_transform(
                 get_prim_at_path(self.reference_path), get_prim_at_path(self.root_prim_path)
@@ -159,6 +159,18 @@ class CustomCamera(Camera):
                 translation=camera_mount2env_pose[0],
                 orientation=camera_mount2env_pose[1],
             )
+
+    def get_rgb_observation(self):
+        """Return only RGB, primarily for MP4-only debug streams."""
+        self._update_reference_pose()
+        if self.output_mode == "rgb":
+            return self.get_rgba()[..., :3]
+        if self.output_mode == "diffuse_albedo":
+            return self._custom_annotators["DiffuseAlbedo"].get_data()[..., :3]
+        raise NotImplementedError
+
+    def get_observations(self):
+        self._update_reference_pose()
         camera2env_pose = get_relative_transform(
             get_prim_at_path(self.prim_path), get_prim_at_path(self.root_prim_path)
         )

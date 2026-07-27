@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip config *)",
+      "Bash(cat /etc/environment 2>/dev/null; echo \"---\"; env | grep -i proxy; echo \"---\"; cat /etc/profile.d/*.sh 2>/dev/null | grep -i proxy; echo \"---\"; cat ~/.bashrc | grep -i proxy; echo \"---\"; cat ~/.profile | grep -i proxy 2>/dev/null)",
+      "Read(//etc/**)",
+      "Read(//etc/profile.d/**)",
+      "Bash(python3.8 --version)",
+      "Bash(python3.9 --version)",
+      "Bash(python3.10 --version)",
+      "Bash(conda info *)",
+      "Bash(conda run *)",
+      "Bash(pip show *)"
+    ],
+    "additionalDirectories": [
+      "/home/bld/.config/pip",
+      "/home/bld"
+    ]
+  }
+}

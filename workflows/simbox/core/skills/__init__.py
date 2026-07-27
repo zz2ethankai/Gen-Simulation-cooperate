@@ -20,7 +20,9 @@ from .mobile_rotate import Mobile_Rotate
 from .mobile_translate import Mobile_Translate
 from .move import Move
 from .open import Open
+from .observe_hold import ObserveHold
 from .pick import Pick
+from .pick_plan_probe import PickPlanProbe
 from .place import Place
 from .pour_water_succ import Pour_Water_Succ
 from .rotate import Rotate
@@ -48,7 +50,9 @@ __all__ = [
     "Mobile_Translate",
     "Move",
     "Open",
+    "ObserveHold",
     "Pick",
+    "PickPlanProbe",
     "Manualpick",
     "Place",
     "Pour_Water_Succ",

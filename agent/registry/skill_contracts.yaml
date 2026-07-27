@@ -1,0 +1,225 @@
+version: 2
+skills:
+  - name: pick
+    category: pick
+    object_count: 1
+    supported_robots: [split_aloha]
+    collision_world_modes: [physics_schema]
+    preconditions: [object_in_world, object_rigid_body, collision_schema_available]
+    effects: [object_held]
+    parameters:
+      filter_x_dir: &pick_direction_filter
+        value_type: direction_filter
+        description: EE X 轴方向过滤，格式为 [方向, 角度] 或 [方向, 最小角度, 最大角度]。
+        allowed_values: [forward, backward, upward, downward]
+        min_items: 2
+        max_items: 3
+      filter_y_dir:
+        <<: *pick_direction_filter
+        description: EE Y 轴方向过滤，格式同 filter_x_dir。
+      filter_z_dir:
+        <<: *pick_direction_filter
+        description: EE Z 轴方向过滤，格式同 filter_x_dir。
+      fixed_orientation:
+        value_type: number_list
+        description: 固定末端四元数 [w, x, y, z]；仅在任务明确要求固定朝向时设置。
+        min_items: 4
+        max_items: 4
+      npy_name:
+        value_type: npy_filename
+        description: 抓取标注文件名；必须是资产目录内已存在的 .npy 文件名，不能编造路径。
+      grasp_scale:
+        value_type: number
+        description: 抓取标注位移缩放系数。
+        minimum: 0.01
+        maximum: 10.0
+      tcp_offset:
+        value_type: number
+        description: TCP 偏移量，单位米；仅在机器人或资产信息给出依据时覆盖默认值。
+        minimum: 0.0
+        maximum: 1.0
+      direction_to_obj:
+        value_type: string
+        description: 按物体相对位置保留左侧或右侧抓取候选。
+        allowed_values: [left, right]
+      pre_grasp_offset:
+        value_type: number
+        description: 预抓取点到抓取点的接近距离，单位米。
+        minimum: 0.0
+        maximum: 1.0
+      gripper_change_steps:
+        value_type: integer
+        description: 夹爪闭合保持的仿真步数。
+        minimum: 1
+        maximum: 1000
+      post_grasp_offset_min:
+        value_type: number
+        description: 抓取后向上抬升距离随机范围下界，单位米。
+        minimum: 0.0
+        maximum: 1.0
+      post_grasp_offset_max:
+        value_type: number
+        description: 抓取后向上抬升距离随机范围上界，必须不小于下界，单位米。
+        minimum: 0.0
+        maximum: 1.0
+      return_to_pregrasp:
+        value_type: boolean
+        description: 抓取并抬升后是否返回预抓取位姿。
+      lift_th:
+        value_type: number
+        description: Pick 成功判定所需的最小抬升高度，单位米。
+        minimum: 0.0
+        maximum: 1.0
+      grasp_contact_threshold_n:
+        value_type: number
+        description: 夹爪接触确认的最小法向力阈值，单位牛顿。
+        minimum: 0.0
+        maximum: 10000.0
+      t_eps:
+        value_type: number
+        description: 末端位姿完成判断的平移容差，单位米。
+        minimum: 0.000001
+        maximum: 1.0
+      o_eps:
+        value_type: number
+        description: 末端位姿完成判断的旋转容差，单位弧度。
+        minimum: 0.000001
+        maximum: 3.2
+      test_mode:
+        value_type: string
+        description: Physics Schema 下由编译器固定为 forward，Agent 不得设置。
+        owner: compiler
+        allowed_values: [forward]
+
+  - name: place
+    category: place
+    object_count: 2
+    supported_robots: [split_aloha]
+    collision_world_modes: [physics_schema]
+    preconditions: [object_held, target_support_in_world]
+    effects: [object_released, target_relation_satisfied]
+    parameters:
+      place_direction:
+        value_type: string
+        description: 放置接近方向；vertical 为从上方放置，horizontal 为水平插入或悬挂。
+        allowed_values: [vertical, horizontal]
+      filter_x_dir: &place_direction_filter
+        value_type: direction_filter
+        description: EE X 轴方向过滤，格式为 [方向, 角度] 或 [方向, 最小角度, 最大角度]。
+        allowed_values: [forward, backward, leftward, rightward, upward, downward]
+        min_items: 2
+        max_items: 3
+      filter_y_dir:
+        <<: *place_direction_filter
+        description: EE Y 轴方向过滤，格式同 filter_x_dir。
+      filter_z_dir:
+        <<: *place_direction_filter
+        description: EE Z 轴方向过滤，格式同 filter_x_dir。
+      x_ratio_range: &ratio_range
+        value_type: ratio_range
+        description: 在目标包围盒 X 轴上的采样比例范围 [min, max]。
+        min_items: 2
+        max_items: 2
+      y_ratio_range:
+        <<: *ratio_range
+        description: 在目标包围盒 Y 轴上的采样比例范围 [min, max]。
+      z_ratio_range:
+        <<: *ratio_range
+        description: 水平放置时在目标包围盒 Z 轴上的采样比例范围 [min, max]。
+      pre_place_z_offset: &meter_offset
+        value_type: number
+        description: 垂直放置时预放置点相对目标顶面的高度，单位米。
+        minimum: -2.0
+        maximum: 2.0
+      place_z_offset:
+        <<: *meter_offset
+        description: 垂直放置时最终放置点相对目标顶面的高度，单位米。
+      pre_place_align:
+        <<: *meter_offset
+        description: 水平放置时预放置点沿对齐轴的偏移，单位米。
+      place_align:
+        <<: *meter_offset
+        description: 水平放置时最终点沿对齐轴的偏移，单位米。
+      pre_place_offset:
+        <<: *meter_offset
+        description: 水平放置时预放置点沿辅助偏移轴的偏移，单位米。
+      place_offset:
+        <<: *meter_offset
+        description: 水平放置时最终点沿辅助偏移轴的偏移，单位米。
+      post_place_vector:
+        value_type: number_list
+        description: 释放物体后的末端撤退向量 [x, y, z]，单位米。
+        min_items: 3
+        max_items: 3
+      position_constraint:
+        value_type: string
+        description: 采样目标约束到被放置物体 object，或约束到夹爪 gripper；不能填写区域名。
+        allowed_values: [object, gripper]
+      success_mode:
+        value_type: string
+        description: Place 成功判定方式；inside 不是合法值，容器内通常使用 xybbox 或 3diou。
+        allowed_values: [3diou, height, xybbox, left, right, flower, cup]
+      success_th:
+        value_type: number
+        description: 3D IoU、flower 或 cup 成功模式使用的阈值。
+        minimum: 0.0
+        maximum: 1.0
+      threshold:
+        value_type: number
+        description: left/right 成功模式使用的水平距离阈值，单位米。
+        minimum: 0.0
+        maximum: 10.0
+      place_part_prim_path:
+        value_type: string
+        description: 目标资产内部的已有 Prim 子路径；只能来自资产清单，Agent 不得编造。
+        owner: asset
+      align_pick_obj_axis: &axis_vector
+        value_type: number_list
+        description: 被拿物体需要对齐的局部轴 [x, y, z]。
+        min_items: 3
+        max_items: 3
+      align_place_obj_axis:
+        <<: *axis_vector
+        description: 目标容器的对齐轴；horizontal 模式必填。
+      offset_place_obj_axis:
+        <<: *axis_vector
+        description: 目标容器的辅助偏移轴；horizontal 模式必填。
+      align_obj_tol:
+        value_type: number
+        description: 被拿物体轴与目标轴之间允许的最大角度，单位度。
+        minimum: 0.0
+        maximum: 180.0
+      align_plane_x_axis:
+        <<: *axis_vector
+        description: 限制 EE X 轴所在平面的法向量。
+      align_plane_y_axis:
+        <<: *axis_vector
+        description: 限制 EE Y 轴所在平面的法向量。
+      gripper_change_steps:
+        value_type: integer
+        description: 释放时夹爪打开保持的仿真步数。
+        minimum: 1
+        maximum: 1000
+      hesitate_steps:
+        value_type: integer
+        description: 打开夹爪前在放置位姿停留的仿真步数。
+        minimum: 0
+        maximum: 1000
+      preserve_attached_orientation:
+        value_type: boolean
+        description: 生成放置姿态时是否保持当前被拿物体的附着朝向。
+      t_eps:
+        value_type: number
+        description: 末端位姿完成判断的平移容差，单位米。
+        minimum: 0.000001
+        maximum: 1.0
+      o_eps:
+        value_type: number
+        description: 末端位姿完成判断的旋转容差，单位弧度。
+        minimum: 0.000001
+        maximum: 3.2
+      test_mode:
+        value_type: string
+        description: Physics Schema 下由编译器固定为 forward，Agent 不得设置。
+        owner: compiler
+        allowed_values: [forward]

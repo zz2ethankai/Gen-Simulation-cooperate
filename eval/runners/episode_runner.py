@@ -16,11 +16,12 @@ class EpisodeRunner:
 
     def run(self, seed: int) -> dict[str, Any]:
         started_at = time.time()
+        print("[eval] policy.reset start", flush=True)
+        self.policy.reset({"task": self.spec.task.name, "seed": seed})
+        print("[eval] policy.reset done", flush=True)
         print("[eval] env.reset start", flush=True)
         obs = self.env.reset(seed)
         print("[eval] env.reset done", flush=True)
-        self.policy.reset({"task": self.spec.task.name, "seed": seed})
-        print("[eval] policy.reset done", flush=True)
 
         frames_by_camera: dict[str, list[Any]] = {}
         if self.spec.run_args.get("record_video", False):
@@ -162,6 +163,31 @@ def _safe_filename(value: str) -> str:
 
 def _get_by_path(data: dict[str, Any], path: str) -> Any:
     value: Any = data
-    for part in path.split("."):
-        value = value[part]
+    parts = path.split(".")
+    index = 0
+    while index < len(parts):
+        if not isinstance(value, dict):
+            traversed = ".".join(parts[:index])
+            raise KeyError(f"Cannot resolve {path!r}: {traversed!r} is not a mapping.")
+
+        remaining = ".".join(parts[index:])
+        if remaining in value:
+            return value[remaining]
+
+        part = parts[index]
+        if part in value:
+            value = value[part]
+            index += 1
+            continue
+
+        for end in range(len(parts), index + 1, -1):
+            flat_key = ".".join(parts[index:end])
+            if flat_key in value:
+                value = value[flat_key]
+                index = end
+                break
+        else:
+            available = ", ".join(map(str, list(value.keys())[:12]))
+            traversed = ".".join(parts[:index]) or "<root>"
+            raise KeyError(f"Cannot resolve {path!r} at {traversed!r}. Available keys: {available}")
     return value

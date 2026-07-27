@@ -50,6 +50,8 @@ class StarVLAMsgpackPolicyClient:
         timeout_s: float = 300.0,
         unnorm_key: str | None = None,
         image_keys: list[str] | None = None,
+        state_key: str | None = None,
+        state_keys: list[str] | None = None,
         prompt_key: str = "detailed_prompt",
         request_args: dict[str, Any] | None = None,
         action_slice: list[int] | None = None,
@@ -59,6 +61,8 @@ class StarVLAMsgpackPolicyClient:
         self.timeout_s = timeout_s
         self.unnorm_key = unnorm_key
         self.image_keys = image_keys or []
+        self.state_key = state_key
+        self.state_keys = state_keys or []
         self.prompt_key = prompt_key
         self.request_args = request_args or {}
         self.action_slice = action_slice
@@ -138,13 +142,16 @@ class StarVLAMsgpackPolicyClient:
         if not prompt:
             prompt = _coerce_prompt(observation.get("prompt", ""))
 
+        example = {
+            "image": images,
+            "lang": prompt,
+        }
+        state = self._extract_state(observation)
+        if state is not None:
+            example["state"] = state
+
         request = {
-            "examples": [
-                {
-                    "image": images,
-                    "lang": prompt,
-                }
-            ],
+            "examples": [example],
             **self.request_args,
         }
         if self.unnorm_key:
@@ -165,11 +172,50 @@ class StarVLAMsgpackPolicyClient:
             raise ValueError("No camera images found. Configure policy.policy_args.image_keys for StarVLA.")
         return images
 
+    def _extract_state(self, observation: dict[str, Any]) -> np.ndarray | None:
+        if self.state_key:
+            state = np.asarray(_get_by_path(observation, self.state_key), dtype=np.float32)
+        elif self.state_keys:
+            parts = [np.asarray(_get_by_path(observation, key), dtype=np.float32).reshape(-1) for key in self.state_keys]
+            state = np.concatenate(parts, axis=0)
+        else:
+            return None
+
+        state = np.asarray(state, dtype=np.float32)
+        if state.ndim == 1:
+            state = state.reshape(1, -1)
+        return state
+
 
 def _get_by_path(data: dict[str, Any], path: str) -> Any:
     value: Any = data
-    for part in path.split("."):
-        value = value[part]
+    parts = path.split(".")
+    index = 0
+    while index < len(parts):
+        if not isinstance(value, dict):
+            traversed = ".".join(parts[:index])
+            raise KeyError(f"Cannot resolve {path!r}: {traversed!r} is not a mapping.")
+
+        remaining = ".".join(parts[index:])
+        if remaining in value:
+            return value[remaining]
+
+        part = parts[index]
+        if part in value:
+            value = value[part]
+            index += 1
+            continue
+
+        for end in range(len(parts), index + 1, -1):
+            flat_key = ".".join(parts[index:end])
+            if flat_key in value:
+                value = value[flat_key]
+                index = end
+                break
+        else:
+            available = ", ".join(map(str, list(value.keys())[:12]))
+            traversed = ".".join(parts[:index]) or "<root>"
+            raise KeyError(f"Cannot resolve {path!r} at {traversed!r}. Available keys: {available}")
     return value
 
 

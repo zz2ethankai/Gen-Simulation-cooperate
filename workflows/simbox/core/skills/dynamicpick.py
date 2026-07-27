@@ -5,6 +5,7 @@ from copy import deepcopy
 
 import numpy as np
 from core.skills.base_skill import BaseSkill, register_skill
+from core.utils.asset_path_utils import resolve_asset_path
 from core.utils.constants import CUROBO_BATCH_SIZE
 from core.utils.plan_utils import (
     select_index_by_priority_dual,
@@ -41,8 +42,8 @@ class Dynamicpick(BaseSkill):
         self.tcp_offset = self.skill_cfg.get("tcp_offset", 0.125)
 
         # Get grasp annotation
-        usd_path = [obj["path"] for obj in task.cfg["objects"] if obj["name"] == object_name][0]
-        usd_path = os.path.join(self.task.asset_root, usd_path)
+        object_cfg = next(obj for obj in task.cfg["objects"] if obj["name"] == object_name)
+        usd_path = resolve_asset_path(self.task.asset_root, object_cfg)
         grasp_pose_path = usd_path.replace("Aligned_obj.usd", "Aligned_grasp_sparse.npy")
         sparse_grasp_poses = np.load(grasp_pose_path)
         lr_arm = "right" if "right" in self.controller.robot_file else "left"

@@ -1,0 +1,39 @@
+launcher_type: simbox_parallel_v2
+name: franka_open_microwave_smoke_1
+
+parallel:
+  backend: docker
+  gpus: [0]
+  workers_per_gpu: 1
+  run_id: null
+  compose_file: docker/docker-compose.simbox.yml
+  task_timeout_sec: 900
+  stats_after_run: false
+  dry_run: false
+  task_preflight: true
+
+startup_guard:
+  enabled: true
+  marker: "Simulation App Startup Complete"
+  timeout_min: 5
+  retry: 1
+
+monitor:
+  enabled: true
+  mode: plain
+  refresh_sec: 5
+  silent_warn_sec: 300
+  keep_finished_rows: 20
+
+defaults:
+  de_config: configs/simbox/de_plan_with_render_template.yaml
+  random_num: 1
+  dataset_root: null
+  scene_info: null
+  seed_base: 2000
+  shard_random_num: false
+
+jobs:
+  - id: open_microwave_part0_gpu0_smoke
+    task: workflows/simbox/core/configs/tasks/art/franka/open_the_microwave/open_the_microwave_part0.yaml
+    gpu: 0

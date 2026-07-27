@@ -11,6 +11,7 @@ from core.objects import get_object_cls
 from core.robots import get_robot_cls
 from core.tasks.base_task import register_task
 from core.utils.dr import update_articulated_objs, update_rigid_objs, update_scenes
+from core.utils.asset_path_utils import resolve_asset_root
 from core.utils.language import update_language
 from core.utils.layout import optimize_2d_manip_layout
 from core.utils.region_sampler import RandomRegionSampler
@@ -51,6 +52,8 @@ class BananaBaseTask(BaseTask):
         self.distractors = {}
         self.fixtures = {}
         self.visuals = {}
+        self.pickcontact_views = {}
+        self.artcontact_views = {}
         self.stage = get_current_stage()
         self.random_region_list = self.cfg.get("random_region_list", [])
         self.current_id = 0
@@ -292,9 +295,15 @@ class BananaBaseTask(BaseTask):
         )
 
         self.cameras[cfg["name"]] = camera
+        record_mode = cfg.get("record_mode", "lmdb_and_video")
+        if record_mode not in {"lmdb_and_video", "video_only"}:
+            raise ValueError(f"unsupported camera record_mode {record_mode!r}: {cfg['name']}")
         self.cameras_info[cfg["name"]] = {
             "translation": deepcopy(camera.get_local_pose()[0]),
             "orientation": deepcopy(camera.get_local_pose()[1]),
+            "record_to": deepcopy(cfg.get("record_to")),
+            "save_name": cfg.get("save_name"),
+            "record_mode": record_mode,
         }
 
     def _load_obj(self, cfg: DictConfig):
@@ -304,7 +313,8 @@ class BananaBaseTask(BaseTask):
 
         # Decide root prim and constructor args
         root_prim_path = self.root_prim_path
-        ctor_args = [self.asset_root]
+        object_asset_root = resolve_asset_root(self.asset_root, cfg)
+        ctor_args = [object_asset_root]
 
         if target_class == "XFormObject" and cfg.get("parent_obj", None):
             root_prim_path = self.objects[cfg["parent_obj"]].prim_path
@@ -319,7 +329,7 @@ class BananaBaseTask(BaseTask):
 
         # Optional texture (for non-shape objects)
         if cfg.get("texture") and target_class not in ("ShapeObject",):
-            obj.apply_texture(self.asset_root, cfg.get("texture"))
+            obj.apply_texture(object_asset_root, cfg.get("texture"))
 
         orientation = get_orientation(cfg.get("euler"), cfg.get("quaternion"))
         obj.set_local_pose(translation=cfg.get("translation"), orientation=orientation)
@@ -474,8 +484,23 @@ class BananaBaseTask(BaseTask):
         """Randomize or reset the environment map (HDR dome light)."""
         cfg = self.cfg["env_map"]
         if cfg.get("light_type", "DomeLight") == "DomeLight":
-            envmap_hdr_path_list = glob.glob(os.path.join(self.asset_root, cfg["envmap_lib"], "*.hdr"))
+            envmap_lib = cfg["envmap_lib"]
+            envmap_dirs = [os.path.join(self.asset_root, envmap_lib)]
+            envmap_dirs.append(
+                os.path.abspath(
+                    os.path.join(os.path.dirname(__file__), "../../../../InternDataAssets/assets", envmap_lib)
+                )
+            )
+            envmap_hdr_path_list = []
+            for envmap_dir in envmap_dirs:
+                envmap_hdr_path_list = glob.glob(os.path.join(envmap_dir, "*.hdr"))
+                if envmap_hdr_path_list:
+                    break
             envmap_hdr_path_list.sort()
+            if not envmap_hdr_path_list:
+                raise FileNotFoundError(
+                    f"No HDR envmap files found for {envmap_lib!r}; checked: {', '.join(envmap_dirs)}"
+                )
             if cfg.get("apply_randomization", False):
                 envmap_id = random.randint(0, len(envmap_hdr_path_list) - 1)
                 intensity = random.uniform(cfg["intensity_range"][0], cfg["intensity_range"][1])

@@ -112,7 +112,7 @@ tasks:
 
       ### robot
       -
-        object: lift2
+        object: lift2ena
         target: conveyor
         random_type: A_on_B_region_sampler
         random_config:

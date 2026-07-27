@@ -1,0 +1,39 @@
+name: ${INTERNDATA_COMPOSE_PROJECT:-interdata-simbox-generation}
+
+services:
+  isaac:
+    build:
+      context: ..
+      dockerfile: docker/isaac/Dockerfile
+    image: ${INTERNDATA_ISAAC_IMAGE:-local/interdata-isaac-sim-4.1.0-curobo:latest}
+    network_mode: host
+    gpus:
+      - driver: nvidia
+        device_ids: ["${INTERNDATA_ISAAC_GPU_DEVICE_IDS:-0}"]
+        capabilities: [gpu]
+    privileged: false
+    stdin_open: true
+    tty: true
+    shm_size: "8gb"
+    environment:
+      ACCEPT_EULA: "Y"
+      PRIVACY_CONSENT: "Y"
+      OMNI_KIT_ACCEPT_EULA: "YES"
+      OMNI_KIT_ALLOW_ROOT: "1"
+      ISAAC_SIM_PATH: /isaac-sim
+      CUROBO_PATH: /opt/curobo
+      NVIDIA_VISIBLE_DEVICES: ${INTERNDATA_ISAAC_GPU_DEVICE_IDS:-0}
+      NVIDIA_DRIVER_CAPABILITIES: all
+      INTERNDATA_RUN_IMPORT_CHECKS: ${INTERNDATA_RUN_IMPORT_CHECKS:-0}
+    volumes:
+      - ${ISAAC_CACHE_MAIN:-../.docker/isaac-sim/cache/main}:/root/.cache/ov:rw
+      - ${ISAAC_CACHE_COMPUTE:-../.docker/isaac-sim/cache/computecache}:/root/.nv/ComputeCache:rw
+      - ${ISAAC_LOGS:-../.docker/isaac-sim/logs}:/root/.nvidia-omniverse/logs:rw
+      - ${ISAAC_CONFIG:-../.docker/isaac-sim/config}:/root/.nvidia-omniverse/config:rw
+      - ${ISAAC_DATA:-../.docker/isaac-sim/data}:/root/.local/share/ov/data:rw
+      - ${ISAAC_PKGS:-../.docker/isaac-sim/pkg}:/root/.local/share/ov/pkg:rw
+      - /usr/share/nvidia/nvoptix.bin:/usr/share/nvidia/nvoptix.bin:ro
+      - ../docker/isaac/entrypoint.sh:/entrypoint.sh:ro
+      - ..:/workspace:rw
+    working_dir: /workspace
+    entrypoint: ["/entrypoint.sh"]

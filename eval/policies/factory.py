@@ -41,6 +41,8 @@ def create_policy(spec: PolicySpec):
             timeout_s=float(spec.policy_args.get("timeout_s", 300.0)),
             unnorm_key=spec.policy_args.get("unnorm_key"),
             image_keys=list(spec.policy_args.get("image_keys", [])),
+            state_key=spec.policy_args.get("state_key"),
+            state_keys=list(spec.policy_args.get("state_keys", [])),
             prompt_key=spec.policy_args.get("prompt_key", "detailed_prompt"),
             request_args=dict(spec.policy_args.get("request_args", {})),
             action_slice=spec.policy_args.get("action_slice"),

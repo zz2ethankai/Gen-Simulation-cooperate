@@ -2,6 +2,8 @@ open3d-cpu
 opencv-python
 pathfinding
 imageio[ffmpeg]
+msgpack
+websockets
 plyfile
 omegaconf
 pydantic

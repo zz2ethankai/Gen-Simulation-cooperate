@@ -60,7 +60,11 @@ class EnvLoader(SceneLoader):
         if isinstance(rendering_dt, str):
             rendering_dt = float(Fraction(rendering_dt))
 
-        cuda_device = simulator.get("active_gpu", None)
+        # Isaac/Kit selects GPUs by physical index, while PyTorch sees the
+        # logical indices produced by CUDA_VISIBLE_DEVICES. Keep the old
+        # active_gpu fallback for existing configs, but allow launchers that
+        # isolate one physical GPU to select logical cuda:0 explicitly.
+        cuda_device = simulator.get("cuda_device", simulator.get("active_gpu", None))
         if cuda_device is not None:
             import torch
             torch.cuda.set_device(cuda_device)
@@ -137,6 +141,9 @@ class EnvLoader(SceneLoader):
             return scene
         if self.cur_index >= len(self.workflow.task_cfgs):
             self.logger.info("No more tasks to load, stopping iteration.")
+            close_workflow = getattr(self.workflow, "close", None)
+            if close_workflow is not None:
+                close_workflow()
             raise StopIteration
         self.logger.info(f"Loading task {self.cur_index + 1}/{len(self.workflow.task_cfgs)}")
         self.workflow.init_task(self.cur_index, self.need_preload)

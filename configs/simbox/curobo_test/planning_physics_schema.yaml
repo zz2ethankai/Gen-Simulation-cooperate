@@ -1,0 +1,34 @@
+planning:
+  collision_world:
+    mode: physics_schema
+    strict: true
+    exact_exclusions: []
+  pick_place:
+    terminal_step_m: 0.005
+    max_terminal_distance_m: 0.10
+    place_settle_steps: 10
+  execution_safety:
+    enabled: true
+    max_waypoint_stride: 2
+    max_replans_per_phase: 2
+    hold_steps_before_replan: 5
+    dynamic_sync_interval_steps: 5
+    joint_error_soft_rad: 0.10
+    joint_error_hard_rad: 0.25
+    ee_position_soft_m: 0.03
+    ee_position_hard_m: 0.06
+    ee_orientation_soft_rad: 0.15
+    ee_orientation_hard_rad: 0.30
+    base_translation_soft_m: 0.01
+    base_translation_hard_m: 0.03
+    base_rotation_soft_deg: 2.0
+    base_rotation_hard_deg: 5.0
+    unexpected_contact_soft_n: 5.0
+    unexpected_contact_hard_n: 20.0
+    arm_velocity_soft_rad_s: 5.0
+    arm_velocity_hard_rad_s: 8.0
+    soft_trigger_consecutive_steps: 3
+    dynamic_translation_replan_m: 0.01
+    dynamic_rotation_replan_deg: 3.0
+    attached_object_slip_translation_m: 0.02
+    attached_object_slip_rotation_deg: 10.0

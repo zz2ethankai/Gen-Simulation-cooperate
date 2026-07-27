@@ -1,6 +1,7 @@
 from copy import deepcopy
 
 import numpy as np
+from core.planning.motion_command import MotionPhase, MotionPhaseCommand
 from core.skills.base_skill import BaseSkill, register_skill
 from core.utils.box import Box, get_bbox_center_and_corners
 from core.utils.constants import CUROBO_BATCH_SIZE
@@ -11,6 +12,7 @@ from core.utils.plan_utils import (
 )
 from core.utils.transformation_utils import create_pose_matrices, poses_from_tf_matrices
 from core.utils.usd_geom_utils import compute_bbox
+from core.visualization.skill_target_math import ratio_box_corners
 from omegaconf import DictConfig
 from omni.isaac.core.controllers import BaseController
 from omni.isaac.core.robots.robot import Robot
@@ -22,6 +24,10 @@ from omni.isaac.core.utils.transformations import (
     tf_matrix_from_pose,
 )
 from scipy.spatial.transform import Rotation as R
+
+
+class PlacePlanningError(RuntimeError):
+    """A collision-safe Place target could not be selected."""
 
 
 # pylint: disable=consider-using-generator,too-many-public-methods,unused-argument
@@ -60,8 +66,154 @@ class Place(BaseSkill):
         self.align_plane_x_axis = self.skill_cfg.get("align_plane_x_axis", None)
         self.align_plane_y_axis = self.skill_cfg.get("align_plane_y_axis", None)
         self.align_obj_tol = self.skill_cfg.get("align_obj_tol", None)
+        self._pending_target_intent = None
+        self.failure_reason = ""
 
     def simple_generate_manip_cmds(self):
+        if getattr(self.controller, "collision_world_mode", "legacy_stage_scan") == "physics_schema":
+            return self._physics_schema_generate_manip_cmds()
+        return self._legacy_simple_generate_manip_cmds()
+
+    @staticmethod
+    def _terminal_samples(start, goal, step_m: float) -> list[np.ndarray]:
+        start = np.asarray(start, dtype=float)
+        goal = np.asarray(goal, dtype=float)
+        distance = float(np.linalg.norm(goal - start))
+        count = max(1, int(np.ceil(distance / float(step_m))))
+        return [start + (goal - start) * (index / count) for index in range(1, count + 1)]
+
+    def _physics_schema_generate_manip_cmds(self):
+        """Generate no-contact transit plus bounded placement-contact phases."""
+
+        manager = self.controller.collision_scene_manager
+        object_name = self.pick_obj.name
+        support_name = self.place_obj.name
+        record = manager.records.get(object_name)
+        if record is None or record.state.value != "attached":
+            raise RuntimeError(
+                f"Place requires ATTACHED object state, got {getattr(record, 'state', None)} for {object_name}"
+            )
+        manager.sync_dynamic_poses(0, interval_steps=1, force=True)
+        self.controller.update_pose_cost_metric(None)
+        self.failure_reason = ""
+        try:
+            result = self.sample_gripper_place_traj()
+        except PlacePlanningError as exc:
+            self.failure_reason = str(exc)
+            print(
+                f"[PlaceDebug] preplace-plan object={object_name} "
+                f"support={support_name} selected_index=None "
+                f"failure={self.failure_reason}"
+            )
+            self.publish_target_intent(
+                {
+                    "kind": "place",
+                    "objects": list(self.skill_cfg["objects"]),
+                    "has_target": False,
+                    "failure_reason": self.failure_reason,
+                }
+            )
+            self.manip_list = []
+            return
+        if self._pending_target_intent is not None:
+            self.publish_target_intent(self._pending_target_intent)
+
+        pre_position, pre_orientation = np.asarray(result[0][0]), np.asarray(result[0][1])
+        place_position, place_orientation = np.asarray(result[1][0]), np.asarray(result[1][1])
+        pick_place_cfg = self.task.cfg.get("planning", {}).get("pick_place", {})
+        terminal_step = float(pick_place_cfg.get("terminal_step_m", 0.005))
+        max_terminal = float(pick_place_cfg.get("max_terminal_distance_m", 0.10))
+        settle_steps = int(pick_place_cfg.get("place_settle_steps", 10))
+        distance = float(np.linalg.norm(place_position - pre_position))
+        if distance > max_terminal + 1e-5:
+            raise RuntimeError(
+                f"terminal Place distance {distance:.4f}m exceeds {max_terminal:.4f}m"
+            )
+        tolerance = {
+            "position_m": float(self.skill_cfg.get("t_eps", 0.005)),
+            "orientation_rad": float(self.skill_cfg.get("o_eps", 0.05)),
+        }
+        commands = [
+            MotionPhaseCommand(
+                MotionPhase.TRANSIT_PREPLACE,
+                pre_position,
+                pre_orientation,
+                gripper_action="close_gripper",
+                active_object=object_name,
+                support_object=support_name,
+                allow_target_finger_contact=True,
+                completion_tolerance=tolerance,
+            )
+        ]
+        terminal_points = self._terminal_samples(pre_position, place_position, terminal_step)
+        for point_index, point in enumerate(terminal_points):
+            ratio = (point_index + 1) / len(terminal_points)
+            quat = (1.0 - ratio) * pre_orientation + ratio * place_orientation
+            quat = quat / np.linalg.norm(quat)
+            commands.append(
+                MotionPhaseCommand(
+                    MotionPhase.TERMINAL_PLACE_DESCENT,
+                    point,
+                    quat,
+                    gripper_action="close_gripper",
+                    active_object=object_name,
+                    support_object=support_name,
+                    allow_target_finger_contact=True,
+                    allow_object_support_contact=True,
+                    completion_tolerance={"position_m": terminal_step, "orientation_rad": tolerance["orientation_rad"]},
+                )
+            )
+        commands.extend(
+            [
+                MotionPhaseCommand(
+                    MotionPhase.GRIPPER_OPEN,
+                    place_position,
+                    place_orientation,
+                    gripper_action="open_gripper",
+                    active_object=object_name,
+                    support_object=support_name,
+                    allow_target_finger_contact=True,
+                    allow_object_support_contact=True,
+                    replan_allowed=False,
+                    dwell_steps=int(self.skill_cfg.get("gripper_change_steps", 10)),
+                ),
+                MotionPhaseCommand(
+                    MotionPhase.DETACH_AND_SETTLE,
+                    active_object=object_name,
+                    support_object=support_name,
+                    allow_object_support_contact=True,
+                    replan_allowed=False,
+                    dwell_steps=settle_steps,
+                ),
+            ]
+        )
+        if self.skill_cfg.get("post_place_vector", None):
+            commands.append(
+                MotionPhaseCommand(
+                    MotionPhase.TERMINAL_RETREAT,
+                    np.asarray(result[2][0]),
+                    np.asarray(result[2][1]),
+                    gripper_action="open_gripper",
+                    active_object=object_name,
+                    support_object=support_name,
+                    completion_tolerance=tolerance,
+                )
+            )
+        commands.append(
+            MotionPhaseCommand(
+                MotionPhase.RESTORE_WORLD,
+                active_object=object_name,
+                support_object=support_name,
+                replan_allowed=False,
+            )
+        )
+        self.manip_list = commands
+        self.place_ee_trans = place_position
+
+    def _legacy_simple_generate_manip_cmds(self):
+        """LEGACY_STAGE_SCAN: original tuple/substring Place implementation."""
+
+        # LEGACY_BEGIN: keyword-based collision world, retained for comparison
         manip_list = []
 
         p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
@@ -88,6 +240,8 @@ class Place(BaseSkill):
             manip_list.append(cmd)
 
         result = self.sample_gripper_place_traj()
+        if self._pending_target_intent is not None:
+            self.publish_target_intent(self._pending_target_intent)
 
         cmd = (result[0][0], result[0][1], "close_gripper", {})
         manip_list.append(cmd)
@@ -137,6 +291,7 @@ class Place(BaseSkill):
 
         self.manip_list = manip_list
         self.place_ee_trans = p_base_ee_place
+        # LEGACY_END
 
     def sample_gripper_place_traj(self):
         self.T_world_obj = tf_matrix_from_pose(*self.pick_obj.get_local_pose())
@@ -151,7 +306,8 @@ class Place(BaseSkill):
         self.T_world_container = tf_matrix_from_pose(*self.place_obj.get_local_pose())
 
         bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
-        b_min, b_max = bbox_place_obj.min, bbox_place_obj.max
+        b_min = np.asarray(bbox_place_obj.min, dtype=float)
+        b_max = np.asarray(bbox_place_obj.max, dtype=float)
 
         def get_range(key, default):
             r = self.skill_cfg.get(key, default)
@@ -160,6 +316,14 @@ class Place(BaseSkill):
         x_ratios = get_range("x_ratio_range", (0.4, 0.6))
         y_ratios = get_range("y_ratio_range", (0.4, 0.6))
         z_ratios = get_range("z_ratio_range", (0.4, 0.6))
+        ratio_ranges = tuple(
+            tuple(float(value) for value in self.skill_cfg.get(key, default))
+            for key, default in (
+                ("x_ratio_range", (0.4, 0.6)),
+                ("y_ratio_range", (0.4, 0.6)),
+                ("z_ratio_range", (0.4, 0.6)),
+            )
+        )
         direction = self.skill_cfg.get("place_direction", "vertical")
         pos_constraint = self.skill_cfg.get("position_constraint", "gripper")
         pre_z_off = self.skill_cfg.get("pre_place_z_offset", 0.2)
@@ -170,6 +334,11 @@ class Place(BaseSkill):
             y = b_min[1] + y_ratios * (b_max[1] - b_min[1])
             pre_place_pos_w = np.stack([x, y, np.full(CUROBO_BATCH_SIZE, b_max[2] + pre_z_off)], axis=-1)
             place_pos_w = np.stack([x, y, np.full(CUROBO_BATCH_SIZE, b_max[2] + plt_z_off)], axis=-1)
+            ratio_corners = ratio_box_corners(b_min, b_max, ratio_ranges)
+            region_points_w = ratio_corners.copy()
+            region_points_w[:, 2] = b_max[2] + plt_z_off
+            region_normal_w = np.array([0.0, 0.0, 1.0])
+            region_tangent_hint_w = np.array([1.0, 0.0, 0.0])
 
         elif direction == "horizontal":
             align_axis = self.T_world_container[:3, :3] @ np.array(self.skill_cfg["align_place_obj_axis"])
@@ -185,9 +354,21 @@ class Place(BaseSkill):
 
                 pre_place_pos_w = tmp_pos_w + align_axis * pre_align + offset_axis * pre_offset
                 place_pos_w = tmp_pos_w + align_axis * plt_align + offset_axis * plt_offset
+                region_points_w = ratio_box_corners(b_min, b_max, ratio_ranges)
+                region_points_w = (
+                    region_points_w
+                    + align_axis * plt_align
+                    + offset_axis * plt_offset
+                )
             else:
                 pre_place_pos_w = tmp_pos_w - align_axis * (pre_z_off + ee2o_distance)
                 place_pos_w = tmp_pos_w - align_axis * (plt_z_off + ee2o_distance)
+                region_points_w = ratio_box_corners(b_min, b_max, ratio_ranges)
+                region_points_w = region_points_w - align_axis * (
+                    plt_z_off + ee2o_distance
+                )
+            region_normal_w = np.asarray(align_axis, dtype=float)
+            region_tangent_hint_w = np.asarray(offset_axis, dtype=float)
         else:
             raise NotImplementedError
 
@@ -211,10 +392,19 @@ class Place(BaseSkill):
         else:
             raise NotImplementedError
 
-        self.controller.update_specific(
-            ignore_substring=self.controller.ignore_substring + self.skill_cfg.get("ignore_substring", []),
-            reference_prim_path=self.controller.reference_prim_path,
+        physics_schema = (
+            getattr(self.controller, "collision_world_mode", "legacy_stage_scan")
+            == "physics_schema"
         )
+        if not physics_schema:
+            # LEGACY_BEGIN: substring-based Place world update, retained for
+            # explicit legacy_stage_scan mode only.
+            self.controller.update_specific(
+                ignore_substring=self.controller.ignore_substring
+                + self.skill_cfg.get("ignore_substring", []),
+                reference_prim_path=self.controller.reference_prim_path,
+            )
+            # LEGACY_END
 
         p_base_ee_preplaces, q_base_ee_preplaces = poses_from_tf_matrices(T_base_ee_preplaces)
         p_base_ee_places, q_base_ee_places = poses_from_tf_matrices(T_base_ee_places)
@@ -226,13 +416,21 @@ class Place(BaseSkill):
             ):
                 # Inputs are identical, compute only once to avoid redundant computation
                 result = self.controller.test_batch_forward(p_base_ee_places, q_base_ee_places)
+                if physics_schema and not bool(result.success.any().item()):
+                    raise PlacePlanningError("NO_COLLISION_FREE_PREPLACE_PLAN")
                 index = select_index_by_priority_single(result)
             else:
                 # Inputs are different, compute separately
                 pre_result = self.controller.test_batch_forward(p_base_ee_preplaces, q_base_ee_preplaces)
-                result = self.controller.test_batch_forward(p_base_ee_places, q_base_ee_places)
-                index = select_index_by_priority_dual(pre_result, result)
+                if physics_schema:
+                    if not bool(pre_result.success.any().item()):
+                        raise PlacePlanningError("NO_COLLISION_FREE_PREPLACE_PLAN")
+                    index = select_index_by_priority_single(pre_result)
+                else:
+                    result = self.controller.test_batch_forward(p_base_ee_places, q_base_ee_places)
+                    index = select_index_by_priority_dual(pre_result, result)
         else:
+            selected_index = None
             for index in range(T_base_ee_places.shape[0]):
                 p_base_ee_pregrasp, q_base_ee_pregrasp = p_base_ee_preplaces[index], q_base_ee_preplaces[index]
                 p_base_ee_grasp, q_base_ee_grasp = p_base_ee_places[index], q_base_ee_places[index]
@@ -244,6 +442,10 @@ class Place(BaseSkill):
                 else:
                     raise NotImplementedError
 
+                if physics_schema and result_pre == 1:
+                    print("pre-place transit plan success")
+                    selected_index = index
+                    break
                 if self.skill_cfg.get("pre_grasp_offset", 0.1) > 0:
                     if test_mode == "forward":
                         result = self.controller.test_single_forward(p_base_ee_grasp, q_base_ee_grasp)
@@ -253,14 +455,64 @@ class Place(BaseSkill):
                         raise NotImplementedError
                     if result == 1 and result_pre == 1:
                         print("place plan success")
+                        selected_index = index
                         break
                 else:
                     if result_pre == 1:
                         print("place plan success")
+                        selected_index = index
                         break
+            if selected_index is None:
+                raise PlacePlanningError("NO_COLLISION_FREE_PREPLACE_PLAN")
+            index = selected_index
 
         res_pre = list(pose_from_tf_matrix(T_base_ee_preplaces[index]))
         res_plt = list(pose_from_tf_matrix(T_base_ee_places[index]))
+        print(
+            f"[PlaceDebug] preplace-plan object={self.pick_obj.name} "
+            f"support={self.place_obj.name} selected_index={int(index)} failure=None"
+        )
+        self._pending_target_intent = {
+            "kind": "place",
+            "objects": list(self.skill_cfg["objects"]),
+            "selected_index": int(index),
+            "place_direction": str(direction),
+            "position_constraint": str(pos_constraint),
+            "constraints": {
+                key: self.skill_cfg[key]
+                for key in (
+                    "align_pick_obj_axis",
+                    "align_place_obj_axis",
+                    "offset_place_obj_axis",
+                    "align_obj_tol",
+                    "filter_x_dir",
+                    "filter_y_dir",
+                    "filter_z_dir",
+                    "place_direction",
+                    "position_constraint",
+                    "preserve_attached_orientation",
+                    "pre_place_z_offset",
+                    "place_z_offset",
+                    "pre_place_align",
+                    "place_align",
+                    "pre_place_offset",
+                    "place_offset",
+                )
+                if key in self.skill_cfg
+            },
+            "bbox_world": np.concatenate([b_min, b_max]),
+            "ratio_ranges": np.asarray(ratio_ranges, dtype=float),
+            "region_points_world": np.asarray(region_points_w, dtype=float),
+            "region_normal_world": np.asarray(region_normal_w, dtype=float),
+            "region_tangent_hint_world": np.asarray(
+                region_tangent_hint_w, dtype=float
+            ),
+            "selected_reference_world": np.asarray(place_pos_w[index], dtype=float),
+            "preplace_position": np.asarray(res_pre[0], dtype=float),
+            "preplace_orientation": np.asarray(res_pre[1], dtype=float),
+            "place_position": np.asarray(res_plt[0], dtype=float),
+            "place_orientation": np.asarray(res_plt[1], dtype=float),
+        }
 
         if self.skill_cfg.get("post_place_vector", None):
             post_vec = np.array(self.skill_cfg["post_place_vector"])
@@ -272,6 +524,16 @@ class Place(BaseSkill):
         return [res_pre, res_plt]
 
     def generate_constrained_rotation_batch(self, batch_size=3000):
+        if self.skill_cfg.get("preserve_attached_orientation", False):
+            # Local Place validation should exercise carried-object planning,
+            # contact, detach and settle without injecting an unrelated random
+            # reorientation.  T_base_world and T_world_ee are refreshed by
+            # sample_gripper_place_traj immediately before this method.
+            current_base_ee = (self.T_base_world @ self.T_world_ee)[:3, :3]
+            return np.repeat(
+                current_base_ee[np.newaxis, :, :], CUROBO_BATCH_SIZE, axis=0
+            )
+
         filter_conditions = {
             "x": {
                 "forward": (0, 0, 1),  # (row, col, direction)
@@ -360,6 +622,14 @@ class Place(BaseSkill):
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
+        if isinstance(self.manip_list[0], MotionPhaseCommand):
+            return self.controller.is_phase_command_complete(self.manip_list[0])
+        return self._legacy_is_subtask_done(t_eps=t_eps, o_eps=o_eps)
+
+    def _legacy_is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
+        """LEGACY completion fallback retained only for tuple commands."""
+
+        # LEGACY_BEGIN: pose OR wait-count completion, retained for comparison
         p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
         p_base_ee, q_base_ee, *_ = self.manip_list[0]
         diff_trans = np.linalg.norm(p_base_ee_cur - p_base_ee)
@@ -370,6 +640,7 @@ class Place(BaseSkill):
         )
         self.plan_flag = self.controller.num_last_cmd > 10
         return np.logical_or(pose_flag, self.plan_flag)
+        # LEGACY_END
 
     def is_done(self):
         if len(self.manip_list) == 0:

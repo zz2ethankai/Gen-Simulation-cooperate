@@ -1,0 +1,135 @@
+launcher_type: simbox_parallel_v2
+name: franka_12jobs_10h
+
+parallel:
+  backend: docker
+  gpus: [0, 1, 2, 3]
+  workers_per_gpu: 3
+  run_id: null
+  compose_file: docker/docker-compose.simbox.yml
+  task_timeout_sec: 0
+  stats_after_run: true
+  dry_run: false
+  task_preflight: true
+
+startup_guard:
+  enabled: false
+  marker: "Simulation App Startup Complete"
+  timeout_min: 10
+  retry: 1
+
+monitor:
+  enabled: true
+  mode: rich
+  refresh_sec: 2
+  silent_warn_sec: 900
+  keep_finished_rows: 30
+  theme: nvtop_like
+  compact_paths: true
+  show_gpu_panel: true
+  show_data_panel: true
+
+failure_guard:
+  enabled: true
+  kill_on_fatal_log: true
+  kill_on_suspect_hang: true
+  suspect_hang_kill_sec: 1800
+
+progress:
+  enabled: true
+  mode: event_hook_first
+  event_poll_interval_sec: 2
+  dataset_scan_interval_sec: 30
+  action_fps: 30
+  video_fps: 15
+  final_ffprobe_verify: true
+
+failed_episode_cleanup:
+  enabled: true
+  mode: conservative
+  require_finalized_event: true
+  require_run_time_window: true
+  delete_dirs: true
+  keep_summary: true
+
+cache_cleanup:
+  enabled: true
+  scope: current_run
+  root: .docker/isaac-sim
+  cleanup_on_success: true
+  cleanup_on_failure: true
+  cleanup_on_interrupt: true
+  keep_summary: true
+
+gpu_sampling:
+  enabled: true
+  interval_sec: 10
+  output: gpu_samples.csv
+
+defaults:
+  de_config: configs/simbox/de_plan_with_render_template.yaml
+  dataset_root: /data1/yikai
+  scene_info: null
+  seed_base: 5000
+  shard_random_num: false
+
+jobs:
+  - id: open_microwave_part0_gpu0
+    task: workflows/simbox/core/configs/tasks/art/franka/open_the_microwave/open_the_microwave_part0.yaml
+    gpu: 0
+    random_num: 100
+
+  - id: pick_ball_gpu0
+    task: workflows/simbox/core/configs/tasks/pick_and_place/franka/single_pick/omniobject3d-ball.yaml
+    gpu: 0
+    random_num: 280
+
+  - id: pick_sweet_potato_gpu0
+    task: workflows/simbox/core/configs/tasks/pick_and_place/franka/single_pick/omniobject3d-sweet_potato.yaml
+    gpu: 0
+    random_num: 280
+
+  - id: pick_banana_gpu1
+    task: workflows/simbox/core/configs/tasks/pick_and_place/franka/single_pick/omniobject3d-banana.yaml
+    gpu: 1
+    random_num: 280
+
+  - id: pick_mug_gpu1
+    task: workflows/simbox/core/configs/tasks/pick_and_place/franka/single_pick/omniobject3d-mug.yaml
+    gpu: 1
+    random_num: 280
+
+  - id: pick_bottle_gpu1
+    task: workflows/simbox/core/configs/tasks/pick_and_place/franka/single_pick/omniobject3d-bottle.yaml
+    gpu: 1
+    random_num: 280
+
+  - id: pick_bowl_gpu2
+    task: workflows/simbox/core/configs/tasks/pick_and_place/franka/single_pick/omniobject3d-bowl.yaml
+    gpu: 2
+    random_num: 280
+
+  - id: pick_box_gpu2
+    task: workflows/simbox/core/configs/tasks/pick_and_place/franka/single_pick/omniobject3d-box.yaml
+    gpu: 2
+    random_num: 280
+
+  - id: pick_cup_gpu2
+    task: workflows/simbox/core/configs/tasks/pick_and_place/franka/single_pick/omniobject3d-cup.yaml
+    gpu: 2
+    random_num: 280
+
+  - id: pick_orange_gpu3
+    task: workflows/simbox/core/configs/tasks/pick_and_place/franka/single_pick/omniobject3d-orange.yaml
+    gpu: 3
+    random_num: 280
+
+  - id: pick_tomato_gpu3
+    task: workflows/simbox/core/configs/tasks/pick_and_place/franka/single_pick/omniobject3d-tomato.yaml
+    gpu: 3
+    random_num: 280
+
+  - id: pick_carrot_gpu3
+    task: workflows/simbox/core/configs/tasks/pick_and_place/franka/single_pick/omniobject3d-carrot.yaml
+    gpu: 3
+    random_num: 280

@@ -5,6 +5,7 @@ dist
 *.egg
 .vscode
 output
+outputs
 *.err
 *.out
 .cursor
@@ -22,3 +23,4 @@ debug.yaml
 depre
 # Agent secrets
 agent/.env
+.codex

@@ -3,6 +3,7 @@ import os
 import random
 
 from core.objects.base_object import register_object
+from core.utils.attach_collision_utils import join_prim_path, resolve_attach_collision_prims
 from omni.isaac.core.prims import RigidPrim
 from omni.isaac.core.utils.prims import create_prim, get_prim_at_path
 
@@ -23,6 +24,8 @@ class RigidObject(RigidPrim):
                 - name: Object name
                 - path: USD file path relative to asset_root
                 - prim_path_child: Child prim path for rigid body
+                - attach_prim_path_children (optional): Collision prim paths used by CuRobo attach
+                - attach_prim_path_child (optional): Deprecated singular collision prim path
                 - init_translation (optional): Initial translation
                 - init_orientation (optional): Initial orientation
                 - init_parent (optional): Initial parent prim
@@ -34,7 +37,14 @@ class RigidObject(RigidPrim):
         cfg_name = cfg["name"]
         cfg_path = cfg["path"]
         prim_path = f"{root_prim_path}/{cfg_name}"
-        usd_path = f"{asset_root}/{cfg_path}"
+        if os.path.isabs(cfg_path) and os.path.exists(cfg_path):
+            usd_path = cfg_path
+        else:
+            # Legacy distractor generation stores repo-relative asset paths
+            # with a leading slash.  Treat a non-existent absolute-looking
+            # path as relative to asset_root instead of discarding the root.
+            usd_path = os.path.join(asset_root, cfg_path.lstrip(os.sep))
+        self.usd_path = os.path.abspath(usd_path)
         self.init_translation = cfg.get("init_translation", None)
         self.init_orientation = cfg.get("init_orientation", None)
         self.init_parent = cfg.get("init_parent", None)
@@ -43,11 +53,28 @@ class RigidObject(RigidPrim):
         kwargs["mass"] = cfg.get("mass", None)
 
         # ===== Initialize =====
-        create_prim(prim_path=prim_path, usd_path=usd_path)
+        create_prim(prim_path=prim_path, usd_path=self.usd_path)
         self.base_prim_path = prim_path
-        rigid_prim_path = os.path.join(self.base_prim_path, cfg["prim_path_child"])
-        self.mesh_prim_path = str(get_prim_at_path(rigid_prim_path).GetChildren()[0].GetPrimPath())
-        super().__init__(prim_path=rigid_prim_path, name=cfg["name"], *args, **kwargs)
+        self.rigid_prim_path = join_prim_path(self.base_prim_path, cfg["prim_path_child"])
+        if not get_prim_at_path(self.rigid_prim_path).IsValid():
+            raise ValueError(f"rigid prim does not exist for {cfg_name}: {self.rigid_prim_path}")
+        resolution = resolve_attach_collision_prims(
+            self.base_prim_path,
+            self.rigid_prim_path,
+            cfg,
+            get_prim_at_path,
+        )
+        self.attach_collision_prim_paths = resolution.prim_paths
+        self.attach_collision_resolution_source = resolution.source
+        self.attach_collision_failure_code = resolution.failure_code
+        self.attach_collision_candidates = resolution.candidates
+        self.attach_collision_failure_message = resolution.message
+        # Temporary compatibility for older skills.  New Pick code consumes
+        # attach_collision_prim_paths and never guesses the first USD child.
+        self.mesh_prim_path = (
+            self.attach_collision_prim_paths[0] if len(self.attach_collision_prim_paths) == 1 else None
+        )
+        super().__init__(prim_path=self.rigid_prim_path, name=cfg["name"], *args, **kwargs)
 
     def get_observations(self):
         translation, orientation = self.get_local_pose()

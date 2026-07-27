@@ -1,0 +1,16 @@
+.git
+.docker
+.codex
+output
+outputs
+__pycache__
+*.pyc
+*.pyo
+*.log
+*.tmp
+
+# The Isaac image only needs curobo at build time. Runtime data is bind-mounted.
+InternDataAssets/*
+!InternDataAssets/curobo/
+!InternDataAssets/curobo/**
+

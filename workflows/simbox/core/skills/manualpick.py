@@ -5,6 +5,7 @@ from copy import deepcopy
 
 import numpy as np
 from core.skills.base_skill import BaseSkill, register_skill
+from core.utils.asset_path_utils import resolve_asset_path
 from core.utils.constants import CUROBO_BATCH_SIZE
 from core.utils.plan_utils import (
     select_index_by_priority_dual,
@@ -34,8 +35,8 @@ class Manualpick(BaseSkill):
         self.pick_obj = task.objects[object_name]
 
         # Get grasp annotation
-        usd_path = [obj["path"] for obj in task.cfg["objects"] if obj["name"] == object_name][0]
-        usd_path = os.path.join(self.task.asset_root, usd_path)
+        object_cfg = next(obj for obj in task.cfg["objects"] if obj["name"] == object_name)
+        usd_path = resolve_asset_path(self.task.asset_root, object_cfg)
         grasp_pose_path = usd_path.replace(
             "Aligned_obj.usd", self.skill_cfg.get("npy_name", "Aligned_grasp_sparse.npy")
         )
@@ -266,8 +267,8 @@ class Manualpick(BaseSkill):
         cmd = (
             p_base_ee_grasps[index],
             q_base_ee_grasps[index],
-            "attach_obj",
-            {"obj_prim_path": self.pick_obj.mesh_prim_path},
+            "attach_objects",
+            {"obj_prim_paths": self.pick_obj.attach_collision_prim_paths},
         )
         manip_list.append(cmd)
 

@@ -73,6 +73,21 @@ python -m eval.cli.eval_policy --config eval/configs/starvla_same_dist.yaml
 If the server metadata reports multiple `available_unnorm_keys`, set
 `policy.policy_args.unnorm_key` in `eval/configs/starvla_same_dist.yaml`.
 
+For the Franka banana pick checkpoint that uses
+`video.base_view + video.ego_view + state.eef_position/eef_rotation` and returns
+`delta_eef_position + delta_eef_rotation + gripper_close`, use:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m eval.cli.eval_policy --config eval/configs/starvla_franka_single_pick_banana.yaml
+```
+
+This config maps:
+
+- `video.base_view` to `raw.cameras.franka_head.color_image`
+- `video.ego_view` to `raw.cameras.franka_hand.color_image`
+- `state` to `raw.robots.franka.states.gripper.pose`
+- action to `env_args.action.mode: franka_eef_delta`
+
 When `run_args.record_video` is enabled, each configured camera uses the same
 core layout as SimBox data generation:
 

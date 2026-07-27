@@ -38,6 +38,7 @@ class EnvWriter(BaseWriter):
         )
 
     def flush_to_disk(self, task, scene_name, seq, obs):
+        length = 0
         try:
             scene_name = self.scene.name
             if obs is not None and self.obs_output_dir is not None:

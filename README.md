@@ -35,6 +35,8 @@ InternDataEngine is a synthetic data generation engine for embodied AI that powe
 
 Please refer to the [Installation](https://internrobotics.github.io/InternDataEngine-Docs/guides/installation.html) and [Usage](https://internrobotics.github.io/InternDataEngine-Docs/guides/quickstart.html) to start the installation and run your first synthetic data generation task.
 
+中文项目内文档：[数据生成 README / Quick Start](./docs/data_generation/README.md)，包含单任务启动、配置分类、Docker 并行生成、资产替换和 SimBox skill 替换。
+
 For more details, please check [Documentation](https://internrobotics.github.io/InternDataEngine-Docs/).
 
 ## License and Citation
