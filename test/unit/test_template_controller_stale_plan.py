@@ -34,7 +34,12 @@ def _load_ee_forward():
     method_node = next(
         node for node in controller_node.body if isinstance(node, ast.FunctionDef) and node.name == "ee_forward"
     )
-    namespace = {"np": np, "torch": torch, "ArticulationAction": _ArticulationAction}
+    namespace = {
+        "np": np,
+        "torch": torch,
+        "ArticulationAction": _ArticulationAction,
+        "LOGGER": SimpleNamespace(warning=lambda *args, **kwargs: None),
+    }
     method_module = ast.fix_missing_locations(ast.Module(body=[method_node], type_ignores=[]))
     exec(compile(method_module, _CONTROLLER_PATH, "exec"), namespace)
     return namespace["ee_forward"]
@@ -50,6 +55,7 @@ class _Controller:
     ee_forward = _load_ee_forward()
 
     def __init__(self):
+        self.name = "test_robot"
         self.tensor_args = _TensorArgs()
         self.arm_indices = np.array([0, 1, 2])
         self.gripper_indices = np.array([3])
@@ -69,6 +75,10 @@ class _Controller:
         self.ds_ratio = 1
         self.lr_name = "left"
         self._last_arm_action = np.array([0.7, 0.8, 0.9])
+        self._last_command_name = "test"
+        self._phase_plan_started = False
+        self._phase_plan_failed = False
+        self._last_commanded_arm_position = None
         stale_waypoint = SimpleNamespace(
             position=torch.tensor([1.1, 1.2, 1.3]),
             velocity=torch.zeros(3),
@@ -80,6 +90,10 @@ class _Controller:
     def plan(self, ee_trans, ee_ori, sim_js, js_names):
         self.plan_calls += 1
         return SimpleNamespace(success=torch.tensor([False]))
+
+    @staticmethod
+    def _log_plan_result(*args, **kwargs):
+        return None
 
     @staticmethod
     def get_gripper_action():

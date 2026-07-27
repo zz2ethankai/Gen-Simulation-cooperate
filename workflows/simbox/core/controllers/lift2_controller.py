@@ -40,7 +40,7 @@ class Lift2Controller(TemplateController):
         params = manip_cmd[3]
         assert hasattr(self, gripper_fn)
         method = getattr(self, gripper_fn)
-        if gripper_fn in ["in_plane_rotation", "mobile_move", "dummy_forward", "joint_ctrl"]:
+        if gripper_fn in ["in_plane_rotation", "mobile_move", "dummy_forward", "joint_ctrl", "observe_hold"]:
             return method(**params)
         elif gripper_fn in ["update_pose_cost_metric", "update_specific"]:
             method(**params)

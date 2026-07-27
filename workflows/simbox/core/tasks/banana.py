@@ -12,6 +12,7 @@ from core.objects import get_object_cls
 from core.robots import get_robot_cls
 from core.tasks.base_task import register_task
 from core.utils.dr import update_articulated_objs, update_rigid_objs, update_scenes
+from core.utils.asset_path_utils import resolve_asset_root
 from core.utils.language import update_language
 from core.utils.layout import optimize_2d_manip_layout
 from core.utils.region_sampler import RandomRegionSampler
@@ -52,6 +53,8 @@ class BananaBaseTask(BaseTask):
         self.distractors = {}
         self.fixtures = {}
         self.visuals = {}
+        self.pickcontact_views = {}
+        self.artcontact_views = {}
         self.stage = get_current_stage()
         self.random_region_list = self.cfg.get("random_region_list", [])
         self.current_id = 0
@@ -391,7 +394,8 @@ class BananaBaseTask(BaseTask):
 
         # Decide root prim and constructor args
         root_prim_path = self.root_prim_path
-        ctor_args = [self.asset_root]
+        object_asset_root = resolve_asset_root(self.asset_root, cfg)
+        ctor_args = [object_asset_root]
 
         if target_class == "XFormObject" and cfg.get("parent_obj", None):
             root_prim_path = self.objects[cfg["parent_obj"]].prim_path
@@ -406,7 +410,7 @@ class BananaBaseTask(BaseTask):
 
         # Optional texture (for non-shape objects)
         if cfg.get("texture") and target_class not in ("ShapeObject",):
-            obj.apply_texture(self.asset_root, cfg.get("texture"))
+            obj.apply_texture(object_asset_root, cfg.get("texture"))
 
         orientation = get_orientation(cfg.get("euler"), cfg.get("quaternion"))
         obj.set_local_pose(translation=cfg.get("translation"), orientation=orientation)

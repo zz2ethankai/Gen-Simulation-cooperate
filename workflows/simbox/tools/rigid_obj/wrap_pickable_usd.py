@@ -1,0 +1,171 @@
+"""Wrap a single-mesh USD into the SimBox pickable hierarchy.
+
+This creates a new asset package instead of modifying the source USD.  It is a
+first-stage bridge for scene-level benchmark objects such as `/Asset/Geometry`;
+you still need to generate/check OBJ grasp labels and run Isaac Sim collider
+tools for production-quality pickables.
+"""
+
+import argparse
+from pathlib import Path
+
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
+
+
+def vec_min(points):
+    return Gf.Vec3f(
+        min(point[0] for point in points),
+        min(point[1] for point in points),
+        min(point[2] for point in points),
+    )
+
+
+def vec_max(points):
+    return Gf.Vec3f(
+        max(point[0] for point in points),
+        max(point[1] for point in points),
+        max(point[2] for point in points),
+    )
+
+
+def centered_points(points):
+    local_min = vec_min(points)
+    local_max = vec_max(points)
+    center = (local_min + local_max) / 2.0
+    shifted = Vt.Vec3fArray([Gf.Vec3f(point[0] - center[0], point[1] - center[1], point[2] - center[2]) for point in points])
+    return shifted, center
+
+
+def copy_authored_attributes(src_prim, dst_prim, recenter: bool):
+    center = Gf.Vec3f(0.0, 0.0, 0.0)
+    copied_points = None
+
+    for src_attr in src_prim.GetAttributes():
+        if not src_attr.HasAuthoredValueOpinion():
+            continue
+
+        name = src_attr.GetName()
+        value = src_attr.Get()
+        if value is None:
+            continue
+
+        if name == "points" and recenter:
+            value, center = centered_points(value)
+            copied_points = value
+        elif name == "points":
+            copied_points = value
+
+        dst_attr = dst_prim.CreateAttribute(name, src_attr.GetTypeName(), custom=src_attr.IsCustom())
+        dst_attr.Set(value)
+
+    if copied_points:
+        local_min = vec_min(copied_points)
+        local_max = vec_max(copied_points)
+        UsdGeom.Mesh(dst_prim).GetExtentAttr().Set(Vt.Vec3fArray([local_min, local_max]))
+
+    return center
+
+
+def apply_basic_physics(aligned_prim, mesh_prim, mass: float, static_friction: float, dynamic_friction: float):
+    rigid_api = UsdPhysics.RigidBodyAPI.Apply(aligned_prim)
+    rigid_api.CreateRigidBodyEnabledAttr(True)
+    rigid_api.CreateKinematicEnabledAttr(False)
+
+    mass_api = UsdPhysics.MassAPI.Apply(aligned_prim)
+    mass_api.CreateMassAttr(mass)
+
+    collision_api = UsdPhysics.CollisionAPI.Apply(mesh_prim)
+    collision_api.CreateCollisionEnabledAttr(True)
+
+    mesh_collision_api = UsdPhysics.MeshCollisionAPI.Apply(mesh_prim)
+    mesh_collision_api.CreateApproximationAttr("convexDecomposition")
+
+    material_prim = aligned_prim.GetStage().DefinePrim("/World/Physics_Materials", "Material")
+    material_api = UsdPhysics.MaterialAPI.Apply(material_prim)
+    material_api.CreateStaticFrictionAttr(static_friction)
+    material_api.CreateDynamicFrictionAttr(dynamic_friction)
+    UsdShade.MaterialBindingAPI.Apply(aligned_prim)
+    aligned_prim.CreateRelationship("material:binding:physics").SetTargets([Sdf.Path("/World/Physics_Materials")])
+
+
+def wrap_pickable(
+    source_usd: Path,
+    output_dir: Path,
+    source_mesh_path: str,
+    recenter: bool,
+    mass: float,
+    static_friction: float,
+    dynamic_friction: float,
+):
+    src_stage = Usd.Stage.Open(str(source_usd))
+    if src_stage is None:
+        raise RuntimeError(f"Failed to open source USD: {source_usd}")
+
+    src_mesh_prim = src_stage.GetPrimAtPath(source_mesh_path)
+    if not src_mesh_prim.IsValid():
+        raise RuntimeError(f"Source mesh prim does not exist: {source_mesh_path}")
+    if src_mesh_prim.GetTypeName() != "Mesh":
+        raise RuntimeError(f"Source prim is not a Mesh: {source_mesh_path} ({src_mesh_prim.GetTypeName()})")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_usd = output_dir / "Aligned_obj.usd"
+
+    dst_stage = Usd.Stage.CreateNew(str(output_usd))
+    UsdGeom.SetStageUpAxis(dst_stage, UsdGeom.GetStageUpAxis(src_stage))
+    UsdGeom.SetStageMetersPerUnit(dst_stage, UsdGeom.GetStageMetersPerUnit(src_stage))
+
+    world = UsdGeom.Xform.Define(dst_stage, "/World").GetPrim()
+    dst_stage.SetDefaultPrim(world)
+    aligned = UsdGeom.Xform.Define(dst_stage, "/World/Aligned").GetPrim()
+    mesh = UsdGeom.Mesh.Define(dst_stage, "/World/Aligned/Geometry").GetPrim()
+
+    offset = copy_authored_attributes(src_mesh_prim, mesh, recenter)
+    apply_basic_physics(aligned, mesh, mass, static_friction, dynamic_friction)
+
+    dst_stage.GetRootLayer().Save()
+
+    (output_dir / "source.txt").write_text(
+        "\n".join(
+            [
+                f"source_usd={source_usd}",
+                f"source_mesh_path={source_mesh_path}",
+                f"recenter_geometry={recenter}",
+                f"subtracted_local_bbox_center={tuple(round(float(x), 6) for x in offset)}",
+                "",
+                "Generated by workflows/simbox/tools/rigid_obj/wrap_pickable_usd.py.",
+                "This does not generate Aligned_obj.obj or Aligned_grasp_sparse.npy.",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    return output_usd
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Wrap a single benchmark mesh USD into SimBox pickable hierarchy")
+    parser.add_argument("--source-usd", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--source-mesh-path", default="/Asset/Geometry")
+    parser.add_argument("--no-recenter", action="store_true", help="Keep source mesh point coordinates unchanged")
+    parser.add_argument("--mass", type=float, default=0.1)
+    parser.add_argument("--static-friction", type=float, default=1.0)
+    parser.add_argument("--dynamic-friction", type=float, default=1.0)
+    args = parser.parse_args()
+
+    output_usd = wrap_pickable(
+        args.source_usd,
+        args.output_dir,
+        args.source_mesh_path,
+        not args.no_recenter,
+        args.mass,
+        args.static_friction,
+        args.dynamic_friction,
+    )
+    print(f"Wrote {output_usd}")
+    print("Next: inspect it, run Isaac Sim collider refinement if needed, export OBJ, then generate grasp labels.")
+
+
+if __name__ == "__main__":
+    main()

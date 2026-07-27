@@ -1,8 +1,48 @@
+from pathlib import Path
 import numpy as np
 from omni.isaac.core.utils.prims import get_prim_at_path
 from omni.isaac.core.utils.transformations import get_relative_transform
 from omni.isaac.sensor import Camera
 
+def capture_topdown_screenshot(output_dir: str, world, task_cameras: dict | None = None, eye=None, target=None):
+    """Capture a top-down screenshot using an existing task camera.
+
+    Temporarily repositions the first available camera to look straight
+    down, renders one frame, saves ``topdown_check.png``, then restores
+    the original pose.  This works in headless mode because it reuses
+    an already-initialised camera with a valid RenderProduct.
+    """
+    output_path = Path(output_dir) / "topdown_check.png"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    _eye = eye or [0.5, 0.5, 3.0]
+
+    if not task_cameras:
+        print("[topdown_check] ERROR: No task cameras available")
+        return
+
+    cam_name, cam = next(iter(task_cameras.items()))
+    try:
+        orig_trans, orig_orient = cam.get_local_pose()
+        cam.set_local_pose(translation=np.array(_eye))
+        world.render()
+        obs = cam.get_observations()
+        rgb = obs.get("color_image")
+        if rgb is not None and rgb.size > 0:
+            from PIL import Image
+
+            img = rgb.astype(np.uint8) if rgb.dtype != np.uint8 else rgb
+            Image.fromarray(img).save(str(output_path))
+            print(f"[topdown_check] Screenshot saved to {output_path} (via {cam_name})")
+        else:
+            print("[topdown_check] ERROR: Camera get_observations returned no color_image")
+    except Exception as exc:
+        print(f"[topdown_check] Failed: {exc}")
+    finally:
+        try:
+            cam.set_local_pose(translation=orig_trans, orientation=orig_orient)
+        except Exception:
+            pass
 
 def _get_annotator(camera: Camera, annotator_name: str):
     custom_annotators = getattr(camera, "_custom_annotators", None)

@@ -1,0 +1,46 @@
+version: 1
+categories:
+  configuration:
+    - INVALID_TASK_CONFIG
+    - UNSUPPORTED_SKILL
+    - UNSUPPORTED_CONCURRENT_MANIPULATION
+  asset_contract:
+    - ATTACH_COLLISION_CONFIG_MISSING
+    - ATTACH_COLLISION_CONFIG_INVALID
+    - ATTACH_COLLISION_CONFIG_CONFLICT
+    - ATTACH_COLLISION_PRIM_NOT_FOUND
+    - ATTACH_COLLISION_PRIM_NOT_COLLIDABLE
+    - ATTACH_COLLISION_PRIM_OUTSIDE_RIGID_ROOT
+    - ATTACH_COLLISION_PRIM_AMBIGUOUS
+    - ATTACH_COLLISION_PRIM_NOT_IN_CUROBO_WORLD
+  workspace:
+    - NO_GEOMETRY_CANDIDATE
+    - NO_CUROBO_CANDIDATE
+    - NO_COMMON_WORKSPACE_CANDIDATE
+    - NO_COMMON_CUROBO_WORKSPACE_CANDIDATE
+  pick_planning:
+    - NO_GRASP_CANDIDATE
+    - NO_JOINT_GRASP_PLAN
+    - TERMINAL_DISTANCE_EXCEEDED
+  pick_execution:
+    - GRASP_CONTACT_MISSING
+    - attached_object_dropped
+    - attached_object_translation_slip
+    - attached_object_rotation_slip
+  place:
+    - NO_COLLISION_FREE_PREPLACE_PLAN
+    - PLACE_PREDICATE_FAILED
+  execution:
+    - joint_tracking_error
+    - ee_position_tracking_error
+    - ee_orientation_tracking_error
+    - base_translation_drift
+    - base_rotation_drift
+    - unexpected_contact
+    - unexpected_object_contact
+    - tracking_completion_failed
+  infrastructure:
+    - EVENT_MISSING
+    - TASK_TIMEOUT
+    - PROCESS_FAILED
+    - UNKNOWN_FAILURE

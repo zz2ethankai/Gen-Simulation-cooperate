@@ -3,6 +3,7 @@ Template robot class for manipulator robots with configurable parameters.
 All robot implementations (FR3, FrankaRobotiq85, Genie1, Lift2, SplitAloha) inherit from this class.
 """
 import json
+import logging
 import os
 import time
 import traceback
@@ -18,6 +19,15 @@ from omni.isaac.core.utils.transformations import (
     tf_matrix_from_pose,
 )
 from scipy.interpolate import interp1d
+
+from core.utils.joint_index_resolver import (
+    JOINT_GROUP_FIELDS,
+    resolve_configured_joint_groups,
+    resolve_joint_names,
+)
+
+
+LOGGER = logging.getLogger("de_logger")
 
 
 # pylint: disable=line-too-long,unused-argument
@@ -57,6 +67,9 @@ class TemplateRobot(Robot):
         self._setup_gripper_keypoints()
         self._setup_collision_paths()
         self._load_extra_depth(usd_path)
+        self._manipulation_base_hold_active = False
+        self._manipulation_base_hold_indices = np.asarray([], dtype=np.int64)
+        self._manipulation_base_hold_positions = np.asarray([], dtype=float)
 
     def _setup_joint_indices(self):
         """Setup joint indices. Override in subclass."""
@@ -116,9 +129,29 @@ class TemplateRobot(Robot):
     def initialize(self, *args, **kwargs):
         super().initialize()
         self._articulation_view.initialize()
+        self._resolve_runtime_joint_indices()
         self._setup_joint_velocities()
         self._setup_joint_homes()
         self._set_initial_positions()
+
+    def _resolve_runtime_joint_indices(self):
+        """Make configured joint names authoritative over asset-specific numeric indices."""
+
+        runtime_names = list(self.dof_names)
+        resolved_groups = resolve_configured_joint_groups(runtime_names, self.cfg)
+        for group, (indices_field, _) in JOINT_GROUP_FIELDS.items():
+            resolved = resolved_groups[group]
+            configured = list(self.cfg.get(indices_field, []))
+            if configured != resolved:
+                LOGGER.warning(
+                    "[JointIndex] robot=%s corrected %s from %s to %s using runtime dof_names",
+                    self.name,
+                    indices_field,
+                    configured,
+                    resolved,
+                )
+            setattr(self, indices_field, resolved)
+            self.cfg[indices_field] = resolved
 
     def _setup_joint_velocities(self):
         all_joint_indices = (
@@ -253,7 +286,92 @@ class TemplateRobot(Robot):
             )
 
     def apply_action(self, joint_positions, joint_indices, *args, **kwargs):
-        self._articulation_view.set_joint_position_targets(joint_positions, joint_indices=joint_indices)
+        positions = np.asarray(joint_positions, dtype=float).reshape(-1)
+        indices = np.asarray(joint_indices, dtype=np.int64).reshape(-1)
+        if self._manipulation_base_hold_active:
+            supplied = set(indices.tolist())
+            missing = [
+                (index, position)
+                for index, position in zip(
+                    self._manipulation_base_hold_indices,
+                    self._manipulation_base_hold_positions,
+                )
+                if int(index) not in supplied
+            ]
+            if missing:
+                indices = np.concatenate(
+                    [indices, np.asarray([item[0] for item in missing], dtype=np.int64)]
+                )
+                positions = np.concatenate(
+                    [positions, np.asarray([item[1] for item in missing], dtype=float)]
+                )
+        self._articulation_view.set_joint_position_targets(positions, joint_indices=indices)
+
+    def enable_manipulation_base_hold(self) -> None:
+        """Hold explicitly configured mobile-base DOFs during Pick/Place.
+
+        SplitAloha's planar base joints intentionally have zero drive gain in
+        the delivered USD because navigation controls them.  A manipulation
+        episode, however, must not let arm reaction/contact forces move those
+        joints while CuRobo is executing in an arm-base frame.  Joint names in
+        robot config are the contract; no asset-name or numeric-index guessing
+        is used here.
+        """
+
+        config = self.cfg.get("manipulation_base_hold", {})
+        if not config or not bool(config.get("enabled", False)):
+            return
+        joint_names = list(config.get("joint_names", []))
+        if not joint_names:
+            raise ValueError(
+                f"robot {self.name} enables manipulation_base_hold without joint_names"
+            )
+        indices = np.asarray(
+            resolve_joint_names(
+                list(self.dof_names),
+                joint_names,
+                group=f"{self.name}.manipulation_base_hold",
+            ),
+            dtype=np.int64,
+        )
+        joint_state = self.get_joints_state()
+        positions = np.asarray(joint_state.positions[indices], dtype=float).copy()
+
+        articulation_controller = self.get_articulation_controller()
+        kps, kds = articulation_controller.get_gains()
+        max_efforts = articulation_controller.get_max_efforts()
+        kps = np.asarray(kps, dtype=float).copy()
+        kds = np.asarray(kds, dtype=float).copy()
+        if max_efforts is None:
+            raise RuntimeError(f"robot {self.name} does not expose articulation max efforts")
+        max_efforts = np.asarray(max_efforts, dtype=float).copy()
+
+        stiffness = float(config.get("stiffness", 100000.0))
+        damping = float(config.get("damping", 3000.0))
+        max_effort = float(config.get("max_effort", 10000.0))
+        kps[indices] = stiffness
+        kds[indices] = damping
+        max_efforts[indices] = max_effort
+        articulation_controller.set_gains(kps=kps, kds=kds)
+        articulation_controller.set_max_efforts(max_efforts)
+        self._articulation_view.set_joint_position_targets(positions, joint_indices=indices)
+        self._articulation_view.set_joint_velocity_targets(
+            np.zeros_like(positions), joint_indices=indices
+        )
+
+        self._manipulation_base_hold_indices = indices
+        self._manipulation_base_hold_positions = positions
+        self._manipulation_base_hold_active = True
+        LOGGER.warning(
+            "[BaseHold] robot=%s joints=%s indices=%s targets=%s kp=%.1f kd=%.1f max_effort=%.1f",
+            self.name,
+            joint_names,
+            indices.tolist(),
+            np.round(positions, 6).tolist(),
+            stiffness,
+            damping,
+            max_effort,
+        )
 
     def get_observations(self) -> dict:
         joint_state = self.get_joints_state()

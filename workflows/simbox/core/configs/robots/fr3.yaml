@@ -3,7 +3,7 @@
 
 # Robot info
 target_class: FR3
-path: "franka/robot.usd"
+path: "workflows/simbox/assets/franka/robot.usd"
 
 # CuRobo file
 robot_file:
@@ -19,7 +19,8 @@ solver_position_iteration_count: 128
 solver_velocity_iteration_count: 4
 stabilization_threshold: 0.005
 
-# Joint indices
+# Joint names are authoritative; indices are legacy compatibility fallbacks.
+left_joint_names: [panda_joint1, panda_joint2, panda_joint3, panda_joint4, panda_joint5, panda_joint6, panda_joint7]
 left_joint_indices: [0, 1, 2, 3, 4, 5, 6]
 left_gripper_indices: [7]
 

@@ -1,0 +1,362 @@
+"""Offline Physics-schema discovery and object-state tests."""
+
+from __future__ import annotations
+
+import sys
+import types
+from pathlib import Path
+
+import pytest
+import numpy as np
+from pxr import Usd, UsdGeom, UsdPhysics
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SIMBOX_ROOT = ROOT / "workflows" / "simbox"
+if str(SIMBOX_ROOT) not in sys.path:
+    sys.path.insert(0, str(SIMBOX_ROOT))
+
+from core.planning.collision_scene_manager import (  # noqa: E402
+    CollisionObjectState,
+    CollisionSceneError,
+    CollisionSceneManager,
+    validate_exact_exclusions,
+)
+
+
+def _cube(stage, path, *, enabled=True):
+    prim = UsdGeom.Cube.Define(stage, path).GetPrim()
+    collision = UsdPhysics.CollisionAPI.Apply(prim)
+    collision.CreateCollisionEnabledAttr(enabled)
+    return prim
+
+
+def _task(stage):
+    stage.DefinePrim("/World/task_0/sink_table_named_asset", "Xform")
+    _cube(stage, "/World/task_0/sink_table_named_asset/collider")
+    UsdGeom.Mesh.Define(stage, "/World/task_0/sink_table_named_asset/visual").CreatePointsAttr([])
+    _cube(stage, "/World/task_0/sink_table_named_asset/disabled", enabled=False)
+
+    stage.DefinePrim("/World/task_0/movable_b", "Xform")
+    rigid = stage.GetPrimAtPath("/World/task_0/movable_b")
+    UsdPhysics.RigidBodyAPI.Apply(rigid).CreateKinematicEnabledAttr(False)
+    _cube(stage, "/World/task_0/movable_b/collider")
+    return types.SimpleNamespace(
+        fixtures={
+            "sink_table_named_asset": types.SimpleNamespace(
+                prim_path="/World/task_0/sink_table_named_asset"
+            )
+        },
+        objects={"movable_b": types.SimpleNamespace(prim_path="/World/task_0/movable_b")},
+        distractors={},
+    )
+
+
+def test_discovery_uses_enabled_collision_api_not_names_or_visual_meshes():
+    stage = Usd.Stage.CreateInMemory()
+    manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
+    assert manager.collision_prim_paths == [
+        "/World/task_0/sink_table_named_asset/collider",
+        "/World/task_0/movable_b/collider",
+    ]
+    assert manager.records["sink_table_named_asset"].mobility == "static"
+    assert manager.records["movable_b"].mobility == "dynamic"
+
+
+def test_exact_exclusions_require_absolute_path_and_reason():
+    with pytest.raises(ValueError, match="complete absolute"):
+        validate_exact_exclusions([{"prim_path": "sink/collider", "reason": "known duplicate"}])
+    with pytest.raises(ValueError, match="non-empty reason"):
+        validate_exact_exclusions([{"prim_path": "/World/sink/collider", "reason": ""}])
+    assert validate_exact_exclusions(
+        [{"prim_path": "/World/sink/collider", "reason": "duplicate proxy"}]
+    ) == {"/World/sink/collider": "duplicate proxy"}
+
+
+def test_exact_exclusion_must_match_collider_inside_registered_entity():
+    stage = Usd.Stage.CreateInMemory()
+    task = _task(stage)
+    _cube(stage, "/World/unrelated/collider")
+    with pytest.raises(CollisionSceneError, match="do not name enabled Stage colliders"):
+        CollisionSceneManager(
+            stage,
+            task,
+            {
+                "strict": True,
+                "exact_exclusions": [
+                    {"prim_path": "/World/unrelated/collider", "reason": "not in task entities"}
+                ],
+            },
+        )
+
+
+def test_strict_mode_rejects_collision_api_on_unsupported_prim():
+    stage = Usd.Stage.CreateInMemory()
+    root = stage.DefinePrim("/World/task_0/object", "Xform")
+    UsdPhysics.CollisionAPI.Apply(root)
+    task = types.SimpleNamespace(
+        fixtures={}, objects={"object": types.SimpleNamespace(prim_path=str(root.GetPath()))}, distractors={}
+    )
+    with pytest.raises(CollisionSceneError, match="unsupported enabled CollisionAPI"):
+        CollisionSceneManager(stage, task, {"strict": True})
+
+
+def test_non_geometry_collision_api_is_audited_when_supported_descendant_exists():
+    stage = Usd.Stage.CreateInMemory()
+    root = stage.DefinePrim("/World/task_0/object", "Xform")
+    UsdPhysics.CollisionAPI.Apply(root)
+    _cube(stage, "/World/task_0/object/collider")
+    task = types.SimpleNamespace(
+        fixtures={}, objects={"object": types.SimpleNamespace(prim_path=str(root.GetPath()))}, distractors={}
+    )
+    manager = CollisionSceneManager(stage, task, {"strict": True})
+    assert manager.collision_prim_paths == ["/World/task_0/object/collider"]
+    assert manager.schema_exclusions == {
+        "/World/task_0/object": "non_geometry_collision_api_with_supported_descendant_colliders"
+    }
+
+
+def test_explicit_visual_only_entity_is_skipped_but_missing_claimed_collider_is_strict():
+    stage = Usd.Stage.CreateInMemory()
+    visual_root = stage.DefinePrim("/World/task_0/rug", "Xform")
+    _cube(stage, "/World/task_0/solid/collider")
+    stage.DefinePrim("/World/task_0/solid", "Xform")
+    task = types.SimpleNamespace(
+        fixtures={
+            "rug": types.SimpleNamespace(
+                prim_path=str(visual_root.GetPath()),
+                cfg={"physics": {"collision_enabled": False}, "collider": "none"},
+            ),
+            "solid": types.SimpleNamespace(prim_path="/World/task_0/solid"),
+        },
+        objects={},
+        distractors={},
+    )
+    manager = CollisionSceneManager(stage, task, {"strict": True})
+    assert "rug" not in manager.records
+    assert manager.schema_exclusions[str(visual_root.GetPath())].startswith(
+        "config_declared_visual_only"
+    )
+
+    broken = stage.DefinePrim("/World/task_0/broken", "Xform")
+    task.fixtures["broken"] = types.SimpleNamespace(
+        prim_path=str(broken.GetPath()),
+        cfg={"physics": {"collision_enabled": True}},
+    )
+    with pytest.raises(CollisionSceneError, match="no supported enabled collider"):
+        CollisionSceneManager(stage, task, {"strict": True})
+
+
+def test_world_colliders_and_consolidated_attach_prim_are_separate_contracts():
+    stage = Usd.Stage.CreateInMemory()
+    stage.DefinePrim("/World/task_0/a", "Xform")
+    _cube(stage, "/World/task_0/a/combined")
+    _cube(stage, "/World/task_0/a/detail")
+    entity = types.SimpleNamespace(
+        prim_path="/World/task_0/a",
+        attach_collision_prim_paths=["/World/task_0/a/combined"],
+    )
+    task = types.SimpleNamespace(
+        fixtures={},
+        objects={"a": entity},
+        distractors={},
+        cfg={
+            "skills": [
+                {"robot": [{"left": [{"name": "Pick", "objects": ["a"]}], "right": []}]}
+            ]
+        },
+    )
+    manager = CollisionSceneManager(stage, task, {"strict": True})
+    assert manager.records["a"].collision_prim_paths == [
+        "/World/task_0/a/combined",
+        "/World/task_0/a/detail",
+    ]
+    assert manager.attach_prim_paths["a"] == ["/World/task_0/a/combined"]
+
+    entity.attach_collision_prim_paths = ["/World/task_0/a/visual"]
+    with pytest.raises(CollisionSceneError, match="not an enabled collider"):
+        CollisionSceneManager(stage, task, {"strict": True})
+
+
+def test_attached_pose_tracking_uses_the_rigidbody_that_carries_attach_collider():
+    stage = Usd.Stage.CreateInMemory()
+    stage.DefinePrim("/World/task_0/bottle", "Xform")
+    body = stage.DefinePrim("/World/task_0/bottle/Aligned/base_link", "Xform")
+    UsdPhysics.RigidBodyAPI.Apply(body).CreateKinematicEnabledAttr(False)
+    collider = _cube(stage, "/World/task_0/bottle/Aligned/base_link/collider")
+    entity = types.SimpleNamespace(
+        prim_path="/World/task_0/bottle",
+        attach_collision_prim_paths=[str(collider.GetPath())],
+    )
+    task = types.SimpleNamespace(
+        fixtures={},
+        objects={"bottle": entity},
+        distractors={},
+        cfg={
+            "skills": [
+                {
+                    "robot": [
+                        {"left": [], "right": [{"name": "Pick", "objects": ["bottle"]}]}
+                    ]
+                }
+            ]
+        },
+    )
+
+    manager = CollisionSceneManager(stage, task, {"strict": True})
+
+    assert manager.records["bottle"].root_prim_path == "/World/task_0/bottle"
+    assert (
+        manager.records["bottle"].tracking_prim_path
+        == "/World/task_0/bottle/Aligned/base_link"
+    )
+
+
+def test_state_machine_rejects_illegal_and_concurrent_transitions():
+    stage = Usd.Stage.CreateInMemory()
+    manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
+    manager._transition(  # pylint: disable=protected-access
+        "movable_b", CollisionObjectState.ACTIVE_TARGET_TRANSIT, "robot", "right"
+    )
+    with pytest.raises(CollisionSceneError, match="UNSUPPORTED_CONCURRENT_MANIPULATION"):
+        manager._transition(  # pylint: disable=protected-access
+            "sink_table_named_asset", CollisionObjectState.ACTIVE_TARGET_TRANSIT, "robot", "left"
+        )
+    with pytest.raises(CollisionSceneError, match="illegal collision state transition"):
+        manager._transition(  # pylint: disable=protected-access
+            "movable_b", CollisionObjectState.PLACED_WORLD
+        )
+
+
+def test_invariants_allow_only_explicit_terminal_support_disable():
+    stage = Usd.Stage.CreateInMemory()
+    manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
+    key = ("robot", "right")
+    manager.controllers[key] = types.SimpleNamespace(
+        has_attached_collision_spheres=lambda: True
+    )
+    manager.controller_enabled[key] = {
+        path: True for path in manager.collision_prim_paths
+    }
+    manager._temporary_disabled[key] = set()  # pylint: disable=protected-access
+    manager._transition(  # pylint: disable=protected-access
+        "movable_b", CollisionObjectState.ACTIVE_TARGET_TRANSIT, *key
+    )
+    manager._transition(  # pylint: disable=protected-access
+        "movable_b", CollisionObjectState.ACTIVE_TARGET_APPROACH, *key
+    )
+    manager._transition(  # pylint: disable=protected-access
+        "movable_b", CollisionObjectState.ATTACHED, *key
+    )
+    target_path = manager.records["movable_b"].collision_prim_paths[0]
+    support_path = manager.records["sink_table_named_asset"].collision_prim_paths[0]
+    manager.controller_enabled[key][target_path] = False
+    manager.controller_enabled[key][support_path] = False
+    manager._temporary_disabled[key].add(support_path)  # pylint: disable=protected-access
+
+    manager.assert_invariants()
+
+    manager._temporary_disabled[key].clear()  # pylint: disable=protected-access
+    with pytest.raises(CollisionSceneError, match="world object is disabled"):
+        manager.assert_invariants()
+
+
+def test_placed_object_can_enter_and_restore_terminal_retreat_identity():
+    stage = Usd.Stage.CreateInMemory()
+    manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
+    manager._transition(  # pylint: disable=protected-access
+        "movable_b", CollisionObjectState.ACTIVE_TARGET_TRANSIT, "robot", "right"
+    )
+    manager._transition(  # pylint: disable=protected-access
+        "movable_b", CollisionObjectState.ACTIVE_TARGET_APPROACH, "robot", "right"
+    )
+    manager._transition(  # pylint: disable=protected-access
+        "movable_b", CollisionObjectState.ATTACHED, "robot", "right"
+    )
+    manager._transition(  # pylint: disable=protected-access
+        "movable_b", CollisionObjectState.PLACED_WORLD
+    )
+    manager._transition(  # pylint: disable=protected-access
+        "movable_b", CollisionObjectState.ACTIVE_TARGET_APPROACH, "robot", "right"
+    )
+    manager._transition(  # pylint: disable=protected-access
+        "movable_b", CollisionObjectState.PLACED_WORLD
+    )
+    assert manager.records["movable_b"].state == CollisionObjectState.PLACED_WORLD
+
+
+def test_contact_force_reduction_preserves_filter_identity_across_sensors():
+    class View:
+        def __init__(self, values):
+            self.values = np.asarray(values, dtype=float)
+
+        def get_contact_force_matrix(self):
+            return self.values
+
+    maxima = CollisionSceneManager._filter_force_maxima(  # pylint: disable=protected-access
+        [
+            View([[[3.0, 4.0, 0.0], [0.0, 0.0, 2.0]]]),
+            View([[[0.0, 0.0, 1.0], [0.0, 6.0, 8.0]]]),
+        ],
+        filter_count=2,
+    )
+    np.testing.assert_allclose(maxima, [5.0, 10.0])
+
+
+def test_dynamic_pose_sync_does_not_rebuild_collision_geometry(monkeypatch):
+    stage = Usd.Stage.CreateInMemory()
+    task = _task(stage)
+    manager = CollisionSceneManager(stage, task, {"strict": True})
+
+    pose_calls = []
+
+    class Helper:
+        def get_collision_prim_pose(self, path, reference_prim_path=None):
+            pose_calls.append((path, reference_prim_path))
+            return [1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0]
+
+        def get_obstacles_from_collision_prims(self, *_args, **_kwargs):
+            raise AssertionError("dynamic pose sync must not rebuild geometry")
+
+    updates = []
+    world_collision = types.SimpleNamespace(
+        update_obstacle_pose=lambda path, pose: updates.append((path, pose))
+    )
+    controller = types.SimpleNamespace(
+        reference_prim_path="/World/task_0",
+        tensor_args=object(),
+        motion_gen=types.SimpleNamespace(world_collision=world_collision),
+    )
+    manager.controllers[("robot", "right")] = controller
+    manager._usd_helper = Helper()  # pylint: disable=protected-access
+
+    fake_curobo = types.ModuleType("curobo")
+    fake_types = types.ModuleType("curobo.types")
+    fake_math = types.ModuleType("curobo.types.math")
+
+    class FakePose:
+        @staticmethod
+        def from_list(value, _tensor_args):
+            return tuple(value)
+
+    fake_math.Pose = FakePose
+    fake_types.math = fake_math
+    fake_curobo.types = fake_types
+    monkeypatch.setitem(sys.modules, "curobo", fake_curobo)
+    monkeypatch.setitem(sys.modules, "curobo.types", fake_types)
+    monkeypatch.setitem(sys.modules, "curobo.types.math", fake_math)
+
+    root = stage.GetPrimAtPath("/World/task_0/movable_b")
+    UsdGeom.Xformable(root).AddTranslateOp().Set((0.1, 0.0, 0.0))
+    changed = manager.sync_dynamic_poses(step_id=5, interval_steps=5)
+
+    assert changed == ["movable_b"]
+    assert pose_calls == [
+        ("/World/task_0/movable_b/collider", "/World/task_0")
+    ]
+    assert updates == [
+        (
+            "/World/task_0/movable_b/collider",
+            (1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0),
+        )
+    ]

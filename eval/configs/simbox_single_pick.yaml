@@ -1,0 +1,35 @@
+name: simbox_single_pick_eval
+output_dir: outputs/eval
+seeds: [0]
+
+task:
+  name: split_aloha_single_pick_banana_left
+  env_type: simbox
+  task_config: workflows/simbox/core/configs/tasks/pick_and_place/split_aloha/single_pick/left/omniobject3d-banana.yaml
+  workflow_type: SimBoxDualWorkFlow
+  task_index: 0
+  max_steps: 500
+  simulator:
+    physics_dt: "1/30"
+    rendering_dt: "1/30"
+    stage_units_in_meters: 1.0
+    headless: true
+    anti_aliasing: 0
+  env_args:
+    randomize: true
+    render: false
+    action:
+      robot_name: split_aloha
+      # Replace this with the exact joint indices expected by the deployed policy.
+      joint_indices: [0, 1, 2, 3, 4, 5]
+    success_predicate:
+      type: object_lifted
+      object: pick_object_left
+      min_delta_z: 0.02
+
+policy:
+  name: starvla_policy_server
+  policy_type: json_websocket
+  endpoint: ws://127.0.0.1:8000
+  action_dim: 6
+  open_loop_horizon: 1

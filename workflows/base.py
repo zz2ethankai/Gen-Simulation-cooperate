@@ -31,7 +31,18 @@ class NimbusWorkFlow(ABC):
         new_wf.__dict__.update(self.__dict__)
 
         if hasattr(self, "logger"):
-            new_wf.logger = deepcopy(self.logger)
+            clone_for_save = getattr(self.logger, "clone_for_save", None)
+            new_wf.logger = clone_for_save() if clone_for_save is not None else deepcopy(self.logger)
+
+        if hasattr(self, "trajectory_visualizer") and self.trajectory_visualizer is not None:
+            clone_for_save = getattr(self.trajectory_visualizer, "clone_for_save", None)
+            if clone_for_save is not None:
+                new_wf.trajectory_visualizer = clone_for_save()
+
+        if hasattr(self, "skill_target_visualizer") and self.skill_target_visualizer is not None:
+            clone_for_save = getattr(self.skill_target_visualizer, "clone_for_save", None)
+            if clone_for_save is not None:
+                new_wf.skill_target_visualizer = clone_for_save()
 
         if hasattr(self, "recoder"):
             new_wf.recoder = deepcopy(self.recoder)

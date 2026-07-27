@@ -1,61 +1,124 @@
-# Non-secret agent configuration.
-# Safe to commit. No API keys here.
-#
-# 切换 provider 的步骤：
-#   1. 修改下方 active_provider
-#   2. 确认对应 provider 块里的 name/fast 是你想用的模型
-#   3. 确保 agent/.env 里填写了对应 provider 的 key 和 base_url
+version: 2
 
-# 当前生效的 provider（改这一行来切换）
-active_provider: anthropic
+backend:
+#  ---Codex settings
+  # type: codex_cli
+  # model: null
 
+  # --- openai_api settings (ignored when type=codex_cli) ---
+  type: openai_api
+  base_url: https://api.deepseek.com/v1   # DeepSeek
+  # base_url: https://api.openai.com/v1     # OpenAI
+  api_key: null                            # null = $OPENAI_API_KEY
+  model: deepseek-v4-pro
 
-# ── Anthropic ────────────────────────────────────────────────────────────────
-# 对应 .env 变量：ANTHROPIC_API_KEY 或 ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL
-anthropic:
-  name: claude-opus-4-6
-  fast: claude-sonnet-4-6
-  max_tokens: 8192
+  # --- codex_cli settings (ignored when type=openai_api) ---
+  sandbox: read-only
+  ephemeral: true
 
-
-# ── OpenAI-compatible ────────────────────────────────────────────────────────
-# 适用于：OpenAI 官方 / ikuncode / DeepSeek / SiliconFlow / 阿里云百炼 等
-# 对应 .env 变量：OPENAI_API_KEY + OPENAI_BASE_URL
-#
-# 常用模型名参考：
-#   OpenAI 官方:   gpt-4o / gpt-4o-mini
-#   ikuncode:      gpt-5.4 / gpt-5.4-mini
-#   DeepSeek:      deepseek-chat / deepseek-reasoner
-#   SiliconFlow:   Qwen/Qwen2.5-72B-Instruct / deepseek-ai/DeepSeek-V3
-#   阿里云百炼:     qwen-max / qwen-plus
-openai:
-  name: gpt-5.4
-  fast: gpt-5.4-mini
-  max_tokens: 8192
-
-
-# ── 默认运行参数 ──────────────────────────────────────────────────────────────
-# CLI 传了参数就覆盖这里；没传就用这里的值。
-# ref 和 instruction 是最常改的，直接在这里改比每次敲命令行方便。
-defaults:
-  # 参考 YAML 路径（相对于项目根目录）
-  ref: workflows/simbox/core/configs/tasks/basic/lift2/arrange_the_tableware/arrange_the_tableware_part0.yaml
-
-  # 生成指令：用自然语言描述你想做什么改动
-  instruction: "Replace the fork with a knife"
-
-  # 是否用 fast 模型（true/false）
-  fast: false
-
-  # 输出目录
-  output: agent/output
-
-
-# ── 其他设置 ─────────────────────────────────────────────────────────────────
 paths:
-  task_configs: workflows/simbox/core/configs/tasks
+  inventory: output/agent_inventory.json
+  run_root: output/agent_runs
+
+scene_roots:
+  - InternDataAssets/Bench_2.1_isaacsim/scene_4
+
+execution:
+  conda_env: interndata
+  gpu: 0
+  timeout_sec: 1800
+  max_revisions: 2
+  retain_experience: true
 
 generation:
-  validate_schema: true
-  save_raw_response: true
-  annotate_changes: true   # 生成 _annotated.yaml，在改动行末尾加注释说明
+  enabled: true
+  random_num: 1
+
+robot:
+  default_type: split_aloha
+  default_profile: split_aloha_tabletop_v1
+  default_arm: right
+  allowed_profiles:
+    split_aloha: [split_aloha_tabletop_v1]
+    franka: [franka_tabletop_v1]
+  arms:
+    split_aloha: right
+    franka: left
+
+debug:
+  topdown_check: true
+  topdown_eye: [1.0, 1.0, 3.5]
+  topdown_target: [0.0, 0.0, 0.8]
+
+workspace:
+  common_pose_max_heading_error_deg: 45.0
+  max_common_candidates: 8
+
+planning:
+  collision_world:
+    mode: physics_schema
+    strict: true
+    exact_exclusions: []
+  pick_place:
+    terminal_step_m: 0.005
+    max_terminal_distance_m: 0.10
+    place_settle_steps: 10
+  execution_safety:
+    enabled: true
+    max_waypoint_stride: 2
+    max_replans_per_phase: 2
+    hold_steps_before_replan: 5
+    dynamic_sync_interval_steps: 5
+
+skill_defaults:
+  pick:
+    filter_y_dir: [forward, 90]
+    filter_z_dir: [downward, 140]
+    pre_grasp_offset: 0.10
+    gripper_change_steps: 10
+    post_grasp_offset_min: 0.10
+    post_grasp_offset_max: 0.15
+    test_mode: forward
+  place:
+    place_direction: vertical
+    filter_y_dir: [forward, 90]
+    filter_z_dir: [downward, 140]
+    x_ratio_range: [0.5, 0.5]
+    y_ratio_range: [0.5, 0.5]
+    pre_place_z_offset: 0.10
+    place_z_offset: 0.02
+    position_constraint: object
+    success_mode: xybbox
+    test_mode: forward
+  relation:
+    on:
+      x_ratio_range: [0.5, 0.5]
+      y_ratio_range: [0.5, 0.5]
+      position_constraint: object
+      success_mode: xybbox
+    inside:
+      x_ratio_range: [0.5, 0.5]
+      y_ratio_range: [0.5, 0.5]
+      position_constraint: object
+      success_mode: xybbox
+    left_of:
+      x_ratio_range: [-0.30, -0.15]
+      y_ratio_range: [0.5, 0.5]
+      position_constraint: object
+      success_mode: left
+    right_of:
+      x_ratio_range: [1.15, 1.30]
+      y_ratio_range: [0.5, 0.5]
+      position_constraint: object
+      success_mode: right
+    next_to:
+      x_ratio_range: [1.15, 1.30]
+      y_ratio_range: [0.4, 0.6]
+      position_constraint: object
+      success_mode: right
+    hang:
+      place_direction: horizontal
+      position_constraint: object
+    insert:
+      place_direction: horizontal
+      position_constraint: object

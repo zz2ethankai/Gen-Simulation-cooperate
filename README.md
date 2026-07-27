@@ -125,6 +125,8 @@ Stop the stack:
 scripts/docker/stop_all_docker.sh
 ```
 
+中文项目内文档：[数据生成 README / Quick Start](./docs/data_generation/README.md)，包含单任务启动、配置分类、Docker 并行生成、资产替换和 SimBox skill 替换。
+
 For more details, please check [Documentation](https://internrobotics.github.io/InternDataEngine-Docs/).
 
 ## Split ROS / Isaac Sim Deployment

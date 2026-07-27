@@ -3,6 +3,7 @@ from copy import deepcopy
 
 import numpy as np
 from core.skills.base_skill import BaseSkill, register_skill
+from core.utils.asset_path_utils import resolve_asset_path
 from omegaconf import DictConfig, OmegaConf
 from omni.isaac.core.controllers import BaseController
 from omni.isaac.core.robots.robot import Robot
@@ -31,8 +32,8 @@ class Dexpick(BaseSkill):
         self.object = task.objects[object_name]
 
         # Get grasp annotation
-        usd_path = [obj["path"] for obj in task.cfg["objects"] if obj["name"] == object_name][0]
-        usd_path = os.path.join(self.task.asset_root, usd_path)
+        object_cfg = next(obj for obj in task.cfg["objects"] if obj["name"] == object_name)
+        usd_path = resolve_asset_path(self.task.asset_root, object_cfg)
         dexpick_pose_path = usd_path.replace("Aligned_obj.usd", "dexpick_pose.yaml")
         self.pick_poses = []
         if os.path.exists(dexpick_pose_path):

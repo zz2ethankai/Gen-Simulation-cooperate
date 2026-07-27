@@ -1,0 +1,18 @@
+name: smoke_mock_eval
+output_dir: outputs/eval
+seeds: [0, 1]
+
+task:
+  name: mock_scalar_reach
+  env_type: mock
+  max_steps: 10
+  env_args:
+    target: 1.0
+
+policy:
+  name: constant_action_policy
+  policy_type: constant_action
+  action_dim: 1
+  open_loop_horizon: 1
+  policy_args:
+    action: [0.25]

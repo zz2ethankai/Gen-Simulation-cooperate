@@ -1,4 +1,7 @@
 # SplitAlohaActual physical 4WIS robot configuration.
+# Deprecated: the active SplitAloha configuration uses the virtual-base asset.
+
+deprecated: true
 
 target_class: SplitAlohaActual
 path: "split_aloha_mid_360/robot.usd"

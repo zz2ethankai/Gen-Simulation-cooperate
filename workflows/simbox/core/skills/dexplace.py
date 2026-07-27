@@ -3,6 +3,7 @@ from copy import deepcopy
 
 import numpy as np
 from core.skills.base_skill import BaseSkill, register_skill
+from core.utils.asset_path_utils import resolve_asset_path
 from core.utils.usd_geom_utils import compute_bbox
 from omegaconf import DictConfig, OmegaConf
 from omni.isaac.core.controllers import BaseController
@@ -35,8 +36,9 @@ class Dexplace(BaseSkill):
         self.camera_axis_filter = cfg.get("camera_axis_filter", None)
         self.place_part_prim_path = cfg.get("place_part_prim_path", None)
         # Get place annotation
-        usd_path = [obj["path"] for obj in task.cfg["objects"] if obj["name"] == self.skill_cfg["objects"][0]][0]
-        usd_path = os.path.join(self.task.asset_root, usd_path)
+        object_name = self.skill_cfg["objects"][0]
+        object_cfg = next(obj for obj in task.cfg["objects"] if obj["name"] == object_name)
+        usd_path = resolve_asset_path(self.task.asset_root, object_cfg)
         place_range_path = usd_path.replace("Aligned_obj.usd", "place_range.yaml")
         if os.path.exists(place_range_path):
             with open(place_range_path, "r", encoding="utf-8") as f:

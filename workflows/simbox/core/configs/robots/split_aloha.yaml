@@ -29,6 +29,18 @@ left_joint_names: [fl_joint1, fl_joint2, fl_joint3, fl_joint4, fl_joint5, fl_joi
 right_joint_names: [fr_joint1, fr_joint2, fr_joint3, fr_joint4, fr_joint5, fr_joint6]
 left_gripper_joint_names: [fl_joint7]
 right_gripper_joint_names: [fr_joint7]
+# Compatibility aliases used by the Agent's runtime joint resolver.
+left_gripper_names: [fl_joint7]
+right_gripper_names: [fr_joint7]
+
+# Hold the measured virtual-base pose while an Agent physics-schema arm phase
+# executes. Navigation remains controlled by the local virtual-base bridge.
+manipulation_base_hold:
+  enabled: true
+  joint_names: [mobile_translate_x, mobile_translate_y, mobile_rotate]
+  stiffness: 100000.0
+  damping: 3000.0
+  max_effort: 10000.0
 
 # Paths
 fl_ee_path: "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link6"
