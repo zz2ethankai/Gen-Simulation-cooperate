@@ -2139,13 +2139,12 @@ tasks:
         id: nav_to_pick_apple_0_id9008
         depends_on: []
         approach: apple_0_id9008
+        approach_sampling_random: true
         approach_arm: left
         approach_object_armbase_xy:
         - 0.5
         - 0.0
-        # approach_min_distance: 0.48
-        # approach_max_distance: 0.7
-        rotate_to_heading_enabled: true
+        rotate_to_heading_enabled: false
         xy_goal_tolerance: 0.1
         yaw_goal_tolerance: 0.1
       - name: navigate
@@ -2153,13 +2152,12 @@ tasks:
         depends_on:
         - home_after_pick_apple_0_id9008
         approach: metal_tray_0_id9016
+        approach_sampling_random: true
         approach_arm: left
         approach_object_armbase_xy:
         - 0.5
         - 0.0
-        # approach_min_distance: 0.48
-        # approach_max_distance: 0.7
-        rotate_to_heading_enabled: true
+        rotate_to_heading_enabled: false
         xy_goal_tolerance: 0.1
         yaw_goal_tolerance: 0.1
       - name: navigate
@@ -2167,13 +2165,12 @@ tasks:
         depends_on:
         - home_after_place_apple_0_id9008
         approach: orange_0_id9009
+        approach_sampling_random: true
         approach_arm: left
         approach_object_armbase_xy:
         - 0.5
         - 0.0
-        # approach_min_distance: 0.48
-        # approach_max_distance: 0.7
-        rotate_to_heading_enabled: true
+        rotate_to_heading_enabled: false
         xy_goal_tolerance: 0.1
         yaw_goal_tolerance: 0.1
       - name: navigate
@@ -2181,13 +2178,12 @@ tasks:
         depends_on:
         - home_after_pick_orange_0_id9009
         approach: metal_tray_0_id9016
+        approach_sampling_random: true
         approach_arm: left
         approach_object_armbase_xy:
         - 0.5
         - 0.0
-        # approach_min_distance: 0.48
-        # approach_max_distance: 0.7
-        rotate_to_heading_enabled: true
+        rotate_to_heading_enabled: false
         xy_goal_tolerance: 0.1
         yaw_goal_tolerance: 0.1
       left:
@@ -2200,24 +2196,8 @@ tasks:
         filter_x_dir: [forward, 90]
         filter_z_dir: [downward, 140]
         grasp_side_preference: toward_arm
-        # pre_grasp_offset: 0.12
         gripper_change_steps: 20
-        # filter_x_dir:
-        # - forward
-        # - 90
-        # filter_z_dir:
-        # - downward
-        # - 140
-        # pre_grasp_offset: 0.12
-        # post_grasp_offset_min: 0.26
-        # post_grasp_offset_max: 0.28
-        post_grasp_offset_min: 0.26
-        post_grasp_offset_max: 0.28
         lift_th: 0.02
-        # gripper_change_steps: 20
-        # t_eps: 0.025
-        # o_eps: 1
-        # process_valid: true
       - name: heuristic__skill
         id: home_after_pick_apple_0_id9008
         depends_on:
@@ -2260,8 +2240,6 @@ tasks:
         filter_z_dir: [downward, 140]
         grasp_side_preference: toward_arm
         gripper_change_steps: 20
-        post_grasp_offset_min: 0.26
-        post_grasp_offset_max: 0.28
         lift_th: 0.02
       - name: heuristic__skill
         id: home_after_pick_orange_0_id9009

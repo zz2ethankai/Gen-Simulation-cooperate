@@ -8,7 +8,7 @@ path: "tracer2_franka/robot.usd"
 
 # CuRobo file
 robot_file:
-  - InternDataAssets/curobo/src/curobo/content/configs/robot/tracer2_franka_left_arm.yml
+  - InternDataAssets/curobo/src/curobo/content/configs/robot/franka_mobile.yml
 
 # Gripper parameters
 gripper_max_width: 0.08

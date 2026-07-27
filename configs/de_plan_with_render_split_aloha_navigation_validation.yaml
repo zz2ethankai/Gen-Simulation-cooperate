@@ -1,0 +1,49 @@
+name: simbox_split_aloha_navigation_validation
+load_stage:
+  scene_loader:
+    type: env_loader
+    args:
+      workflow_type: SimBoxDualWorkFlow
+      cfg_path: workflows/simbox/core/configs/tasks/navigation/split_aloha/navigate_empty_validation.yaml
+      simulator:
+        physics_dt: 1/30
+        rendering_dt: 1/30
+        stage_units_in_meters: 1.0
+        headless: true
+        experience: /isaac-sim/apps/omni.isaac.sim.python.gym.headless.kit
+        anti_aliasing: 4
+        multi_gpu: false
+        max_gpu_count: 1
+        active_gpu: 0
+        physics_gpu: 0
+        renderer: RayTracedLighting
+        rt_new_denoiser: true
+        rt_shadows_enabled: true
+        rt_shadow_sample_count: 4
+        rt_reflections_enabled: true
+        rt_reflections_max_bounces: 2
+        rt_translucency_enabled: true
+        rt_translucency_max_refraction_bounces: 4
+        rt_fractional_cutout_opacity: true
+        rt_indirect_diffuse_enabled: true
+        rt_indirect_diffuse_spp: 2
+        rt_indirect_diffuse_max_bounces: 2
+        rt_ambient_occlusion_enabled: true
+        rt_ambient_occlusion_max_samples: 4
+  layout_random_generator:
+    type: env_randomizer
+    args:
+      random_num: 1
+      strict_mode: true
+plan_with_render_stage:
+  plan_with_render:
+    type: plan_with_render
+    args:
+      emit_obs_on_failure: false
+      failure_obs_length: 1
+store_stage:
+  writer:
+    type: env_writer
+    args:
+      batch_async: true
+      output_dir: output/${name}/

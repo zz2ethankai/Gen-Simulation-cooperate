@@ -1,0 +1,8 @@
+nav2_skill:
+  controller_server:
+    goal_checker:
+      stateful: false
+  planner_server:
+    minimum_turning_radius: 0.0
+  velocity_smoother:
+    feedback: CLOSED_LOOP

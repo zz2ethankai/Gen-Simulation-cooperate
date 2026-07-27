@@ -16,6 +16,7 @@ controller_profiles:
     motion_model: Omni
     open_loop: false
     visualize: false
+    # Preserve MPPI's warm-started noise sequence across control iterations.
     regenerate_noises: false
     reset_period: 1.0
     retry_attempt_limit: 1

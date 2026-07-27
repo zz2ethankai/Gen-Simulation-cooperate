@@ -1,5 +1,11 @@
 nav2_skill:
   approach_footprint_padding: 0.04
+  local_costmap:
+    footprint_padding: 0.04
+  controller_server:
+    follow_path:
+      TwirlingCritic:
+        cost_weight: 2.0
   planner_server:
     minimum_turning_radius: 0.0
   velocity_smoother:

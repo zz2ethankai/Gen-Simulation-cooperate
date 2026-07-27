@@ -1,0 +1,57 @@
+wheel_base: 0.494
+track_width: 0.364
+wheel_radius: 1.0
+ackermann_split_steering: false
+ackermann_split_wheel_speeds: false
+steering_limit: 0.0
+steering_rate_limit: 0.0
+wheel_velocity_limit: 1.0
+command_timeout: 0.25
+restore_done_tolerance: 0.005
+restore_done_velocity_tolerance: 0.02
+steering_command_sign: 1.0
+virtual_drive_stiffness: 0.0
+virtual_linear_drive_damping: 1000.0
+virtual_linear_drive_max_force: 600.0
+virtual_yaw_drive_damping: 1500.0
+virtual_yaw_drive_max_force: 600.0
+body_twist_deadband: 0.0001
+debug_history_size: 4096
+platform:
+  profile: virtual_base
+  nav2:
+    # Preserve the real SplitAloha chassis/upper-body footprint even though
+    # physical base-ground contact is disabled in the virtual asset.
+    footprint_points:
+      - [-0.395, 0.250]
+      - [0.055, 0.250]
+      - [0.055, 0.400]
+      - [0.600, 0.400]
+      - [0.600, 0.220]
+      - [0.423, 0.220]
+      - [0.423, -0.220]
+      - [0.600, -0.220]
+      - [0.600, -0.400]
+      - [0.055, -0.400]
+      - [0.055, -0.250]
+      - [-0.395, -0.250]
+    inflation_radius_m: 0.34
+    minimum_turning_radius_m: 0.0
+    max_steer_angle_ackermann: 0.0
+    controller_hard_limits:
+      max_velocity: [0.45, 0.32, 0.75]
+      min_velocity: [-0.45, -0.32, -0.75]
+      max_accel: [0.45, 0.45, 0.90]
+      max_decel: [-0.45, -0.45, -0.90]
+ros:
+  cmd_vel_topic: /cmd_vel
+  joint_state_topic: /joint_states
+  odom_topic: /odom
+  tf_enabled: true
+  base_frame: base_link
+  odom_frame: odom
+  virtual_odom:
+    enabled: false
+    publish_twist: true
+    use_world_z: true
+    default_z: 0.0

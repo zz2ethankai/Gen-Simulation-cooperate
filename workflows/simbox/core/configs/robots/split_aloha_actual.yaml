@@ -1,36 +1,25 @@
-# SplitAloha virtual-base robot configuration.
+# SplitAlohaActual physical 4WIS robot configuration.
 
-# Robot info
-target_class: SplitAloha
-path: "split_aloha_mid_360_virtual/robot.usd"
+target_class: SplitAlohaActual
+path: "split_aloha_mid_360/robot.usd"
 
-# CuRobo file
 robot_file:
   - workflows/simbox/curobo/src/curobo/content/configs/robot/piper100_left_arm.yml
   - workflows/simbox/curobo/src/curobo/content/configs/robot/piper100_right_arm.yml
 
-# Gripper parameters
 gripper_max_width: 0.10
 gripper_min_width: 0.0
 tcp_offset: 0.12
 
-# Solver parameters
 solver_position_iteration_count: 128
 solver_velocity_iteration_count: 4
 stabilization_threshold: 0.005
 
-# Provisional indices are replaced from joint names after Isaac initializes the
-# virtual articulation. They remain present for config-schema compatibility.
 left_joint_indices: [1, 8, 15, 18, 20, 22]
 right_joint_indices: [2, 9, 16, 19, 21, 23]
 left_gripper_indices: [24]
 right_gripper_indices: [26]
-left_joint_names: [fl_joint1, fl_joint2, fl_joint3, fl_joint4, fl_joint5, fl_joint6]
-right_joint_names: [fr_joint1, fr_joint2, fr_joint3, fr_joint4, fr_joint5, fr_joint6]
-left_gripper_joint_names: [fl_joint7]
-right_gripper_joint_names: [fr_joint7]
 
-# Paths
 fl_ee_path: "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link6"
 fr_ee_path: "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link6"
 fl_base_path: "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/arm_base"
@@ -40,7 +29,6 @@ fr_base_mount_translation: [0.36848, -0.306, 1.2527]
 fl_base_mount_orientation: [1.0, 0.0, 0.0, 0.0]
 fr_base_mount_orientation: [1.0, 0.0, 0.0, 0.0]
 
-# Gripper keypoints
 fl_gripper_keypoints:
   tool_head: [0.0, 0.0, 0.12, 1]
   tool_tail: [0.0, 0.0, 0.06, 1]
@@ -50,7 +38,6 @@ fr_gripper_keypoints:
   tool_tail: [0.0, 0.0, 0.06, 1]
   tool_side: [-0.05, 0.0, 0.12, 1]
 
-# Collision paths
 fl_filter_paths:
   - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link7"
   - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link8"
@@ -68,11 +55,9 @@ fr_forbid_collision_paths:
   - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link4"
   - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link5"
 
-# Pose processing (Z-axis gripper)
 R_ee_graspnet: [[0.0, -1.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]]
 ee_axis: "z"
 
-# Default joint home positions
 left_joint_home: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 right_joint_home: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 left_joint_home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
@@ -80,18 +65,8 @@ right_joint_home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 left_gripper_home: [0.05]
 right_gripper_home: [0.05]
 
-mobile_base_path: "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/base_link"
-virtual_base_joint_paths:
-  - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/dummy_base_x/mobile_translate_x"
-  - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/dummy_base_y/mobile_translate_y"
-  - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/dummy_base_rotate/mobile_rotate"
-
 base:
-  base_config_file: workflows/simbox/core/configs/bases/split_aloha_virtual_base.yaml
-  nav_config_file:
-    - nav2/config/default_nav.yaml
-    - nav2/config/split_aloha_virtual_nav.yaml
-  steering_joint_names: []
-  wheel_joint_names: [mobile_translate_x, mobile_translate_y, mobile_rotate]
-  base_velocity_joint_names: [mobile_translate_x, mobile_translate_y, mobile_rotate]
-  base_velocity_command_signs: [1.0, 1.0, 1.0]
+  base_config_file: workflows/simbox/core/configs/bases/ranger_mini_v3.yaml
+  nav_config_file: nav2/config/default_nav.yaml
+  steering_joint_names: [fl_steering_joint, fr_steering_joint, rl_steering_joint, rr_steering_joint]
+  wheel_joint_names: [fl_wheel, fr_wheel, rl_wheel, rr_wheel]
