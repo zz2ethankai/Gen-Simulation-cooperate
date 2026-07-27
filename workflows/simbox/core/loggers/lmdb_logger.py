@@ -175,10 +175,12 @@ class LmdbLogger(BaseLogger):
 
             json_meta = json_data
             failed_skill = json_meta.get("failed_skill", "")
+            failed_skill_id = json_meta.get("failed_skill_id", "")
             failure_reason = json_meta.get("failure_reason", "")
             failure_message = json_meta.get("failure_message", "")
-            if failed_skill or failure_reason or failure_message:
+            if failed_skill or failed_skill_id or failure_reason or failure_message:
                 print("failed_skill :", failed_skill)
+                print("failed_skill_id :", failed_skill_id)
                 print("failure_reason :", failure_reason)
                 print("failure_message :", failure_message)
             meta_info["tpi_initial_info"] = self.tpi_initial_info

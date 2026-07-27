@@ -947,7 +947,7 @@ class PersistentNav2RuntimeManager:
             "sampling_random": bool(self.approach_config.sampling_random),
             "sampling_seed": self.approach_config.sampling_seed,
             "sampling_strategy": (
-                "uniform_random_radius_random_angle"
+                "linear_radius_golden_angle_random_start"
                 if bool(self.approach_config.sampling_random)
                 else "linear_radius_golden_angle"
             ),

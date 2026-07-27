@@ -8,6 +8,25 @@ from nimbus.daemon.decorators import status_monitor
 from nimbus.utils.flags import is_debug_mode
 
 
+def _format_failure_context(workflow) -> str:
+    get_failure_context = getattr(workflow, "get_failure_context", None)
+    if not callable(get_failure_context):
+        return ""
+    try:
+        context = get_failure_context()
+    except Exception:
+        return ""
+    if not isinstance(context, dict):
+        return ""
+
+    fields = []
+    for key in ("robot", "failed_skill", "failed_skill_id", "failure_reason", "failure_message"):
+        value = context.get(key)
+        if value not in (None, ""):
+            fields.append(f"{key}={value}")
+    return ", ".join(fields)
+
+
 class EnvPlanWithRender(Iterator):
     """
     A component that integrates planning and rendering for a given scene. It takes an iterator of scenes as
@@ -41,14 +60,20 @@ class EnvPlanWithRender(Iterator):
         wf = scene.wf
         obs_num = wf.plan_with_render()
         if obs_num <= 0:
+            failure_context = _format_failure_context(wf)
+            failure_suffix = f", {failure_context}" if failure_context else ""
             if not self.emit_obs_on_failure:
-                self.logger.info(f"plan_with_render returned {obs_num}, treat episode as failed without obs output.")
+                self.logger.info(
+                    f"plan_with_render returned {obs_num}{failure_suffix}, "
+                    "treat episode as failed without obs output."
+                )
                 return None
             fallback_len = int(getattr(wf, "length", 0) or 0)
             if fallback_len <= 0:
                 fallback_len = self.failure_obs_length
             self.logger.info(
-                f"plan_with_render returned {obs_num}, emit placeholder observation with length {fallback_len}."
+                f"plan_with_render returned {obs_num}{failure_suffix}, "
+                f"emit placeholder observation with length {fallback_len}."
             )
             return Observations(
                 scene.name,

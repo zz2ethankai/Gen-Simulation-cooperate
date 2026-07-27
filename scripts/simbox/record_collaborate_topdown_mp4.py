@@ -293,8 +293,8 @@ def main():
     )
     parser.add_argument(
         "--split-aloha-usd-relpath",
-        default="../../../InternDataAssets/assets/split_aloha_mid_360/robot.usd",
-        help="SplitAloha USD path relative to task asset_root",
+        default="",
+        help="Optional SplitAloha USD override relative to task asset_root; defaults to the robot config virtual asset",
     )
     parser.add_argument(
         "--output-path",

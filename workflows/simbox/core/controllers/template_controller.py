@@ -583,6 +583,7 @@ class TemplateController(BaseController):
         )
         if not skip_plan:
             if plan_flag:
+                self.cmd_plan = None
                 self.cmd_idx = 0
                 self._step_idx = 0
                 self.num_last_cmd = 0
@@ -829,6 +830,53 @@ class TemplateController(BaseController):
             return 1
         print("Plan did not converge to a solution.")
         return 0
+
+    def test_forward_from_joint_positions(
+        self,
+        ee_trans: np.ndarray,
+        ee_ori: np.ndarray,
+        start_arm_positions: Optional[np.ndarray] = None,
+    ):
+        """Plan without changing runtime controller state and return the path endpoint."""
+        assert ee_trans is not None and ee_ori is not None
+        sim_js = self.robot.get_joints_state()
+        sim_js.positions = np.asarray(sim_js.positions, dtype=float).copy()
+        if start_arm_positions is not None:
+            start_arm_positions = np.asarray(start_arm_positions, dtype=float).reshape(-1)
+            if len(start_arm_positions) != len(self.arm_indices):
+                raise ValueError(
+                    "start_arm_positions must match the controller arm joint count: "
+                    f"got {len(start_arm_positions)}, expected {len(self.arm_indices)}"
+                )
+            sim_js.positions[self.arm_indices] = start_arm_positions
+
+        result = self.plan(ee_trans, ee_ori, sim_js, self.robot.dof_names)
+        success_values = result.success.detach().cpu().numpy()
+        if not bool(np.asarray(success_values).any()):
+            return False, None, result
+
+        if self.use_batch:
+            paths = result.get_successful_paths()
+            if not paths:
+                return False, None, result
+            position_filter_res = filter_paths_by_position_error(paths, result.position_error[result.success])
+            rotation_filter_res = filter_paths_by_rotation_error(paths, result.rotation_error[result.success])
+            filtered_paths = [
+                path
+                for path_index, path in enumerate(paths)
+                if position_filter_res[path_index] and rotation_filter_res[path_index]
+            ]
+            if not filtered_paths:
+                filtered_paths = paths
+            sort_weights = self._get_sort_path_weights()  # pylint: disable=assignment-from-none
+            weights_arg = self.tensor_args.to_device(sort_weights) if sort_weights is not None else None
+            sorted_indices = sort_by_difference_js(filtered_paths, weights=weights_arg)
+            cmd_plan = self.motion_gen.get_full_js(filtered_paths[sorted_indices[0]])
+        else:
+            cmd_plan = result.get_interpolated_plan()
+        cmd_plan = cmd_plan.get_ordered_joint_state(self.raw_js_names)
+        end_arm_positions = np.asarray(cmd_plan[-1].position.detach().cpu(), dtype=float)
+        return True, end_arm_positions, result
 
     def pre_forward(self, ee_trans: np.ndarray, ee_ori: np.ndarray, expected_js=None, ds_ratio=1):
         assert ee_trans is not None and ee_ori is not None

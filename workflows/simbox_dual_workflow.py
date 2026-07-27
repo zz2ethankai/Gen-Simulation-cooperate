@@ -1228,21 +1228,39 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 return str(cfg_name)
         return str(skill.__class__.__name__).lower()
 
+    def get_failure_context(self) -> dict:
+        """Return the recorded failure fields for the current episode."""
+        json_data_logger = getattr(getattr(self, "logger", None), "json_data_logger", {})
+        for robot_name, metadata in json_data_logger.items():
+            if not isinstance(metadata, dict):
+                continue
+            context = {
+                "robot": robot_name,
+                "failed_skill": metadata.get("failed_skill"),
+                "failed_skill_id": metadata.get("failed_skill_id"),
+                "failure_reason": metadata.get("failure_reason"),
+                "failure_message": metadata.get("failure_message"),
+            }
+            if any(value not in (None, "") for key, value in context.items() if key != "robot"):
+                return context
+        return {}
+
     def _record_skill_failure(self, robot_name: str, skill, fallback_reason: str, fallback_message: str):
         failure_reason = str(getattr(skill, "failure_reason", "") or fallback_reason)
         error_message = str(getattr(skill, "error_message", "") or fallback_message)
         failed_skill = self._skill_display_name(skill)
+        skill_id = getattr(skill, "skill_id", None)
         self.logger.add_json_data(robot_name, "episode_success", False)
         self.logger.add_json_data(robot_name, "failed_skill", failed_skill)
-        skill_id = getattr(skill, "skill_id", None)
         if skill_id is not None:
             self.logger.add_json_data(robot_name, "failed_skill_id", str(skill_id))
         self.logger.add_json_data(robot_name, "failure_reason", failure_reason)
         self.logger.add_json_data(robot_name, "failure_message", error_message)
         self.logger.info(
-            "Episode failed: robot=%s skill=%s reason=%s message=%s",
+            "Episode failed: robot=%s skill=%s skill_id=%s reason=%s message=%s",
             robot_name,
             failed_skill,
+            str(skill_id) if skill_id is not None else "",
             failure_reason,
             error_message,
         )

@@ -96,10 +96,31 @@ class DynamicApproachTests(unittest.TestCase):
         self.assertEqual(candidates, same_candidates)
         self.assertNotEqual(candidates, different_candidates)
         for candidate in candidates:
-            self.assertGreaterEqual(candidate["distance_to_target"], 0.35)
-            self.assertLessEqual(candidate["distance_to_target"], 0.50)
+            self.assertGreaterEqual(candidate["distance_to_target"], 0.35 - 1e-9)
+            self.assertLessEqual(candidate["distance_to_target"], 0.50 + 1e-9)
         distances = [candidate["distance_to_target"] for candidate in candidates]
-        self.assertFalse(all(left <= right for left, right in zip(distances, distances[1:])))
+        different_distances = [candidate["distance_to_target"] for candidate in different_candidates]
+        self.assertTrue(all(left < right for left, right in zip(distances, distances[1:])))
+        self.assertAlmostEqual(distances[0], 0.35)
+        self.assertAlmostEqual(distances[-1], 0.50)
+        self.assertTrue(
+            all(math.isclose(left, right) for left, right in zip(distances, different_distances))
+        )
+
+        golden_angle = math.pi * (3.0 - math.sqrt(5.0))
+        for left, right in zip(candidates, candidates[1:]):
+            angle_step = (right["angle"] - left["angle"]) % (2.0 * math.pi)
+            self.assertAlmostEqual(angle_step, golden_angle)
+
+        deterministic = sample_approach_candidates(
+            ApproachConfig("obj", min_distance=0.35, max_distance=0.50, sample_count=64),
+            (2.0, 3.0),
+        )
+        phases = [
+            (random_candidate["angle"] - deterministic_candidate["angle"]) % (2.0 * math.pi)
+            for random_candidate, deterministic_candidate in zip(candidates, deterministic)
+        ]
+        self.assertTrue(all(math.isclose(phase, phases[0]) for phase in phases[1:]))
 
     def test_parse_approach_config_generates_seed_for_random_sampling(self):
         cfg = parse_approach_config({"approach": "apple", "approach_sampling_random": True})
@@ -469,6 +490,7 @@ class DynamicApproachTests(unittest.TestCase):
         manager.nav2_yaw_tolerance_rad = 0.1
         manager.position_tolerance_m = 0.1
         manager.yaw_tolerance_rad = 0.1
+        manager._sim_time = lambda: 0.0
         manager._write_dynamic_goal_candidates_debug = lambda: None
         manager._dynamic_goal_static_map = None
         manager._dynamic_goal_footprint_points = []
@@ -534,6 +556,7 @@ class DynamicApproachTests(unittest.TestCase):
         ]
         manager._request_id = "req"
         manager.startup_timeout_sec = 60.0
+        manager._sim_time = lambda: 0.0
         manager._write_dynamic_goal_candidates_debug = lambda: None
         manager._dynamic_goal_static_map = {
             "image": np.full((20, 20), 254, dtype=np.int16),

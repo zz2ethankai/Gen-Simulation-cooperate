@@ -7,10 +7,7 @@ from copy import deepcopy
 import numpy as np
 from core.skills.base_skill import BaseSkill, register_skill
 from core.utils.constants import CUROBO_BATCH_SIZE
-from core.utils.plan_utils import (
-    select_index_by_priority_dual,
-    select_index_by_priority_single,
-)
+from core.utils.plan_utils import select_index_by_priority_dual
 from core.utils.transformation_utils import poses_from_tf_matrices
 from omegaconf import DictConfig
 from omni.isaac.core.controllers import BaseController
@@ -407,8 +404,90 @@ class Pick(BaseSkill):
         )
         return selected[2]
 
+    def _validate_complete_candidate_path(
+        self,
+        pregrasp_translation,
+        pregrasp_orientation,
+        grasp_translation,
+        grasp_orientation,
+        postgrasp_translation,
+        base_ignore_substring,
+        grasp_ignore_substring,
+        validate_postgrasp,
+    ):
+        """Validate current -> pregrasp -> grasp -> postgrasp as one continuous path."""
+        self.controller.update_specific(
+            ignore_substring=base_ignore_substring,
+            reference_prim_path=self.controller.reference_prim_path,
+        )
+        pregrasp_success, pregrasp_end_js, _ = self.controller.test_forward_from_joint_positions(
+            pregrasp_translation,
+            pregrasp_orientation,
+        )
+        grasp_success = False
+        grasp_end_js = None
+        postgrasp_success = False
+        if pregrasp_success:
+            self.controller.update_specific(
+                ignore_substring=grasp_ignore_substring,
+                reference_prim_path=self.controller.reference_prim_path,
+            )
+            grasp_success, grasp_end_js, _ = self.controller.test_forward_from_joint_positions(
+                grasp_translation,
+                grasp_orientation,
+                start_arm_positions=pregrasp_end_js,
+            )
+        if grasp_success:
+            if validate_postgrasp:
+                postgrasp_success, _, _ = self.controller.test_forward_from_joint_positions(
+                    postgrasp_translation,
+                    grasp_orientation,
+                    start_arm_positions=grasp_end_js,
+                )
+            else:
+                postgrasp_success = True
+
+        return {
+            "pregrasp_success": bool(pregrasp_success),
+            "grasp_success": bool(grasp_success),
+            "postgrasp_success": bool(postgrasp_success),
+        }
+
+    def _find_complete_candidate_path(
+        self,
+        candidate_order,
+        p_base_ee_pregrasps,
+        q_base_ee_pregrasps,
+        p_base_ee_grasps,
+        q_base_ee_grasps,
+        p_base_ee_postgrasps,
+        base_ignore_substring,
+        grasp_ignore_substring,
+        validate_postgrasp,
+        candidate_debug_by_index,
+    ):
+        for candidate_index in candidate_order:
+            validation = self._validate_complete_candidate_path(
+                p_base_ee_pregrasps[candidate_index],
+                q_base_ee_pregrasps[candidate_index],
+                p_base_ee_grasps[candidate_index],
+                q_base_ee_grasps[candidate_index],
+                p_base_ee_postgrasps[candidate_index],
+                base_ignore_substring,
+                grasp_ignore_substring,
+                validate_postgrasp=validate_postgrasp,
+            )
+            candidate_debug_by_index[candidate_index].update(validation)
+            if all(validation.values()):
+                print(f"[pick-debug] Complete pick path succeeded for candidate {candidate_index}.")
+                return candidate_index
+        return None
+
     def simple_generate_manip_cmds(self):
         manip_list = []
+        self.process_valid = True
+        self.failure_reason = ""
+        self.error_message = ""
         self._runtime_failure_snapshot_written = False
         self._runtime_failure_debug_path = None
         self._selected_candidate_debug = {}
@@ -449,6 +528,9 @@ class Pick(BaseSkill):
 
         if T_base_ee_grasps.shape[0] == 0:
             self.manip_list = []
+            self.process_valid = False
+            self.failure_reason = "no_grasp_candidates_after_sampling"
+            self.error_message = "Pick sampling produced no grasp candidates."
             self._plan_debug_path = self._write_debug_artifact(
                 "pick_plan_snapshot.json",
                 {
@@ -465,113 +547,131 @@ class Pick(BaseSkill):
 
         p_base_ee_pregrasps, q_base_ee_pregrasps = poses_from_tf_matrices(T_base_ee_pregrasps)
         p_base_ee_grasps, q_base_ee_grasps = poses_from_tf_matrices(T_base_ee_grasps)
+        if self.fixed_orientation is not None:
+            q_base_ee_pregrasps[:] = self.fixed_orientation
+            q_base_ee_grasps[:] = self.fixed_orientation
+
+        post_grasp_offset = float(
+            np.random.uniform(
+                self.skill_cfg.get("post_grasp_offset_min", 0.05),
+                self.skill_cfg.get("post_grasp_offset_max", 0.05),
+            )
+        )
+        p_base_ee_postgrasps = deepcopy(p_base_ee_grasps)
+        p_base_ee_postgrasps[:, 2] += post_grasp_offset
         candidate_results = []
         success_found = False
         index = min(T_base_ee_grasps.shape[0] - 1, 0)
+        candidate_order = list(range(T_base_ee_grasps.shape[0]))
 
         if self.controller.use_batch:
-            # Check if the input arrays are exactly the same
-            if np.array_equal(p_base_ee_pregrasps, p_base_ee_grasps) and np.array_equal(
-                q_base_ee_pregrasps, q_base_ee_grasps
-            ):
-                # Inputs are identical, compute only once to avoid redundant computation
-                result = self.controller.test_batch_forward(p_base_ee_grasps, q_base_ee_grasps)
-                index = select_index_by_priority_single(result)
-                success_mask = np.asarray(result.success.detach().cpu().numpy()).reshape(-1).astype(bool)
-                success_found = bool(success_mask.any())
-            else:
-                # Inputs are different, compute separately
-                pre_result = self.controller.test_batch_forward(p_base_ee_pregrasps, q_base_ee_pregrasps)
-                self.controller.update_specific(
-                    ignore_substring=grasp_ignore_substring, reference_prim_path=self.controller.reference_prim_path
+            pre_result = self.controller.test_batch_forward(p_base_ee_pregrasps, q_base_ee_pregrasps)
+            self.controller.update_specific(
+                ignore_substring=grasp_ignore_substring, reference_prim_path=self.controller.reference_prim_path
+            )
+            result = self.controller.test_batch_forward(p_base_ee_grasps, q_base_ee_grasps)
+            pre_success_mask = np.asarray(pre_result.success.detach().cpu().numpy()).reshape(-1).astype(bool)
+            grasp_success_mask = np.asarray(result.success.detach().cpu().numpy()).reshape(-1).astype(bool)
+            coarse_success_mask = np.logical_and(pre_success_mask, grasp_success_mask)
+            candidate_order = np.where(coarse_success_mask)[0].tolist()
+            if candidate_order:
+                preferred_index = self._select_grasp_index(
+                    pre_result,
+                    result,
+                    p_base_ee_grasps,
+                    q_base_ee_grasps,
+                    T_base_ee_grasps,
                 )
-                result = self.controller.test_batch_forward(p_base_ee_grasps, q_base_ee_grasps)
-                pre_success_mask = np.asarray(pre_result.success.detach().cpu().numpy()).reshape(-1).astype(bool)
-                grasp_success_mask = np.asarray(result.success.detach().cpu().numpy()).reshape(-1).astype(bool)
-                success_found = bool(np.logical_and(pre_success_mask, grasp_success_mask).any())
-                index = self._select_grasp_index(pre_result, result, p_base_ee_grasps, q_base_ee_grasps, T_base_ee_grasps)
-                candidate_results = [
-                    {
-                        **self._candidate_source_debug(i),
-                        "pregrasp_success": bool(pre_success_mask[i]),
-                        "grasp_success": bool(grasp_success_mask[i]),
-                        "pregrasp_translation": p_base_ee_pregrasps[i],
-                        "pregrasp_orientation": q_base_ee_pregrasps[i],
-                        "grasp_translation": p_base_ee_grasps[i],
-                        "grasp_orientation": q_base_ee_grasps[i],
-                    }
-                    for i in range(min(len(pre_success_mask), 128))
-                ]
-            if not candidate_results:
-                candidate_results = [
-                    {
-                        **self._candidate_source_debug(i),
-                        "success": bool(success_mask[i]),
-                    }
-                    for i in range(min(len(success_mask), 128))
-                ]
+                candidate_order.remove(preferred_index)
+                candidate_order.insert(0, preferred_index)
+            candidate_results = [
+                {
+                    **self._candidate_source_debug(i),
+                    "batch_pregrasp_success": bool(pre_success_mask[i]),
+                    "batch_grasp_success": bool(grasp_success_mask[i]),
+                    "pregrasp_translation": p_base_ee_pregrasps[i],
+                    "pregrasp_orientation": q_base_ee_pregrasps[i],
+                    "grasp_translation": p_base_ee_grasps[i],
+                    "grasp_orientation": q_base_ee_grasps[i],
+                    "postgrasp_translation": p_base_ee_postgrasps[i],
+                    "postgrasp_orientation": q_base_ee_grasps[i],
+                }
+                for i in range(len(pre_success_mask))
+            ]
         else:
-            for index in range(T_base_ee_grasps.shape[0]):
-                p_base_ee_pregrasp, q_base_ee_pregrasp = p_base_ee_pregrasps[index], q_base_ee_pregrasps[index]
-                p_base_ee_grasp, q_base_ee_grasp = p_base_ee_grasps[index], q_base_ee_grasps[index]
-                test_mode = self.skill_cfg.get("test_mode", "forward")
-                if test_mode == "forward":
-                    result_pre = self.controller.test_single_forward(p_base_ee_pregrasp, q_base_ee_pregrasp)
-                elif test_mode == "ik":
-                    result_pre = self.controller.test_single_ik(p_base_ee_pregrasp, q_base_ee_pregrasp)
-                else:
-                    raise NotImplementedError
-                if self.skill_cfg.get("pre_grasp_offset", 0.1) > 0:
-                    self.controller.update_specific(
-                        ignore_substring=grasp_ignore_substring,
-                        reference_prim_path=self.controller.reference_prim_path,
-                    )
-                    if test_mode == "forward":
-                        result = self.controller.test_single_forward(p_base_ee_grasp, q_base_ee_grasp)
-                    elif test_mode == "ik":
-                        result = self.controller.test_single_ik(p_base_ee_grasp, q_base_ee_grasp)
-                    else:
-                        raise NotImplementedError
-                    candidate_results.append(
-                        {
-                            **self._candidate_source_debug(index),
-                            "pregrasp_success": bool(result_pre),
-                            "grasp_success": bool(result),
-                            "pregrasp_translation": p_base_ee_pregrasp,
-                            "pregrasp_orientation": q_base_ee_pregrasp,
-                            "grasp_translation": p_base_ee_grasp,
-                            "grasp_orientation": q_base_ee_grasp,
-                        }
-                    )
-                    if result == 1 and result_pre == 1:
-                        print("pick plan success")
-                        success_found = True
-                        break
-                else:
-                    candidate_results.append(
-                        {
-                            **self._candidate_source_debug(index),
-                            "pregrasp_success": bool(result_pre),
-                            "pregrasp_translation": p_base_ee_pregrasp,
-                            "pregrasp_orientation": q_base_ee_pregrasp,
-                        }
-                    )
-                    if result_pre == 1:
-                        print("pick plan success")
-                        success_found = True
-                        break
+            candidate_results = [
+                {
+                    **self._candidate_source_debug(i),
+                    "pregrasp_translation": p_base_ee_pregrasps[i],
+                    "pregrasp_orientation": q_base_ee_pregrasps[i],
+                    "grasp_translation": p_base_ee_grasps[i],
+                    "grasp_orientation": q_base_ee_grasps[i],
+                    "postgrasp_translation": p_base_ee_postgrasps[i],
+                    "postgrasp_orientation": q_base_ee_grasps[i],
+                }
+                for i in candidate_order
+            ]
 
-        if self.fixed_orientation is not None:
-            q_base_ee_pregrasps[index] = self.fixed_orientation
-            q_base_ee_grasps[index] = self.fixed_orientation
+        candidate_debug_by_index = {
+            int(candidate_debug["candidate_index"]): candidate_debug for candidate_debug in candidate_results
+        }
+        complete_candidate_index = self._find_complete_candidate_path(
+            candidate_order,
+            p_base_ee_pregrasps,
+            q_base_ee_pregrasps,
+            p_base_ee_grasps,
+            q_base_ee_grasps,
+            p_base_ee_postgrasps,
+            base_ignore_substring,
+            grasp_ignore_substring,
+            validate_postgrasp=bool(post_grasp_offset),
+            candidate_debug_by_index=candidate_debug_by_index,
+        )
+        if complete_candidate_index is not None:
+            index = complete_candidate_index
+            success_found = True
+
+        if not success_found:
+            self._selected_candidate_debug = {
+                "success_found": False,
+                "attempted_candidate_indices": candidate_order,
+                "post_grasp_offset": post_grasp_offset,
+            }
+            self.manip_list = []
+            self.process_valid = False
+            self.failure_reason = "no_complete_pick_path"
+            self.error_message = (
+                "No grasp candidate has a continuous current-to-pregrasp-to-grasp-to-postgrasp path."
+            )
+            self._plan_debug_path = self._write_debug_artifact(
+                "pick_plan_snapshot.json",
+                {
+                    "robot": self.robot.name,
+                    "object": self.pick_obj.name,
+                    "lr_arm": self.lr_arm,
+                    "reason": self.failure_reason,
+                    "success_found": False,
+                    "selected_candidate": self._selected_candidate_debug,
+                    "sample_debug": self._sample_debug,
+                    "geometry_debug": self._collect_geometry_debug(),
+                    "candidate_results": candidate_results,
+                    "candidate_rank_debug": self._candidate_rank_debug,
+                    "manip_command_sequence": [],
+                },
+            )
+            print(f"[pick-debug] No complete pick path found. Snapshot: {self._plan_debug_path}")
+            return
 
         self._selected_candidate_debug = {
             **self._candidate_source_debug(index),
-            "success_found": success_found,
+            "success_found": True,
             "selected_pregrasp_translation": p_base_ee_pregrasps[index],
             "selected_pregrasp_orientation": q_base_ee_pregrasps[index],
             "selected_grasp_translation": p_base_ee_grasps[index],
             "selected_grasp_orientation": q_base_ee_grasps[index],
+            "selected_postgrasp_translation": p_base_ee_postgrasps[index],
+            "selected_postgrasp_orientation": q_base_ee_grasps[index],
+            "post_grasp_offset": post_grasp_offset,
         }
 
         # Pre-grasp
@@ -669,12 +769,7 @@ class Pick(BaseSkill):
         manip_list.append(cmd)
 
         # Post-grasp
-        post_grasp_offset = np.random.uniform(
-            self.skill_cfg.get("post_grasp_offset_min", 0.05), self.skill_cfg.get("post_grasp_offset_max", 0.05)
-        )
         if post_grasp_offset:
-            p_base_ee_postgrasps = deepcopy(p_base_ee_grasps)
-            p_base_ee_postgrasps[index][2] += post_grasp_offset
             cmd = (
                 p_base_ee_postgrasps[index],
                 q_base_ee_grasps[index],
@@ -705,8 +800,6 @@ class Pick(BaseSkill):
             },
         )
         print(f"[pick-debug] Wrote pick planning snapshot: {self._plan_debug_path}")
-        if not success_found:
-            print("[pick-debug] No candidate passed pregrasp+grasp screening; using fallback selected candidate.")
 
     def _record_execution_step(self):
         if not self.manip_list:

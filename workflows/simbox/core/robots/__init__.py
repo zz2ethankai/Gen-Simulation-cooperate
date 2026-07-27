@@ -11,7 +11,7 @@ from core.robots.genie1 import Genie1
 from core.robots.lift2 import Lift2
 from core.robots.panda_omron import PandaOmron
 from core.robots.panda_omron_virtual import PandaOmronVirtual
-from core.robots.split_aloha import SplitAloha
+from core.robots.split_aloha import SplitAloha, SplitAlohaActual
 
 __all__ = [
     "TemplateRobot",
@@ -21,6 +21,7 @@ __all__ = [
     "Lift2",
     "PandaOmron",
     "PandaOmronVirtual",
+    "SplitAlohaActual",
     "SplitAloha",
 ]
 

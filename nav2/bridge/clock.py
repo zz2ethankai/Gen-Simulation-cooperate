@@ -3,12 +3,65 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import math
+import threading
 import time
 
 
 _BRIDGE_EXTENSION = "omni.isaac.ros2_bridge"
 _ROS2_IMPORTS = None
+# Must stay above MPPI's reset_period so its first post-reset command clears
+# the previous episode's optimizer state.
+_CLOCK_RESET_GAP_SEC = 2.0
+_CLOCK_REGRESSION_EPS_SEC = 1.0e-9
+LOGGER = logging.getLogger(__name__)
+
+
+class _MonotonicSimTime:
+    """Map resettable Isaac time onto one process-wide monotonic ROS timeline."""
+
+    def __init__(self, reset_gap_sec: float = _CLOCK_RESET_GAP_SEC):
+        self._reset_gap_sec = max(float(reset_gap_sec), 0.0)
+        self._offset_sec = 0.0
+        self._last_raw_sec = None
+        self._last_published_sec = None
+        self._lock = threading.Lock()
+
+    def translate(self, raw_time_sec: float) -> float:
+        raw_time_sec = float(raw_time_sec)
+        if not math.isfinite(raw_time_sec):
+            raise ValueError(f"simulation time must be finite, got {raw_time_sec!r}")
+
+        with self._lock:
+            previous_raw_sec = self._last_raw_sec
+            previous_published_sec = self._last_published_sec
+            if (
+                previous_raw_sec is not None
+                and raw_time_sec < previous_raw_sec - _CLOCK_REGRESSION_EPS_SEC
+            ):
+                self._offset_sec = (
+                    float(previous_published_sec) + self._reset_gap_sec - raw_time_sec
+                )
+                LOGGER.info(
+                    "Isaac simulation time reset from %.6f to %.6f; advancing ROS clock "
+                    "from %.6f by %.3f seconds",
+                    previous_raw_sec,
+                    raw_time_sec,
+                    previous_published_sec,
+                    self._reset_gap_sec,
+                )
+
+            translated_sec = raw_time_sec + self._offset_sec
+            if self._last_published_sec is not None:
+                translated_sec = max(translated_sec, self._last_published_sec)
+
+            self._last_raw_sec = raw_time_sec
+            self._last_published_sec = translated_sec
+            return translated_sec
+
+
+_SIM_TIME_TIMELINE = _MonotonicSimTime()
 
 
 def _app_instance():
@@ -85,7 +138,8 @@ class SimClockPublisher:
         self._clock_pub = self.node.create_publisher(self._Clock, "/clock", clock_qos)
 
     def publish(self):
-        sim_time = float(getattr(self.world, "current_time", 0.0))
+        raw_sim_time = float(getattr(self.world, "current_time", 0.0))
+        sim_time = _SIM_TIME_TIMELINE.translate(raw_sim_time)
         secs = int(math.floor(sim_time))
         nanosecs = int(round((sim_time - secs) * 1.0e9))
         if nanosecs >= 1_000_000_000:

@@ -116,7 +116,7 @@ def export_grasp_html(
             y=obj_points[:, 1],
             z=obj_points[:, 2],
             mode="markers",
-            name="orange mesh samples",
+            name="object mesh samples",
             marker={"size": 2, "color": "rgba(255,128,0,0.55)"},
             hovertemplate="object point<br>x=%{x:.4f}<br>y=%{y:.4f}<br>z=%{z:.4f}<extra></extra>",
         )

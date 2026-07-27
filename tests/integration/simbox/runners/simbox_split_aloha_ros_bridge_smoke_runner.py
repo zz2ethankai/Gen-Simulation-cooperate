@@ -1,4 +1,4 @@
-"""Smoke runner for SplitAloha ROS base bridge integration."""
+"""Smoke runner for physical SplitAlohaActual ROS 4WIS integration."""
 
 import argparse
 import json
@@ -49,6 +49,11 @@ def _write_camera_free_task_cfg(task_cfg_path: str):
         for task in task_cfg["tasks"]:
             if isinstance(task, dict):
                 task["cameras"] = []
+                for robot in task.get("robots", []):
+                    if "split_aloha" in str(robot.get("name", "")).lower():
+                        robot["robot_config_file"] = (
+                            "workflows/simbox/core/configs/robots/split_aloha_actual.yaml"
+                        )
 
     tmp_dir = tempfile.mkdtemp(prefix="split_aloha_smoke_", dir="/tmp")
     patched_task_cfg_path = os.path.join(tmp_dir, os.path.basename(task_cfg_path))
@@ -59,9 +64,9 @@ def _write_camera_free_task_cfg(task_cfg_path: str):
 
 def _find_split_aloha(workflow):
     for robot in workflow.task.robots.values():
-        if robot.__class__.__name__ == "SplitAloha":
+        if robot.__class__.__name__ == "SplitAlohaActual":
             return robot
-    raise RuntimeError("SplitAloha robot not found in workflow task")
+    raise RuntimeError("SplitAlohaActual robot not found in workflow task")
 
 
 def run_smoke(config_path: str, output_path: str, steps: int, wheel_velocity: float):
@@ -104,7 +109,7 @@ def run_smoke(config_path: str, output_path: str, steps: int, wheel_velocity: fl
         print("[smoke] initializing task", flush=True)
         workflow.init_task(0)
 
-        print("[smoke] locating SplitAloha robot", flush=True)
+        print("[smoke] locating SplitAlohaActual robot", flush=True)
         robot = _find_split_aloha(workflow)
         base_interface = robot.get_base_interface()
         print("[smoke] creating direct /cmd_vel 4WIS bridge", flush=True)

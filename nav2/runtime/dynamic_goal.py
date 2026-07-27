@@ -79,11 +79,13 @@ def sample_approach_candidates(
     armbase_target_context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     target_x, target_y = float(target_xy[0]), float(target_xy[1])
-    rng = random.Random(int(config.sampling_seed)) if config.sampling_random else None
+    angle_index_offset = 0
+    if config.sampling_random:
+        angle_index_offset = random.Random(int(config.sampling_seed)).randrange(config.sample_count)
     candidates = []
     for index in range(config.sample_count):
-        radius = _candidate_radius(config, index, rng)
-        angle = _candidate_angle(index, rng)
+        radius = _candidate_radius(config, index)
+        angle = _candidate_angle(index + angle_index_offset)
         x = target_x + float(radius) * math.cos(angle)
         y = target_y + float(radius) * math.sin(angle)
         yaw = wrap_to_pi(math.atan2(target_y - y, target_x - x))
@@ -105,20 +107,16 @@ def sample_approach_candidates(
     return candidates
 
 
-def _candidate_radius(config: ApproachConfig, index: int, rng: random.Random | None = None) -> float:
+def _candidate_radius(config: ApproachConfig, index: int) -> float:
     min_distance = float(config.min_distance)
     max_distance = float(config.max_distance)
     if config.sample_count <= 1 or math.isclose(min_distance, max_distance, abs_tol=1e-9):
-        return rng.uniform(min_distance, max_distance) if rng is not None else min_distance
-    if rng is not None:
-        return rng.uniform(min_distance, max_distance)
+        return min_distance
     fraction = float(index) / float(config.sample_count - 1)
     return min_distance + (max_distance - min_distance) * fraction
 
 
-def _candidate_angle(index: int, rng: random.Random | None = None) -> float:
-    if rng is not None:
-        return rng.uniform(0.0, 2.0 * math.pi)
+def _candidate_angle(index: int) -> float:
     golden_angle = math.pi * (3.0 - math.sqrt(5.0))
     return (float(index) * golden_angle) % (2.0 * math.pi)
 

@@ -52,3 +52,8 @@ class SplitAlohaController(TemplateController):
         else:
             method(**params)
             return self.ee_forward(ee_trans, ee_ori, eps=eps, skip_plan=skip_plan, gripper_action=gripper_action)
+
+
+@register_controller
+class SplitAlohaActualController(SplitAlohaController):
+    """Controller registry entry for the physical 4WIS SplitAlohaActual."""

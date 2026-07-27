@@ -7,7 +7,8 @@ import xml.etree.ElementTree as ET
 
 import yaml
 
-from nav2.runtime.config import _write_nav2_bt_files
+from nav2.bridge.clock import _CLOCK_RESET_GAP_SEC
+from nav2.runtime.config import _controller_params, _write_nav2_bt_files
 
 
 class Nav2BehaviorTreeConfigTests(unittest.TestCase):
@@ -121,6 +122,43 @@ class Nav2BehaviorTreeConfigTests(unittest.TestCase):
         self.assertIn("nav2_wait_action_bt_node", plugins)
         goal_checker = native_params["controller_server"]["ros__parameters"]["general_goal_checker"]
         self.assertTrue(goal_checker["stateful"])
+        mppi_profile = params_config["controller_profiles"][
+            "nav2_mppi_controller::MPPIController"
+        ]
+        self.assertFalse(mppi_profile["regenerate_noises"])
+        self.assertGreater(_CLOCK_RESET_GAP_SEC, mppi_profile["reset_period"])
+
+    def test_panda_omron_virtual_reduces_mppi_twirling_penalty(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        params_config = yaml.safe_load(
+            (repo_root / "nav2/config/nav2_params.yaml").read_text(encoding="utf-8")
+        )
+        virtual_config = yaml.safe_load(
+            (repo_root / "nav2/config/panda_omron_virtual_nav.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        _, nested_overrides = _controller_params(
+            params_config,
+            virtual_config["nav2_skill"],
+            {
+                "max_velocity": [1.0, 1.0, 1.0],
+                "min_velocity": [-1.0, -1.0, -1.0],
+                "max_accel": [1.0, 1.0, 1.0],
+                "max_decel": [-1.0, -1.0, -1.0],
+            },
+        )
+        follow_path = nested_overrides["FollowPath"]
+        twirling_weight = follow_path["TwirlingCritic"]["cost_weight"]
+        goal_angle_weight = follow_path["GoalAngleCritic"]["cost_weight"]
+        approach_padding = virtual_config["nav2_skill"]["approach_footprint_padding"]
+        local_costmap_padding = virtual_config["nav2_skill"]["local_costmap"]["footprint_padding"]
+
+        self.assertEqual(twirling_weight, 2.0)
+        self.assertLess(twirling_weight, goal_angle_weight)
+        self.assertEqual(approach_padding, 0.04)
+        self.assertEqual(local_costmap_padding, approach_padding)
 
 
 if __name__ == "__main__":

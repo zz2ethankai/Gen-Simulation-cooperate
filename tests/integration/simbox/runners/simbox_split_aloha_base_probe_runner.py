@@ -1,4 +1,4 @@
-"""Isaac Sim runner that probes the SplitAloha mobile base interface and geometry."""
+"""Isaac Sim runner that probes the physical SplitAlohaActual 4WIS base."""
 
 import argparse
 import json
@@ -42,9 +42,9 @@ def _build_world(simulator_cfg: dict):
 
 def _find_split_aloha(workflow):
     for robot in workflow.task.robots.values():
-        if robot.__class__.__name__ == "SplitAloha":
+        if robot.__class__.__name__ == "SplitAlohaActual":
             return robot
-    raise RuntimeError("SplitAloha robot not found in workflow task")
+    raise RuntimeError("SplitAlohaActual robot not found in workflow task")
 
 
 def _select_nav_robot(task_cfg: dict) -> dict:
@@ -113,6 +113,7 @@ def _write_probe_arena_cfg(output_dir: str) -> str:
 def _build_probe_floor_task(task_cfg: dict, arena_cfg_path: str) -> dict:
     nav_robot = _select_nav_robot(task_cfg)
     nav_robot_name = str(nav_robot["name"])
+    nav_robot["robot_config_file"] = "workflows/simbox/core/configs/robots/split_aloha_actual.yaml"
 
     nav_task = dict(task_cfg)
     nav_task["asset_root"] = str(task_cfg.get("asset_root", "workflows/simbox/assets"))
@@ -260,7 +261,10 @@ def run_probe(config_path: str, output_path: str):
         config = _load_render_config(config_path)
         scene_loader_cfg = config["load_stage"]["scene_loader"]["args"]
         workflow_type = scene_loader_cfg["workflow_type"]
-        task_cfg_path = scene_loader_cfg["cfg_path"]
+        task_cfg_path = _prepare_probe_task_cfg(
+            scene_loader_cfg["cfg_path"],
+            os.path.dirname(output_path) or ".",
+        )
         simulator_cfg = scene_loader_cfg["simulator"]
 
         import_extensions(workflow_type)
