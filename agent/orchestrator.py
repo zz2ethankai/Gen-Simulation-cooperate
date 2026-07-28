@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -36,6 +37,23 @@ from .settings import load_agent_settings, resolve_data_generation
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RUN_ROOT = REPO_ROOT / "output" / "agent_runs"
 
+
+def _stop_process_group(process: subprocess.Popen[Any], timeout_sec: float = 20.0) -> int | None:
+    if process.poll() is not None:
+        return process.wait()
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return process.poll()
+    try:
+        return process.wait(timeout=timeout_sec)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        return process.wait(timeout=timeout_sec)
+
 def _create_backend(settings: dict[str, Any], model: str | None) -> CodexBackend | OpenAIBackend:
     backend_cfg = settings.get("backend", {})
     backend_type = str(backend_cfg.get("type", "codex_cli")).lower()
@@ -53,7 +71,6 @@ class AgentOrchestrator:
         *,
         gpu: int = 0,
         max_revisions: int = 2,
-        conda_env: str = "interndata",
         timeout_sec: int = 1800,
         model: str | None = None,
         inventory_path: Path = DEFAULT_INDEX_PATH,
@@ -64,7 +81,6 @@ class AgentOrchestrator:
         self.settings = settings or load_agent_settings()
         self.gpu = gpu
         self.max_revisions = max_revisions
-        self.conda_env = conda_env
         self.timeout_sec = timeout_sec
         self.inventory_path = inventory_path
         self.run_root = run_root
@@ -215,7 +231,6 @@ class AgentOrchestrator:
                 selected_manifest,
                 workspace_selection_dir,
                 self.gpu,
-                self.conda_env,
                 self.settings,
             )
         except CompileError as exc:
@@ -324,7 +339,6 @@ class AgentOrchestrator:
                         selected_manifest,
                         workspace_selection_dir / f"replan_{attempt_index + 1:02d}",
                         self.gpu,
-                        self.conda_env,
                         self.settings,
                         excluded_candidate_ids=excluded_candidates,
                     )
@@ -363,6 +377,7 @@ class AgentOrchestrator:
         data_dir = attempt_dir / "data"
         env = os.environ.copy()
         debug_cfg = self.settings.get("debug", {})
+        docker_cfg = self.settings.get("execution", {}).get("docker", {})
         env.update(
             {
                 "TASK_CONFIG": str(config_path),
@@ -376,32 +391,40 @@ class AgentOrchestrator:
                 "INTERNDATA_GPU": str(self.gpu),
                 "INTERNDATA_DEBUG_TOPDOWN": "1" if debug_cfg.get("topdown_check") else "0",
                 "INTERNDATA_TASK_PATH": str(config_path),
-                "CONDA_ENV": self.conda_env,
+                "INTERNDATA_STACK_ID": f"agent-{run_id}-a{attempt_index:02d}",
+                "INTERNDATA_COMPOSE_FILE": str(
+                    docker_cfg.get("compose_file", "docker/docker-compose.yml")
+                ),
+                "INTERNDATA_DOCKER_METADATA_PATH": str(attempt_dir / "docker_runtime.json"),
+                "LAUNCH_TEMPLATE": str(
+                    docker_cfg.get("launcher_config", "configs/de_plan_with_render_template.yaml")
+                ),
+                "SIMBOX_DEBUG_OUTPUT_DIR": str(attempt_dir / "simbox_debug"),
                 "PYTHONUNBUFFERED": "1",
             }
         )
-        command = ["bash", "scripts/simbox/run_simbox_task.sh"]
+        command = ["bash", "scripts/docker/run_simbox_task.sh"]
         (attempt_dir / "command.json").write_text(
-            json.dumps({"command": command, "env": {key: env[key] for key in sorted(env) if key.startswith("INTERNDATA_") or key in {"TASK_CONFIG", "GPU_ID", "RANDOM_NUM", "RANDOM_SEED", "RUN_NAME", "OUTPUT_DIR", "CONDA_ENV"}}}, ensure_ascii=False, indent=2)
+            json.dumps({"command": command, "env": {key: env[key] for key in sorted(env) if key.startswith("INTERNDATA_") or key in {"TASK_CONFIG", "GPU_ID", "RANDOM_NUM", "RANDOM_SEED", "RUN_NAME", "OUTPUT_DIR", "LAUNCH_TEMPLATE", "SIMBOX_DEBUG_OUTPUT_DIR"}}}, ensure_ascii=False, indent=2)
             + "\n",
             encoding="utf-8",
         )
         timed_out = False
         return_code: int | None
         with log_path.open("w", encoding="utf-8") as stream:
+            process = subprocess.Popen(
+                command,
+                cwd=REPO_ROOT,
+                env=env,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
             try:
-                completed = subprocess.run(
-                    command,
-                    cwd=REPO_ROOT,
-                    env=env,
-                    stdout=stream,
-                    stderr=subprocess.STDOUT,
-                    timeout=self.timeout_sec,
-                    check=False,
-                )
-                return_code = completed.returncode
+                return_code = process.wait(timeout=self.timeout_sec)
             except subprocess.TimeoutExpired:
                 timed_out = True
+                _stop_process_group(process)
                 return_code = None
         return return_code, timed_out, event_path, log_path
 

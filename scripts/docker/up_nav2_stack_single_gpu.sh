@@ -129,7 +129,16 @@ for service in "$@"; do
   fi
 done
 if [ "${needs_nav2}" = "true" ]; then
-  eval "$(resolve_nav2_robot_env)"
+  if [ -n "${INTERNDATA_NAV2_ROBOT_NAME:-}" ] && \
+     [ -n "${INTERNDATA_NAV2_ROBOT_CONFIG:-}" ] && \
+     [ -n "${INTERNDATA_BASE_CONFIG:-}" ]; then
+    echo "Using explicit task-derived Nav2 robot configuration."
+  elif [ -n "${INTERNDATA_NAV2_ROBOT_NAME:-}${INTERNDATA_NAV2_ROBOT_CONFIG:-}${INTERNDATA_BASE_CONFIG:-}" ]; then
+    echo "ERROR: explicit Nav2 robot configuration is incomplete" >&2
+    exit 2
+  else
+    eval "$(resolve_nav2_robot_env)"
+  fi
 fi
 
 echo "Using INTERNDATA_NAV2_SESSION_UUID=${INTERNDATA_NAV2_SESSION_UUID}"

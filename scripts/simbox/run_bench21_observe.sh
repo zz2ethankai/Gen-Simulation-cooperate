@@ -35,4 +35,4 @@ exec env \
     LAUNCH_TEMPLATE="configs/simbox/de_plan_with_render_template.yaml" \
     RUN_NAME="${RUN_NAME}" \
     OUTPUT_DIR="${OUTPUT_DIR}" \
-    bash "${REPO_ROOT}/scripts/simbox/run_simbox_task.sh"
+    bash "${REPO_ROOT}/scripts/docker/run_simbox_task.sh"

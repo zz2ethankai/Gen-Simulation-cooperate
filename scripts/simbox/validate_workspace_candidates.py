@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import hashlib
 import json
 import math
 import os
@@ -20,6 +21,7 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+CONTAINER_ROOT = Path("/workspace")
 SIMBOX_ROOT = REPO_ROOT / "workflows" / "simbox"
 if str(SIMBOX_ROOT) not in sys.path:
     sys.path.insert(0, str(SIMBOX_ROOT))
@@ -87,7 +89,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-pick-candidates", type=int, default=3)
     parser.add_argument("--probe-timeout-sec", type=int, default=900)
     parser.add_argument("--pick-timeout-sec", type=int, default=1200)
-    parser.add_argument("--conda-env", default="interndata")
     parser.add_argument(
         "--candidate-id",
         action="append",
@@ -153,6 +154,12 @@ def _stop_process_group(process: subprocess.Popen[Any], timeout_sec: float = 15.
         return process.wait(timeout=timeout_sec)
 
 
+def _stack_id(prefix: str, path: Path) -> str:
+    digest = hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()[:10]
+    safe_prefix = "".join(char if char.isalnum() or char in "_.-" else "-" for char in prefix)
+    return f"{safe_prefix.strip('-') or 'workspace'}-{digest}"
+
+
 def _shortlist_candidates(
     candidates: list[dict[str, Any]],
     preferred_radius_m: float,
@@ -201,7 +208,6 @@ def _run_probe(
     target: str,
     run_root: Path,
     timeout: int,
-    conda_env: str,
     required_arm: str | None,
     planning: dict[str, Any] | None,
     attach_prim_path_children: list[str],
@@ -240,7 +246,9 @@ def _run_probe(
             "RUN_NAME": f"workspace_probe/{candidate_id}",
             "OUTPUT_DIR": "",
             "SEQ_OUTPUT_DIR": str(case_dir / "unused_seq"),
-            "CONDA_ENV": conda_env,
+            "INTERNDATA_STACK_ID": _stack_id(f"workspace-probe-{candidate_id}", case_dir),
+            "INTERNDATA_DOCKER_METADATA_PATH": str(case_dir / "docker_runtime.json"),
+            "SIMBOX_DEBUG_OUTPUT_DIR": str(case_dir / "simbox_debug"),
             "PYTHONUNBUFFERED": "1",
         }
     )
@@ -249,7 +257,7 @@ def _run_probe(
     terminated_after_results = False
     with log_path.open("w", encoding="utf-8") as stream:
         process = subprocess.Popen(
-            ["bash", "scripts/simbox/run_simbox_task.sh"],
+            ["bash", "scripts/docker/run_simbox_task.sh"],
             cwd=REPO_ROOT,
             env=env,
             stdout=stream,
@@ -314,7 +322,6 @@ def _run_probe_queue(
     target: str,
     run_root: Path,
     timeout: int,
-    conda_env: str,
     stop_event: threading.Event,
     stop_after_feasible: bool,
     required_arm: str | None,
@@ -333,7 +340,6 @@ def _run_probe_queue(
             target,
             run_root,
             timeout,
-            conda_env,
             required_arm,
             planning,
             attach_prim_path_children,
@@ -361,6 +367,15 @@ def _read_episode_event(path: Path) -> dict[str, Any] | None:
     return values[-1] if values else None
 
 
+def _host_artifact_path(value: str) -> Path:
+    path = Path(value)
+    try:
+        relative = path.relative_to(CONTAINER_ROOT)
+    except ValueError:
+        return path
+    return REPO_ROOT / relative
+
+
 def _run_pick(
     candidate: dict[str, Any],
     arm: str,
@@ -370,7 +385,6 @@ def _run_pick(
     target: str,
     run_root: Path,
     timeout: int,
-    conda_env: str,
 ) -> dict[str, Any]:
     candidate_id = str(candidate["candidate_id"])
     case_dir = run_root / "picks" / candidate_id / f"seed_{seed}"
@@ -392,30 +406,39 @@ def _run_pick(
             "INTERNDATA_EPISODE_EVENT_PATH": str(event_path),
             "INTERNDATA_RANDOM_SEED": str(seed),
             "INTERNDATA_GPU": gpu,
-            "CONDA_ENV": conda_env,
+            "INTERNDATA_STACK_ID": _stack_id(
+                f"workspace-pick-{candidate_id}-s{seed}",
+                case_dir,
+            ),
+            "INTERNDATA_DOCKER_METADATA_PATH": str(case_dir / "docker_runtime.json"),
+            "SIMBOX_DEBUG_OUTPUT_DIR": str(case_dir / "simbox_debug"),
             "PYTHONUNBUFFERED": "1",
         }
     )
     log_path = case_dir / "stdout.log"
-    try:
-        with log_path.open("w", encoding="utf-8") as stream:
-            completed = subprocess.run(
-                ["bash", "scripts/simbox/run_simbox_task.sh"],
-                cwd=REPO_ROOT,
-                env=env,
-                stdout=stream,
-                stderr=subprocess.STDOUT,
-                timeout=timeout,
-                check=False,
-            )
-        return_code: int | None = completed.returncode
-        timed_out = False
-    except subprocess.TimeoutExpired:
-        return_code = None
-        timed_out = True
+    with log_path.open("w", encoding="utf-8") as stream:
+        process = subprocess.Popen(
+            ["bash", "scripts/docker/run_simbox_task.sh"],
+            cwd=REPO_ROOT,
+            env=env,
+            stdout=stream,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        try:
+            return_code = process.wait(timeout=timeout)
+            timed_out = False
+        except subprocess.TimeoutExpired:
+            _stop_process_group(process)
+            return_code = None
+            timed_out = True
     stdout = log_path.read_text(encoding="utf-8", errors="replace") if log_path.is_file() else ""
     event = _read_episode_event(event_path)
-    episode_dir = Path(str(event.get("primary_episode_dir", ""))) if event else None
+    episode_dir = (
+        _host_artifact_path(str(event.get("primary_episode_dir", "")))
+        if event
+        else None
+    )
     event_success = bool(event and event.get("status") == "success")
     episode_name_valid = bool(episode_dir and episode_dir.name and not episode_dir.name.startswith("fail_"))
     meta_valid = bool(episode_dir and (episode_dir / "meta_info.pkl").is_file())
@@ -519,7 +542,6 @@ def main() -> int:
                 target,
                 run_root,
                 args.probe_timeout_sec,
-                args.conda_env,
                 stop_event,
                 args.stop_after_feasible,
                 args.arm,
@@ -633,7 +655,6 @@ def main() -> int:
             target,
             run_root,
             args.pick_timeout_sec,
-            args.conda_env,
         )
         attempts.append(attempt)
         _progress(
@@ -661,7 +682,6 @@ def main() -> int:
             target,
             run_root,
             args.pick_timeout_sec,
-            args.conda_env,
         )
         attempts.append(attempt)
         _progress(

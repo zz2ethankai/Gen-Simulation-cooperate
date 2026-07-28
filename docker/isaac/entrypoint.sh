@@ -8,6 +8,7 @@ export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 export INTERNDATA_AUTOSTART_LAUNCHER="${INTERNDATA_AUTOSTART_LAUNCHER:-0}"
 export INTERNDATA_LAUNCHER_CONFIG="${INTERNDATA_LAUNCHER_CONFIG:-configs/de_plan_with_render_template.yaml}"
 export INTERNDATA_LAUNCHER_EXTRA_ARGS="${INTERNDATA_LAUNCHER_EXTRA_ARGS:-}"
+export INTERNDATA_LAUNCHER_ARGS_JSON="${INTERNDATA_LAUNCHER_ARGS_JSON:-[]}"
 export SETUPTOOLS_SCM_PRETEND_VERSION="${SETUPTOOLS_SCM_PRETEND_VERSION:-0.7.0}"
 export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CUROBO="${SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CUROBO:-${SETUPTOOLS_SCM_PRETEND_VERSION}}"
 
@@ -26,7 +27,17 @@ done
 run_default_entry() {
   if [ "${INTERNDATA_AUTOSTART_LAUNCHER}" = "1" ]; then
     cd /workspace
-    read -r -a launcher_extra_args <<< "${INTERNDATA_LAUNCHER_EXTRA_ARGS}"
+    launcher_extra_args=()
+    if [ "${INTERNDATA_LAUNCHER_ARGS_JSON}" != "[]" ]; then
+      launcher_args_file="$(mktemp)"
+      "${ISAAC_SIM_PATH}/python.sh" -c \
+        'import json, sys; [print(value) for value in json.loads(sys.argv[1])]' \
+        "${INTERNDATA_LAUNCHER_ARGS_JSON}" > "${launcher_args_file}"
+      mapfile -t launcher_extra_args < "${launcher_args_file}"
+      rm -f "${launcher_args_file}"
+    elif [ -n "${INTERNDATA_LAUNCHER_EXTRA_ARGS}" ]; then
+      read -r -a launcher_extra_args <<< "${INTERNDATA_LAUNCHER_EXTRA_ARGS}"
+    fi
     exec "${ISAAC_SIM_PATH}/python.sh" launcher.py --config "${INTERNDATA_LAUNCHER_CONFIG}" "${launcher_extra_args[@]}"
   fi
 

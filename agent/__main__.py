@@ -29,7 +29,6 @@ def _common_kwargs(args: argparse.Namespace, settings: dict) -> dict:
             if getattr(args, "max_revisions", None) is not None
             else execution.get("max_revisions", 2)
         ),
-        "conda_env": str(getattr(args, "conda_env", None) or execution.get("conda_env", "interndata")),
         "timeout_sec": int(
             getattr(args, "timeout_sec", None)
             if getattr(args, "timeout_sec", None) is not None
@@ -57,7 +56,6 @@ def build_parser(settings: dict) -> argparse.ArgumentParser:
         command.add_argument("--prompt", required=True)
         command.add_argument("--gpu", type=int)
         command.add_argument("--max-revisions", type=int)
-        command.add_argument("--conda-env")
         command.add_argument("--timeout-sec", type=int)
         command.add_argument("--no-retain", action="store_true")
         if name == "plan":
@@ -67,7 +65,6 @@ def build_parser(settings: dict) -> argparse.ArgumentParser:
     resume.add_argument("--run-id", required=True)
     resume.add_argument("--gpu", type=int)
     resume.add_argument("--max-revisions", type=int)
-    resume.add_argument("--conda-env")
     resume.add_argument("--timeout-sec", type=int)
     resume.add_argument("--no-retain", action="store_true")
 

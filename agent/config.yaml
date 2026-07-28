@@ -24,11 +24,13 @@ scene_roots:
   - InternDataAssets/Bench_2.1_isaacsim/scene_4
 
 execution:
-  conda_env: interndata
   gpu: 0
   timeout_sec: 1800
   max_revisions: 2
   retain_experience: true
+  docker:
+    compose_file: docker/docker-compose.yml
+    launcher_config: configs/de_plan_with_render_template.yaml
 
 generation:
   enabled: true

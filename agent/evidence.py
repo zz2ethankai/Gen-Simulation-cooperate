@@ -13,6 +13,17 @@ from .contracts import Diagnosis, EvidenceBundle
 
 
 AGENT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = AGENT_DIR.parent
+CONTAINER_ROOT = Path("/workspace")
+
+
+def _host_artifact_path(value: str) -> Path:
+    path = Path(value)
+    try:
+        relative = path.relative_to(CONTAINER_ROOT)
+    except ValueError:
+        return path
+    return REPO_ROOT / relative
 
 
 def _json(path: Path) -> dict[str, Any] | None:
@@ -64,7 +75,7 @@ def collect_evidence(
     event = _last_event(event_path)
     stdout = log_path.read_text(encoding="utf-8", errors="replace") if log_path.is_file() else ""
     episode_value = str(event.get("primary_episode_dir", "")) if event else ""
-    episode_dir = Path(episode_value) if episode_value else None
+    episode_dir = _host_artifact_path(episode_value) if episode_value else None
     if episode_dir is not None and not episode_dir.exists():
         episode_dir = None
 
@@ -172,6 +183,11 @@ def classify_evidence(evidence: EvidenceBundle) -> Diagnosis:
         "ATTACH_COLLISION_PRIM_AMBIGUOUS",
         "UNSUPPORTED_CONCURRENT_MANIPULATION",
         "EVENT_MISSING",
+        "DOCKER_RUNTIME_UNAVAILABLE",
+        "DOCKER_IMAGE_MISSING",
+        "DOCKER_START_FAILED",
+        "DOCKER_WAIT_FAILED",
+        "ISAAC_CONTAINER_FAILED",
     }
     workspace_codes = {
         "NO_GEOMETRY_CANDIDATE",

@@ -42,10 +42,13 @@ conda run -n graspgen-interndata python \
   --robot-config workflows/simbox/core/configs/robots/split_aloha.yaml \
   --models-dir /path/to/GraspGenModels \
   --output path/to/Aligned_grasp_sparse_graspgen.npy \
-  --unit m --count 256
+  --unit m
 ```
 
-The output is a `float32` `N x 17` array accepted by the existing pick skills.
+By default, the diffusion planner generates 2,000 candidates and the output is
+a `float32` `2000 x 17` array accepted by the existing pick skills. Pass an
+explicit smaller `--count` only when a top-k subset is required; select
+`--planner graspmoe` explicitly when diffusion-plus-OBB generation is wanted.
 To use a non-default filename, set the pick skill's existing `npy_name` option.
 The adjacent `.npy.meta.json` records the source model, project robot config,
 URDF paths, EE links, and conversion parameters.

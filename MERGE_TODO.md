@@ -14,13 +14,12 @@ physical-4WIS probes.
   behavior, then adding only the `physics_schema` and evidence hooks required by
   the Agent.
 - [ ] Run the Agent workspace probe end to end with
-  `configs/de_workspace_probe_template.yaml`; verify that local `active_gpu` and
-  `physics_gpu` handling is sufficient without the remote `cuda_device` runtime
-  change.
+  `configs/de_workspace_probe_template.yaml`; verify that the host GPU is assigned
+  by Compose while container-local `active_gpu` and `physics_gpu` remain `0`.
 - [ ] Runtime-validate SplitAloha `manipulation_base_hold` against the local
   virtual-base asset. Confirm the three base joints remain fixed during Agent
   Pick/Place and that Nav2 control resumes without a pose jump afterward.
-- [ ] Run one Agent-generated task through `scripts/simbox/run_simbox_task.sh`
+- [ ] Run one Agent-generated task through `scripts/docker/run_simbox_task.sh`
   and verify strict success from the task log, episode events, LMDB metadata,
   and skill snapshots.
 - [ ] Validate one Agent-generated task that uses an object-level `asset_root`;
@@ -35,3 +34,6 @@ physical-4WIS probes.
 - [ ] Treat the remote Docker parallel-generation stack and its sample configs
   as a separate integration. They are documented by the remote migration guide
   but are not called by the Agent orchestrator.
+- [ ] Runtime-validate Docker-only failure cleanup: force one timeout and confirm
+  the attempt's Isaac/Nav2 containers, Compose network, and ROS-domain lock are
+  released without falling back to a host Isaac process.

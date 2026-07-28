@@ -291,7 +291,8 @@ workflows/simbox/core/workspace/
 workflows/simbox/core/utils/workspace_planner.py
 scripts/simbox/plan_workspace_layout.py
 scripts/simbox/validate_workspace_candidates.py
-scripts/simbox/run_simbox_task.sh
+scripts/docker/run_simbox_task.sh
+scripts/docker/prepare_simbox_run.py
 configs/simbox/de_workspace_probe_template.yaml
 ```
 
@@ -773,7 +774,9 @@ output/agent_runs/<run_id>/workspace_manifests.json
 - 当前没有 Nav，没有共同底座位姿时停止；
 - 数据生成默认开启；
 - Agent 失败闭环已有结构化证据和有界修订，但部分 CuRobo 失败仍需要更细的 per-goal status；
-- Docker Parallel V2 调度已有 YAML、监控、失败保护、恢复和统计，但不等于 Agent 已自动调度多 GPU；
+- Agent 的 Workspace Probe 和正式任务只通过 `scripts/docker/` 单栈流程执行，
+  每个 attempt 使用独立 Compose project、ROS domain 和 Isaac/Nav2 容器；
+- Docker Parallel V2 仍是已有 YAML 的批量调度入口，不由 Agent orchestrator 调用；
 - CuRobo 轨迹可视化底层可用，Agent 统一默认注入仍应作为独立改动完成。
 
 ## 13. 最终交付检查表

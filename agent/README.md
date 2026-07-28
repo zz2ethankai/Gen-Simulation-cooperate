@@ -168,7 +168,10 @@ TaskRequest
 
 ## 5. 使用方法
 
-在仓库根目录和 `interndata` 环境中运行。
+Agent 控制进程在仓库根目录的 Python 环境中运行；所有 Workspace Probe、
+CuRobo、Isaac Sim 和 Nav2 执行都强制通过
+`scripts/docker/run_simbox_task.sh` 启动独立 Docker stack。没有宿主机仿真
+回退路径，Docker 不可用时运行会直接停止并生成基础设施诊断。
 
 首次使用或场景/资产变化后建立 inventory：
 
@@ -200,7 +203,7 @@ conda run -n interndata python -m agent resume \
 规划并执行：
 
 ```bash
-conda plan -n interndata python -m agent run \
+conda run -n interndata python -m agent run \
   --prompt "使用左臂抓取面包片，将面包片完整、稳定地放入金属托盘内部；使用右臂抓取橙子，将橙子完整、稳定地放入同一个金属托盘内部。" \
   --gpu 0 \
   --max-revisions 2

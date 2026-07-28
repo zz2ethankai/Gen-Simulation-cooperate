@@ -373,7 +373,6 @@ def _write_workspace_diagnostics(
 def validate_workspace_manifest(
     manifest_path: Path,
     gpu: int,
-    conda_env: str = "interndata",
     candidate_id: str | None = None,
     stop_after_feasible: bool = True,
     *,
@@ -400,8 +399,6 @@ def validate_workspace_manifest(
         str(manifest_path),
         "--gpus",
         str(gpu),
-        "--conda-env",
-        conda_env,
         "--arm",
         required_arm,
         "--planning-config",
@@ -429,7 +426,6 @@ def validate_next_workspace_candidate(
     manifest_path: Path,
     current_candidate_id: str,
     gpu: int,
-    conda_env: str = "interndata",
     *,
     arm: str | None = None,
     attach_prim_path_children: list[str] | None = None,
@@ -447,7 +443,6 @@ def validate_next_workspace_candidate(
             return validate_workspace_manifest(
                 manifest_path,
                 gpu,
-                conda_env,
                 candidate_id=candidate_id,
                 stop_after_feasible=False,
                 arm=arm,
@@ -613,7 +608,6 @@ def select_task_workspace_candidate(
     manifest: SceneCapabilityManifest,
     output_dir: Path,
     gpu: int,
-    conda_env: str = "interndata",
     settings: Mapping[str, Any] | None = None,
     excluded_candidate_ids: set[str] | None = None,
 ) -> dict[str, Any]:
@@ -633,7 +627,6 @@ def select_task_workspace_candidate(
             selected = validate_workspace_manifest(
                 workspace_manifest_path,
                 gpu,
-                conda_env,
                 arm=subtask.arm,
                 attach_prim_path_children=attach_paths,
             )
@@ -651,7 +644,6 @@ def select_task_workspace_candidate(
                     selected = validate_workspace_manifest(
                         workspace_manifest_path,
                         gpu,
-                        conda_env,
                         candidate_id=candidate_id,
                         stop_after_feasible=False,
                         arm=subtask.arm,
@@ -729,7 +721,6 @@ def select_task_workspace_candidate(
                 selected = validate_workspace_manifest(
                     probe_manifest,
                     gpu,
-                    conda_env,
                     candidate_id=str(candidate["candidate_id"]),
                     stop_after_feasible=False,
                     arm=subtask.arm,

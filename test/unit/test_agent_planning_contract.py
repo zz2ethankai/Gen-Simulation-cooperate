@@ -451,7 +451,7 @@ def test_common_workspace_selection_probes_same_pose_with_each_preselected_arm(
 
     probes = []
 
-    def fake_validate(path, _gpu, _conda_env, **kwargs):
+    def fake_validate(path, _gpu, **kwargs):
         value = json.loads(Path(path).read_text(encoding="utf-8"))
         local = value["geometry_candidates"][0]
         probes.append(

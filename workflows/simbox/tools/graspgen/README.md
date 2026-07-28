@@ -72,9 +72,10 @@ parameters.
 
 ### Generate one asset
 
-This quality-oriented configuration asks the diffusion model for 2,000
-candidates and retains the highest-confidence 256. It writes a separate file
-and does not replace the legacy `Aligned_grasp_sparse.npy` annotation.
+The InterndataEngine generator defaults to 2,000 diffusion candidates and
+exports all 2,000 in confidence order. Pass a smaller explicit `--count` only
+when a top-k subset is required. This example writes a separate file and does
+not replace the existing `Aligned_grasp_sparse.npy` annotation.
 
 ```bash
 env CUDA_VISIBLE_DEVICES=0 conda run -n graspgen-interndata python \
@@ -82,11 +83,9 @@ env CUDA_VISIBLE_DEVICES=0 conda run -n graspgen-interndata python \
   --mesh path/to/asset/Aligned_obj.obj \
   --robot-config workflows/simbox/core/configs/robots/panda_omron.yaml \
   --models-dir /data1/yifei/workspace/GraspGenModels \
-  --output path/to/asset/Aligned_grasp_sparse_graspgen_panda_oversampled.npy \
+  --output path/to/asset/Aligned_grasp_sparse_graspgen_panda_all2000.npy \
   --unit m \
   --planner diffusion \
-  --num-grasps 2000 \
-  --count 256 \
   --seed 0
 ```
 
@@ -94,7 +93,7 @@ To load this file without changing the Pick API, set the existing pick-skill
 option:
 
 ```yaml
-npy_name: Aligned_grasp_sparse_graspgen_panda_oversampled.npy
+npy_name: Aligned_grasp_sparse_graspgen_panda_all2000.npy
 ```
 
 ### Regenerate all existing Scene 8 grasp assets
@@ -121,16 +120,16 @@ rg --files -uu "$SCENE8_ROOT" \
         --mesh "$asset_dir/Aligned_obj.obj" \
         --robot-config workflows/simbox/core/configs/robots/panda_omron.yaml \
         --models-dir "$GRASPGEN_MODELS_DIR" \
-        --output "$asset_dir/Aligned_grasp_sparse_graspgen_panda_oversampled.npy" \
-        --unit m --planner diffusion --num-grasps 2000 --count 256 --seed 0
+        --output "$asset_dir/Aligned_grasp_sparse_graspgen_panda_all2000.npy" \
+        --unit m --planner diffusion --seed 0
     ' _ '{}'
 ```
 
 Each successful asset must have both files:
 
 ```text
-Aligned_grasp_sparse_graspgen_panda_oversampled.npy
-Aligned_grasp_sparse_graspgen_panda_oversampled.npy.meta.json
+Aligned_grasp_sparse_graspgen_panda_all2000.npy
+Aligned_grasp_sparse_graspgen_panda_all2000.npy.meta.json
 ```
 
 The current Scene 8 meshes use meters. Revalidate `--unit` before applying this

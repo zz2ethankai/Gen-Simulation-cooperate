@@ -94,10 +94,10 @@ def _parse_args() -> argparse.Namespace:
         help="Checkpoint embodiment when --models-dir is used (default: auto)",
     )
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--count", type=int, default=256)
-    parser.add_argument("--num-grasps", type=int, default=400)
+    parser.add_argument("--count", type=int, default=2000)
+    parser.add_argument("--num-grasps", type=int, default=2000)
     parser.add_argument("--num-sample-points", type=int, default=2000)
-    parser.add_argument("--planner", choices=("diffusion", "graspmoe"), default="graspmoe")
+    parser.add_argument("--planner", choices=("diffusion", "graspmoe"), default="diffusion")
     parser.add_argument("--unit", choices=("m", "mm"), default="m")
     parser.add_argument("--seed", type=int, default=0)
     return parser.parse_args()
