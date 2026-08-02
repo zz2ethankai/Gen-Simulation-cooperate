@@ -146,6 +146,7 @@ class CollisionSceneManager:
         self.path_to_entity: dict[str, str] = {}
         self.controllers: dict[tuple[str, str], Any] = {}
         self.controller_enabled: dict[tuple[str, str], dict[str, bool]] = {}
+        self._controller_reference_matrices: dict[tuple[str, str], np.ndarray] = {}
         self.controller_audits: dict[str, dict[str, list[str]]] = {}
         self._temporary_disabled: dict[tuple[str, str], set[str]] = {}
         self._pending_detach: set[str] = set()
@@ -483,7 +484,7 @@ class CollisionSceneManager:
                 UsdGeom.Tokens.guide,
             ],
             useExtentsHint=False,
-        ).ComputeLocalBound(prim).ComputeAlignedBox()
+        ).ComputeUntransformedBound(prim).ComputeAlignedBox()
         if local_range.IsEmpty():
             raise CollisionSceneError(
                 f"cannot build collision proxy for empty collider: {prim_path}"
@@ -492,7 +493,9 @@ class CollisionSceneManager:
         maximum = local_range.GetMax()
         center = (minimum + maximum) * 0.5
         local_dims = maximum - minimum
-        relative, _ = cache.ComputeRelativeTransform(prim, reference)
+        prim_world = cache.GetLocalToWorldTransform(prim)
+        reference_world = cache.GetLocalToWorldTransform(reference)
+        relative = prim_world * reference_world.GetInverse()
         transform = Gf.Transform(relative)
         scale = transform.GetScale()
         dims = [
@@ -547,6 +550,9 @@ class CollisionSceneManager:
             raise CollisionSceneError(f"controller already registered: {key}")
         self.controllers[key] = controller
         self.controller_enabled[key] = {path: True for path in self.collision_prim_paths}
+        self._controller_reference_matrices[key] = self._world_matrix(
+            controller.reference_prim_path
+        )
         self._temporary_disabled[key] = set()
         capacity = int(
             controller.motion_gen.robot_cfg.kinematics.kinematics_config.get_number_of_spheres(
@@ -573,6 +579,44 @@ class CollisionSceneManager:
             if getattr(controller, "collision_world_mode", "physics_schema")
             == "physics_schema"
         ]
+
+    def get_attached_entity(self, robot: str, arm: str) -> str | None:
+        """Return the object currently owned by one controller, if any."""
+
+        owner = (str(robot), str(arm))
+        attached = sorted(
+            record.entity_name
+            for record in self.records.values()
+            if record.state == CollisionObjectState.ATTACHED
+            and (record.owner_robot, record.owner_arm) == owner
+        )
+        if len(attached) > 1:
+            raise CollisionSceneError(
+                f"controller owns multiple attached objects: owner={owner} objects={attached}"
+            )
+        return attached[0] if attached else None
+
+    def assert_attached_owner(
+        self, entity_name: str, robot: str, arm: str
+    ) -> CollisionObjectRecord:
+        """Validate that a carry phase preserves the existing attachment."""
+
+        record = self.records.get(str(entity_name))
+        owner = (str(robot), str(arm))
+        if record is None:
+            raise CollisionSceneError(f"unknown attached object: {entity_name}")
+        if record.state != CollisionObjectState.ATTACHED:
+            raise CollisionSceneError(
+                f"carry phase requires ATTACHED object, got {record.state.value}: {entity_name}"
+            )
+        if (record.owner_robot, record.owner_arm) != owner:
+            raise CollisionSceneError(
+                "carry phase attachment owner mismatch: "
+                f"object={entity_name} expected={owner} "
+                f"actual={(record.owner_robot, record.owner_arm)}"
+            )
+        self.assert_invariants()
+        return record
 
     def prepare_controller_for_legacy(self, controller: Any) -> None:
         """Reject a mode switch that would orphan Physics-owned object state."""
@@ -603,9 +647,81 @@ class CollisionSceneManager:
         self.controller_enabled[key] = {
             path: True for path in self.collision_prim_paths
         }
+        self._controller_reference_matrices[key] = self._world_matrix(
+            controller.reference_prim_path
+        )
         self._temporary_disabled[key].clear()
         self.audit_controller(controller)
         self.assert_invariants()
+
+    def refresh_controller_reference_world(self, controller: Any, force: bool = False) -> bool:
+        """Refresh every obstacle pose after the mobile planning reference moves."""
+
+        key = self._controller_key(controller.name, controller.lr_name)
+        current = self._world_matrix(controller.reference_prim_path)
+        previous = self._controller_reference_matrices.get(key)
+        if not force and previous is not None and np.allclose(
+            current, previous, atol=1e-6, rtol=0.0
+        ):
+            return False
+        for path in self.collision_prim_paths:
+            controller.motion_gen.world_collision.update_obstacle_pose(
+                path, self._controller_obstacle_pose(controller, path)
+            )
+        self._controller_reference_matrices[key] = current
+        self.world_revision += 1
+        LOGGER.info(
+            "[CollisionWorld] refreshed moving reference controller=%s/%s obstacles=%d world_revision=%d",
+            controller.name,
+            controller.lr_name,
+            len(self.collision_prim_paths),
+            self.world_revision,
+        )
+        return True
+
+    def diagnose_controller_world_collision(self, controller: Any) -> dict[str, Any]:
+        """Identify which entity groups invalidate the controller's live start state."""
+
+        key = self._controller_key(controller.name, controller.lr_name)
+        check_start = getattr(controller, "check_current_start_state", None)
+        if not callable(check_start):
+            return {"available": False, "reason": "controller_check_unavailable"}
+
+        original = dict(self.controller_enabled[key])
+        enabled_paths = [
+            path for path in self.collision_prim_paths if original.get(path, False)
+        ]
+        grouped_paths: dict[str, list[str]] = {}
+        for path in enabled_paths:
+            grouped_paths.setdefault(self.path_to_entity.get(path, path), []).append(path)
+
+        colliding_entities = []
+        try:
+            self._set_enabled(key, enabled_paths, False)
+            baseline_valid, baseline_status = check_start()
+            for entity_name, paths in grouped_paths.items():
+                self._set_enabled(key, paths, True)
+                valid, status = check_start()
+                if not valid:
+                    colliding_entities.append(
+                        {
+                            "entity": entity_name,
+                            "paths": list(paths),
+                            "status": status,
+                        }
+                    )
+                self._set_enabled(key, paths, False)
+        finally:
+            for path, enabled in original.items():
+                self._set_enabled(key, [path], enabled)
+
+        return {
+            "available": True,
+            "baseline_without_world_valid": baseline_valid,
+            "baseline_without_world_status": baseline_status,
+            "tested_entity_count": len(grouped_paths),
+            "colliding_entities": colliding_entities,
+        }
 
     def initialize_contact_views(self) -> None:
         """Create PhysX views for non-finger robot links against all world colliders."""

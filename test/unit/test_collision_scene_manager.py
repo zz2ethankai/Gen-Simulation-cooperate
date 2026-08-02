@@ -328,6 +328,63 @@ def test_active_physics_object_state_blocks_legacy_activation():
         manager.prepare_controller_for_legacy(controller)
 
 
+def test_attached_owner_lookup_and_carry_validation_are_exact(monkeypatch):
+    stage = Usd.Stage.CreateInMemory()
+    manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
+    record = manager.records["movable_b"]
+    record.state = CollisionObjectState.ATTACHED
+    record.owner_robot = "robot"
+    record.owner_arm = "right"
+    monkeypatch.setattr(manager, "assert_invariants", lambda: None)
+
+    assert manager.get_attached_entity("robot", "right") == "movable_b"
+    assert manager.get_attached_entity("robot", "left") is None
+    assert manager.assert_attached_owner("movable_b", "robot", "right") is record
+    with pytest.raises(CollisionSceneError, match="owner mismatch"):
+        manager.assert_attached_owner("movable_b", "robot", "left")
+
+
+def test_world_collision_diagnostic_isolates_entity_and_restores_enabled_state():
+    stage = Usd.Stage.CreateInMemory()
+    manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
+    key = ("robot", "left")
+    enabled = set(manager.collision_prim_paths)
+    collision_path = manager.records["movable_b"].collision_prim_paths[0]
+
+    def enable_obstacle(path, value):
+        if value:
+            enabled.add(path)
+        else:
+            enabled.discard(path)
+
+    controller = types.SimpleNamespace(
+        name=key[0],
+        lr_name=key[1],
+        motion_gen=types.SimpleNamespace(
+            world_model=types.SimpleNamespace(get_obstacle=lambda _path: object()),
+            world_collision=types.SimpleNamespace(enable_obstacle=enable_obstacle),
+        ),
+        check_current_start_state=lambda: (
+            collision_path not in enabled,
+            None if collision_path not in enabled else "Start state is colliding with world",
+        ),
+    )
+    manager.controllers[key] = controller
+    manager.controller_enabled[key] = {
+        path: True for path in manager.collision_prim_paths
+    }
+    manager._temporary_disabled[key] = set()  # pylint: disable=protected-access
+
+    result = manager.diagnose_controller_world_collision(controller)
+
+    assert result["baseline_without_world_valid"] is True
+    assert [item["entity"] for item in result["colliding_entities"]] == [
+        "movable_b"
+    ]
+    assert enabled == set(manager.collision_prim_paths)
+    assert all(manager.controller_enabled[key].values())
+
+
 def test_physics_sync_and_export_skip_legacy_controllers(monkeypatch, tmp_path):
     stage = Usd.Stage.CreateInMemory()
     manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
@@ -439,6 +496,45 @@ def test_old_usd_helper_api_builds_exact_name_bbox_world(monkeypatch):
     assert [obstacle.name for obstacle in result.cuboid] == manager.collision_prim_paths
     assert all(len(obstacle.pose) == 7 for obstacle in result.cuboid)
     assert all(min(obstacle.dims) > 0.0 for obstacle in result.cuboid)
+
+
+def test_bbox_proxy_uses_sibling_reference_and_applies_scale_once(monkeypatch):
+    stage = Usd.Stage.CreateInMemory()
+    reference = UsdGeom.Xform.Define(stage, "/World/robot_base")
+    reference.AddTranslateOp().Set((2.5, 1.0, 0.7))
+    wall = UsdGeom.Xform.Define(stage, "/World/wall")
+    wall.AddTranslateOp().Set((2.0, 0.0, 1.4))
+    wall.AddRotateXYZOp().Set((90.0, 0.0, 0.0))
+    collider = UsdGeom.Cube.Define(stage, "/World/wall/collision")
+    collider.CreateSizeAttr().Set(1.0)
+    collider_xform = UsdGeom.Xformable(collider)
+    collider_xform.AddScaleOp().Set((4.0, 2.8, 0.02))
+    UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+
+    class FakeCuboid:
+        def __init__(self, **kwargs):
+            self.name = kwargs["name"]
+            self.pose = kwargs["pose"]
+            self.dims = kwargs["dims"]
+
+    fake_curobo = types.ModuleType("curobo")
+    fake_geom = types.ModuleType("curobo.geom")
+    fake_geom_types = types.ModuleType("curobo.geom.types")
+    fake_geom_types.Cuboid = FakeCuboid
+    fake_geom.types = fake_geom_types
+    fake_curobo.geom = fake_geom
+    monkeypatch.setitem(sys.modules, "curobo", fake_curobo)
+    monkeypatch.setitem(sys.modules, "curobo.geom", fake_geom)
+    monkeypatch.setitem(sys.modules, "curobo.geom.types", fake_geom_types)
+
+    manager = CollisionSceneManager.__new__(CollisionSceneManager)
+    manager.stage = stage
+    proxy = manager._bbox_collision_proxy(  # pylint: disable=protected-access
+        "/World/wall/collision", "/World/robot_base"
+    )
+
+    np.testing.assert_allclose(proxy.pose[:3], [-0.5, -1.0, 0.7], atol=1e-6)
+    np.testing.assert_allclose(proxy.dims, [4.0, 2.8, 0.02], atol=1e-6)
 
 
 def test_old_usd_helper_api_computes_relative_dynamic_pose(monkeypatch):

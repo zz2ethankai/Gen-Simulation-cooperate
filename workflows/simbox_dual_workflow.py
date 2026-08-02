@@ -35,6 +35,7 @@ from core.execution.execution_supervisor import ExecutionSupervisor
 from core.planning.config_contract import (
     PASSTHROUGH_MODE,
     resolve_collision_world_mode,
+    resolve_runtime_skill_collision_world_mode,
     resolve_skill_collision_world_mode,
     task_uses_physics_schema,
     validate_planning_contract,
@@ -1440,10 +1441,10 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 return str(cfg_name)
         return str(skill.__class__.__name__).lower()
 
-    def _activate_skill_collision_world(self, skill) -> None:
+    def _activate_skill_collision_world(self, skill) -> str:
         mode = getattr(skill, "collision_world_mode", PASSTHROUGH_MODE)
         if mode == PASSTHROUGH_MODE:
-            return
+            return mode
         controller = getattr(skill, "controller", None)
         activate = getattr(controller, "activate_collision_world_mode", None)
         if not callable(activate):
@@ -1452,8 +1453,37 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                     f"Physics-schema Skill {self._skill_display_name(skill)!r} "
                     "requires an active manipulator controller"
                 )
-            return
+            return mode
+        attached_entity = None
+        if self.collision_scene_manager is not None:
+            attached_entity = self.collision_scene_manager.get_attached_entity(
+                controller.name, controller.lr_name
+            )
+        runtime_mode = resolve_runtime_skill_collision_world_mode(
+            getattr(skill, "skill_cfg", {}),
+            self.requested_collision_world_mode,
+            attached_object=attached_entity is not None,
+        )
+        setattr(skill, "_physics_schema_active_object", attached_entity)
+        setattr(skill, "effective_collision_world_mode", runtime_mode)
+        adapter_state = (mode, runtime_mode, attached_entity)
+        if runtime_mode != mode and getattr(
+            skill, "_last_collision_world_adapter_log_state", None
+        ) != adapter_state:
+            LOGGER.info(
+                "[CollisionWorld] runtime-adapter skill=%s configured_mode=%s "
+                "effective_mode=%s attached_object=%s controller=%s/%s",
+                self._skill_display_name(skill),
+                mode,
+                runtime_mode,
+                attached_entity,
+                controller.name,
+                controller.lr_name,
+            )
+        setattr(skill, "_last_collision_world_adapter_log_state", adapter_state)
+        mode = runtime_mode
         activate(mode)
+        return mode
 
     def get_failure_context(self) -> dict:
         """Return the recorded failure fields for the current episode."""

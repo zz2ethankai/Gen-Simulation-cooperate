@@ -150,11 +150,86 @@ class DynamicApproachTests(unittest.TestCase):
                 "approach": "apple",
                 "approach_arm": "left",
                 "approach_object_armbase_xy": [0.575, -0.12],
+                "approach_armbase_tolerance": 0.08,
+                "approach_max_refinements": 3,
             }
         )
 
         self.assertEqual(cfg.arm, "left")
         self.assertEqual(cfg.object_armbase_xy, (0.575, -0.12))
+        self.assertEqual(cfg.armbase_tolerance_m, 0.08)
+        self.assertEqual(cfg.max_refinements, 3)
+
+    def test_dynamic_approach_refines_from_staging_goal(self):
+        from nav2.runtime.runtime import PersistentNav2RuntimeManager
+
+        manager = PersistentNav2RuntimeManager.__new__(PersistentNav2RuntimeManager)
+        manager.approach_config = ApproachConfig(
+            "tray",
+            arm="left",
+            object_armbase_xy=(0.5, 0.0),
+            armbase_tolerance_m=0.15,
+            max_refinements=2,
+        )
+        manager._dynamic_goal_selected = {
+            "index": 9,
+            "approach_armbase_prediction": {"object_armbase_xy": [0.83, 0.0]},
+        }
+        manager._dynamic_goal_refinement_count = 0
+        manager._dynamic_goal_refinement_history = []
+        manager._goal_output_tag = "goal"
+        manager._robot_bridge_finalized = True
+        manager._post_success_started_at = 1.0
+        manager._post_success_settle_started_at = 1.0
+        manager._post_success_deadline = 2.0
+        manager._dynamic_goal_candidates = [{"index": 9}]
+        manager._dynamic_goal_plan_index = 1
+        manager._dynamic_goal_active_plan_request_id = "goal_approach_9"
+        manager._dynamic_goal_plan_deadline = 3.0
+        manager.startup_timeout_sec = 60.0
+        manager._sim_time = mock.Mock(return_value=10.0)
+        manager._prepare_robot_bridge_for_navigation = mock.Mock()
+        manager._initialize_dynamic_goal_candidates = mock.Mock()
+        manager._publish_next_dynamic_plan_request = mock.Mock()
+        manager._write_dynamic_goal_candidates_debug = mock.Mock()
+        manager.result = types.SimpleNamespace(done=False)
+        bridge = mock.Mock()
+
+        refined = manager._refine_dynamic_approach_if_needed(bridge)
+
+        self.assertTrue(refined)
+        self.assertEqual(manager._dynamic_goal_refinement_count, 1)
+        self.assertEqual(manager._request_id, "goal_refine_1")
+        self.assertEqual(manager.state, manager.STATE_WAITING_FOR_STACK_READY)
+        self.assertEqual(manager._startup_deadline, 70.0)
+        self.assertFalse(manager._robot_bridge_finalized)
+        self.assertEqual(len(manager._dynamic_goal_refinement_history), 1)
+        self.assertEqual(manager._dynamic_goal_candidates, [])
+        self.assertEqual(manager._dynamic_goal_plan_index, 0)
+        self.assertEqual(manager._dynamic_goal_active_plan_request_id, "")
+        self.assertIsNone(manager._dynamic_goal_plan_deadline)
+        bridge.clear_cached_bridge_state.assert_called_once_with()
+        manager._prepare_robot_bridge_for_navigation.assert_called_once_with()
+        manager._initialize_dynamic_goal_candidates.assert_not_called()
+        manager._publish_next_dynamic_plan_request.assert_not_called()
+
+    def test_dynamic_approach_does_not_refine_within_armbase_tolerance(self):
+        from nav2.runtime.runtime import PersistentNav2RuntimeManager
+
+        manager = PersistentNav2RuntimeManager.__new__(PersistentNav2RuntimeManager)
+        manager.approach_config = ApproachConfig(
+            "tray",
+            arm="left",
+            object_armbase_xy=(0.5, 0.0),
+            armbase_tolerance_m=0.15,
+        )
+        manager._dynamic_goal_selected = {
+            "approach_armbase_prediction": {"object_armbase_xy": [0.61, 0.0]},
+        }
+        manager._write_dynamic_goal_candidates_debug = mock.Mock()
+
+        self.assertFalse(manager._refine_dynamic_approach_if_needed(object()))
+        manager._write_dynamic_goal_candidates_debug.assert_called_once_with()
 
     def test_armbase_target_requires_arm(self):
         with self.assertRaisesRegex(ValueError, "requires approach_arm"):
@@ -332,6 +407,79 @@ class DynamicApproachTests(unittest.TestCase):
         self.assertEqual(result["first_blocked_result"]["segment_index"], 0)
         self.assertGreater(result["first_blocked_result"]["segment_fraction"], 0.0)
         self.assertLess(result["first_blocked_result"]["segment_fraction"], 1.0)
+
+    def test_path_static_collision_allows_initial_padding_only_egress(self):
+        static_map = {
+            "image": np.full((40, 40), 254, dtype=np.int16),
+            "resolution": 0.1,
+            "origin": [0.0, 0.0, 0.0],
+        }
+        static_map["image"][16, 19] = 0
+        footprint = [[-0.2, -0.2], [0.2, -0.2], [0.2, 0.2], [-0.2, 0.2]]
+
+        result = check_path_static_collision(
+            static_map=static_map,
+            footprint_points=footprint,
+            path_poses=[
+                {"x": 2.0, "y": 2.0, "yaw": 0.0},
+                {"x": 2.3, "y": 2.0, "yaw": 0.0},
+                {"x": 2.6, "y": 2.0, "yaw": 0.0},
+            ],
+            footprint_padding_m=0.1,
+            initial_padding_egress_distance_m=0.15,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertGreater(result["ignored_initial_padding_pose_count"], 0)
+        self.assertEqual(result["blocked_pose_count"], 0)
+
+    def test_path_static_collision_never_ignores_initial_real_footprint_collision(self):
+        static_map = {
+            "image": np.full((40, 40), 254, dtype=np.int16),
+            "resolution": 0.1,
+            "origin": [0.0, 0.0, 0.0],
+        }
+        static_map["image"][17, 19] = 0
+        footprint = [[-0.2, -0.2], [0.2, -0.2], [0.2, 0.2], [-0.2, 0.2]]
+
+        result = check_path_static_collision(
+            static_map=static_map,
+            footprint_points=footprint,
+            path_poses=[
+                {"x": 2.0, "y": 2.0, "yaw": 0.0},
+                {"x": 2.5, "y": 2.0, "yaw": 0.0},
+            ],
+            footprint_padding_m=0.1,
+            initial_padding_egress_distance_m=0.15,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertGreater(result["first_blocked_result"]["footprint_blocked_cells"], 0)
+
+    def test_path_static_collision_rejects_padding_collision_after_egress(self):
+        static_map = {
+            "image": np.full((40, 40), 254, dtype=np.int16),
+            "resolution": 0.1,
+            "origin": [0.0, 0.0, 0.0],
+        }
+        static_map["image"][16, 24] = 0
+        footprint = [[-0.2, -0.2], [0.2, -0.2], [0.2, 0.2], [-0.2, 0.2]]
+
+        result = check_path_static_collision(
+            static_map=static_map,
+            footprint_points=footprint,
+            path_poses=[
+                {"x": 2.0, "y": 2.0, "yaw": 0.0},
+                {"x": 2.3, "y": 2.0, "yaw": 0.0},
+                {"x": 2.6, "y": 2.0, "yaw": 0.0},
+            ],
+            footprint_padding_m=0.1,
+            initial_padding_egress_distance_m=0.15,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["first_blocked_result"]["footprint_blocked_cells"], 0)
+        self.assertGreater(result["first_blocked_result"]["padding_blocked_cells"], 0)
 
     def test_approach_footprint_padding_defaults_to_nav2_skill_padding(self):
         base_cfg = {

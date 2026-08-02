@@ -582,6 +582,43 @@ class Pick(BaseSkill):
         # Candidate testing leaves the owner in the terminal world.  Execution
         # always starts again from the complete transit world.
         manager.restore_world(object_name)
+        world_collision_diagnostic = None
+        if not result.feasible and result.pregrasp_success_count == 0:
+            try:
+                world_collision_diagnostic = manager.diagnose_controller_world_collision(
+                    self.controller
+                )
+                LOGGER.warning(
+                    "[PickSafety] start-state world collision diagnostic object=%s result=%s",
+                    object_name,
+                    world_collision_diagnostic,
+                )
+            except Exception as exc:
+                world_collision_diagnostic = {
+                    "available": False,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                }
+                LOGGER.exception(
+                    "[PickSafety] failed to diagnose start-state world collision for %s",
+                    object_name,
+                )
+        self._plan_debug_path = self._write_debug_artifact(
+            "pick_plan_snapshot.json",
+            {
+                "robot": self.robot.name,
+                "object": object_name,
+                "lr_arm": self.lr_arm,
+                "collision_world_mode": "physics_schema",
+                "plan_evaluation": result.to_dict(),
+                "sample_debug": self._sample_debug,
+                "geometry_debug": self._collect_geometry_debug(),
+                "pregrasp_positions": self.plan_evaluation.pregrasp_positions,
+                "pregrasp_orientations": self.plan_evaluation.pregrasp_orientations,
+                "grasp_positions": self.plan_evaluation.grasp_positions,
+                "grasp_orientations": self.plan_evaluation.grasp_orientations,
+                "world_collision_diagnostic": world_collision_diagnostic,
+            },
+        )
         if not result.feasible:
             self.failure_reason = result.failure_code or "NO_COLLISION_FREE_PLAN"
             self.publish_target_intent(

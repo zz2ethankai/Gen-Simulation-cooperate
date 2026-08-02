@@ -19,6 +19,7 @@ from core.planning.config_contract import (  # noqa: E402
     PASSTHROUGH_MODE,
     PHYSICS_SCHEMA_MODE,
     resolve_collision_world_mode,
+    resolve_runtime_skill_collision_world_mode,
     resolve_skill_collision_world_mode,
     task_uses_physics_schema,
     validate_planning_contract,
@@ -87,6 +88,50 @@ def test_auto_uses_hybrid_for_physics_pick_place_and_legacy_home():
     assert resolve_skill_collision_world_mode("pick", "auto") == PHYSICS_SCHEMA_MODE
     assert (
         resolve_skill_collision_world_mode("heuristic__skill", "auto")
+        == LEGACY_STAGE_SCAN_MODE
+    )
+
+
+def test_attached_home_uses_conditional_physics_adapter_in_hybrid():
+    skill = {"name": "heuristic__skill", "mode": "home"}
+
+    assert (
+        resolve_runtime_skill_collision_world_mode(
+            skill, "auto", attached_object=True
+        )
+        == PHYSICS_SCHEMA_MODE
+    )
+    assert (
+        resolve_runtime_skill_collision_world_mode(
+            skill, "auto", attached_object=False
+        )
+        == LEGACY_STAGE_SCAN_MODE
+    )
+
+
+def test_attached_adapter_does_not_weaken_explicit_legacy_or_other_modes():
+    assert (
+        resolve_runtime_skill_collision_world_mode(
+            {"name": "heuristic__skill", "mode": "home"},
+            "legacy_stage_scan",
+            attached_object=True,
+        )
+        == LEGACY_STAGE_SCAN_MODE
+    )
+    assert (
+        resolve_runtime_skill_collision_world_mode(
+            {"name": "heuristic__skill", "mode": "abs_qpos"},
+            "auto",
+            attached_object=True,
+        )
+        == LEGACY_STAGE_SCAN_MODE
+    )
+    assert (
+        resolve_runtime_skill_collision_world_mode(
+            {"name": "close", "mode": "home"},
+            "auto",
+            attached_object=True,
+        )
         == LEGACY_STAGE_SCAN_MODE
     )
 

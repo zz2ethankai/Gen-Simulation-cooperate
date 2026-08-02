@@ -7,6 +7,9 @@ from typing import Any
 
 PHYSICS_SCHEMA_SKILLS = {"pick", "place"}
 VALIDATION_ONLY_SKILLS = {"pick_plan_probe"}
+ATTACHED_PHYSICS_SCHEMA_SKILL_MODES = {
+    ("heuristic__skill", "home"),
+}
 NON_MANIPULATION_SKILLS = {
     "navigate",
     "observe_hold",
@@ -45,6 +48,36 @@ def resolve_skill_collision_world_mode(
     if name in PHYSICS_SCHEMA_SKILLS | VALIDATION_ONLY_SKILLS:
         return PHYSICS_SCHEMA_MODE
     return LEGACY_STAGE_SCAN_MODE
+
+
+def resolve_runtime_skill_collision_world_mode(
+    skill_cfg: Any,
+    requested_mode: str | None,
+    *,
+    attached_object: bool,
+) -> str:
+    """Resolve conditional Physics adapters that depend on object ownership.
+
+    Static task resolution keeps these Skills in the legacy fallback set.  At
+    runtime, an attached object cannot cross into that world safely, so only
+    explicitly adapted Skill modes stay in the Physics world until detach.
+    """
+
+    name = str(
+        skill_cfg.get("name", "") if hasattr(skill_cfg, "get") else ""
+    ).strip().lower()
+    mode = str(
+        skill_cfg.get("mode", "") if hasattr(skill_cfg, "get") else ""
+    ).strip().lower()
+    resolved = resolve_skill_collision_world_mode(name, requested_mode)
+    requested = "auto" if requested_mode is None else str(requested_mode).strip().lower()
+    if (
+        attached_object
+        and requested != LEGACY_STAGE_SCAN_MODE
+        and (name, mode) in ATTACHED_PHYSICS_SCHEMA_SKILL_MODES
+    ):
+        return PHYSICS_SCHEMA_MODE
+    return resolved
 
 
 def task_uses_physics_schema(collision_world_mode: str) -> bool:

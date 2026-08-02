@@ -79,6 +79,8 @@ class PersistentNav2RuntimeManager:
         self._dynamic_goal_static_map = None
         self._dynamic_goal_footprint_points: list[list[float]] = []
         self._dynamic_goal_footprint_padding_m = 0.0
+        self._dynamic_goal_refinement_count = 0
+        self._dynamic_goal_refinement_history: list[dict] = []
         self.nav2_position_tolerance_m = NAV2_DEFAULT_POSITION_TOLERANCE_M
         self.nav2_yaw_tolerance_rad = NAV2_DEFAULT_YAW_TOLERANCE_RAD
         self.position_tolerance_m = NAV2_DEFAULT_POSITION_TOLERANCE_M
@@ -344,6 +346,8 @@ class PersistentNav2RuntimeManager:
         self._dynamic_goal_static_map = None
         self._dynamic_goal_footprint_points = []
         self._dynamic_goal_footprint_padding_m = 0.0
+        self._dynamic_goal_refinement_count = 0
+        self._dynamic_goal_refinement_history = []
 
         bridge_client = self._ensure_bridge_client()
         bridge_client.reset_debug_trace()
@@ -390,6 +394,8 @@ class PersistentNav2RuntimeManager:
         self._dynamic_goal_static_map = None
         self._dynamic_goal_footprint_points = []
         self._dynamic_goal_footprint_padding_m = 0.0
+        self._dynamic_goal_refinement_count = 0
+        self._dynamic_goal_refinement_history = []
 
     def step(self):
         if self.done or self.state == self.STATE_IDLE:
@@ -512,6 +518,8 @@ class PersistentNav2RuntimeManager:
             )
             goal_within_tolerance = self._goal_within_tolerance()
             if goal_within_tolerance and settle_done:
+                if self._refine_dynamic_approach_if_needed(bridge_client):
+                    return
                 self.result.done = True
                 self.result.success = True
                 self.state = self.STATE_SUCCEEDED
@@ -619,6 +627,71 @@ class PersistentNav2RuntimeManager:
         self._post_success_deadline = now + self._post_success_timeout_sec()
         self._post_success_settle_started_at = now
 
+    def _refine_dynamic_approach_if_needed(self, bridge_client) -> bool:
+        """Use a reachable staging goal, then replan until the arm-base target is met."""
+
+        config = getattr(self, "approach_config", None)
+        if config is None or config.object_armbase_xy is None:
+            return False
+        prediction = self._dynamic_goal_selected.get(
+            "approach_armbase_prediction", {}
+        )
+        achieved = prediction.get("object_armbase_xy")
+        if not isinstance(achieved, (list, tuple)) or len(achieved) != 2:
+            return False
+        desired = config.object_armbase_xy
+        error_m = math.hypot(
+            float(achieved[0]) - float(desired[0]),
+            float(achieved[1]) - float(desired[1]),
+        )
+        self._dynamic_goal_selected["armbase_error_m"] = float(error_m)
+        if error_m <= float(config.armbase_tolerance_m):
+            self._write_dynamic_goal_candidates_debug()
+            return False
+        if self._dynamic_goal_refinement_count >= int(config.max_refinements):
+            self._write_dynamic_goal_candidates_debug()
+            self._fail(
+                "approach_refinement_exhausted",
+                "Dynamic approach reached a staging goal but could not meet the "
+                f"arm-base target within {config.max_refinements} refinements: "
+                f"error_m={error_m:.4f} tolerance_m={config.armbase_tolerance_m:.4f}.",
+            )
+            return True
+
+        self._dynamic_goal_refinement_history.append(
+            {
+                "refinement_index": int(self._dynamic_goal_refinement_count),
+                "armbase_error_m": float(error_m),
+                "selected": self._compact_dynamic_goal_candidate(
+                    self._dynamic_goal_selected
+                ),
+            }
+        )
+        self._dynamic_goal_refinement_count += 1
+        self._request_id = (
+            f"{self._goal_output_tag}_refine_{self._dynamic_goal_refinement_count}"
+        )
+        bridge_client.clear_cached_bridge_state()
+        self._robot_bridge_finalized = False
+        self._prepare_robot_bridge_for_navigation()
+        self._post_success_started_at = None
+        self._post_success_settle_started_at = None
+        self._post_success_deadline = None
+        self._dynamic_goal_candidates = []
+        self._dynamic_goal_plan_index = 0
+        self._dynamic_goal_active_plan_request_id = ""
+        self._dynamic_goal_plan_deadline = None
+        self.state = self.STATE_WAITING_FOR_STACK_READY
+        self._startup_deadline = self._sim_time() + self.startup_timeout_sec
+        LOGGER.info(
+            "dynamic approach refinement=%d/%d staging_error_m=%.4f tolerance_m=%.4f",
+            self._dynamic_goal_refinement_count,
+            config.max_refinements,
+            error_m,
+            config.armbase_tolerance_m,
+        )
+        return True
+
     def _robot_base_state_is_invalid(self) -> bool:
         bridge = getattr(self.robot, "_simbox_ros_base_bridge", None)
         has_bad_state = getattr(bridge, "has_non_finite_state", None)
@@ -700,6 +773,7 @@ class PersistentNav2RuntimeManager:
             )
             candidate = {
                 **candidate,
+                "refinement_index": int(self._dynamic_goal_refinement_count),
                 "static_ok": bool(static_result.get("ok", False)),
                 "static_reason": str(static_result.get("reason", "")),
                 "static_check": static_result,
@@ -859,20 +933,31 @@ class PersistentNav2RuntimeManager:
             return {
                 "ok": False,
                 "num_poses": 0,
+                "sampled_pose_count": 0,
+                "interpolated_pose_count": 0,
+                "ignored_initial_padding_pose_count": 0,
                 "blocked_pose_count": 0,
                 "first_blocked_index": None,
                 "first_blocked_result": {},
                 "blocked_summary": [],
                 "free_value_min": int(self.approach_config.static_free_value_min if self.approach_config else 250),
                 "footprint_padding_m": footprint_padding_m,
+                "initial_padding_egress_distance_m": 0.0,
                 "reason": "empty_path",
             }
+        position_tolerance_m = float(
+            getattr(self, "position_tolerance_m", NAV2_DEFAULT_POSITION_TOLERANCE_M)
+        )
         return check_path_static_collision(
             static_map=static_map,
             footprint_points=footprint_points,
             path_poses=poses,
             free_value_min=int(self.approach_config.static_free_value_min if self.approach_config else 250),
             footprint_padding_m=footprint_padding_m,
+            initial_padding_egress_distance_m=max(
+                float(getattr(self, "nav2_position_tolerance_m", position_tolerance_m)),
+                position_tolerance_m,
+            ),
         )
 
     def _dynamic_plan_effective_goal(self, candidate: dict, path: dict) -> dict:
@@ -925,6 +1010,8 @@ class PersistentNav2RuntimeManager:
             return
         payload = {
             "approach": self._approach_debug_payload(),
+            "refinement_count": int(self._dynamic_goal_refinement_count),
+            "refinement_history": list(self._dynamic_goal_refinement_history),
             "selected": self._compact_dynamic_goal_candidate(self._dynamic_goal_selected),
             "candidates": [
                 self._compact_dynamic_goal_candidate(candidate)
@@ -1113,6 +1200,8 @@ class PersistentNav2RuntimeManager:
                 if self.approach_config.object_armbase_xy is not None
                 else None
             ),
+            "armbase_tolerance_m": float(self.approach_config.armbase_tolerance_m),
+            "max_refinements": int(self.approach_config.max_refinements),
             "armbase_target_context": dict(self._approach_armbase_target_context),
             "debug_path": str(self._dynamic_goal_debug_path),
         }

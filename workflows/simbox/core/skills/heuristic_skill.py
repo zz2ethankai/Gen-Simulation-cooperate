@@ -1,4 +1,5 @@
 import numpy as np
+from core.planning.motion_command import MotionPhase, MotionPhaseCommand
 from core.skills.base_skill import BaseSkill, register_skill
 from omegaconf import DictConfig
 from omni.isaac.core.controllers import BaseController
@@ -51,6 +52,10 @@ class Heuristic_Skill(BaseSkill):
         # Keyposes should be generated after previous skill is done
         self.manip_list = []
         self._goal_joints = None
+        self._physics_schema_active_object = None
+        self._pickcontact_view = None
+        self.failure_reason = ""
+        self.error_message = ""
 
     def _compute_ee_goal(self, p_base_ee_cur, q_base_ee_cur, rel_ee):
         """
@@ -101,6 +106,9 @@ class Heuristic_Skill(BaseSkill):
         return manip_list
 
     def simple_generate_manip_cmds(self):
+        if getattr(self.controller, "collision_world_mode", "legacy_stage_scan") == "physics_schema":
+            return self._physics_schema_generate_manip_cmds()
+
         self.manip_list = []
         p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
         curr_joints = self.robot.get_joint_positions()[self._joint_indices]
@@ -136,6 +144,114 @@ class Heuristic_Skill(BaseSkill):
 
         self.manip_list = self._build_joint_traj(curr_joints, self._goal_joints, p_base_ee_cur, q_base_ee_cur)
 
+    def _physics_schema_generate_manip_cmds(self):
+        """Plan an attached-object carry posture without leaving Physics mode."""
+
+        self.manip_list = []
+        self.failure_reason = ""
+        self.error_message = ""
+        if self.mode != "home":
+            raise RuntimeError(
+                f"Physics-schema heuristic adapter only supports mode='home', got {self.mode!r}"
+            )
+        object_name = getattr(self, "_physics_schema_active_object", None)
+        if not object_name:
+            raise RuntimeError("Physics-schema carry-home requires an attached object")
+        manager = self.controller.collision_scene_manager
+        manager.assert_attached_owner(
+            object_name, self.controller.name, self.controller.lr_name
+        )
+        if float(self._gripper_state) >= 0.0:
+            raise RuntimeError(
+                "Physics-schema carry-home must keep the gripper closed while the object is attached"
+            )
+        self._pickcontact_view = self.task.pickcontact_views[
+            self.robot.name
+        ][self.controller.lr_name][object_name]
+        current_joints = np.asarray(
+            self.robot.get_joint_positions(), dtype=float
+        )[self._joint_indices]
+        configured_progress = self.skill_cfg.get(
+            "physics_home_progress_candidates", [1.0, 0.75, 0.5, 0.25, 0.125]
+        )
+        try:
+            progress_candidates = sorted(
+                {
+                    float(progress)
+                    for progress in configured_progress
+                    if 0.0 < float(progress) <= 1.0
+                },
+                reverse=True,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "physics_home_progress_candidates must contain numeric values in (0, 1]"
+            ) from exc
+        if not progress_candidates:
+            raise ValueError(
+                "physics_home_progress_candidates must contain at least one value in (0, 1]"
+            )
+
+        result = None
+        selected_progress = None
+        for progress in progress_candidates:
+            candidate = current_joints + progress * (
+                self._joint_home - current_joints
+            )
+            candidate_result = self.controller.plan_joint_positions(candidate)
+            success = bool(
+                np.asarray(candidate_result.success.detach().cpu()).any()
+            )
+            if success:
+                self._goal_joints = candidate
+                result = candidate_result
+                selected_progress = progress
+                break
+        if result is None:
+            self.controller.num_plan_failed += 1
+            self.failure_reason = "NO_COLLISION_FREE_CARRY_HOME_PLAN"
+            self.error_message = (
+                "Could not plan any configured carry posture with the attached object "
+                f"in the Physics world; attempted_home_progress={progress_candidates}."
+            )
+            return
+        self.controller.num_plan_failed = 0
+        target_position, target_orientation = self.controller.forward_kinematic(
+            self._goal_joints
+        )
+        self.manip_list = [
+            MotionPhaseCommand(
+                MotionPhase.CARRY_HOME,
+                target_position,
+                target_orientation,
+                gripper_action="close_gripper",
+                active_object=object_name,
+                allow_target_finger_contact=True,
+                completion_tolerance={
+                    "position_m": float(self.skill_cfg.get("physics_t_eps", 0.01)),
+                    "orientation_rad": float(
+                        self.skill_cfg.get("physics_o_eps", 0.05)
+                    ),
+                },
+                params={
+                    "preplanned_joint_path": result.get_interpolated_plan(),
+                    "home_progress": selected_progress,
+                },
+            )
+        ]
+
+    def get_contact(self, contact_threshold=0.0):
+        if self._pickcontact_view is None:
+            return np.empty((0,), dtype=float), np.empty((0,), dtype=int)
+        values = np.asarray(
+            self._pickcontact_view.get_contact_force_matrix(), dtype=float
+        )
+        if not values.size:
+            return np.empty((0,), dtype=float), np.empty((0,), dtype=int)
+        contact = np.atleast_1d(np.sum(np.abs(values), axis=-1).squeeze())
+        indices = np.where(contact > float(contact_threshold))[0]
+        return contact, indices
+
     def is_feasible(self, th=5):
         return self.controller.num_plan_failed <= th
 
@@ -154,6 +270,10 @@ class Heuristic_Skill(BaseSkill):
     def is_done(self):
         if len(self.manip_list) == 0:
             return True
+        if isinstance(self.manip_list[0], MotionPhaseCommand):
+            if self.controller.is_phase_command_complete(self.manip_list[0]):
+                self.manip_list.pop(0)
+            return len(self.manip_list) == 0
         if self.is_subtask_done(t_eps=self.t_eps):
             self.manip_list.pop(0)
         if self.is_success(t_eps=self.t_eps):
@@ -168,4 +288,24 @@ class Heuristic_Skill(BaseSkill):
 
         curr_joints = self.robot.get_joint_positions()[self._joint_indices]
         diff_trans = np.linalg.norm(curr_joints - self._goal_joints)
-        return diff_trans < t_eps
+        success = bool(diff_trans < t_eps)
+        if self._physics_schema_active_object:
+            manager = self.controller.collision_scene_manager
+            try:
+                manager.assert_attached_owner(
+                    self._physics_schema_active_object,
+                    self.controller.name,
+                    self.controller.lr_name,
+                )
+            except Exception as exc:
+                self.failure_reason = "CARRY_HOME_ATTACHMENT_LOST"
+                self.error_message = str(exc)
+                return False
+            _, indices = self.get_contact(
+                float(self.skill_cfg.get("grasp_contact_threshold_n", 0.0))
+            )
+            if len(indices) == 0:
+                self.failure_reason = "CARRY_HOME_GRASP_CONTACT_LOST"
+                self.error_message = "Attached object lost finger contact during carry-home."
+                return False
+        return success

@@ -27,6 +27,8 @@ class ApproachConfig:
     sampling_seed: int | None = None
     arm: str | None = None
     object_armbase_xy: tuple[float, float] | None = None
+    armbase_tolerance_m: float = 0.15
+    max_refinements: int = 2
 
 
 def wrap_to_pi(yaw: float) -> float:
@@ -48,6 +50,8 @@ def parse_approach_config(cfg: dict[str, Any]) -> ApproachConfig | None:
     sampling_seed = None if sampling_seed is None else int(sampling_seed)
     arm = _parse_arm_name(cfg.get("approach_arm", None))
     object_armbase_xy = _parse_optional_xy(cfg.get("approach_object_armbase_xy", None))
+    armbase_tolerance_m = float(cfg.get("approach_armbase_tolerance", 0.15))
+    max_refinements = int(cfg.get("approach_max_refinements", 2))
     if sampling_random and sampling_seed is None:
         sampling_seed = int.from_bytes(os.urandom(8), byteorder="big", signed=False)
     if min_distance <= 0.0:
@@ -60,6 +64,10 @@ def parse_approach_config(cfg: dict[str, Any]) -> ApproachConfig | None:
         raise ValueError("approach_footprint_padding must be non-negative")
     if object_armbase_xy is not None and arm is None:
         raise ValueError("approach_object_armbase_xy requires approach_arm to be 'left' or 'right'")
+    if armbase_tolerance_m < 0.0:
+        raise ValueError("approach_armbase_tolerance must be non-negative")
+    if max_refinements < 0:
+        raise ValueError("approach_max_refinements must be non-negative")
     return ApproachConfig(
         target_name=target_name,
         min_distance=min_distance,
@@ -70,6 +78,8 @@ def parse_approach_config(cfg: dict[str, Any]) -> ApproachConfig | None:
         sampling_seed=sampling_seed,
         arm=arm,
         object_armbase_xy=object_armbase_xy,
+        armbase_tolerance_m=armbase_tolerance_m,
+        max_refinements=max_refinements,
     )
 
 
@@ -243,12 +253,17 @@ def check_path_static_collision(
     path_poses: list[dict[str, Any]],
     free_value_min: int = 250,
     footprint_padding_m: float = 0.0,
+    initial_padding_egress_distance_m: float = 0.0,
 ) -> dict[str, Any]:
     """Check every path pose and the footprint sweep between adjacent poses."""
     blocked_results = []
     normalized_poses = [_path_pose(pose) for pose in path_poses or []]
     sampled_pose_count = 0
     interpolated_pose_count = 0
+    ignored_initial_padding_pose_count = 0
+    initial_egress_exited = False
+    initial_pose = normalized_poses[0] if normalized_poses else None
+    initial_egress_distance = max(float(initial_padding_egress_distance_m), 0.0)
 
     def check_sample(
         pose: dict[str, float],
@@ -258,6 +273,7 @@ def check_path_static_collision(
         segment_fraction: float,
     ):
         nonlocal sampled_pose_count, interpolated_pose_count
+        nonlocal ignored_initial_padding_pose_count, initial_egress_exited
         sampled_pose_count += 1
         if segment_fraction not in {0.0, 1.0}:
             interpolated_pose_count += 1
@@ -270,6 +286,23 @@ def check_path_static_collision(
             free_value_min=free_value_min,
             footprint_padding_m=footprint_padding_m,
         )
+        if initial_pose is not None and not initial_egress_exited:
+            distance_from_start = math.hypot(
+                pose["x"] - initial_pose["x"],
+                pose["y"] - initial_pose["y"],
+            )
+            if distance_from_start > initial_egress_distance:
+                initial_egress_exited = True
+            elif (
+                not bool(result.get("ok", False))
+                and int(result.get("footprint_blocked_cells", 0)) == 0
+                and int(result.get("padding_blocked_cells", 0)) > 0
+                and int(result.get("unknown_cells", 0)) == 0
+                and int(result.get("out_of_bounds_vertices", 0)) == 0
+                and not bool(result.get("padding_out_of_bounds", False))
+            ):
+                ignored_initial_padding_pose_count += 1
+                return
         if not bool(result.get("ok", False)):
             blocked_results.append(
                 {
@@ -328,12 +361,14 @@ def check_path_static_collision(
         "num_poses": int(len(normalized_poses)),
         "sampled_pose_count": int(sampled_pose_count),
         "interpolated_pose_count": int(interpolated_pose_count),
+        "ignored_initial_padding_pose_count": int(ignored_initial_padding_pose_count),
         "blocked_pose_count": int(len(blocked_results)),
         "first_blocked_index": int(blocked_results[0]["index"]) if blocked_results else None,
         "first_blocked_result": blocked_results[0] if blocked_results else {},
         "blocked_summary": blocked_results[:20],
         "free_value_min": int(free_value_min),
         "footprint_padding_m": float(max(float(footprint_padding_m), 0.0)),
+        "initial_padding_egress_distance_m": initial_egress_distance,
     }
 
 

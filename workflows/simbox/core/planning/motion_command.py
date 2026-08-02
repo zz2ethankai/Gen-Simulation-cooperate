@@ -16,6 +16,7 @@ class MotionPhase(str, Enum):
     GRIPPER_CLOSE = "gripper_close"
     ATTACH = "attach"
     POST_GRASP_LIFT = "post_grasp_lift"
+    CARRY_HOME = "carry_home"
     TRANSIT_PREPLACE = "transit_preplace"
     TERMINAL_PLACE_DESCENT = "terminal_place_descent"
     GRIPPER_OPEN = "gripper_open"

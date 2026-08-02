@@ -303,9 +303,13 @@ class TemplateController(BaseController):
         success_count = self._plan_success_count(result)
         pos_range = self._error_range(result, "position_error")
         rot_range = self._error_range(result, "rotation_error")
+        status = getattr(result, "status", None)
+        status = getattr(status, "value", status)
+        valid_query = getattr(result, "valid_query", None)
         msg = (
             f"[PlanDebug] {context} robot={self.name} arm={self.lr_name} command={self._last_command_name} "
-            f"use_batch={self.use_batch} success_count={success_count}"
+            f"use_batch={self.use_batch} success_count={success_count} "
+            f"status={status} valid_query={valid_query}"
         )
         if target is not None:
             msg += f" target={np.array2string(np.asarray(target), precision=4, suppress_small=True)}"
@@ -645,6 +649,8 @@ class TemplateController(BaseController):
         if target == "legacy_stage_scan" and manager is not None:
             manager.prepare_controller_for_legacy(self)
         if target == self.collision_world_mode:
+            if target == "physics_schema" and manager is not None:
+                manager.refresh_controller_reference_world(self)
             return
 
         self.clear_plan_and_hold()
@@ -808,6 +814,59 @@ class TemplateController(BaseController):
         cu_js = cu_js.get_ordered_joint_state(self.cmd_js_names)
         return self.motion_gen.plan_single(cu_js.unsqueeze(0), ik_goal, self.plan_config.clone())
 
+    def plan_joint_positions(self, goal_arm_positions: np.ndarray):
+        """Plan to an exact arm configuration in the active collision world."""
+
+        goal_arm_positions = np.asarray(goal_arm_positions, dtype=float).reshape(-1)
+        if len(goal_arm_positions) != len(self.arm_indices):
+            raise ValueError(
+                "goal_arm_positions must match the controller arm joint count: "
+                f"got {len(goal_arm_positions)}, expected {len(self.arm_indices)}"
+            )
+        sim_js = self.robot.get_joints_state()
+        positions = np.asarray(sim_js.positions, dtype=float).copy()
+        velocities, accelerations, jerks = self._joint_state_derivatives(sim_js)
+        start_state = JointState(
+            position=self.tensor_args.to_device(positions),
+            velocity=self.tensor_args.to_device(velocities),
+            acceleration=self.tensor_args.to_device(accelerations),
+            jerk=self.tensor_args.to_device(jerks),
+            joint_names=self.robot.dof_names,
+        ).get_ordered_joint_state(self.cmd_js_names)
+        goal_positions = positions.copy()
+        goal_positions[self.arm_indices] = goal_arm_positions
+        zeros = np.zeros_like(goal_positions)
+        goal_state = JointState(
+            position=self.tensor_args.to_device(goal_positions),
+            velocity=self.tensor_args.to_device(zeros),
+            acceleration=self.tensor_args.to_device(zeros),
+            jerk=self.tensor_args.to_device(zeros),
+            joint_names=self.robot.dof_names,
+        ).get_ordered_joint_state(self.cmd_js_names)
+        result = self.motion_gen.plan_single_js(
+            start_state.unsqueeze(0),
+            goal_state.unsqueeze(0),
+            self.plan_config.clone(),
+        )
+        self._log_plan_result("plan_joint_positions", result, goal_arm_positions)
+        return result
+
+    def check_current_start_state(self):
+        """Validate the live articulation state against the active planning world."""
+
+        sim_js = self.robot.get_joints_state()
+        velocities, accelerations, jerks = self._joint_state_derivatives(sim_js)
+        start_state = JointState(
+            position=self.tensor_args.to_device(sim_js.positions),
+            velocity=self.tensor_args.to_device(velocities),
+            acceleration=self.tensor_args.to_device(accelerations),
+            jerk=self.tensor_args.to_device(jerks),
+            joint_names=self.robot.dof_names,
+        ).get_ordered_joint_state(self.cmd_js_names)
+        valid, status = self.motion_gen.check_start_state(start_state.unsqueeze(0))
+        status = getattr(status, "value", status)
+        return bool(valid), status
+
     def forward(self, manip_cmd, eps=5e-3):
         if isinstance(manip_cmd, MotionPhaseCommand):
             return self.forward_phase_command(manip_cmd)
@@ -900,6 +959,27 @@ class TemplateController(BaseController):
                     )
                 manager.attach_target(command.active_object, robot, arm)
                 self._phase_bookkeeping_done = True
+            elif command.phase == MotionPhase.CARRY_HOME:
+                manager.assert_attached_owner(command.active_object, robot, arm)
+                preplanned_path = command.params.get("preplanned_joint_path")
+                if preplanned_path is None:
+                    raise RuntimeError("CARRY_HOME requires a preplanned joint path")
+                cmd_plan = self.motion_gen.get_full_js(preplanned_path)
+                self.idx_list = list(range(len(self.raw_js_names)))
+                self.cmd_plan = cmd_plan.get_ordered_joint_state(self.raw_js_names)
+                self.cmd_idx = 0
+                self._phase_plan_started = True
+                self._ee_trans = self.tensor_args.to_device(command.target_position)
+                self._ee_ori = self.tensor_args.to_device(command.target_orientation)
+                self._visualize_selected_plan()
+                LOGGER.info(
+                    "[PhaseDebug] selected-plan robot=%s arm=%s phase=%s waypoints=%d stride=%d cached=true",
+                    self.name,
+                    self.lr_name,
+                    command.phase.value,
+                    len(self.cmd_plan),
+                    self.ds_ratio,
+                )
             elif command.phase == MotionPhase.TERMINAL_PLACE_DESCENT:
                 manager.begin_placement_descent(
                     command.active_object, command.support_object, robot, arm
