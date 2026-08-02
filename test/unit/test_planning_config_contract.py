@@ -13,7 +13,10 @@ SIMBOX_ROOT = ROOT / "workflows" / "simbox"
 if str(SIMBOX_ROOT) not in sys.path:
     sys.path.insert(0, str(SIMBOX_ROOT))
 
-from core.planning.config_contract import validate_planning_contract  # noqa: E402
+from core.planning.config_contract import (  # noqa: E402
+    resolve_collision_world_mode,
+    validate_planning_contract,
+)
 
 
 def _task(skill, *, both_arms=False):
@@ -29,6 +32,65 @@ def test_standard_pick_and_place_are_accepted():
         ]
     }
     validate_planning_contract(task, "physics_schema")
+
+
+def test_auto_enables_physics_schema_for_supported_task():
+    task = {
+        "skills": [
+            {"robot": [{"left": [{"name": "Pick", "objects": ["a"]}], "right": []}]},
+            {
+                "robot": [
+                    {
+                        "left": [
+                            {"name": "Place", "objects": ["a", "support"]}
+                        ],
+                        "right": [],
+                    }
+                ]
+            },
+        ]
+    }
+
+    mode, reason = resolve_collision_world_mode(task, "auto")
+
+    assert mode == "physics_schema"
+    assert "support physics_schema" in reason
+
+
+def test_auto_falls_back_for_unmigrated_skill():
+    task = _task({"name": "heuristic__skill", "mode": "home"})
+
+    mode, reason = resolve_collision_world_mode(task, None)
+
+    assert mode == "legacy_stage_scan"
+    assert "not migrated" in reason
+
+
+def test_auto_does_not_enable_for_non_manipulation_only_task():
+    mode, reason = resolve_collision_world_mode(
+        _task({"name": "Observe_Hold", "hold_steps": 10}),
+        "auto",
+    )
+
+    assert mode == "legacy_stage_scan"
+    assert "no Physics-schema manipulation skills" in reason
+
+
+def test_explicit_physics_schema_remains_strict():
+    task = _task({"name": "heuristic__skill", "mode": "home"})
+
+    with pytest.raises(ValueError, match="not migrated"):
+        resolve_collision_world_mode(task, "physics_schema")
+
+
+def test_explicit_legacy_mode_is_preserved():
+    mode, reason = resolve_collision_world_mode(
+        _task({"name": "DynamicPick", "objects": ["a"]}),
+        "legacy_stage_scan",
+    )
+
+    assert mode == "legacy_stage_scan"
+    assert reason == "explicit configuration"
 
 
 @pytest.mark.parametrize("name", ["DynamicPick", "ManualPick", "DexPick", "DexPlace", "Open", "Close"])

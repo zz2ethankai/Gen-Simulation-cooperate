@@ -116,6 +116,15 @@ DEFAULT_ROS_DOMAIN_ID="0"
 DEFAULT_SERVICES=(isaac nav2)
 ```
 
+可通过 wrapper 为两个容器分别限制 Docker CPU 配额（也可设置同名环境变量
+`INTERNDATA_ISAAC_CPUS` 和 `INTERNDATA_NAV2_CPUS`）：
+
+```bash
+scripts/docker/up_nav2_stack.sh --isaac-cpus 16 --nav2-cpus 2 isaac nav2
+```
+
+`cpus` 是 Docker CPU 配额，不是物理 CPU 核绑定。
+
 默认行为：
 
 - 使用宿主机 GPU `0`
@@ -139,6 +148,15 @@ DEFAULT_LAUNCHER_CONFIG="configs/de_pipe_template.yaml"
 ```bash
 scripts/docker/up_nav2_stack_multi_gpu.sh
 ```
+
+为每个并行栈设置相同的 Docker CPU 配额：
+
+```bash
+INTERNDATA_PARALLEL_ISAAC_CPUS=16 INTERNDATA_PARALLEL_NAV2_CPUS=2 \
+  scripts/docker/up_nav2_stack_multi_gpu.sh
+```
+
+多 GPU 脚本默认每个栈为 Isaac 分配 `12` CPUs、为 Nav2 分配 `6` CPUs。
 
 脚本顶部包含默认配置：
 

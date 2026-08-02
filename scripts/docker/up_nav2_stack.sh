@@ -15,6 +15,8 @@ Options:
   --gpu ID                       Set INTERNDATA_ISAAC_GPU_DEVICE_IDS for single mode.
   --launcher-config PATH         Set INTERNDATA_LAUNCHER_CONFIG.
   --launcher-extra-args ARGS     Set INTERNDATA_LAUNCHER_EXTRA_ARGS.
+  --isaac-cpus COUNT             Limit the Isaac container to COUNT CPUs.
+  --nav2-cpus COUNT              Limit the Nav2 container to COUNT CPUs.
   --keep-nav2                    Keep Nav2 running after Isaac exits.
   -h, --help                     Show this help.
 USAGE
@@ -45,6 +47,14 @@ while [ "$#" -gt 0 ]; do
       ;;
     --launcher-extra-args)
       export INTERNDATA_LAUNCHER_EXTRA_ARGS="${2:?--launcher-extra-args requires a value}"
+      shift 2
+      ;;
+    --isaac-cpus)
+      export INTERNDATA_ISAAC_CPUS="${2:?--isaac-cpus requires a value}"
+      shift 2
+      ;;
+    --nav2-cpus)
+      export INTERNDATA_NAV2_CPUS="${2:?--nav2-cpus requires a value}"
       shift 2
       ;;
     --keep-nav2)

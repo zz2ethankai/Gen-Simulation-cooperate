@@ -3,6 +3,7 @@ set -e
 
 export ISAAC_SIM_PATH="${ISAAC_SIM_PATH:-/isaac-sim}"
 export CUROBO_PATH="${CUROBO_PATH:-/opt/curobo}"
+export INTERNDATA_RUN_IMPORT_CHECKS="${INTERNDATA_RUN_IMPORT_CHECKS:-0}"
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 export INTERNDATA_AUTOSTART_LAUNCHER="${INTERNDATA_AUTOSTART_LAUNCHER:-0}"
@@ -65,11 +66,12 @@ if [ -d "${CUROBO_PATH}/src" ]; then
   export PYTHONPATH="${CUROBO_PATH}/src:${PYTHONPATH}"
 fi
 
-echo "[isaac] Python version:"
-"${ISAAC_SIM_PATH}/python.sh" -c "import sys; print(sys.version)"
+if [ "${INTERNDATA_RUN_IMPORT_CHECKS}" = "1" ]; then
+  echo "[isaac] Python version:"
+  "${ISAAC_SIM_PATH}/python.sh" -c "import sys; print(sys.version)"
 
-echo "[isaac] Test imports..."
-"${ISAAC_SIM_PATH}/python.sh" - <<'PY'
+  echo "[isaac] Test imports..."
+  "${ISAAC_SIM_PATH}/python.sh" - <<'PY'
 mods = [
     "trimesh",
     "open3d",
@@ -103,6 +105,7 @@ for module in mods:
     except Exception as exc:
         print("[fail]", module, exc)
 PY
+fi
 if [ "$#" -eq 0 ]; then
   run_default_entry
 fi

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib
 import importlib.util
 import math
@@ -25,6 +26,21 @@ from nav2.runtime.dynamic_goal import (
 
 
 class DynamicApproachTests(unittest.TestCase):
+    def test_compute_path_preflight_uses_planner_tf_pose(self):
+        adapter_path = Path(__file__).resolve().parents[2] / "nav2/bridge/adapter.py"
+        module = ast.parse(adapter_path.read_text(encoding="utf-8"))
+        methods = {
+            node.name: node
+            for node in ast.walk(module)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+
+        for method_name in ("_request_preflight_plan", "_request_plan_only"):
+            source = ast.unparse(methods[method_name])
+            self.assertIn("plan_goal.use_start = False", source)
+            self.assertIn("planner_tf_current_pose", source)
+            self.assertNotIn("_latest_odom_pose", source)
+
     def test_parse_approach_config_is_opt_in(self):
         self.assertIsNone(parse_approach_config({"goal": "pick"}))
 
@@ -267,11 +283,11 @@ class DynamicApproachTests(unittest.TestCase):
 
     def test_path_static_collision_reports_first_blocked_pose(self):
         static_map = {
-            "image": np.full((20, 20), 254, dtype=np.int16),
-            "resolution": 0.1,
+            "image": np.full((40, 40), 254, dtype=np.int16),
+            "resolution": 0.05,
             "origin": [0.0, 0.0, 0.0],
         }
-        static_map["image"][9:12, 9:12] = 0
+        static_map["image"][18:23, 18:23] = 0
         footprint = [[-0.05, -0.05], [0.05, -0.05], [0.05, 0.05], [-0.05, 0.05]]
 
         result = check_path_static_collision(
@@ -290,10 +306,37 @@ class DynamicApproachTests(unittest.TestCase):
         self.assertGreater(result["blocked_pose_count"], 0)
         self.assertEqual(result["first_blocked_result"]["reason"], "static_footprint_collision")
 
+    def test_path_static_collision_checks_intermediate_rotation_sweep(self):
+        static_map = {
+            "image": np.full((50, 50), 254, dtype=np.int16),
+            "resolution": 0.1,
+            "origin": [0.0, 0.0, 0.0],
+        }
+        # The endpoints are clear, but this cell is covered while the
+        # asymmetric footprint rotates through pi / 4 at the same XY.
+        static_map["image"][25, 22] = 0
+        footprint = [[-0.6, -0.1], [0.2, -0.1], [0.2, 0.1], [-0.6, 0.1]]
+
+        result = check_path_static_collision(
+            static_map=static_map,
+            footprint_points=footprint,
+            path_poses=[
+                {"x": 2.5, "y": 2.5, "yaw": 0.0},
+                {"x": 2.5, "y": 2.5, "yaw": math.pi / 2.0},
+            ],
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertGreater(result["interpolated_pose_count"], 0)
+        self.assertEqual(result["first_blocked_index"], 1)
+        self.assertEqual(result["first_blocked_result"]["segment_index"], 0)
+        self.assertGreater(result["first_blocked_result"]["segment_fraction"], 0.0)
+        self.assertLess(result["first_blocked_result"]["segment_fraction"], 1.0)
+
     def test_approach_footprint_padding_defaults_to_nav2_skill_padding(self):
         base_cfg = {
             "nav2_skill": {
-                "approach_footprint_padding": 0.04,
+                "costmap": {"footprint_padding": 0.04},
                 "local_costmap": {"footprint_padding": 0.1},
             }
         }
@@ -302,6 +345,19 @@ class DynamicApproachTests(unittest.TestCase):
 
         self.assertAlmostEqual(resolve_approach_footprint_padding_m(base_cfg, default_cfg), 0.04)
         self.assertAlmostEqual(resolve_approach_footprint_padding_m(base_cfg, explicit_cfg), 0.03)
+
+    def test_shared_costmap_padding_precedes_legacy_approach_padding(self):
+        base_cfg = {
+            "nav2_skill": {
+                "costmap": {"footprint_padding": 0.04},
+                "approach_footprint_padding": 0.02,
+            }
+        }
+
+        self.assertAlmostEqual(
+            resolve_approach_footprint_padding_m(base_cfg, ApproachConfig("obj")),
+            0.04,
+        )
 
     def test_approach_footprint_padding_falls_back_to_local_costmap_padding(self):
         base_cfg = {"nav2_skill": {"local_costmap": {"footprint_padding": 0.1}}}
@@ -592,6 +648,8 @@ class DynamicApproachTests(unittest.TestCase):
         self.assertEqual(rejected["path_state"], "path_static_rejected")
         self.assertFalse(rejected["path_static_ok"])
         self.assertEqual(rejected["path_static_check"]["first_blocked_index"], 1)
+        self.assertGreater(rejected["path_static_sampled_pose_count"], rejected["path_num_poses"])
+        self.assertGreater(rejected["path_static_interpolated_pose_count"], 0)
         self.assertEqual(manager._dynamic_goal_plan_index, 1)
         self.assertEqual(manager._dynamic_goal_active_plan_request_id, "req_approach_2")
         self.assertEqual(bridge.published_plan_requests, [("req", "req_approach_2", 1.5, 2.5, 0.4)])
@@ -635,8 +693,14 @@ class DynamicApproachTests(unittest.TestCase):
             )
             self.assertEqual(skill.approach_config.target_name, "apple_0_id9008")
             self.assertEqual((skill.goal_x, skill.goal_y, skill.goal_yaw), (0.0, 0.0, 0.0))
+            self.assertEqual(skill.position_tolerance_m, 0.15)
+            self.assertEqual(skill.nav2_position_tolerance_m, 0.10)
+            self.assertEqual(skill.runtime_timeout_sec, 30.0)
+            self.assertEqual(skill.execution_trace_sample_interval_sec, 0.5)
+            self.assertEqual(skill.execution_trace_write_interval_sec, 5.0)
+            self.assertEqual(skill.execution_trace_max_samples, 600)
 
-    def test_navigate_skill_goal_tolerances_override_nav2_goal_checker(self):
+    def test_navigate_skill_xy_tolerance_does_not_override_nav2_default(self):
         with mock.patch.dict(sys.modules, _navigate_import_stubs()):
             sys.modules.pop("workflows.simbox.core.skills.navigate", None)
             navigate_path = Path(__file__).resolve().parents[2] / "workflows/simbox/core/skills/navigate.py"
@@ -666,7 +730,6 @@ class DynamicApproachTests(unittest.TestCase):
                 {
                     "name": "navigate",
                     "goal": "pick",
-                    "rotate_to_heading_enabled": False,
                     "xy_goal_tolerance": 0.12,
                     "yaw_goal_tolerance": 0.34,
                 },
@@ -675,9 +738,28 @@ class DynamicApproachTests(unittest.TestCase):
 
             overrides = captured["nav2_skill_overrides"]
             controller_cfg = overrides["controller_server"]
-            self.assertFalse(controller_cfg["follow_path"]["rotate_to_heading_enabled"])
-            self.assertEqual(controller_cfg["goal_checker"]["xy_goal_tolerance"], 0.12)
+            self.assertNotIn("follow_path", controller_cfg)
+            self.assertEqual(controller_cfg["goal_checker"]["xy_goal_tolerance"], 0.10)
             self.assertEqual(controller_cfg["goal_checker"]["yaw_goal_tolerance"], 0.34)
+
+    def test_navigate_skill_preserves_explicit_internal_nav2_tolerance(self):
+        with mock.patch.dict(sys.modules, _navigate_import_stubs()):
+            sys.modules.pop("workflows.simbox.core.skills.navigate", None)
+            navigate_path = Path(__file__).resolve().parents[2] / "workflows/simbox/core/skills/navigate.py"
+            spec = importlib.util.spec_from_file_location("_test_navigate_internal_tolerance_module", navigate_path)
+            navigate_mod = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(navigate_mod)
+
+            overrides = navigate_mod.Navigate._nav2_skill_overrides(
+                {"xy_goal_tolerance": 0.10, "yaw_goal_tolerance": 0.10},
+                nav2_position_tolerance_m=0.08,
+                nav2_yaw_tolerance_rad=0.10,
+            )
+
+            goal_checker = overrides["controller_server"]["goal_checker"]
+            self.assertEqual(goal_checker["xy_goal_tolerance"], 0.08)
+            self.assertEqual(goal_checker["yaw_goal_tolerance"], 0.10)
 
     def test_approach_target_resolution_uses_task_objects_table(self):
         from nav2.runtime.runtime import PersistentNav2RuntimeManager

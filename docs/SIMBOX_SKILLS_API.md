@@ -591,6 +591,7 @@ horizontal + `position_constraint: gripper` 不读取 `pre_place_align/place_ali
 
 `navigate` 不使用 arm controller 规划命令，而是通过 workflow 的持久 Nav2 session manager 阻塞等待底盘到达。
 目标来源优先级为：`approach` 动态目标 > `goal` 命名位置 > `goal_x/y/yaw` 直接坐标。
+FollowPath 固定使用 `RotationShimController -> MPPIController`；Skill YAML 不提供 controller 启停或替换选项。
 
 ### 8.1 固定目标参数
 
@@ -601,7 +602,6 @@ horizontal + `position_constraint: gripper` 不读取 `pre_place_align/place_ali
 | `xy_goal_tolerance` | `float` | 否 | `0.10` | skill 位置容差，建议 `> 0`。 |
 | `yaw_goal_tolerance` | `float` | 否 | `0.10` | skill yaw 容差，rad，建议 `(0,pi]`。 |
 | `skill_xy_goal_tolerance`, `skill_yaw_goal_tolerance` | `float` | 否 | 同上 | 兼容别名；显式非 skill 前缀字段优先。 |
-| `rotate_to_heading_enabled` | `bool` | 否 | robot Nav2 配置值 | 覆盖 `controller_server.follow_path`；Scene 4 应保持 false。 |
 | `startup_timeout_sec` | `float` | 否 | `60.0` | 应 `> 0`。 |
 | `runtime_timeout_sec` | `float` | 否 | `240.0` | 应 `> 0`。 |
 | `scene_name` | `str` | 否 | task name | 地图/会话标识。 |
@@ -657,7 +657,6 @@ skills:
             name: navigate
             depends_on: []
             goal: nav_to_pick
-            rotate_to_heading_enabled: false
             xy_goal_tolerance: 0.1
             yaw_goal_tolerance: 0.1
 ```
@@ -842,7 +841,6 @@ skills:
             approach: apple_0_id9008
             approach_arm: left
             approach_object_armbase_xy: [0.5, 0.0]
-            rotate_to_heading_enabled: true
             xy_goal_tolerance: 0.1
             yaw_goal_tolerance: 0.1
           - name: navigate
@@ -851,7 +849,6 @@ skills:
             approach: metal_tray_0_id9016
             approach_arm: left
             approach_object_armbase_xy: [0.5, 0.0]
-            rotate_to_heading_enabled: true
             xy_goal_tolerance: 0.1
             yaw_goal_tolerance: 0.1
         left:

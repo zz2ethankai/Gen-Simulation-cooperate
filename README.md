@@ -164,6 +164,16 @@ DEFAULT_ROS_DOMAIN_ID="0"
 DEFAULT_SERVICES=(isaac nav2)
 ```
 
+To limit CPU scheduling quota per container, use the wrapper options (or set
+the equivalent `INTERNDATA_ISAAC_CPUS` and `INTERNDATA_NAV2_CPUS` environment
+variables):
+
+```bash
+scripts/docker/up_nav2_stack.sh --isaac-cpus 16 --nav2-cpus 2 isaac nav2
+```
+
+`cpus` is a Docker CPU quota, not a physical-core pinning policy.
+
 Use `configs/de_plan_with_render_template.yaml` for plan-with-render runs, or
 change `DEFAULT_LAUNCHER_CONFIG` to `configs/de_pipe_template.yaml` for the
 pipeline template. The script exports the selected config into Compose; the
@@ -174,6 +184,15 @@ Start multiple isolated GPU stacks with:
 ```bash
 scripts/docker/up_nav2_stack_multi_gpu.sh
 ```
+
+Give every parallel stack the same Docker CPU quota with:
+
+```bash
+INTERNDATA_PARALLEL_ISAAC_CPUS=16 INTERNDATA_PARALLEL_NAV2_CPUS=2 \
+  scripts/docker/up_nav2_stack_multi_gpu.sh
+```
+
+The multi-GPU defaults are `12` CPUs for Isaac and `6` for Nav2 in each stack.
 
 The multi-GPU defaults live at the top of
 `scripts/docker/up_nav2_stack_multi_gpu.sh`:

@@ -7,8 +7,6 @@ steering_limit: 0.0
 steering_rate_limit: 0.0
 wheel_velocity_limit: 1.0
 command_timeout: 0.25
-restore_done_tolerance: 0.005
-restore_done_velocity_tolerance: 0.02
 steering_command_sign: 1.0
 virtual_drive_stiffness: 0.0
 virtual_linear_drive_damping: 1000.0

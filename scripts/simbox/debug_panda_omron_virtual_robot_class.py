@@ -90,6 +90,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--physics-dt", type=float, default=1.0 / 60.0)
     parser.add_argument("--drive-steps", type=int, default=120)
     parser.add_argument("--settle-steps", type=int, default=30)
+    parser.add_argument("--command-vx", type=float, default=0.16)
+    parser.add_argument("--command-vy", type=float, default=0.0)
+    parser.add_argument("--command-wz", type=float, default=0.0)
     parser.add_argument("--initial-x", type=float, default=0.0)
     parser.add_argument("--initial-y", type=float, default=0.0)
     parser.add_argument("--initial-z", type=float, default=0.0)
@@ -130,12 +133,22 @@ def main() -> int:
             world.step(render=False)
 
         start_pose = _pose_dict(robot)
-        command = np.asarray([0.16, 0.0, 0.0], dtype=np.float32)
+        command = np.asarray(
+            [args.command_vx, args.command_vy, args.command_wz], dtype=np.float32
+        )
+        yaw_velocity_samples = []
         for _ in range(max(int(args.drive_steps), 0)):
             robot.apply_base_command([], command, step_dt=step_dt)
             world.step(render=False)
+            yaw_velocity_samples.append(
+                float(robot.get_base_joint_state()["wheel_velocities"].reshape(-1)[2])
+            )
         end_pose = _pose_dict(robot)
         joint_state = robot.get_base_joint_state()
+        yaw_accelerations = [
+            float((current - previous) / step_dt)
+            for previous, current in zip(yaw_velocity_samples, yaw_velocity_samples[1:])
+        ]
 
         result = {
             "start_pose": start_pose,
@@ -147,12 +160,20 @@ def main() -> int:
             },
             "base_joint_positions": [float(v) for v in joint_state["wheel_positions"].reshape(-1).tolist()],
             "base_joint_velocities": [float(v) for v in joint_state["wheel_velocities"].reshape(-1).tolist()],
+            "command": [float(value) for value in command.tolist()],
+            "yaw_velocity_samples": yaw_velocity_samples,
+            "yaw_acceleration": {
+                "peak_abs_rad_s2": float(max((abs(value) for value in yaw_accelerations), default=0.0)),
+                "initial_rad_s2": float(yaw_accelerations[0]) if yaw_accelerations else 0.0,
+            },
             "dof_names": list(robot._articulation_view.dof_names),
         }
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(result, indent=2), flush=True)
-        return 0 if abs(result["delta"]["x"]) > 0.05 else 1
+        commanded_motion = max(abs(float(value)) for value in command)
+        observed_motion = max(abs(value) for value in result["delta"].values())
+        return 0 if commanded_motion == 0.0 or observed_motion > 0.05 else 1
     finally:
         app.close()
 

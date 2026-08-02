@@ -110,12 +110,7 @@ class BaseBridge(ABC):
         self._last_step_time_sec = now_sec
         self._last_step_dt = 1e-3
         self._navigation_active = False
-        self._hold_after_navigation = True
-        self._restore_after_navigation = False
-        self._restore_waiting_for_wheel_stop = False
-        self._restore_target_steering = np.zeros(steering_count, dtype=np.float32)
-        self._restore_done_tolerance = float(self.base_cfg["restore_done_tolerance"])
-        self._restore_done_velocity_tolerance = float(self.base_cfg["restore_done_velocity_tolerance"])
+        self._has_nav2_command = False
         history_size = max(int(self.base_cfg["debug_history_size"]), 1)
         self._received_cmd_vel_count = 0
         self._driver_command_message_count = 0
@@ -157,13 +152,12 @@ class BaseBridge(ABC):
             self._rclpy.shutdown()
 
     def reset(self, *, clear_debug_history: bool = False):
-        """重置 bridge 缓存命令、调试状态和底盘输出到当前转向角加零轮速。"""
+        """重置 bridge 缓存和调试状态，不向底盘写入控制目标。"""
         self._spin_available_callbacks()
         now_sec = self._now_sec()
         steering_count = len(self.base_interface["steering_joint_names"])
         wheel_count = len(self.base_interface["wheel_joint_names"])
         zero_command = BaseCommand.zero(received_time_sec=now_sec)
-        zero_steering = np.zeros(steering_count, dtype=np.float32)
         zero_wheel = np.zeros(wheel_count, dtype=np.float32)
 
         self._command = zero_command
@@ -177,9 +171,7 @@ class BaseBridge(ABC):
         self._last_step_time_sec = now_sec
         self._last_step_dt = 1e-3
         self._navigation_active = False
-        self._hold_after_navigation = True
-        self._restore_after_navigation = False
-        self._restore_waiting_for_wheel_stop = False
+        self._has_nav2_command = False
         self._last_received_cmd_vel = {
             "linear_x": 0.0,
             "linear_y": 0.0,
@@ -198,11 +190,6 @@ class BaseBridge(ABC):
             self._debug_cmd_vel_history.clear()
             self._debug_command_history.clear()
 
-        self._apply_robot_base_command(
-            steering_positions=current_steering,
-            wheel_velocities=zero_wheel,
-            step_dt=1e-3,
-        )
         translation, orientation = self._get_robot_base_pose()
         self._last_actual_translation = np.array(translation, dtype=np.float32)
         self._last_actual_yaw = float(self._yaw_from_wxyz(orientation))
@@ -215,191 +202,36 @@ class BaseBridge(ABC):
     def prepare_for_navigation(self):
         """进入导航态，使 bridge 开始接受 Nav2 发来的 /cmd_vel。"""
         self._navigation_active = True
-        self._hold_after_navigation = False
-        self._restore_after_navigation = False
+        self._has_nav2_command = False
 
     def finalize_after_navigation(self):
-        """退出导航态，清零命令并启动导航后的转向回正流程。"""
+        """退出导航态，立即写入零速度并停止接受后续 /cmd_vel。"""
         self._spin_available_callbacks()
         now_sec = self._now_sec()
-        steering_count = len(self.base_interface["steering_joint_names"])
-        wheel_count = len(self.base_interface["wheel_joint_names"])
-        current_steering = self._get_current_steering_positions()
-        self._command = BaseCommand.zero(received_time_sec=now_sec)
-        self._last_step_command = self._command
+        zero_command = BaseCommand.zero(received_time_sec=now_sec)
+        steering_positions, wheel_velocities = self._map_command(zero_command)
+        self._apply_robot_base_command(
+            steering_positions=steering_positions,
+            wheel_velocities=wheel_velocities,
+            step_dt=1e-3,
+        )
+        self._command = zero_command
+        self._last_step_command = zero_command
+        self._last_requested_steering = steering_positions.copy()
+        self._last_requested_wheel_velocities = wheel_velocities.copy()
+        self._last_applied_steering = steering_positions.copy()
+        self._last_applied_wheel_velocities = wheel_velocities.copy()
         self._navigation_active = False
-        self._hold_after_navigation = True
-        self._last_applied_steering = current_steering.copy()
-        self._last_requested_wheel_velocities = np.zeros(wheel_count, dtype=np.float32)
-        self._last_applied_wheel_velocities = np.zeros(wheel_count, dtype=np.float32)
+        self._has_nav2_command = False
         self._last_wheel_shaping_debug = {}
-        self._restore_target_steering = self._get_restore_target_steering(steering_count)
-        self._restore_after_navigation = True
-        self._restore_waiting_for_wheel_stop = True
         self._last_step_time_sec = now_sec
         self._last_step_dt = 1e-3
         self._publish_joint_state()
         self._publish_odometry()
         self._rclpy.spin_once(self.node, timeout_sec=0.0)
 
-    def step_restore_after_navigation(self, step_dt: float | None = None) -> bool:
-        """推进一次导航后回正：先等轮速停下，再把转向关节恢复到初始角。"""
-        if not self._restore_after_navigation:
-            return True
-        self._spin_available_callbacks()
-        now_sec = self._now_sec()
-        if step_dt is None:
-            dt = max(now_sec - self._last_step_time_sec, 1e-3)
-        else:
-            dt = max(float(step_dt), 1e-3)
-        self._last_step_time_sec = now_sec
-        self._last_step_dt = dt
-
-        steering_count = len(self.base_interface["steering_joint_names"])
-        wheel_count = len(self.base_interface["wheel_joint_names"])
-        requested_wheel_velocities = np.zeros(wheel_count, dtype=np.float32)
-        current_wheel_velocities = self._get_current_wheel_velocities()
-        wheel_stop_reached = bool(
-            wheel_count == 0
-            or float(np.max(np.abs(current_wheel_velocities))) <= self._restore_done_velocity_tolerance
-        )
-
-        if self._restore_waiting_for_wheel_stop and not wheel_stop_reached:
-            requested_steering = self._get_current_steering_positions()
-            steering_positions = self._apply_steering_limits(requested_steering, dt)
-        else:
-            self._restore_waiting_for_wheel_stop = False
-            requested_steering = self._restore_target_steering.copy()
-            steering_positions = self._apply_steering_limits(requested_steering, dt)
-
-        wheel_velocities = requested_wheel_velocities.copy()
-        self._last_step_command = BaseCommand.zero(received_time_sec=now_sec)
-        self._last_requested_steering = requested_steering.astype(np.float32).copy()
-        self._last_requested_wheel_velocities = requested_wheel_velocities.copy()
-        self._last_applied_wheel_velocities = wheel_velocities.astype(np.float32).copy()
-        self._last_wheel_shaping_debug = {}
-        self._apply_robot_base_command(
-            steering_positions=steering_positions,
-            wheel_velocities=wheel_velocities,
-            step_dt=dt,
-        )
-        self._publish_joint_state()
-        self._publish_odometry()
-        self._record_debug_history(
-            command=self._last_step_command,
-            requested_steering=requested_steering,
-            steering_positions=steering_positions,
-            wheel_velocities=wheel_velocities,
-            now_sec=now_sec,
-            dt=dt,
-            mode="restore_after_navigation",
-        )
-        done = self.restore_after_navigation_done()
-        if done:
-            self._restore_after_navigation = False
-            self._restore_waiting_for_wheel_stop = False
-            self._hold_after_navigation = True
-        self._rclpy.spin_once(self.node, timeout_sec=0.0)
-        return done
-
-    def restore_after_navigation_done(self) -> bool:
-        """检查导航后回正流程是否已经满足转向角和轮速收敛条件。"""
-        if not self._restore_after_navigation:
-            return True
-        steering_count = len(self.base_interface["steering_joint_names"])
-        wheel_count = len(self.base_interface["wheel_joint_names"])
-        joint_state = self.robot.get_base_joint_state()
-        current_steering = np.asarray(joint_state["steering_positions"], dtype=np.float32).reshape(-1)
-        steering_velocities = np.asarray(joint_state["steering_velocities"], dtype=np.float32).reshape(-1)
-        wheel_velocities = np.asarray(joint_state["wheel_velocities"], dtype=np.float32).reshape(-1)
-        target_steering = self._get_restore_target_steering(steering_count)
-        if (
-            current_steering.size != target_steering.size
-            or steering_velocities.size != target_steering.size
-            or wheel_velocities.size != wheel_count
-        ):
-            return False
-        if (
-            not np.all(np.isfinite(current_steering))
-            or not np.all(np.isfinite(steering_velocities))
-            or not np.all(np.isfinite(wheel_velocities))
-        ):
-            return False
-        wheel_velocity_done = (
-            wheel_velocities.size == 0
-            or float(np.max(np.abs(wheel_velocities))) <= self._restore_done_velocity_tolerance
-        )
-        steering_velocity_done = (
-            steering_velocities.size == 0
-            or float(np.max(np.abs(steering_velocities))) <= self._restore_done_velocity_tolerance
-        )
-        if self._restore_waiting_for_wheel_stop:
-            return bool(wheel_velocity_done)
-        return bool(
-            np.allclose(current_steering, target_steering, atol=self._restore_done_tolerance)
-            and steering_velocity_done
-            and wheel_velocity_done
-        )
-
-    def hold_after_navigation(self, step_dt: float | None = None):
-        """非导航态保持底盘静止，并持续发布 joint/odom 供外部状态同步。"""
-        self._spin_available_callbacks()
-        now_sec = self._now_sec()
-        if step_dt is None:
-            dt = max(now_sec - self._last_step_time_sec, 1e-3)
-        else:
-            dt = max(float(step_dt), 1e-3)
-        self._last_step_time_sec = now_sec
-        self._last_step_dt = dt
-
-        steering_count = len(self.base_interface["steering_joint_names"])
-        wheel_count = len(self.base_interface["wheel_joint_names"])
-        target_steering = self._get_restore_target_steering(steering_count)
-        wheel_velocities = np.zeros(wheel_count, dtype=np.float32)
-        command = BaseCommand.zero(received_time_sec=now_sec)
-
-        self._command = command
-        self._last_step_command = command
-        self._last_requested_steering = target_steering.astype(np.float32).copy()
-        self._last_requested_wheel_velocities = wheel_velocities.copy()
-        self._last_applied_wheel_velocities = wheel_velocities.copy()
-        self._last_wheel_shaping_debug = {}
-        self._apply_robot_base_command(
-            steering_positions=target_steering,
-            wheel_velocities=wheel_velocities,
-            step_dt=dt,
-        )
-        self._publish_joint_state()
-        self._publish_odometry()
-        self._record_debug_history(
-            command=command,
-            requested_steering=target_steering,
-            steering_positions=target_steering,
-            wheel_velocities=wheel_velocities,
-            now_sec=now_sec,
-            dt=dt,
-            mode="hold_after_navigation",
-        )
-        self._rclpy.spin_once(self.node, timeout_sec=0.0)
-
-    def _get_current_wheel_velocities(self):
-        """读取当前轮关节速度，并校验数量和有限性。"""
-        joint_state = self.robot.get_base_joint_state()
-        current = np.asarray(joint_state["wheel_velocities"], dtype=np.float32).reshape(-1)
-        expected = len(self.base_interface["wheel_joint_names"])
-        if current.size != expected or not np.all(np.isfinite(current)):
-            raise ValueError("Current wheel velocities must match wheel joints and be finite")
-        return current.astype(np.float32).copy()
-
     def step(self, step_dt: float | None = None):
         """推进 bridge 一帧：接收回调、解析有效 /cmd_vel、映射并应用到底盘关节。"""
-        if self._restore_after_navigation:
-            self.step_restore_after_navigation(step_dt=step_dt)
-            return
-        if self._hold_after_navigation and not self._navigation_active:
-            self.hold_after_navigation(step_dt=step_dt)
-            return
-
         self._spin_available_callbacks()
         now_sec = self._now_sec()
         if step_dt is None:
@@ -408,7 +240,12 @@ class BaseBridge(ABC):
             dt = max(float(step_dt), 1e-3)
         self._last_step_time_sec = now_sec
         self._last_step_dt = dt
-        self._restore_after_navigation = False
+
+        if not self._navigation_active or not self._has_nav2_command:
+            self._publish_joint_state()
+            self._publish_odometry()
+            self._rclpy.spin_once(self.node, timeout_sec=0.0)
+            return
 
         command = self._resolve_active_command(now_sec)
         self._last_step_command = command
@@ -493,6 +330,7 @@ class BaseBridge(ABC):
         accepted = bool(self._navigation_active and finite_command)
         if accepted:
             self._command = command
+            self._has_nav2_command = True
             self._applied_driver_command_count += 1
         self._debug_cmd_vel_history.append(
             {
@@ -577,11 +415,7 @@ class BaseBridge(ABC):
             "vy_body": float(command.vy_body),
             "wz_body": float(command.wz_body),
             "navigation_active": bool(self._navigation_active),
-            "hold_after_navigation": bool(self._hold_after_navigation),
-            "restore_after_navigation": bool(self._restore_after_navigation),
-            "restore_after_navigation_done": bool(self.restore_after_navigation_done()),
-            "restore_done_tolerance": float(self._restore_done_tolerance),
-            "restore_done_velocity_tolerance": float(self._restore_done_velocity_tolerance),
+            "has_nav2_command": bool(self._has_nav2_command),
             "requested_steering": [float(v) for v in self._last_requested_steering.tolist()],
             "requested_wheel_velocities": [float(v) for v in self._last_requested_wheel_velocities.tolist()],
             "applied_wheel_velocities": [float(v) for v in self._last_applied_wheel_velocities.tolist()],
@@ -657,18 +491,6 @@ class BaseBridge(ABC):
             raise ValueError("Current steering positions must match steering joints and be finite")
         current = np.asarray([self._wrap_angle(float(value)) for value in current], dtype=np.float32)
         return np.clip(current, -self._steering_limit, self._steering_limit).astype(np.float32)
-
-    def _get_restore_target_steering(self, steering_count: int):
-        """读取机器人初始转向角，作为导航结束后的转向回正目标。"""
-        if steering_count == 0:
-            return np.zeros(0, dtype=np.float32)
-        getter = getattr(self.robot, "get_base_initial_steering_positions", None)
-        if not callable(getter):
-            raise ValueError("Robot must provide get_base_initial_steering_positions")
-        target = np.asarray(getter(), dtype=np.float32).reshape(-1)
-        if target.size != steering_count or not np.all(np.isfinite(target)):
-            raise ValueError("Initial steering target must match steering joints and be finite")
-        return np.clip(target, -self._steering_limit, self._steering_limit).astype(np.float32)
 
     def has_non_finite_state(self) -> bool:
         """返回 bridge 是否曾检测到底盘状态中存在非有限数。"""

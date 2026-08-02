@@ -34,6 +34,7 @@ class _RecordingController:
         self.reference_prim_path = "/World/robot/base"
         self.outcomes = iter(outcomes)
         self.plan_calls = []
+        self.attached_plan_calls = []
         self.world_updates = []
 
     def update_specific(self, ignore_substring, reference_prim_path):
@@ -47,6 +48,20 @@ class _RecordingController:
                 "start_arm_positions": None
                 if start_arm_positions is None
                 else np.asarray(start_arm_positions).copy(),
+            }
+        )
+        success, endpoint = next(self.outcomes)
+        return success, endpoint, SimpleNamespace()
+
+    def test_attached_forward_from_joint_positions(
+        self, translation, orientation, start_arm_positions, obj_prim_paths
+    ):
+        self.attached_plan_calls.append(
+            {
+                "translation": np.asarray(translation).copy(),
+                "orientation": np.asarray(orientation).copy(),
+                "start_arm_positions": np.asarray(start_arm_positions).copy(),
+                "obj_prim_paths": list(obj_prim_paths),
             }
         )
         success, endpoint = next(self.outcomes)
@@ -67,6 +82,7 @@ class _Pick:
 
     def __init__(self, outcomes):
         self.controller = _RecordingController(outcomes)
+        self.pick_obj = SimpleNamespace(attach_collision_prim_paths=["/World/pick-object/collision"])
 
 
 def test_complete_path_uses_each_previous_segment_endpoint():
@@ -94,13 +110,18 @@ def test_complete_path_uses_each_previous_segment_endpoint():
         "grasp_success": True,
         "postgrasp_success": False,
     }
-    assert len(pick.controller.plan_calls) == 3
+    assert len(pick.controller.plan_calls) == 2
     assert pick.controller.plan_calls[0]["start_arm_positions"] is None
     np.testing.assert_allclose(pick.controller.plan_calls[1]["start_arm_positions"], [1.0, 2.0])
-    np.testing.assert_allclose(pick.controller.plan_calls[2]["start_arm_positions"], [3.0, 4.0])
+    assert len(pick.controller.attached_plan_calls) == 1
+    np.testing.assert_allclose(
+        pick.controller.attached_plan_calls[0]["start_arm_positions"], [3.0, 4.0]
+    )
+    assert pick.controller.attached_plan_calls[0]["obj_prim_paths"] == ["/World/pick-object/collision"]
     assert pick.controller.world_updates == [
         (["base-obstacle"], "/World/robot/base"),
         (["base-obstacle", "pick-object"], "/World/robot/base"),
+        (["base-obstacle"], "/World/robot/base"),
     ]
 
 

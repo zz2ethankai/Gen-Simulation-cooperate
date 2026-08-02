@@ -2,6 +2,7 @@
 set -e
 
 source /opt/ros/humble/setup.bash
+source /opt/navigation2_ws/install/setup.bash
 export PYTHONPATH="/workspace/InterndataEngine:${PYTHONPATH}"
 
 cd /workspace/InterndataEngine

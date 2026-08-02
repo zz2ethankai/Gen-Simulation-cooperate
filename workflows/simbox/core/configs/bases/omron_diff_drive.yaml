@@ -8,8 +8,6 @@ steering_limit: 0.0
 steering_rate_limit: 0.0
 wheel_velocity_limit: 18.0
 command_timeout: 0.25
-restore_done_tolerance: 0.005
-restore_done_velocity_tolerance: 0.5
 steering_command_sign: 1.0
 wheel_static_friction: 0.95
 wheel_dynamic_friction: 0.75

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 import os
 from pathlib import Path
 from string import Template
@@ -28,6 +29,7 @@ def _load_yaml_config(path: Path) -> dict:
 _NAV2_RUNTIME_DEFAULTS = _load_yaml_config(NAV2_DEFAULT_CONFIG_PATH)["nav2_runtime_defaults"]
 NAV2_DEFAULT_POSITION_TOLERANCE_M = float(_NAV2_RUNTIME_DEFAULTS["position_tolerance_m"])
 NAV2_DEFAULT_YAW_TOLERANCE_RAD = float(_NAV2_RUNTIME_DEFAULTS["yaw_tolerance_rad"])
+NAV2_DEFAULT_RUNTIME_TIMEOUT_SEC = float(_NAV2_RUNTIME_DEFAULTS["runtime_timeout_sec"])
 
 
 def format_nav2_footprint(points: list[list[float]]) -> str:
@@ -220,6 +222,16 @@ def _select_profile(profiles: dict, default_plugin: str, overrides: dict) -> dic
     return profile
 
 
+def _symmetric_bidirectional_limit(positive_limit, negative_limit, *, name: str) -> float:
+    positive = float(positive_limit)
+    negative = float(negative_limit)
+    if not math.isfinite(positive) or not math.isfinite(negative):
+        raise ValueError(f"{name} limits must be finite")
+    if positive < 0.0 or negative > 0.0:
+        raise ValueError(f"{name} limits must satisfy negative <= 0 <= positive")
+    return min(positive, abs(negative))
+
+
 def _controller_params(template_cfg: dict, skill_cfg: dict, hard_limits: dict) -> tuple[dict, dict]:
     controller_cfg = deepcopy(skill_cfg.get("controller_server", {}))
     follow_path_cfg = controller_cfg.pop("follow_path", {})
@@ -227,42 +239,59 @@ def _controller_params(template_cfg: dict, skill_cfg: dict, hard_limits: dict) -
     goal_checker_cfg = controller_cfg.pop("goal_checker", {})
 
     profiles = template_cfg["controller_profiles"]
-    default_plugin = template_cfg["defaults"]["controller_plugin"]
     rotation_shim_plugin = "nav2_rotation_shim_controller::RotationShimController"
-    rotate_to_heading = bool(follow_path_cfg.pop("rotate_to_heading_enabled", True))
-    if follow_path_cfg.get("plugin", default_plugin) == rotation_shim_plugin and not rotate_to_heading:
-        follow_path_cfg["plugin"] = follow_path_cfg.pop(
-            "primary_controller",
-            profiles[rotation_shim_plugin]["primary_controller"],
+    primary_controller = "nav2_mppi_controller::MPPIController"
+    configured_plugin = str(follow_path_cfg.pop("plugin", rotation_shim_plugin))
+    configured_primary = str(follow_path_cfg.pop("primary_controller", primary_controller))
+    if configured_plugin != rotation_shim_plugin:
+        raise ValueError(
+            "Nav2 FollowPath must use "
+            f"{rotation_shim_plugin}; controller plugin fallback is not supported"
         )
-        for key in (
-            "angular_dist_threshold",
-            "forward_sampling_distance",
-            "rotate_to_heading_angular_vel",
-            "max_angular_accel",
-            "simulate_ahead_time",
-            "rotate_to_goal_heading",
-        ):
-            follow_path_cfg.pop(key, None)
-
-    follow_path = _select_profile(profiles, default_plugin, follow_path_cfg)
+    if configured_primary != primary_controller:
+        raise ValueError(
+            "Nav2 RotationShimController must use "
+            f"{primary_controller} as its primary controller"
+        )
+    follow_path_cfg["plugin"] = rotation_shim_plugin
+    follow_path_cfg["primary_controller"] = primary_controller
+    follow_path = _select_profile(profiles, rotation_shim_plugin, follow_path_cfg)
+    angular_velocity_limit = _symmetric_bidirectional_limit(
+        hard_limits["max_velocity"][2],
+        hard_limits["min_velocity"][2],
+        name="angular velocity",
+    )
+    angular_acceleration_limit = _symmetric_bidirectional_limit(
+        hard_limits["max_accel"][2],
+        hard_limits["max_decel"][2],
+        name="angular acceleration",
+    )
     dynamic_limits = {
         "vx_max": hard_limits["max_velocity"][0],
         "vx_min": hard_limits["min_velocity"][0],
         "vy_max": hard_limits["max_velocity"][1],
         "vy_min": hard_limits["min_velocity"][1],
-        "wz_max": hard_limits["max_velocity"][2],
+        # MPPI exposes angular limits as symmetric magnitudes.
+        "wz_max": angular_velocity_limit,
         "ax_max": hard_limits["max_accel"][0],
         "ax_min": hard_limits["max_decel"][0],
         "ay_max": hard_limits["max_accel"][1],
         "ay_min": hard_limits["max_decel"][1],
-        "az_max": hard_limits["max_accel"][2],
+        "az_max": angular_acceleration_limit,
     }
-    for key, value in dynamic_limits.items():
-        if key in follow_path and follow_path[key] is None:
-            follow_path[key] = float(value)
-    if follow_path.get("max_angular_accel", False) is None:
-        follow_path["max_angular_accel"] = float(hard_limits["max_accel"][2])
+    follow_path.update({key: float(value) for key, value in dynamic_limits.items()})
+    # Rotation Shim applies the sign internally. Its configured velocity is a
+    # nominal command, while the platform value is the shared safety cap.
+    nominal_rotation_velocity = float(
+        follow_path.get("rotate_to_heading_angular_vel", angular_velocity_limit)
+    )
+    if not math.isfinite(nominal_rotation_velocity) or nominal_rotation_velocity < 0.0:
+        raise ValueError("Rotation Shim nominal angular velocity must be finite and non-negative")
+    follow_path["rotate_to_heading_angular_vel"] = min(
+        nominal_rotation_velocity,
+        float(angular_velocity_limit),
+    )
+    follow_path["max_angular_accel"] = float(angular_acceleration_limit)
     return controller_cfg, {
         "FollowPath": follow_path,
         "progress_checker": progress_checker_cfg,
@@ -292,6 +321,29 @@ def _merge_costmap_config(target: dict, overrides: dict) -> None:
             "cost_scaling_factor"
         )
     _deep_update_dict(target, overrides)
+
+
+def _validate_matching_costmap_constraints(local_costmap: dict, global_costmap: dict) -> None:
+    comparisons = {
+        "footprint_padding": (
+            local_costmap.get("footprint_padding"),
+            global_costmap.get("footprint_padding"),
+        ),
+        "inflation_layer.cost_scaling_factor": (
+            local_costmap.get("inflation_layer", {}).get("cost_scaling_factor"),
+            global_costmap.get("inflation_layer", {}).get("cost_scaling_factor"),
+        ),
+        "inflation_layer.inflation_radius": (
+            local_costmap.get("inflation_layer", {}).get("inflation_radius"),
+            global_costmap.get("inflation_layer", {}).get("inflation_radius"),
+        ),
+    }
+    mismatched = [name for name, (local, global_) in comparisons.items() if local != global_]
+    if mismatched:
+        raise ValueError(
+            "Global and local costmap collision constraints must match: "
+            + ", ".join(mismatched)
+        )
 
 
 def _build_nav2_params(
@@ -341,8 +393,11 @@ def _build_nav2_params(
 
     local_costmap = params["local_costmap"]["local_costmap"]["ros__parameters"]
     global_costmap = params["global_costmap"]["global_costmap"]["ros__parameters"]
+    shared_costmap_cfg = skill_cfg.get("costmap", {})
     local_costmap_cfg = skill_cfg.get("local_costmap", {})
     global_costmap_cfg = skill_cfg.get("global_costmap", {})
+    _merge_costmap_config(local_costmap, shared_costmap_cfg)
+    _merge_costmap_config(global_costmap, shared_costmap_cfg)
     _merge_costmap_config(local_costmap, local_costmap_cfg)
     _merge_costmap_config(global_costmap, global_costmap_cfg)
 
@@ -402,9 +457,25 @@ def _build_nav2_params(
     )
     local_costmap["inflation_layer"]["inflation_radius"] = inflation_radius
     global_costmap["inflation_layer"]["inflation_radius"] = inflation_radius
+    _validate_matching_costmap_constraints(local_costmap, global_costmap)
 
     behavior_params = params["behavior_server"]["ros__parameters"]
-    behavior_params.update({"global_frame": map_frame, "robot_base_frame": base_frame})
+    behavior_params.update(
+        {
+            "global_frame": map_frame,
+            "robot_base_frame": base_frame,
+            "max_rotational_vel": _symmetric_bidirectional_limit(
+                hard_limits["max_velocity"][2],
+                hard_limits["min_velocity"][2],
+                name="angular velocity",
+            ),
+            "rotational_acc_lim": _symmetric_bidirectional_limit(
+                hard_limits["max_accel"][2],
+                hard_limits["max_decel"][2],
+                name="angular acceleration",
+            ),
+        }
+    )
     smoother_params = params["velocity_smoother"]["ros__parameters"]
     smoother_params.update(
         {

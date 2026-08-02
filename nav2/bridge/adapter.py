@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import time
+import zlib
 from typing import Any, Optional
 
 from geometry_msgs.msg import PoseStamped
@@ -16,6 +17,7 @@ from nav2_msgs.action import ComputePathToPose, NavigateToPose
 from nav2_msgs.msg import Costmap
 from nav2_msgs.srv import ClearEntireCostmap, LoadMap
 from nav_msgs.msg import Odometry
+from rcl_interfaces.msg import Log
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -24,8 +26,15 @@ from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 from std_msgs.msg import String
 from tf2_msgs.msg import TFMessage
 
+from .error_log import Nav2ErrorLogBuffer
+
 
 LOGGER = logging.getLogger("simbox.nav2_bridge_adapter")
+
+
+# A clear service completion can publish one transitional costmap before the
+# static layer has repopulated it from the newly loaded map.
+_COSTMAP_REFRESH_STABLE_UPDATE_COUNT = 2
 
 
 class Nav2BridgeAdapter:
@@ -82,6 +91,11 @@ class Nav2BridgeAdapter:
             reliability=QoSReliabilityPolicy.RELIABLE,
             durability=QoSDurabilityPolicy.VOLATILE,
         )
+        rosout_qos = QoSProfile(
+            depth=1000,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        )
         tf_qos = QoSProfile(
             depth=100,
             reliability=QoSReliabilityPolicy.RELIABLE,
@@ -100,6 +114,7 @@ class Nav2BridgeAdapter:
         self.node.create_subscription(Odometry, self.odom_topic, self._on_odom, odom_qos)
         self.node.create_subscription(Costmap, "/global_costmap/costmap_raw", self._on_global_costmap, odom_qos)
         self.node.create_subscription(Costmap, "/local_costmap/costmap_raw", self._on_local_costmap, odom_qos)
+        self.node.create_subscription(Log, "/rosout", self._on_rosout, rosout_qos)
 
         self._action_client = ActionClient(self.node, NavigateToPose, self.action_name)
         self._planner_action_client = ActionClient(self.node, ComputePathToPose, self.planner_action_name)
@@ -131,6 +146,7 @@ class Nav2BridgeAdapter:
         self._latest_planning_debug: dict[str, Any] = {}
         self._plan_request_debug: dict[str, dict[str, Any]] = {}
         self._latest_action_result_debug: dict[str, Any] = {}
+        self._nav2_error_log = Nav2ErrorLogBuffer()
         self._costmap_update_counts = {"global": 0, "local": 0}
         self._latest_costmap_debug: dict[str, dict[str, Any]] = {"global": {}, "local": {}}
         self._waiting_costmap_refresh = False
@@ -169,6 +185,7 @@ class Nav2BridgeAdapter:
         self._request_generation += 1
         generation = int(self._request_generation)
         self._request_id = request_id
+        self._nav2_error_log.reset(request_id=request_id, started_wall_time_sec=time.time())
         self._stack_id = str(payload.get("stack_id", "")).strip()
         self._detail = f"loading_map:{map_yaml_path}"
         self._state = "loading_map"
@@ -256,6 +273,22 @@ class Nav2BridgeAdapter:
             )
         )
 
+    def _on_rosout(self, msg: Log):
+        stamp = getattr(msg, "stamp", None)
+        ros_time_sec = None
+        if stamp is not None:
+            ros_time_sec = float(getattr(stamp, "sec", 0)) + float(getattr(stamp, "nanosec", 0)) * 1.0e-9
+        self._nav2_error_log.append(
+            level=int(getattr(msg, "level", 0)),
+            name=str(getattr(msg, "name", "")),
+            message=str(getattr(msg, "msg", "")),
+            function=str(getattr(msg, "function", "")),
+            file=str(getattr(msg, "file", "")),
+            line=int(getattr(msg, "line", 0)),
+            ros_time_sec=ros_time_sec,
+            wall_time_sec=time.time(),
+        )
+
     def _request_preflight_plan(self, goal_pose: PoseStamped, *, request_id: str, generation: int):
         planning_debug = {
             "source": "compute_path_to_pose",
@@ -272,13 +305,11 @@ class Nav2BridgeAdapter:
         plan_goal = ComputePathToPose.Goal()
         plan_goal.goal = goal_pose
         plan_goal.planner_id = "GridBased"
-        if self._latest_odom_pose:
-            plan_goal.start = self._current_start_pose(goal_pose.header.frame_id)
-            plan_goal.use_start = True
-            planning_debug["requested_start"] = self._pose_stamped_to_dict(plan_goal.start)
-        else:
-            plan_goal.use_start = False
-            planning_debug["requested_start"] = {}
+        # Let planner_server resolve the current base pose from TF, exactly as
+        # NavigateToPose does. The bridge's /odom sample must not be relabeled
+        # as a map-frame start pose: map and odom can legitimately diverge.
+        plan_goal.use_start = False
+        planning_debug["requested_start"] = {"source": "planner_tf_current_pose"}
 
         self._latest_planning_debug = planning_debug
         future = self._planner_action_client.send_goal_async(plan_goal)
@@ -419,13 +450,10 @@ class Nav2BridgeAdapter:
         plan_goal = ComputePathToPose.Goal()
         plan_goal.goal = goal_pose
         plan_goal.planner_id = "GridBased"
-        if self._latest_odom_pose:
-            plan_goal.start = self._current_start_pose(goal_pose.header.frame_id)
-            plan_goal.use_start = True
-            planning_debug["requested_start"] = self._pose_stamped_to_dict(plan_goal.start)
-        else:
-            plan_goal.use_start = False
-            planning_debug["requested_start"] = {}
+        # Keep dynamic-candidate preflight on the same current-pose path as
+        # the eventual NavigateToPose request.
+        plan_goal.use_start = False
+        planning_debug["requested_start"] = {"source": "planner_tf_current_pose"}
         self._plan_request_debug[plan_request_id] = planning_debug
 
         future = self._planner_action_client.send_goal_async(plan_goal)
@@ -589,12 +617,22 @@ class Nav2BridgeAdapter:
     def _on_costmap(self, name: str, msg: Costmap):
         self._costmap_update_counts[name] = int(self._costmap_update_counts.get(name, 0)) + 1
         metadata = getattr(msg, "metadata", None)
+        data = [int(value) for value in list(getattr(msg, "data", []) or [])]
+        origin = getattr(metadata, "origin", None)
+        origin_position = getattr(origin, "position", None)
         self._latest_costmap_debug[name] = {
             "count": int(self._costmap_update_counts[name]),
             "frame_id": str(getattr(getattr(msg, "header", None), "frame_id", "")),
             "size_x": int(getattr(metadata, "size_x", 0)) if metadata is not None else 0,
             "size_y": int(getattr(metadata, "size_y", 0)) if metadata is not None else 0,
             "resolution": float(getattr(metadata, "resolution", 0.0)) if metadata is not None else 0.0,
+            "origin_xy": [
+                float(getattr(origin_position, "x", 0.0)),
+                float(getattr(origin_position, "y", 0.0)),
+            ],
+            "data_size": len(data),
+            "data_crc32": f"{zlib.crc32(bytes(value & 0xFF for value in data)) & 0xFFFFFFFF:08x}",
+            "lethal_cell_count": sum(value >= 254 for value in data),
         }
         self._maybe_mark_costmaps_ready()
 
@@ -715,7 +753,8 @@ class Nav2BridgeAdapter:
         return [
             name
             for name in ("global", "local")
-            if int(self._costmap_update_counts.get(name, 0)) <= int(self._costmap_refresh_baseline.get(name, 0))
+            if int(self._costmap_update_counts.get(name, 0))
+            < int(self._costmap_refresh_baseline.get(name, 0)) + _COSTMAP_REFRESH_STABLE_UPDATE_COUNT
         ]
 
     def _costmap_refresh_elapsed_sec(self) -> float:
@@ -730,6 +769,7 @@ class Nav2BridgeAdapter:
             "generation": int(self._costmap_refresh_generation),
             "baseline": dict(self._costmap_refresh_baseline),
             "counts": dict(self._costmap_update_counts),
+            "required_updates_per_costmap": _COSTMAP_REFRESH_STABLE_UPDATE_COUNT,
             "missing": self._costmap_refresh_missing() if self._waiting_costmap_refresh else [],
             "elapsed_sec": self._costmap_refresh_elapsed_sec(),
             "timeout_sec": float(self.costmap_refresh_timeout_sec),
@@ -919,6 +959,7 @@ class Nav2BridgeAdapter:
             "detail": self._detail,
             "stack_ready": self._stack_ready(),
             "reported_pose": dict(self._latest_odom_pose),
+            "nav2_errors": self._nav2_error_log.snapshot(),
             "costmap_refresh": self._costmap_refresh_debug(),
             "adapter_ros_time_sec": self._node_time_sec(),
             "updated_at": time.time(),
@@ -937,6 +978,7 @@ class Nav2BridgeAdapter:
             "reported_pose": dict(self._latest_odom_pose),
             "planning": dict(self._latest_planning_debug),
             "action_result_debug": dict(self._latest_action_result_debug),
+            "nav2_errors": self._nav2_error_log.snapshot(),
             "costmap_refresh": self._costmap_refresh_debug(),
             "adapter_ros_time_sec": self._node_time_sec(),
             "updated_at": time.time(),
@@ -1023,20 +1065,6 @@ class Nav2BridgeAdapter:
         if not client.service_is_ready():
             client.wait_for_service(timeout_sec=0.1)
         return bool(client.service_is_ready())
-
-    def _current_start_pose(self, frame_id: str) -> PoseStamped:
-        pose = PoseStamped()
-        pose.header.frame_id = str(frame_id or "map")
-        pose.header.stamp = self.node.get_clock().now().to_msg()
-        pose.pose.position.x = float(self._latest_odom_pose.get("x", 0.0))
-        pose.pose.position.y = float(self._latest_odom_pose.get("y", 0.0))
-        pose.pose.position.z = 0.0
-        yaw = float(self._latest_odom_pose.get("yaw", 0.0))
-        pose.pose.orientation.x = 0.0
-        pose.pose.orientation.y = 0.0
-        pose.pose.orientation.z = math.sin(yaw * 0.5)
-        pose.pose.orientation.w = math.cos(yaw * 0.5)
-        return pose
 
     def _goal_pose_from_payload(self, payload: dict[str, Any]) -> PoseStamped:
         pose = PoseStamped()

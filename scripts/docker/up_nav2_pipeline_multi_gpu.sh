@@ -3,22 +3,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Default parallel launch settings. Edit these values to change the direct
-# script behavior; environment variables with the same names still override them.
-DEFAULT_LAUNCHER_CONFIG="configs/de_plan_with_render_template.yaml"
+# Pipeline-specific parallel launch defaults. Each stack gets one host GPU;
+# Ray runs the plan and render workers on that GPU as fractional-GPU actors.
+DEFAULT_LAUNCHER_CONFIG="configs/de_pipe_template.yaml"
 DEFAULT_PARALLEL_GPU_COUNT="4"
 DEFAULT_PARALLEL_GPUS=""             # Empty means generate 0..GPU_COUNT-1.
 DEFAULT_STACKS_PER_GPU="1"
-DEFAULT_STACK_PREFIX="gpu"
+DEFAULT_STACK_PREFIX="pipe-gpu"
 DEFAULT_ROS_DOMAIN_BASE="10"
 DEFAULT_STOP_NAV2_WHEN_ISAAC_EXITS="1"
 DEFAULT_START_DELAY_SEC="0"
 DEFAULT_SERVICES=(isaac nav2)
-# CPU quotas applied to the Isaac/Nav2 containers in every parallel stack.
-# Override with INTERNDATA_PARALLEL_ISAAC_CPUS and
-# INTERNDATA_PARALLEL_NAV2_CPUS when a different split is needed.
-DEFAULT_PARALLEL_ISAAC_CPUS="12"
-DEFAULT_PARALLEL_NAV2_CPUS="6"
 
 GPU_COUNT="${INTERNDATA_PARALLEL_GPU_COUNT:-${DEFAULT_PARALLEL_GPU_COUNT}}"
 GPU_LIST="${INTERNDATA_PARALLEL_GPUS:-${DEFAULT_PARALLEL_GPUS}}"
@@ -28,13 +23,20 @@ ROS_DOMAIN_BASE="${INTERNDATA_PARALLEL_ROS_DOMAIN_BASE:-${DEFAULT_ROS_DOMAIN_BAS
 STOP_NAV2_WHEN_ISAAC_EXITS="${INTERNDATA_STOP_NAV2_WHEN_ISAAC_EXITS:-${DEFAULT_STOP_NAV2_WHEN_ISAAC_EXITS}}"
 START_DELAY_SEC="${INTERNDATA_PARALLEL_START_DELAY_SEC:-${DEFAULT_START_DELAY_SEC}}"
 USER_LAUNCHER_EXTRA_ARGS="${INTERNDATA_LAUNCHER_EXTRA_ARGS:-}"
-LAUNCHER_CONFIG="${INTERNDATA_LAUNCHER_CONFIG:-${DEFAULT_LAUNCHER_CONFIG}}"
-ISAAC_CPUS="${INTERNDATA_PARALLEL_ISAAC_CPUS:-${INTERNDATA_ISAAC_CPUS:-${DEFAULT_PARALLEL_ISAAC_CPUS}}}"
-NAV2_CPUS="${INTERNDATA_PARALLEL_NAV2_CPUS:-${INTERNDATA_NAV2_CPUS:-${DEFAULT_PARALLEL_NAV2_CPUS}}}"
+LAUNCHER_CONFIG="${INTERNDATA_PIPELINE_LAUNCHER_CONFIG:-${DEFAULT_LAUNCHER_CONFIG}}"
 
 if [ "$#" -eq 0 ]; then
   set -- "${DEFAULT_SERVICES[@]}"
 fi
+
+case "${LAUNCHER_CONFIG}" in
+  *de_pipe_template.yaml)
+    ;;
+  *)
+    echo "ERROR: INTERNDATA_PIPELINE_LAUNCHER_CONFIG must point to a pipeline template, got '${LAUNCHER_CONFIG}'" >&2
+    exit 2
+    ;;
+esac
 
 if [ -z "${GPU_LIST}" ]; then
   if ! [[ "${GPU_COUNT}" =~ ^[0-9]+$ ]] || [ "${GPU_COUNT}" -lt 1 ]; then
@@ -75,27 +77,17 @@ for raw_gpu_id in "${GPU_IDS[@]}"; do
     ros_domain_id="$((ROS_DOMAIN_BASE + started))"
 
     launcher_extra_args=()
-    case "${LAUNCHER_CONFIG}" in
-      *de_plan_with_render_template.yaml|*de_pipe_template.yaml)
-        ;;
-      *)
-        echo "ERROR: INTERNDATA_LAUNCHER_CONFIG must point to plan_with_render or pipeline template, got '${LAUNCHER_CONFIG}'" >&2
-        exit 2
-        ;;
-    esac
     if [ -n "${USER_LAUNCHER_EXTRA_ARGS}" ]; then
       launcher_extra_args+=(${USER_LAUNCHER_EXTRA_ARGS})
     fi
 
-    echo "Starting stack '${stack_id}' on host GPU '${gpu_id}' with ROS_DOMAIN_ID=${ros_domain_id}"
+    echo "Starting pipeline stack '${stack_id}' on host GPU '${gpu_id}' with ROS_DOMAIN_ID=${ros_domain_id}"
     env \
       INTERNDATA_STACK_ID="${stack_id}" \
       INTERNDATA_ISAAC_GPU_DEVICE_IDS="${gpu_id}" \
       ROS_DOMAIN_ID="${ros_domain_id}" \
       INTERNDATA_LAUNCHER_CONFIG="${LAUNCHER_CONFIG}" \
       INTERNDATA_LAUNCHER_EXTRA_ARGS="${launcher_extra_args[*]}" \
-      INTERNDATA_ISAAC_CPUS="${ISAAC_CPUS}" \
-      INTERNDATA_NAV2_CPUS="${NAV2_CPUS}" \
       INTERNDATA_STOP_NAV2_WHEN_ISAAC_EXITS=0 \
       "${SCRIPT_DIR}/up_nav2_stack_single_gpu.sh" "$@"
 
@@ -117,4 +109,4 @@ for raw_gpu_id in "${GPU_IDS[@]}"; do
   done
 done
 
-echo "Started ${started} stack(s), launcher_config=${LAUNCHER_CONFIG}, gpus=${GPU_LIST}, stacks_per_gpu=${STACKS_PER_GPU}, isaac_cpus=${ISAAC_CPUS:-unlimited}, nav2_cpus=${NAV2_CPUS:-unlimited}"
+echo "Started ${started} pipeline stack(s), launcher_config=${LAUNCHER_CONFIG}, gpus=${GPU_LIST}, stacks_per_gpu=${STACKS_PER_GPU}"

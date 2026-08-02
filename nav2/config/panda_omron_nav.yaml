@@ -3,14 +3,8 @@ nav2_skill:
     plugin: nav2_navfn_planner/NavfnPlanner
   controller_server:
     min_y_velocity_threshold: 0.0
-    follow_path:
-      plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController
-  local_costmap:
+  costmap:
     footprint_padding: 0.02
-    inflation_layer:
-      cost_scaling_factor: 2.0
-  global_costmap:
-    footprint_padding: 0.0
     inflation_layer:
       cost_scaling_factor: 2.0
   velocity_smoother:

@@ -161,7 +161,7 @@ class TemplateController(BaseController):
         else:
             # LEGACY_STAGE_SCAN keeps the original one-waypoint-per-step timing.
             self.ds_ratio = 1
-        LOGGER.warning(
+        LOGGER.info(
             "[ExecutionTiming] robot=%s arm=%s physics_dt=%.6f interpolation_dt=%.6f ds_ratio=%d",
             self.name,
             self.lr_name,
@@ -211,7 +211,7 @@ class TemplateController(BaseController):
         setattr(self.robot, arm_indices_field, resolved_arm_indices)
         self.robot.cfg[arm_indices_field] = resolved_arm_indices
         self.robot.cfg[gripper_indices_field] = resolved_gripper_indices
-        LOGGER.warning(
+        LOGGER.info(
             "[JointIndexAudit] controller=%s arm=%s joints=%s arm_indices=%s gripper_indices=%s",
             self.name,
             self.lr_name,
@@ -762,7 +762,7 @@ class TemplateController(BaseController):
         self._phase_completion_logged = False
         self._last_command_name = command.phase.value
         self._phase_base_position, self._phase_base_orientation = self.get_armbase_pose()
-        LOGGER.warning(
+        LOGGER.info(
             "[PhaseDebug] start robot=%s arm=%s phase=%s object=%s support=%s target=%s",
             self.name,
             self.lr_name,
@@ -803,7 +803,7 @@ class TemplateController(BaseController):
                     self._ee_trans = self.tensor_args.to_device(command.target_position)
                     self._ee_ori = self.tensor_args.to_device(command.target_orientation)
                     self._visualize_selected_plan()
-                    LOGGER.warning(
+                    LOGGER.info(
                         "[PhaseDebug] selected-plan robot=%s arm=%s phase=%s waypoints=%d stride=%d cached=true",
                         self.name,
                         self.lr_name,
@@ -898,7 +898,7 @@ class TemplateController(BaseController):
         if inside and self.cmd_plan is None:
             self._phase_plan_finished = True
             if not self._phase_completion_logged:
-                LOGGER.warning(
+                LOGGER.info(
                     "[PhaseDebug] complete robot=%s arm=%s phase=%s position_error=%.6f orientation_error=%.6f",
                     self.name,
                     self.lr_name,
@@ -1030,7 +1030,7 @@ class TemplateController(BaseController):
                             selected_path_source="paths[sorted_indices[0]]",
                         )
                         self._visualize_selected_plan()
-                        LOGGER.warning(
+                        LOGGER.info(
                             "[PhaseDebug] selected-plan robot=%s arm=%s phase=%s waypoints=%d stride=%d cached=false",
                             self.name,
                             self.lr_name,
@@ -1071,7 +1071,7 @@ class TemplateController(BaseController):
                             selected_path_source="result.get_interpolated_plan()",
                         )
                         self._visualize_selected_plan()
-                        LOGGER.warning(
+                        LOGGER.info(
                             "[PhaseDebug] selected-plan robot=%s arm=%s phase=%s waypoints=%d stride=%d cached=false",
                             self.name,
                             self.lr_name,
@@ -1102,7 +1102,7 @@ class TemplateController(BaseController):
                 )
                 self.cmd_idx += self.ds_ratio
                 if self.cmd_idx >= len(self.cmd_plan):
-                    LOGGER.warning(
+                    LOGGER.info(
                         "[PhaseDebug] plan-consumed robot=%s arm=%s phase=%s waypoints=%d stride=%d",
                         self.name,
                         self.lr_name,
@@ -1197,6 +1197,8 @@ class TemplateController(BaseController):
 
     def _resolve_attach_object_names(self, obj_prim_path) -> Tuple[List[str], List[str]]:
         requested_names = obj_prim_path if isinstance(obj_prim_path, (list, tuple)) else [obj_prim_path]
+        if any(not isinstance(name, str) or not name.strip() for name in requested_names):
+            raise ValueError("attach_obj requires non-empty CuRobo obstacle path strings")
         world_object_names = self._get_curobo_world_object_names()
         world_object_set = set(world_object_names)
 
@@ -1228,9 +1230,9 @@ class TemplateController(BaseController):
         link_name="attached_object",
         world_objects_pose_offset=None,
     ):
-        paths = [str(path) for path in obj_prim_paths]
-        if not paths:
-            raise ValueError("attach_objects requires at least one CuRobo obstacle path")
+        if not obj_prim_paths or any(not isinstance(path, str) or not path.strip() for path in obj_prim_paths):
+            raise ValueError("attach_objects requires non-empty CuRobo obstacle path strings")
+        paths = [path.strip() for path in obj_prim_paths]
         sim_js = self.robot.get_joints_state()
         js_names = self.robot.dof_names
         cu_js = JointState(
@@ -1253,6 +1255,63 @@ class TemplateController(BaseController):
         )
         LOGGER.warning("[AttachDebug] attached=%s disabled_world_obstacles=%s", attached, paths)
         return attached
+
+    def test_attached_forward_from_joint_positions(
+        self,
+        ee_trans: np.ndarray,
+        ee_ori: np.ndarray,
+        start_arm_positions: np.ndarray,
+        obj_prim_paths: List[str],
+    ):
+        """Plan a post-grasp target with the object attached at the grasp endpoint.
+
+        Candidate validation must use the same attached collision geometry as
+        execution.  The attachment is deliberately transient and is always
+        removed before returning to the caller.
+        """
+        if not obj_prim_paths:
+            raise ValueError("post-grasp validation requires attach collision prim paths")
+        start_arm_positions = np.asarray(start_arm_positions, dtype=float).reshape(-1)
+        if len(start_arm_positions) != len(self.arm_indices):
+            raise ValueError(
+                "start_arm_positions must match the controller arm joint count: "
+                f"got {len(start_arm_positions)}, expected {len(self.arm_indices)}"
+            )
+
+        sim_js = self.robot.get_joints_state()
+        sim_js.positions = np.asarray(sim_js.positions, dtype=float).copy()
+        sim_js.positions[self.arm_indices] = start_arm_positions
+        js_names = self.robot.dof_names
+        cu_js = JointState(
+            position=self.tensor_args.to_device(sim_js.positions),
+            velocity=self.tensor_args.to_device(sim_js.velocities) * 0.0,
+            acceleration=self.tensor_args.to_device(sim_js.velocities) * 0.0,
+            jerk=self.tensor_args.to_device(sim_js.velocities) * 0.0,
+            joint_names=js_names,
+        )
+        paths = [path.strip() for path in obj_prim_paths]
+        missing = [path for path in paths if self.motion_gen.world_model.get_obstacle(path) is None]
+        if missing:
+            raise ValueError(f"attach collision prims are not in CuRobo world: {missing}")
+
+        attached = False
+        try:
+            attached = self.motion_gen.attach_objects_to_robot(
+                cu_js,
+                paths,
+                link_name="attached_object",
+                sphere_fit_type=SphereFitType.VOXEL_VOLUME_SAMPLE_SURFACE,
+            )
+            if attached is False:
+                return False, None, None
+            return self.test_forward_from_joint_positions(
+                ee_trans,
+                ee_ori,
+                start_arm_positions=start_arm_positions,
+            )
+        finally:
+            if attached is not False:
+                self.motion_gen.detach_object_from_robot()
 
     def attach_obj(self, obj_prim_path: str, link_name="attached_object"):
         """Attach a legacy object path while preserving descendant selection."""

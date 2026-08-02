@@ -1,5 +1,7 @@
 FROM ros:humble
 
+ARG NAV2_VERSION=1.1.20
+
 ENV DEBIAN_FRONTEND=noninteractive
 
 SHELL ["/bin/bash", "-lc"]
@@ -36,6 +38,26 @@ RUN apt-get update && apt-get install -y \
 
 RUN rosdep init || true
 RUN rosdep update || true
+
+# Build only RotationShim against the matching Humble Nav2 release. The rest
+# of Nav2 continues to come from the apt-installed underlay.
+RUN mkdir -p /opt/navigation2_ws/src && \
+    git clone --depth 1 --branch "${NAV2_VERSION}" \
+      https://github.com/ros-navigation/navigation2.git \
+      /opt/navigation2_ws/src/navigation2
+
+COPY docker/nav2/patches/0001-rotation-shim-stop-before-overshoot.patch /tmp/
+
+RUN git -C /opt/navigation2_ws/src/navigation2 apply \
+      /tmp/0001-rotation-shim-stop-before-overshoot.patch && \
+    source /opt/ros/humble/setup.bash && \
+    cd /opt/navigation2_ws && \
+    colcon build \
+      --merge-install \
+      --packages-select nav2_rotation_shim_controller \
+      --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF && \
+    rm -rf /opt/navigation2_ws/build /opt/navigation2_ws/log \
+      /tmp/0001-rotation-shim-stop-before-overshoot.patch
 
 # Runtime startup selection is env-driven. Compose should override these values
 # per stack/session instead of relying on project-specific defaults in the

@@ -38,9 +38,9 @@ def parse_approach_config(cfg: dict[str, Any]) -> ApproachConfig | None:
     if not target_name:
         return None
 
-    min_distance = float(cfg.get("approach_min_distance", 0.45))
-    max_distance = float(cfg.get("approach_max_distance", 1.15))
-    sample_count = int(cfg.get("approach_sample_count", 128))
+    min_distance = float(cfg.get("approach_min_distance", 0.55))
+    max_distance = float(cfg.get("approach_max_distance", 0.85))
+    sample_count = int(cfg.get("approach_sample_count", 256))
     footprint_padding_m = cfg.get("approach_footprint_padding", None)
     footprint_padding_m = None if footprint_padding_m is None else float(footprint_padding_m)
     sampling_random = _as_bool(cfg.get("approach_sampling_random", False))
@@ -133,6 +133,9 @@ def resolve_approach_footprint_padding_m(base_cfg: dict[str, Any], config: Appro
     if config.footprint_padding_m is not None:
         return float(config.footprint_padding_m)
     skill_cfg = base_cfg.get("nav2_skill", {}) if isinstance(base_cfg, dict) else {}
+    shared_costmap = skill_cfg.get("costmap", {}) if isinstance(skill_cfg, dict) else {}
+    if isinstance(shared_costmap, dict) and "footprint_padding" in shared_costmap:
+        return max(float(shared_costmap.get("footprint_padding", 0.0)), 0.0)
     if isinstance(skill_cfg, dict) and "approach_footprint_padding" in skill_cfg:
         return max(float(skill_cfg.get("approach_footprint_padding", 0.0)), 0.0)
     local_costmap = skill_cfg.get("local_costmap", {}) if isinstance(skill_cfg, dict) else {}
@@ -241,14 +244,29 @@ def check_path_static_collision(
     free_value_min: int = 250,
     footprint_padding_m: float = 0.0,
 ) -> dict[str, Any]:
+    """Check every path pose and the footprint sweep between adjacent poses."""
     blocked_results = []
-    for index, pose in enumerate(path_poses or []):
+    normalized_poses = [_path_pose(pose) for pose in path_poses or []]
+    sampled_pose_count = 0
+    interpolated_pose_count = 0
+
+    def check_sample(
+        pose: dict[str, float],
+        *,
+        index: int,
+        segment_index: int | None,
+        segment_fraction: float,
+    ):
+        nonlocal sampled_pose_count, interpolated_pose_count
+        sampled_pose_count += 1
+        if segment_fraction not in {0.0, 1.0}:
+            interpolated_pose_count += 1
         result = check_footprint_static_collision(
             static_map=static_map,
             footprint_points=footprint_points,
-            x=float(pose.get("x", 0.0)),
-            y=float(pose.get("y", 0.0)),
-            yaw=float(pose.get("yaw", 0.0)),
+            x=pose["x"],
+            y=pose["y"],
+            yaw=pose["yaw"],
             free_value_min=free_value_min,
             footprint_padding_m=footprint_padding_m,
         )
@@ -257,10 +275,12 @@ def check_path_static_collision(
                 {
                     "index": int(index),
                     "pose": {
-                        "x": float(pose.get("x", 0.0)),
-                        "y": float(pose.get("y", 0.0)),
-                        "yaw": float(pose.get("yaw", 0.0)),
+                        "x": pose["x"],
+                        "y": pose["y"],
+                        "yaw": pose["yaw"],
                     },
+                    "segment_index": segment_index,
+                    "segment_fraction": float(segment_fraction),
                     "reason": str(result.get("reason", "")),
                     "blocked_cells": int(result.get("blocked_cells", 0)),
                     "footprint_blocked_cells": int(result.get("footprint_blocked_cells", 0)),
@@ -273,9 +293,41 @@ def check_path_static_collision(
                 }
             )
 
+    if normalized_poses:
+        check_sample(
+            normalized_poses[0],
+            index=0,
+            segment_index=None,
+            segment_fraction=0.0,
+        )
+    for index in range(1, len(normalized_poses)):
+        previous_pose = normalized_poses[index - 1]
+        pose = normalized_poses[index]
+        sample_count = _path_segment_sample_count(
+            static_map=static_map,
+            footprint_points=footprint_points,
+            previous_pose=previous_pose,
+            pose=pose,
+        )
+        yaw_delta = wrap_to_pi(pose["yaw"] - previous_pose["yaw"])
+        for sample_index in range(1, sample_count + 1):
+            fraction = float(sample_index) / float(sample_count)
+            check_sample(
+                {
+                    "x": previous_pose["x"] + fraction * (pose["x"] - previous_pose["x"]),
+                    "y": previous_pose["y"] + fraction * (pose["y"] - previous_pose["y"]),
+                    "yaw": wrap_to_pi(previous_pose["yaw"] + fraction * yaw_delta),
+                },
+                index=index,
+                segment_index=index - 1,
+                segment_fraction=fraction,
+            )
+
     return {
         "ok": len(blocked_results) == 0,
-        "num_poses": int(len(path_poses or [])),
+        "num_poses": int(len(normalized_poses)),
+        "sampled_pose_count": int(sampled_pose_count),
+        "interpolated_pose_count": int(interpolated_pose_count),
         "blocked_pose_count": int(len(blocked_results)),
         "first_blocked_index": int(blocked_results[0]["index"]) if blocked_results else None,
         "first_blocked_result": blocked_results[0] if blocked_results else {},
@@ -283,6 +335,35 @@ def check_path_static_collision(
         "free_value_min": int(free_value_min),
         "footprint_padding_m": float(max(float(footprint_padding_m), 0.0)),
     }
+
+
+def _path_pose(pose: dict[str, Any]) -> dict[str, float]:
+    return {
+        "x": float(pose.get("x", 0.0)),
+        "y": float(pose.get("y", 0.0)),
+        "yaw": wrap_to_pi(float(pose.get("yaw", 0.0))),
+    }
+
+
+def _path_segment_sample_count(
+    *,
+    static_map: dict[str, Any],
+    footprint_points: list[list[float]],
+    previous_pose: dict[str, float],
+    pose: dict[str, float],
+) -> int:
+    resolution = float(static_map["resolution"])
+    if resolution <= 0.0:
+        raise ValueError("static map resolution must be positive")
+    translation_distance = math.hypot(pose["x"] - previous_pose["x"], pose["y"] - previous_pose["y"])
+    yaw_delta = abs(wrap_to_pi(pose["yaw"] - previous_pose["yaw"]))
+    footprint_radius = max((math.hypot(float(px), float(py)) for px, py in footprint_points), default=0.0)
+    # A footprint vertex may travel both due to translation and rotation. Keep
+    # that sweep below half a map cell so a gap between planner poses cannot
+    # skip an occupied static-map cell.
+    max_sweep_step_m = resolution * 0.5
+    sweep_distance = translation_distance + footprint_radius * yaw_delta
+    return max(1, int(math.ceil(sweep_distance / max_sweep_step_m)))
 
 
 def transform_footprint_points(

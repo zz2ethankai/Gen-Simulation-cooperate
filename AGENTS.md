@@ -4,7 +4,7 @@
 
 - Scene-4 task `positions` are floor-center relative. Convert to world/layout XY with `world_x = floor_center_x + x` and `world_y = floor_center_y + y`; do not add another reference frame field.
 - Keep generated scene-4 skill graphs short. The expected basic-task shape is usually five skills: `nav_to_pick`, `pick_*`, `nav_to_place`, `place_*`, `home_*`.
-- `rotate_to_heading_enabled` should stay explicitly `false` unless a task has been runtime-verified to need heading rotation.
+- Navigation always uses the `RotationShimController -> primary_controller` chain; task YAML must not override or disable it.
 - Do not fix base navigation by editing dummy/mobile_support nodes; they are not on the effective mobile-base control path.
 - Use generated nav overlays and reports as design evidence only. A collision-free overlay does not prove 4WIS stability or arm reachability.
 
@@ -57,7 +57,7 @@
   3. `base: navigate` (`id: nav_to_place`, `depends_on: [pick_<pick_object>]`)
   4. `<arm>: place` (`id: place_<pick_object>`, `depends_on: [nav_to_place]`)
   5. `<arm>: heuristic__skill` (`id: home_<arm>`, `mode: home`, `depends_on: [place_<pick_object>]`)
-- `rotate_to_heading_enabled` is explicitly `false` on all navigation skills.
+- Navigation skills do not expose a heading-controller enable/disable option.
 - Navigation tolerances: `xy_goal_tolerance: 0.1`, `yaw_goal_tolerance: 0.1`.
 - Positions are **floor-center relative** (`floor_center_layout_xy` varies per room). Convert to world/layout XY with `world_x = floor_center_x + x` and `world_y = floor_center_y + y`.
 - Positions and object-to-arm mappings for all 20 tasks are canonically stored in `output/scene4_nav_skill_generation/scene4_nav_skill_generation_summary.json`. When updating a task, read from that summary rather than recomputing from the obstacle map.

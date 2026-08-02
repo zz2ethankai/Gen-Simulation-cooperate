@@ -15,6 +15,7 @@ import uuid
 
 from .config import (
     NAV2_DEFAULT_POSITION_TOLERANCE_M,
+    NAV2_DEFAULT_RUNTIME_TIMEOUT_SEC,
     NAV2_DEFAULT_YAW_TOLERANCE_RAD,
     generate_nav2_bringup_artifacts,
 )
@@ -83,7 +84,7 @@ class PersistentNav2RuntimeManager:
         self.position_tolerance_m = NAV2_DEFAULT_POSITION_TOLERANCE_M
         self.yaw_tolerance_rad = NAV2_DEFAULT_YAW_TOLERANCE_RAD
         self.startup_timeout_sec = 60.0
-        self.runtime_timeout_sec = 240.0
+        self.runtime_timeout_sec = NAV2_DEFAULT_RUNTIME_TIMEOUT_SEC
 
         self.state = self.STATE_IDLE
         self.result = Nav2SkillResult()
@@ -103,11 +104,18 @@ class PersistentNav2RuntimeManager:
         self._goal_output_tag = ""
         self._goal_debug_map_info = None
         self._goal_params_path = ""
-        self._restore_after_nav_started = False
         self._post_success_started_at = None
         self._post_success_settle_started_at = None
-        self._local_goal_reached_started_at = None
-        self._post_success_trigger = ""
+        self._robot_bridge_finalized = False
+        self._execution_trace: list[dict] = []
+        self._execution_trace_total_samples = 0
+        self._execution_trace_sample_interval_sec = 0.5
+        self._execution_trace_write_interval_sec = 5.0
+        self._execution_trace_max_samples = 600
+        self._execution_trace_started_at = None
+        self._execution_trace_next_sample_at = None
+        self._execution_trace_last_write_at = None
+        self._controller_trace_config: dict = {}
         self._cleaned_up = False
         self._session_uuid = uuid.uuid4().hex
 
@@ -226,6 +234,15 @@ class PersistentNav2RuntimeManager:
             params_filename=f"{robot_tag}_nav2_skill_params.yaml",
         )
         self._params_path = str(artifacts["params_path"])
+        controller_params = dict(
+            artifacts["params"].get("controller_server", {}).get("ros__parameters", {})
+        )
+        self._controller_trace_config = {
+            "controller_frequency": controller_params.get("controller_frequency"),
+            "follow_path": dict(controller_params.get("FollowPath", {}) or {}),
+            "progress_checker": dict(controller_params.get("progress_checker", {}) or {}),
+            "goal_checker": dict(controller_params.get("general_goal_checker", {}) or {}),
+        }
         self._stack_id = f"{robot_tag}::{scene_tag}::{self._session_uuid}::{self._stack_signature(artifacts['params'])}"
 
     def _new_goal_output_dir(self) -> str:
@@ -277,7 +294,10 @@ class PersistentNav2RuntimeManager:
         position_tolerance_m: float = NAV2_DEFAULT_POSITION_TOLERANCE_M,
         yaw_tolerance_rad: float = NAV2_DEFAULT_YAW_TOLERANCE_RAD,
         startup_timeout_sec: float = 60.0,
-        runtime_timeout_sec: float = 240.0,
+        runtime_timeout_sec: float = NAV2_DEFAULT_RUNTIME_TIMEOUT_SEC,
+        execution_trace_sample_interval_sec: float = 0.5,
+        execution_trace_write_interval_sec: float = 5.0,
+        execution_trace_max_samples: int = 600,
     ):
         self.goal_x = float(goal_x)
         self.goal_y = float(goal_y)
@@ -289,6 +309,9 @@ class PersistentNav2RuntimeManager:
         self.yaw_tolerance_rad = float(yaw_tolerance_rad)
         self.startup_timeout_sec = float(startup_timeout_sec)
         self.runtime_timeout_sec = float(runtime_timeout_sec)
+        self._execution_trace_sample_interval_sec = max(float(execution_trace_sample_interval_sec), 0.0)
+        self._execution_trace_write_interval_sec = max(float(execution_trace_write_interval_sec), 0.0)
+        self._execution_trace_max_samples = max(int(execution_trace_max_samples), 1)
         previous_request_id = str(self._request_id)
         self.result = Nav2SkillResult()
         self.state = self.STATE_IDLE
@@ -301,11 +324,15 @@ class PersistentNav2RuntimeManager:
         self._request_id = self._goal_output_tag
         self._goal_debug_map_info = None
         self._goal_params_path = ""
-        self._restore_after_nav_started = False
         self._post_success_started_at = None
         self._post_success_settle_started_at = None
-        self._local_goal_reached_started_at = None
-        self._post_success_trigger = ""
+        self._robot_bridge_finalized = False
+        self._execution_trace = []
+        self._execution_trace_total_samples = 0
+        self._execution_trace_started_at = self._sim_time()
+        self._execution_trace_next_sample_at = self._execution_trace_started_at
+        self._execution_trace_last_write_at = self._execution_trace_started_at
+        self._controller_trace_config = {}
         self._approach_target_pose = {}
         self._approach_armbase_target_context = {}
         self._dynamic_goal_selected = {}
@@ -343,11 +370,15 @@ class PersistentNav2RuntimeManager:
         self._runtime_deadline = None
         self._post_success_deadline = None
         self._request_id = ""
-        self._restore_after_nav_started = False
         self._post_success_started_at = None
         self._post_success_settle_started_at = None
-        self._local_goal_reached_started_at = None
-        self._post_success_trigger = ""
+        self._robot_bridge_finalized = False
+        self._execution_trace = []
+        self._execution_trace_total_samples = 0
+        self._execution_trace_started_at = None
+        self._execution_trace_next_sample_at = None
+        self._execution_trace_last_write_at = None
+        self._controller_trace_config = {}
         self._approach_target_pose = {}
         self._approach_armbase_target_context = {}
         self._dynamic_goal_selected = {}
@@ -384,6 +415,7 @@ class PersistentNav2RuntimeManager:
             return
 
         if self.state == self.STATE_WAITING_FOR_STACK_READY:
+            self._maybe_record_execution_trace(bridge_client)
             if bridge_client.bridge_online and bridge_client.nav_stack_ready:
                 bridge_client.publish_map_update(
                     request_id=self._request_id,
@@ -400,6 +432,7 @@ class PersistentNav2RuntimeManager:
         status = bridge_client.request_status(self._request_id)
         result = bridge_client.request_result(self._request_id)
         bridge_state = self._bridge_state_name(status=status, result=result)
+        self._maybe_record_execution_trace(bridge_client, status=status, result=result)
 
         if self.state == self.STATE_WAITING_FOR_MAP_READY:
             if bridge_state == "ready":
@@ -457,14 +490,10 @@ class PersistentNav2RuntimeManager:
         if self.state == self.STATE_RUNNING:
             self._update_pose_result_fields()
             if bridge_state == "succeeded":
-                self._enter_post_success_settling(trigger="nav2_result")
+                self._enter_post_success_settling()
                 return
             if bridge_state in {"failed", "rejected", "aborted", "canceled"}:
                 self._fail("bridge_" + bridge_state, self._bridge_detail(status=status, result=result) or f"Bridge ended with {bridge_state}")
-                return
-            if self._local_goal_reached_hold_elapsed():
-                bridge_client.cancel_request(self._request_id)
-                self._enter_post_success_settling(trigger="local_goal_reached")
                 return
             if self._sim_time() >= float(self._runtime_deadline):
                 bridge_client.cancel_request(self._request_id)
@@ -473,35 +502,22 @@ class PersistentNav2RuntimeManager:
 
         if self.state == self.STATE_POST_SUCCESS_SETTLING:
             self._update_pose_result_fields()
-            restore_done = self._robot_bridge_restore_after_navigation_done()
             if bridge_state in {"failed", "rejected", "aborted", "canceled"}:
-                if self._post_success_trigger == "local_goal_reached" and bridge_state == "canceled":
-                    pass
-                else:
-                    self._fail("bridge_" + bridge_state, self._bridge_detail(status=status, result=result) or f"Bridge ended with {bridge_state}")
-                    return
+                self._fail("bridge_" + bridge_state, self._bridge_detail(status=status, result=result) or f"Bridge ended with {bridge_state}")
+                return
             now = self._sim_time()
-            if restore_done and self._post_success_settle_started_at is None:
-                self._post_success_settle_started_at = now
-            elif not restore_done:
-                self._post_success_settle_started_at = None
             settle_done = (
                 self._post_success_settle_started_at is not None
                 and now - float(self._post_success_settle_started_at) >= self._post_success_settle_sec()
             )
-            if self._goal_within_tolerance() and restore_done and settle_done:
+            goal_within_tolerance = self._goal_within_tolerance()
+            if goal_within_tolerance and settle_done:
                 self.result.done = True
                 self.result.success = True
                 self.state = self.STATE_SUCCEEDED
-                if self._post_success_trigger == "local_goal_reached":
-                    success_reason = "local_goal_reached"
-                    success_message = (
-                        "Local goal tolerance held before Nav2 action result; "
-                        "navigation settled successfully."
-                    )
-                else:
-                    success_reason = "goal_succeeded"
-                    success_message = "Nav2 goal reached within skill tolerances after post-success settling."
+                self._flush_execution_trace()
+                success_reason = "goal_succeeded"
+                success_message = "Nav2 goal reached within skill tolerances after post-success settling."
                 success_snapshot = self._write_debug_snapshot(
                     "success_snapshot.json",
                     success_reason,
@@ -516,25 +532,16 @@ class PersistentNav2RuntimeManager:
                 self._finalize_robot_bridge_after_navigation()
                 return
             if now >= float(self._post_success_deadline):
-                if self._post_success_trigger == "local_goal_reached":
-                    success_source = "Local goal tolerance was held"
-                else:
-                    success_source = "Nav2 reported success"
-                if not restore_done:
-                    self._fail(
-                        "restore_after_navigation_timeout",
-                        f"{success_source} but wheel restore did not finish within post-success simulation timeout.",
-                    )
-                else:
-                    self._fail(
-                        "goal_tolerance_not_met",
-                        f"{success_source} but skill tolerances were not met after post-success settling.",
-                    )
+                self._fail(
+                    "goal_tolerance_not_met",
+                    "Nav2 reported success but skill tolerances were not met after post-success settling.",
+                )
 
     def shutdown(self):
         if self._cleaned_up:
             return
         self._cleaned_up = True
+        self._flush_execution_trace()
         if self._bridge_client is not None and not self.result.done:
             try:
                 self._bridge_client.cancel_request(self._request_id)
@@ -578,15 +585,6 @@ class PersistentNav2RuntimeManager:
             and self.result.final_yaw_error_rad <= self.yaw_tolerance_rad
         )
 
-    def _local_goal_reached_hold_elapsed(self) -> bool:
-        now = self._sim_time()
-        if not self._goal_within_tolerance():
-            self._local_goal_reached_started_at = None
-            return False
-        if self._local_goal_reached_started_at is None:
-            self._local_goal_reached_started_at = now
-        return now - float(self._local_goal_reached_started_at) >= self._local_goal_reached_hold_sec()
-
     def _step_dt(self) -> float:
         get_physics_dt = getattr(self.world, "get_physics_dt", None)
         if callable(get_physics_dt):
@@ -611,18 +609,15 @@ class PersistentNav2RuntimeManager:
         nav2_skill_cfg = self._base_cfg.get("nav2_skill", {}) if isinstance(self._base_cfg, dict) else {}
         return max(float(nav2_skill_cfg.get("post_success_settle_sec", 0.25)), 0.0)
 
-    def _local_goal_reached_hold_sec(self) -> float:
-        nav2_skill_cfg = self._base_cfg.get("nav2_skill", {}) if isinstance(self._base_cfg, dict) else {}
-        return max(float(nav2_skill_cfg.get("local_goal_reached_hold_sec", 0.5)), 0.0)
-
-    def _enter_post_success_settling(self, *, trigger: str = "nav2_result"):
+    def _enter_post_success_settling(self):
+        # Nav2 has completed its action. Close the command gate before the
+        # skill-level pose validation so no residual cmd_vel can move the base.
+        self._finalize_robot_bridge_after_navigation()
         self.state = self.STATE_POST_SUCCESS_SETTLING
-        self._post_success_trigger = str(trigger)
-        self._start_robot_bridge_restore_after_navigation()
         now = self._sim_time()
         self._post_success_started_at = now
         self._post_success_deadline = now + self._post_success_timeout_sec()
-        self._post_success_settle_started_at = None
+        self._post_success_settle_started_at = now
 
     def _robot_base_state_is_invalid(self) -> bool:
         bridge = getattr(self.robot, "_simbox_ros_base_bridge", None)
@@ -810,6 +805,10 @@ class PersistentNav2RuntimeManager:
                 candidate["path_static_check"] = path_static_check
                 candidate["path_static_ok"] = bool(path_static_check.get("ok", False))
                 candidate["path_static_blocked_pose_count"] = int(path_static_check.get("blocked_pose_count", 0))
+                candidate["path_static_sampled_pose_count"] = int(path_static_check.get("sampled_pose_count", 0))
+                candidate["path_static_interpolated_pose_count"] = int(
+                    path_static_check.get("interpolated_pose_count", 0)
+                )
                 if not bool(path_static_check.get("ok", False)):
                     first_blocked = path_static_check.get("first_blocked_index")
                     candidate["path_ok"] = False
@@ -817,7 +816,7 @@ class PersistentNav2RuntimeManager:
                     candidate["path_detail"] = (
                         "ComputePathToPose returned a path, but pose "
                         f"{first_blocked} failed static footprint check with "
-                        f"{path_static_check.get('blocked_pose_count', 0)} blocked path poses."
+                        f"{path_static_check.get('blocked_pose_count', 0)} blocked path-sweep samples."
                     )
                     path_ok = False
         if path_ok:
@@ -926,13 +925,170 @@ class PersistentNav2RuntimeManager:
             return
         payload = {
             "approach": self._approach_debug_payload(),
-            "selected": dict(self._dynamic_goal_selected),
-            "candidates": self._json_safe(self._dynamic_goal_candidates),
+            "selected": self._compact_dynamic_goal_candidate(self._dynamic_goal_selected),
+            "candidates": [
+                self._compact_dynamic_goal_candidate(candidate)
+                for candidate in self._dynamic_goal_candidates
+            ],
         }
         try:
             write_candidates_debug(self._dynamic_goal_debug_path, payload)
         except Exception:
             LOGGER.exception("failed to write dynamic goal candidates debug")
+
+    @staticmethod
+    def _command_motion_phase(command: dict) -> str:
+        vx = float(command.get("linear_x", command.get("vx_body", 0.0)) or 0.0)
+        vy = float(command.get("linear_y", command.get("vy_body", 0.0)) or 0.0)
+        wz = float(command.get("angular_z", command.get("wz_body", 0.0)) or 0.0)
+        linear_active = math.hypot(vx, vy) > 1.0e-4
+        angular_active = abs(wz) > 1.0e-4
+        if linear_active and angular_active:
+            return "combined_command"
+        if linear_active:
+            return "translation_only_command"
+        if angular_active:
+            return "rotation_only_command"
+        return "zero_command"
+
+    def _maybe_record_execution_trace(
+        self,
+        bridge_client,
+        *,
+        status: Optional[dict] = None,
+        result: Optional[dict] = None,
+        force: bool = False,
+    ):
+        try:
+            self._record_execution_trace_sample(
+                bridge_client,
+                status=status,
+                result=result,
+                force=force,
+            )
+        except Exception:
+            LOGGER.exception("failed to collect navigate execution trace sample")
+
+    def _record_execution_trace_sample(
+        self,
+        bridge_client,
+        *,
+        status: Optional[dict] = None,
+        result: Optional[dict] = None,
+        force: bool = False,
+    ):
+        if not hasattr(self, "_execution_trace") or not self._goal_output_dir:
+            return
+        interval_sec = max(float(self._execution_trace_sample_interval_sec), 0.0)
+        if interval_sec <= 0.0 and not force:
+            return
+
+        now = self._sim_time()
+        next_sample_at = self._execution_trace_next_sample_at
+        if not force and next_sample_at is not None and now + 1.0e-9 < float(next_sample_at):
+            return
+        self._execution_trace_next_sample_at = now + interval_sec if interval_sec > 0.0 else None
+
+        self._update_pose_result_fields()
+        status = dict(status if status is not None else bridge_client.latest_status)
+        result = dict(result if result is not None else bridge_client.latest_result)
+        bridge_state = self._bridge_state_name(status=status, result=result)
+        control = self._compact_control_snapshot(runtime_control_debug_snapshot(self.robot))
+        bridge_control = dict(control.get("bridge", {}) or {})
+        command = dict(bridge_control.get("last_received_cmd_vel", {}) or {})
+        published_pose = dict(bridge_control.get("last_published_pose", {}) or {})
+        nav2_errors = dict(result.get("nav2_errors", {}) or status.get("nav2_errors", {}) or {})
+        started_at = self._execution_trace_started_at
+        sample = {
+            "sample_index": int(self._execution_trace_total_samples),
+            "sim_time_sec": float(now),
+            "elapsed_sec": float(now - started_at) if started_at is not None else 0.0,
+            "manager_state": str(self.state),
+            "bridge_state": str(bridge_state),
+            "bridge_detail": self._bridge_detail(status=status, result=result),
+            "motion_phase": self._command_motion_phase(command),
+            "goal_error": {
+                "world_distance_m": float(self.result.final_distance_to_goal),
+                "nav_distance_m": float(self.result.final_nav_distance_to_goal),
+                "yaw_error_rad": float(self.result.final_yaw_error_rad),
+            },
+            "pose": {
+                "world_xy": list(self.result.final_world_xy),
+                "world_yaw": float(self.result.final_world_yaw),
+                "nav_xy": list(self.result.final_nav_xy),
+                "nav_yaw": float(self.result.final_nav_yaw),
+                "reported_pose": dict((result or status).get("reported_pose", {}) or {}),
+            },
+            "command": command,
+            "active_command": dict(bridge_control.get("active_command", {}) or {}),
+            "actual_velocity": {
+                "linear_body": list(published_pose.get("actual_linear_velocity_body", []) or []),
+                "angular_world": list(published_pose.get("actual_angular_velocity_world", []) or []),
+            },
+            "control_counts": {
+                "received_cmd_vel": int(bridge_control.get("received_cmd_vel_count", 0)),
+                "applied_driver_commands": int(bridge_control.get("applied_driver_command_count", 0)),
+            },
+            "nav2_error_counts": {
+                "unique_entries": int(nav2_errors.get("unique_entry_count", 0)),
+                "messages": int(nav2_errors.get("message_count", 0)),
+            },
+        }
+        self._execution_trace.append(self._json_safe(sample))
+        self._execution_trace_total_samples += 1
+        max_samples = max(int(self._execution_trace_max_samples), 1)
+        if len(self._execution_trace) > max_samples:
+            self._execution_trace = self._execution_trace[-max_samples:]
+
+        write_interval_sec = max(float(self._execution_trace_write_interval_sec), 0.0)
+        last_write_at = self._execution_trace_last_write_at
+        if write_interval_sec > 0.0 and (
+            last_write_at is None or now - float(last_write_at) >= write_interval_sec
+        ):
+            self._write_execution_trace(now=now)
+
+    def _write_execution_trace(self, *, now: Optional[float] = None):
+        if not hasattr(self, "_execution_trace") or not self._goal_output_dir:
+            return ""
+        if now is None:
+            now = self._sim_time()
+        payload = {
+            "robot": getattr(self.robot, "name", "robot"),
+            "request_id": str(self._request_id),
+            "goal": {"x": float(self.goal_x), "y": float(self.goal_y), "yaw": float(self.goal_yaw)},
+            "sample_interval_sec": float(self._execution_trace_sample_interval_sec),
+            "write_interval_sec": float(self._execution_trace_write_interval_sec),
+            "total_samples": int(self._execution_trace_total_samples),
+            "retained_samples": int(len(self._execution_trace)),
+            "max_samples": int(self._execution_trace_max_samples),
+            "controller_config": dict(self._controller_trace_config),
+            "result": {
+                "done": bool(self.result.done),
+                "success": bool(self.result.success),
+                "failure_reason": str(self.result.failure_reason),
+                "error_message": str(self.result.error_message),
+            },
+            "samples": list(self._execution_trace),
+        }
+        output_path = os.path.join(self._goal_output_dir, "navigate_execution_trace.json")
+        temporary_path = output_path + ".tmp"
+        try:
+            with open(temporary_path, "w", encoding="utf-8") as handle:
+                json.dump(self._json_safe(payload), handle, indent=2, ensure_ascii=False)
+            os.replace(temporary_path, output_path)
+            self._execution_trace_last_write_at = float(now)
+            return output_path
+        except Exception:
+            LOGGER.exception("failed to write navigate execution trace")
+            return ""
+
+    def _flush_execution_trace(self):
+        if not hasattr(self, "_execution_trace") or not self._goal_output_dir:
+            return ""
+        bridge_client = self._bridge_client
+        if bridge_client is not None and self._request_id:
+            self._maybe_record_execution_trace(bridge_client, force=True)
+        return self._write_execution_trace()
 
     def _approach_debug_payload(self) -> dict:
         if self.approach_config is None:
@@ -984,12 +1140,19 @@ class PersistentNav2RuntimeManager:
         control_snapshot = runtime_control_debug_snapshot(self.robot)
         bridge_client = self._bridge_client
         planning_payload = dict((bridge_client.latest_result if bridge_client is not None else {}).get("planning", {}))
-        trajectory_payload = bridge_client.odom_trace if bridge_client is not None else []
-        artifacts = self._write_navigation_artifacts(
+        control_snapshot = self._compact_control_snapshot(control_snapshot)
+        nav2_result = bridge_client.latest_result if bridge_client is not None else {}
+        nav2_status = bridge_client.latest_status if bridge_client is not None else {}
+        artifacts = self._write_nav2_error_report(
+            reason=reason,
+            message=message,
+            nav2_result=nav2_result,
+            nav2_status=nav2_status,
             planning_payload=planning_payload,
-            trajectory_payload=trajectory_payload,
-            control_snapshot=control_snapshot,
         )
+        execution_trace_path = os.path.join(self._goal_output_dir, "navigate_execution_trace.json")
+        if os.path.exists(execution_trace_path):
+            artifacts["navigate_execution_trace"] = execution_trace_path
         debug_snapshot = {
             "robot": getattr(self.robot, "name", "robot"),
             "state": str(self.state),
@@ -998,7 +1161,7 @@ class PersistentNav2RuntimeManager:
             "goal": {"x": float(self.goal_x), "y": float(self.goal_y), "yaw": float(self.goal_yaw)},
             "goal_source": "approach" if self.approach_config is not None else "fixed",
             "approach": self._approach_debug_payload(),
-            "dynamic_goal": dict(self._dynamic_goal_selected),
+            "dynamic_goal": self._compact_dynamic_goal_candidate(self._dynamic_goal_selected),
             "world_xy": list(self.result.final_world_xy),
             "world_yaw": float(self.result.final_world_yaw),
             "nav_xy": list(self.result.final_nav_xy),
@@ -1006,19 +1169,16 @@ class PersistentNav2RuntimeManager:
             "world_dist": float(self.result.final_distance_to_goal),
             "nav_dist": float(self.result.final_nav_distance_to_goal),
             "yaw_err": float(self.result.final_yaw_error_rad),
-            "post_success_trigger": str(self._post_success_trigger),
-            "local_goal_reached_started_at": self._local_goal_reached_started_at,
-            "local_goal_reached_hold_sec": self._local_goal_reached_hold_sec(),
             "control": control_snapshot,
-            "planning": planning_payload,
+            "planning": self._planning_summary(planning_payload),
             "map_info": dict(self._goal_debug_map_info or self._map_info or {}),
             "params_path": str(self._goal_params_path or self._params_path),
             "stack_id": str(self._stack_id),
             "nav2_runtime": {
                 "bridge_online": bool(bridge_client.bridge_online) if bridge_client is not None else False,
                 "nav_stack_ready": bool(bridge_client.nav_stack_ready) if bridge_client is not None else False,
-                "latest_status": bridge_client.latest_status if bridge_client is not None else {},
-                "latest_result": bridge_client.latest_result if bridge_client is not None else {},
+                "latest_status": nav2_status,
+                "latest_result": self._compact_nav2_result(nav2_result),
             },
             "artifacts": artifacts,
         }
@@ -1059,65 +1219,86 @@ class PersistentNav2RuntimeManager:
             control_snapshot,
         )
 
-    def _write_navigation_artifacts(self, *, planning_payload: dict, trajectory_payload: list[dict], control_snapshot: dict) -> dict:
+    @staticmethod
+    def _compact_control_snapshot(control_snapshot: dict) -> dict:
+        compact = dict(control_snapshot or {})
+        bridge = dict(compact.get("bridge", {}) or {})
+        bridge.pop("recent_cmd_vel_history", None)
+        bridge.pop("recent_command_history", None)
+        compact["bridge"] = bridge
+        return compact
+
+    @classmethod
+    def _compact_dynamic_goal_candidate(cls, candidate: dict) -> dict:
+        compact = dict(candidate or {})
+        if "planning" in compact:
+            compact["planning"] = cls._planning_summary(dict(compact.get("planning", {}) or {}))
+        return cls._json_safe(compact)
+
+    @staticmethod
+    def _planning_summary(planning_payload: dict) -> dict:
+        if not planning_payload:
+            return {}
+        path_payload = dict(planning_payload.get("path", {}) or {})
+        return {
+            "state": str(planning_payload.get("state", "")),
+            "source": str(planning_payload.get("source", "")),
+            "status_code": planning_payload.get("status_code"),
+            "planning_time_sec": planning_payload.get("planning_time_sec"),
+            "path_num_poses": int(path_payload.get("num_poses", 0)),
+            "path_length_m": float(path_payload.get("path_length_m", 0.0)),
+        }
+
+    @classmethod
+    def _compact_nav2_result(cls, nav2_result: dict) -> dict:
+        if not nav2_result:
+            return {}
+        return {
+            "state": str(nav2_result.get("state", "")),
+            "detail": str(nav2_result.get("detail", "")),
+            "status_code": nav2_result.get("status_code"),
+            "reported_pose": dict(nav2_result.get("reported_pose", {}) or {}),
+            "planning": cls._planning_summary(dict(nav2_result.get("planning", {}) or {})),
+            "action_result_debug": dict(nav2_result.get("action_result_debug", {}) or {}),
+            "nav2_errors": dict(nav2_result.get("nav2_errors", {}) or {}),
+        }
+
+    def _write_nav2_error_report(
+        self,
+        *,
+        reason: str,
+        message: str,
+        nav2_result: dict,
+        nav2_status: dict,
+        planning_payload: dict,
+    ) -> dict:
         artifacts = {}
-        if not self._goal_output_dir:
+        if not self._goal_output_dir or self.result.success:
             return artifacts
-
-        planning_summary = {}
-        if planning_payload:
-            planning_summary = {
-                "state": str(planning_payload.get("state", "")),
-                "source": str(planning_payload.get("source", "")),
-                "status_code": planning_payload.get("status_code"),
-                "planning_time_sec": planning_payload.get("planning_time_sec"),
-            }
-            path_payload = dict(planning_payload.get("path", {}))
-            if path_payload:
-                planning_summary["frame_id"] = str(path_payload.get("frame_id", ""))
-                planning_summary["num_poses"] = int(path_payload.get("num_poses", 0))
-                planning_summary["path_length_m"] = float(path_payload.get("path_length_m", 0.0))
-            planned_path_path = os.path.join(self._goal_output_dir, "planned_path.json")
-            with open(planned_path_path, "w", encoding="utf-8") as handle:
-                json.dump(planning_payload, handle, indent=2, ensure_ascii=False)
-            artifacts["planned_path"] = planned_path_path
-        if planning_summary:
-            artifacts["planned_path_summary"] = planning_summary
-
-        if trajectory_payload:
-            actual_trajectory_path = os.path.join(self._goal_output_dir, "actual_trajectory.json")
-            with open(actual_trajectory_path, "w", encoding="utf-8") as handle:
-                json.dump(trajectory_payload, handle, indent=2, ensure_ascii=False)
-            artifacts["actual_trajectory"] = actual_trajectory_path
-            artifacts["actual_trajectory_summary"] = {
-                "num_samples": len(trajectory_payload),
-                "start_xy": [float(trajectory_payload[0]["x"]), float(trajectory_payload[0]["y"])],
-                "end_xy": [float(trajectory_payload[-1]["x"]), float(trajectory_payload[-1]["y"])],
-            }
-
-        bridge_snapshot = dict(control_snapshot.get("bridge", {}) or {})
-        bridge = getattr(self.robot, "_simbox_ros_base_bridge", None)
-        bridge_cmd_vel_history = list(getattr(bridge, "_debug_cmd_vel_history", [])) if bridge is not None else []
-        if bridge_cmd_vel_history:
-            cmd_vel_history_path = os.path.join(self._goal_output_dir, "cmd_vel_history.json")
-            with open(cmd_vel_history_path, "w", encoding="utf-8") as handle:
-                json.dump(bridge_cmd_vel_history, handle, indent=2, ensure_ascii=False)
-            artifacts["cmd_vel_history"] = cmd_vel_history_path
-            artifacts["cmd_vel_history_summary"] = {
-                "num_samples": len(bridge_cmd_vel_history),
-                "last_received_cmd_vel": bridge_snapshot.get("last_received_cmd_vel"),
-            }
-
-        bridge_command_history = list(getattr(bridge, "_debug_command_history", [])) if bridge is not None else []
-        if bridge_command_history:
-            bridge_command_history_path = os.path.join(self._goal_output_dir, "bridge_command_history.json")
-            with open(bridge_command_history_path, "w", encoding="utf-8") as handle:
-                json.dump(bridge_command_history, handle, indent=2, ensure_ascii=False)
-            artifacts["bridge_command_history"] = bridge_command_history_path
-            artifacts["bridge_command_history_summary"] = {
-                "num_samples": len(bridge_command_history),
-                "steering_command_sign": bridge_snapshot.get("steering_command_sign"),
-            }
+        report = {
+            "robot": getattr(self.robot, "name", "robot"),
+            "request_id": str(getattr(self, "_request_id", "")),
+            "stack_id": str(self._stack_id),
+            "failure_reason": str(reason),
+            "failure_message": str(message),
+            "goal": {"x": float(self.goal_x), "y": float(self.goal_y), "yaw": float(self.goal_yaw)},
+            "action": {
+                "state": str(nav2_result.get("state", "")),
+                "detail": str(nav2_result.get("detail", "")),
+                "status_code": nav2_result.get("status_code"),
+                "result": dict(nav2_result.get("action_result_debug", {}) or {}),
+            },
+            "planning_summary": self._planning_summary(planning_payload),
+            "nav2_errors": dict(
+                nav2_result.get("nav2_errors", {})
+                or nav2_status.get("nav2_errors", {})
+                or {}
+            ),
+        }
+        report_path = os.path.join(self._goal_output_dir, "nav2_error_report.json")
+        with open(report_path, "w", encoding="utf-8") as handle:
+            json.dump(self._json_safe(report), handle, indent=2, ensure_ascii=False)
+        artifacts["nav2_error_report"] = report_path
         return artifacts
 
     def _fail(self, reason: str, message: str):
@@ -1127,6 +1308,7 @@ class PersistentNav2RuntimeManager:
         self.result.failure_reason = str(reason)
         self.result.error_message = str(message)
         control_snapshot = runtime_control_debug_snapshot(self.robot)
+        self._flush_execution_trace()
         self._write_debug_snapshot("failure_snapshot.json", reason, message)
         self._log_result_summary(
             level=logging.ERROR,
@@ -1159,46 +1341,23 @@ class PersistentNav2RuntimeManager:
         except Exception as exc:
             raise RuntimeError("failed to prepare base bridge for navigation") from exc
 
-    def _start_robot_bridge_restore_after_navigation(self):
-        if self._restore_after_nav_started:
-            return
-        self._restore_after_nav_started = True
-        bridge = getattr(self.robot, "_simbox_ros_base_bridge", None)
-        finalize_fn = getattr(bridge, "finalize_after_navigation", None)
-        if not callable(finalize_fn):
-            return
-        try:
-            finalize_fn()
-        except Exception as exc:
-            raise RuntimeError("failed to start base bridge restore after navigation") from exc
-
-    def _robot_bridge_restore_after_navigation_done(self) -> bool:
-        bridge = getattr(self.robot, "_simbox_ros_base_bridge", None)
-        done_fn = getattr(bridge, "restore_after_navigation_done", None)
-        if callable(done_fn):
-            try:
-                return bool(done_fn())
-            except Exception as exc:
-                raise RuntimeError("failed to query base bridge restore after navigation state") from exc
-        if bridge is None:
-            return True
-        return not bool(getattr(bridge, "_restore_after_navigation", False))
-
     def _finalize_robot_bridge_after_navigation(self):
+        if getattr(self, "_robot_bridge_finalized", False):
+            return
         bridge = getattr(self.robot, "_simbox_ros_base_bridge", None)
         if bridge is None:
-            return
-        self._start_robot_bridge_restore_after_navigation()
-        if self._restore_after_nav_started:
+            self._robot_bridge_finalized = True
             return
         finalize_fn = getattr(bridge, "finalize_after_navigation", None)
         if callable(finalize_fn):
             try:
                 finalize_fn()
+                self._robot_bridge_finalized = True
                 return
             except Exception as exc:
                 raise RuntimeError("failed to finalize base bridge after navigation") from exc
         self._reset_robot_bridge_state(clear_debug_history=False)
+        self._robot_bridge_finalized = True
 
     def _update_pose_result_fields(self):
         try:

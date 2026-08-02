@@ -477,10 +477,19 @@ class Pick(BaseSkill):
             )
         if grasp_success:
             if validate_postgrasp:
-                postgrasp_success, _, _ = self.controller.test_forward_from_joint_positions(
+                # The grasp pass intentionally ignores the target so fingers
+                # can close around it.  Restore it before validating lift,
+                # then attach it at the grasp endpoint so this candidate sees
+                # the same collision geometry as runtime execution.
+                self.controller.update_specific(
+                    ignore_substring=base_ignore_substring,
+                    reference_prim_path=self.controller.reference_prim_path,
+                )
+                postgrasp_success, _, _ = self.controller.test_attached_forward_from_joint_positions(
                     postgrasp_translation,
                     grasp_orientation,
                     start_arm_positions=grasp_end_js,
+                    obj_prim_paths=list(self.pick_obj.attach_collision_prim_paths),
                 )
             else:
                 postgrasp_success = True
@@ -1057,8 +1066,8 @@ class Pick(BaseSkill):
         cmd = (
             p_base_ee_grasps[index],
             q_base_ee_grasps[index],
-            "attach_obj",
-            {"obj_prim_path": self.pick_obj.mesh_prim_path, "skip_plan": True},
+            "attach_objects",
+            {"obj_prim_paths": list(self.pick_obj.attach_collision_prim_paths), "skip_plan": True},
         )
         manip_list.append(cmd)
 

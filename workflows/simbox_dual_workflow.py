@@ -32,7 +32,10 @@ from core.execution.safety_monitor import (
     quaternion_angle,
 )
 from core.execution.execution_supervisor import ExecutionSupervisor
-from core.planning.config_contract import validate_planning_contract
+from core.planning.config_contract import (
+    resolve_collision_world_mode,
+    validate_planning_contract,
+)
 from core.utils.camera_utils import capture_topdown_screenshot
 from core.loggers.lmdb_logger import LmdbLogger
 from core.planning.collision_scene_manager import (
@@ -371,7 +374,16 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         planning_cfg = self.task_cfg.get("planning", {})
         collision_cfg = planning_cfg.get("collision_world", {})
         safety_cfg = planning_cfg.get("execution_safety", {})
-        self.collision_world_mode = str(collision_cfg.get("mode", "legacy_stage_scan"))
+        self.requested_collision_world_mode = str(collision_cfg.get("mode", "auto"))
+        self.collision_world_mode, collision_mode_reason = resolve_collision_world_mode(
+            self.task_cfg, self.requested_collision_world_mode
+        )
+        LOGGER.warning(
+            "[CollisionWorld] requested_mode=%s resolved_mode=%s reason=%s",
+            self.requested_collision_world_mode,
+            self.collision_world_mode,
+            collision_mode_reason,
+        )
         self._validate_planning_contract(self.task_cfg, self.collision_world_mode)
         self.world.reset()
         # Hold configured virtual-base DOFs before the first Physics step, then
@@ -392,7 +404,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         self.execution_safety_enabled = bool(
             safety_cfg.get("enabled", self.collision_world_mode == "physics_schema")
         )
-        LOGGER.warning(
+        LOGGER.info(
             "[ExecutionSafety] initialized enabled=%s collision_world_mode=%s manager=%s",
             self.execution_safety_enabled,
             self.collision_world_mode,
@@ -1605,7 +1617,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         """
 
         if step_id % 100 == 0:
-            LOGGER.warning(
+            LOGGER.info(
                 "[ExecutionHeartbeat] precheck-entry step=%d enabled=%s manager=%s skills=%s",
                 step_id,
                 self.execution_safety_enabled,
@@ -1638,7 +1650,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 or controller._phase_plan_failed
                 or controller._phase_tracking_failed
             ):
-                LOGGER.warning(
+                LOGGER.info(
                     "[ExecutionHeartbeat] step=%d robot=%s arm=%s phase=%s plan_active=%s plan_index=%d phase_finished=%s plan_failed=%s tracking_failed=%s",
                     step_id,
                     robot_name,

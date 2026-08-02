@@ -24,9 +24,25 @@ fi
 
 if [ "${#containers[@]}" -eq 0 ]; then
   echo "No matching running containers found."
-  exit 0
+else
+  echo "Stopping containers:"
+  printf '  %s\n' "${containers[@]}"
+  docker stop "${containers[@]}"
 fi
 
-echo "Stopping containers:"
-printf '  %s\n' "${containers[@]}"
-docker stop "${containers[@]}"
+# Remove every container that is not running, including containers stopped
+# above and containers that were only created. This does not remove images.
+# mapfile -t stopped_containers < <(
+#   docker ps --all --quiet \
+#     --filter status=created \
+#     --filter status=exited \
+#     --filter status=dead
+# )
+
+# if [ "${#stopped_containers[@]}" -eq 0 ]; then
+#   echo "No stopped containers found."
+# else
+#   echo "Removing stopped containers:"
+#   printf '  %s\n' "${stopped_containers[@]}"
+#   docker rm "${stopped_containers[@]}"
+# fi

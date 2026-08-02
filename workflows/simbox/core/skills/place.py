@@ -16,7 +16,7 @@ from core.utils.plan_utils import (
 from core.utils.transformation_utils import create_pose_matrices, poses_from_tf_matrices
 from core.utils.usd_geom_utils import compute_bbox
 from core.visualization.skill_target_math import ratio_box_corners
-from omegaconf import DictConfig
+from omegaconf import DictConfig, ListConfig, OmegaConf
 from omni.isaac.core.controllers import BaseController
 from omni.isaac.core.robots.robot import Robot
 from omni.isaac.core.tasks import BaseTask
@@ -76,6 +76,8 @@ class Place(BaseSkill):
         self._success_check_debug_path = None
         self._success_check_snapshot_written = False
         self._last_success_check_debug = {}
+        self._runtime_failure_debug_path = None
+        self._runtime_failure_snapshot_written = False
         self._pending_target_intent = None
         self.failure_reason = ""
         self.error_message = ""
@@ -107,6 +109,8 @@ class Place(BaseSkill):
             return value.tolist()
         if isinstance(value, (np.floating, np.integer, np.bool_)):
             return value.item()
+        if isinstance(value, (DictConfig, ListConfig)):
+            return self._json_ready(OmegaConf.to_container(value, resolve=True))
         if type(value).__module__.startswith("pxr") and type(value).__name__.startswith("Vec"):
             return [self._json_ready(v) for v in value]
         if isinstance(value, (list, tuple)):
@@ -121,6 +125,78 @@ class Place(BaseSkill):
         with open(output_path, "w", encoding="utf-8") as handle:
             json.dump(self._json_ready(payload), handle, indent=2, ensure_ascii=False)
         return output_path
+
+    def _manip_cmd_to_debug(self, manip_cmd):
+        if isinstance(manip_cmd, MotionPhaseCommand):
+            return {
+                "phase": manip_cmd.phase.value,
+                "target_position": manip_cmd.target_position,
+                "target_orientation": manip_cmd.target_orientation,
+                "gripper_action": manip_cmd.gripper_action,
+                "active_object": manip_cmd.active_object,
+                "support_object": manip_cmd.support_object,
+                "replan_allowed": manip_cmd.replan_allowed,
+            }
+        if isinstance(manip_cmd, (list, tuple)) and len(manip_cmd) >= 3:
+            return {
+                "target_position": manip_cmd[0],
+                "target_orientation": manip_cmd[1],
+                "command": str(manip_cmd[2]),
+                "params": manip_cmd[3] if len(manip_cmd) > 3 else {},
+            }
+        return str(manip_cmd)
+
+    def _write_runtime_failure_snapshot(self, th: int):
+        """Best-effort evidence for a Place planning failure before release."""
+        current_cmd = self.manip_list[0] if self.manip_list else None
+        payload = {
+            "robot": self.robot.name,
+            "skill": self.name,
+            "pick_object": self.pick_obj.name,
+            "place_object": self.place_obj.name,
+            "collision_world_mode": getattr(self.controller, "collision_world_mode", None),
+            "num_plan_failed": int(getattr(self.controller, "num_plan_failed", 0)),
+            "failure_threshold": int(th),
+            "failure_reason": self.failure_reason,
+            "error_message": self.error_message,
+            "controller_last_command": getattr(self.controller, "_last_command_name", None),
+            "controller_cmd_plan_active": getattr(self.controller, "cmd_plan", None) is not None,
+            "controller_cmd_idx": getattr(self.controller, "cmd_idx", None),
+            "controller_num_last_cmd": getattr(self.controller, "num_last_cmd", None),
+            "controller_gripper_state": getattr(self.controller, "_gripper_state", None),
+            "current_command": self._manip_cmd_to_debug(current_cmd) if current_cmd is not None else None,
+            "selected_place_target": self._pending_target_intent,
+            "constraints": {
+                key: self.skill_cfg[key]
+                for key in (
+                    "position_constraint", "place_direction", "filter_x_dir",
+                    "filter_y_dir", "filter_z_dir", "x_ratio_range", "y_ratio_range",
+                    "z_ratio_range", "pre_place_z_offset", "place_z_offset",
+                )
+                if key in self.skill_cfg
+            },
+        }
+        try:
+            payload["armbase_world_pose"] = self._get_world_pose_from_path(self.robot_base_path)
+            payload["ee_world_pose"] = self._get_world_pose_from_path(self.robot_ee_path)
+            payload["ee_armbase_pose"] = self.controller.get_ee_pose()
+            payload["pick_object_world_pose"] = self.pick_obj.get_world_pose()
+            payload["place_object_world_pose"] = self.place_obj.get_world_pose()
+            manager = getattr(self.controller, "collision_scene_manager", None)
+            record = getattr(manager, "records", {}).get(self.pick_obj.name) if manager else None
+            payload["pick_collision_record"] = record.to_dict() if record else None
+        except Exception as exc:  # Debug capture must not change episode outcome.
+            payload["runtime_state_capture_error"] = repr(exc)
+
+        try:
+            self._runtime_failure_debug_path = self._write_debug_artifact(
+                "place_runtime_failure_snapshot.json", payload
+            )
+            print(f"[place-debug] Wrote place runtime failure snapshot: {self._runtime_failure_debug_path}")
+        except Exception as exc:  # Debug capture must not change episode outcome.
+            print(f"[place-debug] Failed to write place runtime failure snapshot: {exc!r}")
+        finally:
+            self._runtime_failure_snapshot_written = True
 
     def _record_success_check_debug(self, *, success: bool, failure_reasons: list[str], details: dict):
         self._last_success_check_debug = {
@@ -693,7 +769,10 @@ class Place(BaseSkill):
             return valid_rot_mats[indices]
 
     def is_feasible(self, th=5):
-        return self.controller.num_plan_failed <= th
+        feasible = self.controller.num_plan_failed <= th
+        if not feasible and not self._runtime_failure_snapshot_written:
+            self._write_runtime_failure_snapshot(th)
+        return feasible
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0

@@ -14,6 +14,48 @@ DEFAULT_STOP_NAV2_WHEN_ISAAC_EXITS="1"
 
 COMPOSE_FILE="${INTERNDATA_COMPOSE_FILE:-${REPO_ROOT}/docker/docker-compose.yml}"
 STACK_ID="${INTERNDATA_STACK_ID:-}"
+ISAAC_CPUS="${INTERNDATA_ISAAC_CPUS:-}"
+NAV2_CPUS="${INTERNDATA_NAV2_CPUS:-}"
+CPU_LIMITS_COMPOSE_FILE=""
+
+validate_cpu_limit() {
+  local service="$1"
+  local value="$2"
+  if ! [[ "${value}" =~ ^[0-9]+([.][0-9]+)?$ ]] || ! awk "BEGIN { exit !(${value} > 0) }"; then
+    echo "ERROR: INTERNDATA_${service}_CPUS must be a positive number, got '${value}'" >&2
+    exit 2
+  fi
+}
+
+create_cpu_limits_compose_file() {
+  if [ -n "${ISAAC_CPUS}" ]; then
+    validate_cpu_limit "ISAAC" "${ISAAC_CPUS}"
+  fi
+  if [ -n "${NAV2_CPUS}" ]; then
+    validate_cpu_limit "NAV2" "${NAV2_CPUS}"
+  fi
+  if [ -z "${ISAAC_CPUS}${NAV2_CPUS}" ]; then
+    return
+  fi
+
+  CPU_LIMITS_COMPOSE_FILE="$(mktemp "${TMPDIR:-/tmp}/interndata-compose-cpu.XXXXXX.yml")"
+  {
+    printf 'services:\n'
+    if [ -n "${ISAAC_CPUS}" ]; then
+      printf '  isaac:\n    cpus: "%s"\n' "${ISAAC_CPUS}"
+    fi
+    if [ -n "${NAV2_CPUS}" ]; then
+      printf '  nav2:\n    cpus: "%s"\n' "${NAV2_CPUS}"
+    fi
+  } >"${CPU_LIMITS_COMPOSE_FILE}"
+}
+
+cleanup_cpu_limits_compose_file() {
+  if [ -n "${CPU_LIMITS_COMPOSE_FILE}" ]; then
+    rm -f "${CPU_LIMITS_COMPOSE_FILE}"
+  fi
+}
+trap cleanup_cpu_limits_compose_file EXIT
 
 sanitize_id() {
   local value="$1"
@@ -155,10 +197,17 @@ echo "Using INTERNDATA_NAV2_ROBOT_NAME=${INTERNDATA_NAV2_ROBOT_NAME:-}"
 echo "Using INTERNDATA_NAV2_ROBOT_CONFIG=${INTERNDATA_NAV2_ROBOT_CONFIG:-}"
 echo "Using INTERNDATA_BASE_CONFIG=${INTERNDATA_BASE_CONFIG:-}"
 echo "Using INTERNDATA_STOP_NAV2_WHEN_ISAAC_EXITS=${STOP_NAV2_WHEN_ISAAC_EXITS}"
+echo "Using INTERNDATA_ISAAC_CPUS=${ISAAC_CPUS:-unlimited}"
+echo "Using INTERNDATA_NAV2_CPUS=${NAV2_CPUS:-unlimited}"
 echo "Compose file: ${COMPOSE_FILE}"
 echo "Services: $*"
 
-docker compose -f "${COMPOSE_FILE}" up -d "$@"
+create_cpu_limits_compose_file
+compose_args=(-f "${COMPOSE_FILE}")
+if [ -n "${CPU_LIMITS_COMPOSE_FILE}" ]; then
+  compose_args+=(-f "${CPU_LIMITS_COMPOSE_FILE}")
+fi
+docker compose "${compose_args[@]}" up -d "$@"
 
 if [ "${STOP_NAV2_WHEN_ISAAC_EXITS}" = "1" ]; then
   start_isaac_nav2_watchdog=false

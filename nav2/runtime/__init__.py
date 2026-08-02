@@ -2,6 +2,7 @@
 
 from .config import (
     NAV2_DEFAULT_POSITION_TOLERANCE_M,
+    NAV2_DEFAULT_RUNTIME_TIMEOUT_SEC,
     NAV2_DEFAULT_YAW_TOLERANCE_RAD,
     configure_base_cfg_for_nav2_skill,
     configure_robot_for_nav2_skill,
@@ -13,6 +14,7 @@ from .utils import safe_name, time_monotonic
 
 __all__ = [
     "NAV2_DEFAULT_POSITION_TOLERANCE_M",
+    "NAV2_DEFAULT_RUNTIME_TIMEOUT_SEC",
     "NAV2_DEFAULT_YAW_TOLERANCE_RAD",
     "Nav2SkillResult",
     "PersistentNav2RuntimeManager",

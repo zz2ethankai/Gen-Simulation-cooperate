@@ -481,9 +481,7 @@ class TemplateRobot(Robot):
                 }
         for attr in (
             "_navigation_active",
-            "_hold_after_navigation",
-            "_restore_after_navigation",
-            "_restore_waiting_for_wheel_stop",
+            "_has_nav2_command",
             "_last_requested_steering",
             "_last_requested_wheel_velocities",
             "_last_applied_wheel_velocities",

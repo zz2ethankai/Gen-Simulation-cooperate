@@ -10,6 +10,39 @@ VALIDATION_ONLY_SKILLS = {"pick_plan_probe"}
 NON_MANIPULATION_SKILLS = {"observe_hold"}
 
 
+def _arm_skill_names(task_cfg: dict[str, Any]) -> set[str]:
+    names: set[str] = set()
+    for cfg_skill_dict in task_cfg.get("skills", []):
+        for robot_skill_list in cfg_skill_dict.values():
+            for lr_skill_dict in robot_skill_list:
+                for arm in ("left", "right"):
+                    names.update(
+                        str(skill_cfg.get("name", "")).lower()
+                        for skill_cfg in lr_skill_dict.get(arm, [])
+                    )
+    return names
+
+
+def resolve_collision_world_mode(
+    task_cfg: dict[str, Any], requested_mode: str | None
+) -> tuple[str, str]:
+    """Resolve auto mode without weakening explicit Physics-schema validation."""
+
+    requested = "auto" if requested_mode is None else str(requested_mode).strip().lower()
+    if requested == "auto":
+        try:
+            validate_planning_contract(task_cfg, "physics_schema")
+        except ValueError as exc:
+            return "legacy_stage_scan", str(exc)
+        skill_names = _arm_skill_names(task_cfg)
+        if not skill_names.intersection(PHYSICS_SCHEMA_SKILLS | VALIDATION_ONLY_SKILLS):
+            return "legacy_stage_scan", "task has no Physics-schema manipulation skills"
+        return "physics_schema", "all active manipulation skills support physics_schema"
+
+    validate_planning_contract(task_cfg, requested)
+    return requested, "explicit configuration"
+
+
 def validate_planning_contract(task_cfg: dict[str, Any], collision_world_mode: str) -> None:
     """Reject configs that would silently bypass the stateful collision path."""
 

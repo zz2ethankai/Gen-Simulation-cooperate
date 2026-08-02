@@ -10,7 +10,11 @@ from omni.isaac.core.controllers import BaseController
 from omni.isaac.core.robots.robot import Robot
 from omni.isaac.core.tasks import BaseTask
 
-from nav2.runtime import configure_robot_for_nav2_skill
+from nav2.runtime import (
+    NAV2_DEFAULT_POSITION_TOLERANCE_M,
+    NAV2_DEFAULT_RUNTIME_TIMEOUT_SEC,
+    configure_robot_for_nav2_skill,
+)
 from nav2.runtime.dynamic_goal import parse_approach_config
 
 
@@ -38,20 +42,35 @@ class Navigate(BaseSkill):
         else:
             self.goal_x, self.goal_y, self.goal_yaw = 0.0, 0.0, 0.0
 
-        legacy_position_tolerance_m = float(cfg.get("xy_goal_tolerance", cfg.get("skill_xy_goal_tolerance", 0.10)))
+        legacy_position_tolerance_m = float(cfg.get("xy_goal_tolerance", cfg.get("skill_xy_goal_tolerance", 0.15)))
         legacy_yaw_tolerance_rad = float(cfg.get("yaw_goal_tolerance", cfg.get("skill_yaw_goal_tolerance", 0.10)))
         goal_checker_cfg = dict(
             getattr(self.robot, "base_cfg", {}).get("nav2_skill", {}).get("controller_server", {}).get("goal_checker", {})
         )
-        self.nav2_position_tolerance_m = float(goal_checker_cfg.get("xy_goal_tolerance", legacy_position_tolerance_m))
+        self.nav2_position_tolerance_m = float(
+            goal_checker_cfg.get("xy_goal_tolerance", NAV2_DEFAULT_POSITION_TOLERANCE_M)
+        )
         self.nav2_yaw_tolerance_rad = float(goal_checker_cfg.get("yaw_goal_tolerance", legacy_yaw_tolerance_rad))
         self.position_tolerance_m = legacy_position_tolerance_m
         self.yaw_tolerance_rad = legacy_yaw_tolerance_rad
         self.startup_timeout_sec = float(cfg.get("startup_timeout_sec", 60.0))
-        self.runtime_timeout_sec = float(cfg.get("runtime_timeout_sec", 240.0))
+        self.runtime_timeout_sec = float(
+            cfg.get("runtime_timeout_sec", NAV2_DEFAULT_RUNTIME_TIMEOUT_SEC)
+        )
+        self.execution_trace_sample_interval_sec = float(
+            cfg.get("execution_trace_sample_interval_sec", 0.5)
+        )
+        self.execution_trace_write_interval_sec = float(
+            cfg.get("execution_trace_write_interval_sec", 5.0)
+        )
+        self.execution_trace_max_samples = int(cfg.get("execution_trace_max_samples", 600))
         self.output_root = str(cfg.get("output_root", "output/ros_bridge/skills"))
         self.scene_name = str(cfg.get("scene_name", getattr(task, "name", "navigate_skill_scene")))
-        nav2_skill_overrides = self._nav2_skill_overrides(cfg)
+        nav2_skill_overrides = self._nav2_skill_overrides(
+            cfg,
+            nav2_position_tolerance_m=self.nav2_position_tolerance_m,
+            nav2_yaw_tolerance_rad=self.nav2_yaw_tolerance_rad,
+        )
 
         self._configured_base_cfg = configure_robot_for_nav2_skill(
             self.robot,
@@ -138,7 +157,12 @@ class Navigate(BaseSkill):
         )
 
     @staticmethod
-    def _nav2_skill_overrides(cfg: DictConfig) -> dict:
+    def _nav2_skill_overrides(
+        cfg: DictConfig,
+        *,
+        nav2_position_tolerance_m: float,
+        nav2_yaw_tolerance_rad: float,
+    ) -> dict:
         overrides = cfg.get("nav2_skill", {})
         if isinstance(overrides, DictConfig):
             overrides = OmegaConf.to_container(overrides, resolve=True)
@@ -147,17 +171,13 @@ class Navigate(BaseSkill):
         else:
             overrides = dict(overrides)
 
-        if "rotate_to_heading_enabled" in cfg:
-            controller_cfg = overrides.setdefault("controller_server", {})
-            follow_path_cfg = controller_cfg.setdefault("follow_path", {})
-            follow_path_cfg["rotate_to_heading_enabled"] = bool(cfg.get("rotate_to_heading_enabled"))
         if "xy_goal_tolerance" in cfg or "yaw_goal_tolerance" in cfg:
             controller_cfg = overrides.setdefault("controller_server", {})
             goal_checker_cfg = controller_cfg.setdefault("goal_checker", {})
             if "xy_goal_tolerance" in cfg:
-                goal_checker_cfg["xy_goal_tolerance"] = float(cfg.get("xy_goal_tolerance"))
+                goal_checker_cfg.setdefault("xy_goal_tolerance", float(nav2_position_tolerance_m))
             if "yaw_goal_tolerance" in cfg:
-                goal_checker_cfg["yaw_goal_tolerance"] = float(cfg.get("yaw_goal_tolerance"))
+                goal_checker_cfg.setdefault("yaw_goal_tolerance", float(nav2_yaw_tolerance_rad))
         return overrides
 
     def simple_generate_manip_cmds(self):
@@ -199,6 +219,9 @@ class Navigate(BaseSkill):
                 yaw_tolerance_rad=self.yaw_tolerance_rad,
                 startup_timeout_sec=self.startup_timeout_sec,
                 runtime_timeout_sec=self.runtime_timeout_sec,
+                execution_trace_sample_interval_sec=self.execution_trace_sample_interval_sec,
+                execution_trace_write_interval_sec=self.execution_trace_write_interval_sec,
+                execution_trace_max_samples=self.execution_trace_max_samples,
             )
             self._goal_started = True
 
