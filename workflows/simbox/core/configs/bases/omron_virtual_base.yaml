@@ -10,7 +10,7 @@ command_timeout: 0.25
 steering_command_sign: 1.0
 virtual_drive_stiffness: 0.0
 virtual_linear_drive_damping: 2500.0
-virtual_linear_drive_max_force: 6000.0
+virtual_linear_drive_max_force: 9000.0
 # Sized to realize the Nav2 yaw acceleration limit under the virtual base's
 # measured inertia, including terminal deceleration during RotationShim turns.
 virtual_yaw_drive_damping: 2500.0

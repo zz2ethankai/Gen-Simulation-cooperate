@@ -22,8 +22,10 @@ def _stage(collision_names=("collision",)):
     rigid = stage.DefinePrim("/World/object/Aligned", "Xform")
     UsdPhysics.RigidBodyAPI.Apply(rigid)
     for name in collision_names:
-        mesh = UsdGeom.Mesh.Define(stage, f"/World/object/Aligned/{name}").GetPrim()
-        UsdPhysics.CollisionAPI.Apply(mesh)
+        collider = UsdGeom.Cube.Define(
+            stage, f"/World/object/Aligned/{name}"
+        ).GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider)
     return stage
 
 
@@ -54,6 +56,64 @@ def test_multiple_collision_prims_require_explicit_configuration():
         "/World/object/Aligned/part_0",
         "/World/object/Aligned/part_1",
     ]
+
+
+def test_unique_guide_collision_is_preferred_over_collidable_visual():
+    stage = _stage(("visual", "collision"))
+    UsdGeom.Imageable(stage.GetPrimAtPath("/World/object/Aligned/collision")).CreatePurposeAttr(
+        UsdGeom.Tokens.guide
+    )
+
+    result = resolve_attach_collision_prims(
+        "/World/object",
+        "/World/object/Aligned",
+        {"prim_path_child": "Aligned"},
+        stage.GetPrimAtPath,
+    )
+
+    assert result.failure_code is None
+    assert result.source == "auto_unique_guide_collision"
+    assert result.prim_paths == ["/World/object/Aligned/collision"]
+    assert result.candidates == [
+        "/World/object/Aligned/visual",
+        "/World/object/Aligned/collision",
+    ]
+
+
+def test_empty_collision_geometry_is_not_an_attach_candidate():
+    stage = _stage()
+    empty = UsdGeom.Mesh.Define(stage, "/World/object/Aligned/empty").GetPrim()
+    UsdPhysics.CollisionAPI.Apply(empty)
+
+    result = resolve_attach_collision_prims(
+        "/World/object",
+        "/World/object/Aligned",
+        {"prim_path_child": "Aligned"},
+        stage.GetPrimAtPath,
+    )
+
+    assert result.failure_code is None
+    assert result.prim_paths == ["/World/object/Aligned/collision"]
+    assert result.candidates == ["/World/object/Aligned/collision"]
+
+
+def test_explicit_empty_collision_geometry_is_rejected():
+    stage = _stage()
+    empty = UsdGeom.Mesh.Define(stage, "/World/object/Aligned/empty").GetPrim()
+    UsdPhysics.CollisionAPI.Apply(empty)
+
+    result = resolve_attach_collision_prims(
+        "/World/object",
+        "/World/object/Aligned",
+        {
+            "prim_path_child": "Aligned",
+            "attach_prim_path_children": ["Aligned/empty"],
+        },
+        stage.GetPrimAtPath,
+    )
+
+    assert result.failure_code == "ATTACH_COLLISION_PRIM_NOT_COLLIDABLE"
+    assert "non-empty collision geometry" in result.message
 
 
 def test_plural_configuration_preserves_all_paths():

@@ -10,6 +10,7 @@ from core.planning.grasp_plan_evaluator import GraspPlanEvaluator
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand
 from core.skills.base_skill import BaseSkill, register_skill
 from core.utils.constants import CUROBO_BATCH_SIZE
+from core.utils.json_utils import json_ready
 from core.utils.plan_utils import select_index_by_priority_dual
 from core.utils.transformation_utils import poses_from_tf_matrices
 from core.utils.asset_path_utils import resolve_asset_path
@@ -187,21 +188,24 @@ class Pick(BaseSkill):
         return self.pick_obj.get_local_pose()
 
     def _json_ready(self, value):
-        if isinstance(value, np.ndarray):
-            return value.tolist()
-        if isinstance(value, (np.floating, np.integer, np.bool_)):
-            return value.item()
-        if isinstance(value, (list, tuple)):
-            return [self._json_ready(v) for v in value]
-        if isinstance(value, dict):
-            return {str(k): self._json_ready(v) for k, v in value.items()}
-        return value
+        return json_ready(value)
 
     def _write_debug_artifact(self, filename: str, payload: dict):
-        os.makedirs(self.debug_dir, exist_ok=True)
         output_path = os.path.join(self.debug_dir, filename)
-        with open(output_path, "w", encoding="utf-8") as handle:
-            json.dump(self._json_ready(payload), handle, indent=2, ensure_ascii=False)
+        try:
+            encoded = json.dumps(
+                self._json_ready(payload), indent=2, ensure_ascii=False
+            )
+            os.makedirs(self.debug_dir, exist_ok=True)
+            with open(output_path, "w", encoding="utf-8") as handle:
+                handle.write(encoded)
+        except Exception as exc:
+            LOGGER.warning(
+                "[PickDebug] failed to write non-critical artifact %s: %s",
+                output_path,
+                exc,
+            )
+            return None
         return output_path
 
     def _collect_geometry_debug(self):

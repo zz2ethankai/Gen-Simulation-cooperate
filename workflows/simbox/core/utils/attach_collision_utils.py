@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
-from pxr import Sdf, Usd, UsdPhysics
+from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
 
 @dataclass
@@ -31,8 +31,29 @@ def join_prim_path(base_prim_path: str, child_prim_path: str) -> str:
     return str(path)
 
 
+def has_nonempty_collision_bound(prim: Usd.Prim) -> bool:
+    """Return whether a Prim is concrete collision geometry with volume."""
+
+    if not prim or not prim.IsValid() or not prim.IsA(UsdGeom.Gprim):
+        return False
+    bound = UsdGeom.BBoxCache(
+        Usd.TimeCode.Default(),
+        [
+            UsdGeom.Tokens.default_,
+            UsdGeom.Tokens.render,
+            UsdGeom.Tokens.proxy,
+            UsdGeom.Tokens.guide,
+        ],
+        useExtentsHint=False,
+    ).ComputeLocalBound(prim).ComputeAlignedBox()
+    if bound.IsEmpty():
+        return False
+    size = bound.GetSize()
+    return all(float(size[index]) > 0.0 for index in range(3))
+
+
 def collision_candidate_paths(rigid_prim: Usd.Prim) -> list[str]:
-    """Return enabled CollisionAPI prims below a rigid-body root."""
+    """Return enabled, non-empty CollisionAPI geometry below a rigid body."""
 
     if not rigid_prim or not rigid_prim.IsValid():
         return []
@@ -41,9 +62,22 @@ def collision_candidate_paths(rigid_prim: Usd.Prim) -> list[str]:
         if not prim.HasAPI(UsdPhysics.CollisionAPI):
             continue
         enabled = UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Get()
-        if enabled is not False:
+        if enabled is not False and has_nonempty_collision_bound(prim):
             candidates.append(str(prim.GetPath()))
     return candidates
+
+
+def _preferred_discovery_candidates(
+    candidates: list[str], get_prim: Callable[[str], Usd.Prim]
+) -> list[str]:
+    """Prefer USD guide-purpose collision proxies over collidable visuals."""
+
+    guide_candidates = [
+        path
+        for path in candidates
+        if UsdGeom.Imageable(get_prim(path)).ComputePurpose() == UsdGeom.Tokens.guide
+    ]
+    return guide_candidates or candidates
 
 
 def _configured_children(cfg: Any) -> tuple[list[str], str | None, str | None]:
@@ -121,11 +155,18 @@ def resolve_attach_collision_prims(
                 )
             collision = UsdPhysics.CollisionAPI(prim) if prim.HasAPI(UsdPhysics.CollisionAPI) else None
             enabled = collision.GetCollisionEnabledAttr().Get() if collision else None
-            if collision is None or enabled is False:
+            if (
+                collision is None
+                or enabled is False
+                or not has_nonempty_collision_bound(prim)
+            ):
                 return AttachCollisionResolution(
                     failure_code="ATTACH_COLLISION_PRIM_NOT_COLLIDABLE",
                     candidates=candidates,
-                    message=f"attach prim has no enabled CollisionAPI: {full_path}",
+                    message=(
+                        "attach prim has no enabled non-empty collision geometry: "
+                        f"{full_path}"
+                    ),
                 )
             full_paths.append(full_path)
         return AttachCollisionResolution(
@@ -134,10 +175,15 @@ def resolve_attach_collision_prims(
             candidates=candidates,
         )
 
-    if len(candidates) == 1:
+    discovery_candidates = _preferred_discovery_candidates(candidates, get_prim)
+    if len(discovery_candidates) == 1:
         return AttachCollisionResolution(
-            prim_paths=candidates,
-            source="auto_unique_collision",
+            prim_paths=discovery_candidates,
+            source=(
+                "auto_unique_guide_collision"
+                if discovery_candidates != candidates
+                else "auto_unique_collision"
+            ),
             candidates=candidates,
         )
     if not candidates:
@@ -150,7 +196,8 @@ def resolve_attach_collision_prims(
         failure_code="ATTACH_COLLISION_PRIM_AMBIGUOUS",
         candidates=candidates,
         message=(
-            f"found {len(candidates)} collision prims below {rigid_prim_path}; "
+            f"found {len(discovery_candidates)} equally preferred collision prims "
+            f"below {rigid_prim_path}; "
             "configure attach_prim_path_children explicitly"
         ),
     )

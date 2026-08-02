@@ -45,7 +45,7 @@ class Heuristic_Skill(BaseSkill):
             raise ValueError(
                 f"Unsupported mode '{self.mode}' for JointMove. Allowed modes are: {sorted(ALLOWED_MODES)}"
             )
-        self.move_steps = self.skill_cfg.get("move_steps", 100)
+        self.move_steps = self.skill_cfg.get("move_steps", 50)
         self.t_eps = self.skill_cfg.get("t_eps", 0.088)
 
         # Keyposes should be generated after previous skill is done

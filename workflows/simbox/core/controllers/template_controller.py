@@ -151,6 +151,17 @@ class TemplateController(BaseController):
             "SIMBOX_CUROBO_PLAN_DEBUG_DIR",
             os.path.join("output", "ros_bridge", "skills", "curobo_plan_debug"),
         )
+        self._configure_execution_stride()
+        LOGGER.info(
+            "[ExecutionTiming] robot=%s arm=%s physics_dt=%.6f interpolation_dt=%.6f ds_ratio=%d",
+            self.name,
+            self.lr_name,
+            float(self.world.get_physics_dt()),
+            float(self.motion_gen.interpolation_dt),
+            self.ds_ratio,
+        )
+
+    def _configure_execution_stride(self) -> None:
         if self.collision_world_mode == "physics_schema":
             physics_dt = float(self.world.get_physics_dt())
             interpolation_dt = float(self.motion_gen.interpolation_dt)
@@ -161,14 +172,6 @@ class TemplateController(BaseController):
         else:
             # LEGACY_STAGE_SCAN keeps the original one-waypoint-per-step timing.
             self.ds_ratio = 1
-        LOGGER.info(
-            "[ExecutionTiming] robot=%s arm=%s physics_dt=%.6f interpolation_dt=%.6f ds_ratio=%d",
-            self.name,
-            self.lr_name,
-            float(self.world.get_physics_dt()),
-            float(self.motion_gen.interpolation_dt),
-            self.ds_ratio,
-        )
 
     def _get_default_ignore_substring(self) -> List[str]:
         return ["material", "Plane", "conveyor", "scene", "table"]
@@ -327,6 +330,19 @@ class TemplateController(BaseController):
             )
 
     def _init_motion_gen(self) -> None:
+        # Pick/Place phases are often planned back-to-back.  A modest slowdown
+        # gives the position-controlled articulation more time to track each
+        # waypoint, reducing acceleration spikes at phase boundaries without
+        # changing the geometric path.  In cuRobo, values below 1.0 increase
+        # execution time (the task can override this explicitly).
+        pick_place_cfg = self.task.cfg.get("planning", {}).get("pick_place", {})
+        configured_time_dilation = pick_place_cfg.get("time_dilation_factor", 0.8)
+        try:
+            manipulation_time_dilation = float(configured_time_dilation)
+            if not np.isfinite(manipulation_time_dilation) or manipulation_time_dilation <= 0.0:
+                raise ValueError
+        except (TypeError, ValueError):
+            manipulation_time_dilation = 0.8
         pose_metric = None
         if self.constrain_grasp_approach:
             pose_metric = PoseCostMetric.create_grasp_approach_metric(
@@ -342,7 +358,7 @@ class TemplateController(BaseController):
                 max_attempts=4,
                 enable_finetune_trajopt=True,
                 parallel_finetune=True,
-                time_dilation_factor=1.0,
+                time_dilation_factor=manipulation_time_dilation,
             )
         else:
             self.plan_config = MotionGenPlanConfig(
@@ -351,7 +367,7 @@ class TemplateController(BaseController):
                 max_attempts=10,
                 pose_cost_metric=pose_metric,
                 enable_finetune_trajopt=True,
-                time_dilation_factor=1.0,
+                time_dilation_factor=manipulation_time_dilation,
             )
         motion_gen_config = MotionGenConfig.load_from_robot_config(
             self.robot_cfg,
@@ -488,11 +504,12 @@ class TemplateController(BaseController):
                 first_ordered = ordered_cmd_plan[0].position.detach().cpu().numpy()
                 last_ordered = ordered_cmd_plan[-1].position.detach().cpu().numpy()
 
+            velocities, accelerations, jerks = self._joint_state_derivatives(sim_js)
             cu_js = JointState(
                 position=self.tensor_args.to_device(sim_js.positions),
-                velocity=self.tensor_args.to_device(sim_js.velocities) * 0.0,
-                acceleration=self.tensor_args.to_device(sim_js.velocities) * 0.0,
-                jerk=self.tensor_args.to_device(sim_js.velocities) * 0.0,
+                velocity=self.tensor_args.to_device(velocities),
+                acceleration=self.tensor_args.to_device(accelerations),
+                jerk=self.tensor_args.to_device(jerks),
                 joint_names=js_names,
             )
             cu_js_ordered = cu_js.get_ordered_joint_state(self.cmd_js_names)
@@ -615,6 +632,44 @@ class TemplateController(BaseController):
             return
         self._legacy_update()
 
+    def activate_collision_world_mode(self, mode: str) -> None:
+        """Switch one controller between exact Physics and legacy Stage worlds."""
+
+        target = str(mode).strip().lower()
+        if target == "passthrough":
+            return
+        if target not in {"physics_schema", "legacy_stage_scan"}:
+            raise ValueError(f"unsupported controller collision world mode: {mode!r}")
+
+        manager = self.collision_scene_manager
+        if target == "legacy_stage_scan" and manager is not None:
+            manager.prepare_controller_for_legacy(self)
+        if target == self.collision_world_mode:
+            return
+
+        self.clear_plan_and_hold()
+        if target == "legacy_stage_scan":
+            self.collision_world_mode = target
+            self._legacy_update()
+        else:
+            if manager is None:
+                raise RuntimeError("physics_schema mode requires CollisionSceneManager")
+            if self.has_attached_collision_spheres():
+                raise RuntimeError(
+                    "legacy attached collision state cannot be transferred into physics_schema"
+                )
+            self.collision_world_mode = target
+            obstacles = manager.build_world_config(self.reference_prim_path)
+            self._update_world_if_changed(obstacles)
+            manager.resume_controller_physics_world(self)
+        self._configure_execution_stride()
+        LOGGER.info(
+            "[CollisionWorld] controller=%s/%s activated_mode=%s",
+            self.name,
+            self.lr_name,
+            self.collision_world_mode,
+        )
+
     def _legacy_update(self) -> None:
         """LEGACY_STAGE_SCAN: retained for explicit legacy_stage_scan mode."""
 
@@ -669,6 +724,35 @@ class TemplateController(BaseController):
         self._ee_ori = self.tensor_args.to_device(self._ee_ori)
         self.update_pose_cost_metric()
 
+    @staticmethod
+    def _joint_state_derivatives(sim_js):
+        """Return finite joint velocity/acceleration/jerk arrays for planning.
+
+        Isaac articulation states expose velocity consistently, while higher
+        derivatives are optional across simulator versions.  Preserving the
+        measured derivatives when available lets a new Pick/Place phase start
+        with the actual motion state instead of an artificial full stop.
+        """
+
+        positions = sim_js.positions
+        if hasattr(positions, "detach"):
+            positions = positions.detach().cpu().numpy()
+        positions = np.asarray(positions, dtype=float).reshape(-1)
+        size = positions.size
+
+        def _field(name):
+            value = getattr(sim_js, name, None)
+            if value is None:
+                return np.zeros(size, dtype=float)
+            if hasattr(value, "detach"):
+                value = value.detach().cpu().numpy()
+            value = np.asarray(value, dtype=float).reshape(-1)
+            if value.size != size or not np.all(np.isfinite(value)):
+                return np.zeros(size, dtype=float)
+            return value.copy()
+
+        return _field("velocities"), _field("accelerations"), _field("jerks")
+
     def plan_batch(self, ee_translation_goal_batch, ee_orientation_goal_batch, sim_js, js_names):
         t1 = time.time()
         torch.cuda.synchronize()
@@ -678,11 +762,12 @@ class TemplateController(BaseController):
             quaternion=self.tensor_args.to_device(ee_orientation_goal_batch),
             batch=CUROBO_BATCH_SIZE,
         )
+        velocities, accelerations, jerks = self._joint_state_derivatives(sim_js)
         cu_js = JointState(
             position=self.tensor_args.to_device(np.tile(sim_js_positions, (CUROBO_BATCH_SIZE, 1))),
-            velocity=self.tensor_args.to_device(np.tile(sim_js_positions, (CUROBO_BATCH_SIZE, 1))) * 0.0,
-            acceleration=self.tensor_args.to_device(np.tile(sim_js_positions, (CUROBO_BATCH_SIZE, 1))) * 0.0,
-            jerk=self.tensor_args.to_device(np.tile(sim_js_positions, (CUROBO_BATCH_SIZE, 1))) * 0.0,
+            velocity=self.tensor_args.to_device(np.tile(velocities, (CUROBO_BATCH_SIZE, 1))),
+            acceleration=self.tensor_args.to_device(np.tile(accelerations, (CUROBO_BATCH_SIZE, 1))),
+            jerk=self.tensor_args.to_device(np.tile(jerks, (CUROBO_BATCH_SIZE, 1))),
             joint_names=js_names,
         )
         cu_js = cu_js.get_ordered_joint_state(self.cmd_js_names)
@@ -693,6 +778,7 @@ class TemplateController(BaseController):
         return result
 
     def plan(self, ee_translation_goal, ee_orientation_goal, sim_js: JointState, js_names: list):
+        velocities, accelerations, jerks = self._joint_state_derivatives(sim_js)
         if self.use_batch:
             ik_goal = Pose(
                 position=self.tensor_args.to_device(ee_translation_goal.unsqueeze(0).expand(CUROBO_BATCH_SIZE, -1)),
@@ -701,14 +787,9 @@ class TemplateController(BaseController):
             )
             cu_js = JointState(
                 position=self.tensor_args.to_device(np.tile((sim_js.positions)[np.newaxis, :], (CUROBO_BATCH_SIZE, 1))),
-                velocity=self.tensor_args.to_device(np.tile((sim_js.positions)[np.newaxis, :], (CUROBO_BATCH_SIZE, 1)))
-                * 0.0,
-                acceleration=self.tensor_args.to_device(
-                    np.tile((sim_js.positions)[np.newaxis, :], (CUROBO_BATCH_SIZE, 1))
-                )
-                * 0.0,
-                jerk=self.tensor_args.to_device(np.tile((sim_js.positions)[np.newaxis, :], (CUROBO_BATCH_SIZE, 1)))
-                * 0.0,
+                velocity=self.tensor_args.to_device(np.tile(velocities, (CUROBO_BATCH_SIZE, 1))),
+                acceleration=self.tensor_args.to_device(np.tile(accelerations, (CUROBO_BATCH_SIZE, 1))),
+                jerk=self.tensor_args.to_device(np.tile(jerks, (CUROBO_BATCH_SIZE, 1))),
                 joint_names=js_names,
             )
             cu_js = cu_js.get_ordered_joint_state(self.cmd_js_names)
@@ -719,9 +800,9 @@ class TemplateController(BaseController):
         )
         cu_js = JointState(
             position=self.tensor_args.to_device(sim_js.positions),
-            velocity=self.tensor_args.to_device(sim_js.velocities) * 0.0,
-            acceleration=self.tensor_args.to_device(sim_js.velocities) * 0.0,
-            jerk=self.tensor_args.to_device(sim_js.velocities) * 0.0,
+            velocity=self.tensor_args.to_device(velocities),
+            acceleration=self.tensor_args.to_device(accelerations),
+            jerk=self.tensor_args.to_device(jerks),
             joint_names=js_names,
         )
         cu_js = cu_js.get_ordered_joint_state(self.cmd_js_names)

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
-from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
 LOGGER = logging.getLogger("de_logger")
 SUPPORTED_COLLIDER_TYPES = (
@@ -185,6 +185,23 @@ class CollisionSceneManager:
         return any(prim.IsA(schema) for schema in SUPPORTED_COLLIDER_TYPES)
 
     @staticmethod
+    def _has_nonempty_bound(prim: Usd.Prim) -> bool:
+        bound = UsdGeom.BBoxCache(
+            Usd.TimeCode.Default(),
+            [
+                UsdGeom.Tokens.default_,
+                UsdGeom.Tokens.render,
+                UsdGeom.Tokens.proxy,
+                UsdGeom.Tokens.guide,
+            ],
+            useExtentsHint=False,
+        ).ComputeLocalBound(prim).ComputeAlignedBox()
+        if bound.IsEmpty():
+            return False
+        size = bound.GetSize()
+        return all(float(size[index]) > 0.0 for index in range(3))
+
+    @staticmethod
     def _explicitly_noncollidable(entity: Any) -> bool:
         """Return whether config explicitly declares an entity visual-only.
 
@@ -306,7 +323,19 @@ class CollisionSceneManager:
                     continue
                 enabled_collision_prims.append(prim)
 
-            collider_prims = [prim for prim in enabled_collision_prims if self._is_supported(prim)]
+            collider_prims = []
+            for prim in enabled_collision_prims:
+                if not self._is_supported(prim):
+                    continue
+                if not self._has_nonempty_bound(prim):
+                    path = str(prim.GetPath())
+                    self.schema_exclusions[path] = "empty_enabled_geometry_collider"
+                    LOGGER.warning(
+                        "[CollisionWorld] audit-only empty collider exclusion path=%s",
+                        path,
+                    )
+                    continue
+                collider_prims.append(prim)
             supported_paths = [prim.GetPath() for prim in collider_prims]
             for prim in enabled_collision_prims:
                 if self._is_supported(prim):
@@ -416,10 +445,101 @@ class CollisionSceneManager:
         return [path for record in self.records.values() for path in record.collision_prim_paths]
 
     def build_world_config(self, reference_prim_path: str):
-        return self._helper().get_obstacles_from_collision_prims(
-            self.collision_prim_paths,
-            reference_prim_path=reference_prim_path,
-        ).get_collision_check_world()
+        helper = self._helper()
+        exact_loader = getattr(helper, "get_obstacles_from_collision_prims", None)
+        if callable(exact_loader):
+            world = exact_loader(
+                self.collision_prim_paths,
+                reference_prim_path=reference_prim_path,
+            )
+        else:
+            from curobo.geom.types import WorldConfig
+
+            proxies = [
+                self._bbox_collision_proxy(path, reference_prim_path)
+                for path in self.collision_prim_paths
+            ]
+            world = WorldConfig(cuboid=proxies)
+            LOGGER.warning(
+                "[CollisionWorld] old UsdHelper using %d exact-path oriented bbox proxies",
+                len(proxies),
+            )
+        return world.get_collision_check_world()
+
+    def _bbox_collision_proxy(self, prim_path: str, reference_prim_path: str):
+        """Create a conservative exact-name proxy for an old UsdHelper."""
+
+        from curobo.geom.types import Cuboid
+
+        prim = self.stage.GetPrimAtPath(prim_path)
+        reference = self.stage.GetPrimAtPath(reference_prim_path)
+        cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+        local_range = UsdGeom.BBoxCache(
+            Usd.TimeCode.Default(),
+            [
+                UsdGeom.Tokens.default_,
+                UsdGeom.Tokens.render,
+                UsdGeom.Tokens.proxy,
+                UsdGeom.Tokens.guide,
+            ],
+            useExtentsHint=False,
+        ).ComputeLocalBound(prim).ComputeAlignedBox()
+        if local_range.IsEmpty():
+            raise CollisionSceneError(
+                f"cannot build collision proxy for empty collider: {prim_path}"
+            )
+        minimum = local_range.GetMin()
+        maximum = local_range.GetMax()
+        center = (minimum + maximum) * 0.5
+        local_dims = maximum - minimum
+        relative, _ = cache.ComputeRelativeTransform(prim, reference)
+        transform = Gf.Transform(relative)
+        scale = transform.GetScale()
+        dims = [
+            abs(float(local_dims[index]) * float(scale[index]))
+            for index in range(3)
+        ]
+        if min(dims) <= 0.0:
+            raise CollisionSceneError(
+                f"cannot build collision proxy with non-positive dimensions: {prim_path} {dims}"
+            )
+        center_reference = relative.Transform(center)
+        quaternion = transform.GetRotation().GetQuat()
+        imaginary = quaternion.GetImaginary()
+        return Cuboid(
+            name=prim_path,
+            pose=[
+                float(center_reference[0]),
+                float(center_reference[1]),
+                float(center_reference[2]),
+                float(quaternion.GetReal()),
+                float(imaginary[0]),
+                float(imaginary[1]),
+                float(imaginary[2]),
+            ],
+            dims=dims,
+        )
+
+    def _controller_obstacle_pose(self, controller: Any, prim_path: str):
+        """Return a CuRobo Pose across old and new UsdHelper APIs."""
+
+        from curobo.types.math import Pose
+
+        helper = self._helper()
+        exact_pose = getattr(helper, "get_collision_prim_pose", None)
+        if callable(exact_pose):
+            value = exact_pose(
+                prim_path, reference_prim_path=controller.reference_prim_path
+            )
+            return Pose.from_list(value, controller.tensor_args)
+        reference_from_world = np.asarray(
+            helper.get_pose(controller.reference_prim_path, inverse=True), dtype=float
+        )
+        world_from_prim = np.asarray(helper.get_pose(prim_path), dtype=float)
+        reference_from_prim = reference_from_world @ world_from_prim
+        return Pose.from_matrix(
+            controller.tensor_args.to_device(reference_from_prim)
+        )
 
     def bind_controller(self, controller: Any) -> None:
         key = (str(controller.name), str(controller.lr_name))
@@ -445,6 +565,47 @@ class CollisionSceneManager:
                     f"attach_prims={attach_count} capacity={capacity}"
                 )
         self.audit_controller(controller)
+
+    def _physics_controller_keys(self) -> list[tuple[str, str]]:
+        return [
+            key
+            for key, controller in self.controllers.items()
+            if getattr(controller, "collision_world_mode", "physics_schema")
+            == "physics_schema"
+        ]
+
+    def prepare_controller_for_legacy(self, controller: Any) -> None:
+        """Reject a mode switch that would orphan Physics-owned object state."""
+
+        active = sorted(
+            record.entity_name
+            for record in self.records.values()
+            if record.state
+            in {
+                CollisionObjectState.ACTIVE_TARGET_TRANSIT,
+                CollisionObjectState.ACTIVE_TARGET_APPROACH,
+                CollisionObjectState.ATTACHED,
+                CollisionObjectState.PLACEMENT_CONTACT,
+            }
+        )
+        if active or self._pending_detach:
+            raise CollisionSceneError(
+                "cannot activate legacy collision world while Physics-schema object state is active: "
+                f"active={active} pending_detach={sorted(self._pending_detach)}"
+            )
+        key = self._controller_key(controller.name, controller.lr_name)
+        self._restore_temporary(key)
+
+    def resume_controller_physics_world(self, controller: Any) -> None:
+        """Register the freshly rebuilt exact Physics world for one controller."""
+
+        key = self._controller_key(controller.name, controller.lr_name)
+        self.controller_enabled[key] = {
+            path: True for path in self.collision_prim_paths
+        }
+        self._temporary_disabled[key].clear()
+        self.audit_controller(controller)
+        self.assert_invariants()
 
     def initialize_contact_views(self) -> None:
         """Create PhysX views for non-finger robot links against all world colliders."""
@@ -719,7 +880,7 @@ class CollisionSceneManager:
         record = self._transition(
             entity_name, CollisionObjectState.ACTIVE_TARGET_TRANSIT, robot, arm, "pick_transit"
         )
-        for key in self.controllers:
+        for key in self._physics_controller_keys():
             self._set_enabled(key, record.collision_prim_paths, True)
 
     def begin_target_approach(self, entity_name: str, robot: str, arm: str) -> None:
@@ -727,7 +888,7 @@ class CollisionSceneManager:
             entity_name, CollisionObjectState.ACTIVE_TARGET_APPROACH, robot, arm, "terminal_grasp"
         )
         owner = self._controller_key(robot, arm)
-        for key in self.controllers:
+        for key in self._physics_controller_keys():
             self._set_enabled(key, record.collision_prim_paths, key != owner)
         self.assert_invariants()
 
@@ -744,11 +905,11 @@ class CollisionSceneManager:
             # Preserve the ACTIVE_TARGET_APPROACH invariant on any CuRobo
             # attach failure; the execution supervisor can then hold/abort
             # without leaving the target accidentally enabled for its owner.
-            for key in self.controllers:
+            for key in self._physics_controller_keys():
                 self._set_enabled(key, record.collision_prim_paths, key != owner)
             raise
         if attached is False:
-            for key in self.controllers:
+            for key in self._physics_controller_keys():
                 self._set_enabled(key, record.collision_prim_paths, key != owner)
             raise CollisionSceneError(f"CuRobo attach failed: {entity_name}")
         # attach_objects_to_robot disables the selected consolidated attach
@@ -827,7 +988,7 @@ class CollisionSceneManager:
         if entity_name not in self._pending_detach:
             raise CollisionSceneError(f"detach settle was not started: {entity_name}")
         self._sync_record_poses(record, force=True)
-        for key in self.controllers:
+        for key in self._physics_controller_keys():
             self._set_enabled(key, record.collision_prim_paths, True)
         self._transition(entity_name, CollisionObjectState.PLACED_WORLD, reason="detach")
         self._pending_detach.remove(entity_name)
@@ -836,7 +997,7 @@ class CollisionSceneManager:
     def restore_world(self, entity_name: str) -> None:
         record = self.records[entity_name]
         self._sync_record_poses(record, force=True)
-        for key in self.controllers:
+        for key in self._physics_controller_keys():
             self._restore_temporary(key)
             self._set_enabled(key, record.collision_prim_paths, True)
         was_placed = (
@@ -870,14 +1031,10 @@ class CollisionSceneManager:
                 )
             self._pose_matrices[path] = matrix
             changed = True
-            for controller in self.controllers.values():
-                from curobo.types.math import Pose
-
-                obstacle_pose = self._helper().get_collision_prim_pose(
-                    path, reference_prim_path=controller.reference_prim_path
-                )
+            for key in self._physics_controller_keys():
+                controller = self.controllers[key]
                 controller.motion_gen.world_collision.update_obstacle_pose(
-                    path, Pose.from_list(obstacle_pose, controller.tensor_args)
+                    path, self._controller_obstacle_pose(controller, path)
                 )
         if changed:
             record.pose_revision += 1
@@ -932,7 +1089,7 @@ class CollisionSceneManager:
                 CollisionObjectState.ACTIVE_TARGET_APPROACH,
                 CollisionObjectState.DISABLED,
             }:
-                for key in self.controllers:
+                for key in self._physics_controller_keys():
                     disabled_paths = {
                         path
                         for path in record.collision_prim_paths
@@ -961,7 +1118,7 @@ class CollisionSceneManager:
             record.owner_robot = None
             record.owner_arm = None
             record.pose_revision = 0
-        for key in self.controllers:
+        for key in self._physics_controller_keys():
             self._restore_temporary(key)
             self._set_enabled(key, self.collision_prim_paths, True)
         self.object_state_events.clear()
@@ -975,7 +1132,8 @@ class CollisionSceneManager:
     def export(self, episode_dir: str | Path) -> None:
         directory = Path(episode_dir)
         directory.mkdir(parents=True, exist_ok=True)
-        for controller in self.controllers.values():
+        for key in self._physics_controller_keys():
+            controller = self.controllers[key]
             self.audit_controller(controller)
         audit = {
             "mode": self.mode,

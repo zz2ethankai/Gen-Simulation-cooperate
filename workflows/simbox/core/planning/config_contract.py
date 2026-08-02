@@ -7,7 +7,15 @@ from typing import Any
 
 PHYSICS_SCHEMA_SKILLS = {"pick", "place"}
 VALIDATION_ONLY_SKILLS = {"pick_plan_probe"}
-NON_MANIPULATION_SKILLS = {"observe_hold"}
+NON_MANIPULATION_SKILLS = {
+    "navigate",
+    "observe_hold",
+}
+
+PHYSICS_SCHEMA_MODE = "physics_schema"
+LEGACY_STAGE_SCAN_MODE = "legacy_stage_scan"
+HYBRID_MODE = "hybrid"
+PASSTHROUGH_MODE = "passthrough"
 
 
 def _arm_skill_names(task_cfg: dict[str, Any]) -> set[str]:
@@ -23,6 +31,26 @@ def _arm_skill_names(task_cfg: dict[str, Any]) -> set[str]:
     return names
 
 
+def resolve_skill_collision_world_mode(
+    skill_name: str, requested_mode: str | None
+) -> str:
+    """Resolve one Skill without weakening explicit task-level requests."""
+
+    name = str(skill_name).strip().lower()
+    requested = "auto" if requested_mode is None else str(requested_mode).strip().lower()
+    if name in NON_MANIPULATION_SKILLS:
+        return PASSTHROUGH_MODE
+    if requested == LEGACY_STAGE_SCAN_MODE:
+        return LEGACY_STAGE_SCAN_MODE
+    if name in PHYSICS_SCHEMA_SKILLS | VALIDATION_ONLY_SKILLS:
+        return PHYSICS_SCHEMA_MODE
+    return LEGACY_STAGE_SCAN_MODE
+
+
+def task_uses_physics_schema(collision_world_mode: str) -> bool:
+    return str(collision_world_mode) in {PHYSICS_SCHEMA_MODE, HYBRID_MODE}
+
+
 def resolve_collision_world_mode(
     task_cfg: dict[str, Any], requested_mode: str | None
 ) -> tuple[str, str]:
@@ -30,14 +58,23 @@ def resolve_collision_world_mode(
 
     requested = "auto" if requested_mode is None else str(requested_mode).strip().lower()
     if requested == "auto":
-        try:
-            validate_planning_contract(task_cfg, "physics_schema")
-        except ValueError as exc:
-            return "legacy_stage_scan", str(exc)
         skill_names = _arm_skill_names(task_cfg)
         if not skill_names.intersection(PHYSICS_SCHEMA_SKILLS | VALIDATION_ONLY_SKILLS):
-            return "legacy_stage_scan", "task has no Physics-schema manipulation skills"
-        return "physics_schema", "all active manipulation skills support physics_schema"
+            return LEGACY_STAGE_SCAN_MODE, "task has no Physics-schema manipulation skills"
+        legacy_skills = sorted(
+            name
+            for name in skill_names
+            if resolve_skill_collision_world_mode(name, requested)
+            == LEGACY_STAGE_SCAN_MODE
+        )
+        mode = HYBRID_MODE if legacy_skills else PHYSICS_SCHEMA_MODE
+        validate_planning_contract(task_cfg, mode)
+        if legacy_skills:
+            return mode, (
+                "Physics-schema Skills enabled with per-Skill legacy fallback: "
+                + ", ".join(legacy_skills)
+            )
+        return mode, "all active manipulation skills support physics_schema"
 
     validate_planning_contract(task_cfg, requested)
     return requested, "explicit configuration"
@@ -46,9 +83,9 @@ def resolve_collision_world_mode(
 def validate_planning_contract(task_cfg: dict[str, Any], collision_world_mode: str) -> None:
     """Reject configs that would silently bypass the stateful collision path."""
 
-    if collision_world_mode == "legacy_stage_scan":
+    if collision_world_mode == LEGACY_STAGE_SCAN_MODE:
         return
-    if collision_world_mode != "physics_schema":
+    if collision_world_mode not in {PHYSICS_SCHEMA_MODE, HYBRID_MODE}:
         raise ValueError(
             f"unsupported planning.collision_world.mode: {collision_world_mode!r}"
         )
@@ -87,6 +124,8 @@ def validate_planning_contract(task_cfg: dict[str, Any], collision_world_mode: s
                                 )
                             continue
                         if skill_name not in PHYSICS_SCHEMA_SKILLS:
+                            if collision_world_mode == HYBRID_MODE:
+                                continue
                             raise ValueError(
                                 f"Skill {skill_name!r} is not migrated to physics_schema; "
                                 "set planning.collision_world.mode=legacy_stage_scan explicitly"

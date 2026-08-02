@@ -33,7 +33,10 @@ from core.execution.safety_monitor import (
 )
 from core.execution.execution_supervisor import ExecutionSupervisor
 from core.planning.config_contract import (
+    PASSTHROUGH_MODE,
     resolve_collision_world_mode,
+    resolve_skill_collision_world_mode,
+    task_uses_physics_schema,
     validate_planning_contract,
 )
 from core.utils.camera_utils import capture_topdown_screenshot
@@ -391,9 +394,13 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         self._enable_manipulation_base_holds()
         self._step_world(render=True)
         self._set_fixed_robot_start_poses_after_reset()
-        if self.collision_world_mode == "physics_schema":
+        if task_uses_physics_schema(self.collision_world_mode):
+            # The task-level mode may be ``auto``/``hybrid``, but this manager
+            # owns only the exact Physics-schema subset of the collision world.
+            collision_manager_cfg = dict(collision_cfg)
+            collision_manager_cfg["mode"] = "physics_schema"
             self.collision_scene_manager = CollisionSceneManager(
-                self.stage, self.task, collision_cfg, safety_cfg
+                self.stage, self.task, collision_manager_cfg, safety_cfg
             )
         elif self.collision_world_mode == "legacy_stage_scan":
             self.collision_scene_manager = None
@@ -402,7 +409,9 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 f"unsupported planning.collision_world.mode: {self.collision_world_mode!r}"
             )
         self.execution_safety_enabled = bool(
-            safety_cfg.get("enabled", self.collision_world_mode == "physics_schema")
+            safety_cfg.get(
+                "enabled", task_uses_physics_schema(self.collision_world_mode)
+            )
         )
         LOGGER.info(
             "[ExecutionSafety] initialized enabled=%s collision_world_mode=%s manager=%s",
@@ -488,6 +497,13 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             return self._initialize_skill_dag(task, task_cfg, controllers, world, draw)
         return self._initialize_legacy_skills(task, task_cfg, controllers, world, draw)
 
+    def _bind_skill_collision_world_mode(self, skill, skill_cfg):
+        mode = resolve_skill_collision_world_mode(
+            skill_cfg.get("name", ""), self.requested_collision_world_mode
+        )
+        setattr(skill, "collision_world_mode", mode)
+        return mode
+
     @staticmethod
     def _task_uses_skill_dag(task_cfg):
         for cfg_skill_dict in task_cfg.get("skills", []):
@@ -531,6 +547,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                                 workflow=self,
                                 draw=draw,
                             )
+                            self._bind_skill_collision_world_mode(skill, skill_cfg)
                             skill.bind_target_visualizer(
                                 self.skill_target_visualizer,
                                 robot=robot_name,
@@ -582,6 +599,9 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                                 workflow=self,
                                 draw=draw,
                             )
+                            skill_collision_mode = self._bind_skill_collision_world_mode(
+                                skill, skill_cfg
+                            )
                             skill.bind_target_visualizer(
                                 self.skill_target_visualizer,
                                 robot=robot_name,
@@ -595,6 +615,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                                 "depends_on": depends_on,
                                 "robot_name": robot_name,
                                 "controller_name": str(lr_name),
+                                "collision_world_mode": skill_collision_mode,
                                 "skill": skill,
                                 "state": "pending",
                             }
@@ -665,7 +686,11 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                     trajectory_visualizer=self.trajectory_visualizer,
                     skill_target_visualizer=self.skill_target_visualizer,
                     collision_scene_manager=self.collision_scene_manager,
-                    collision_world_mode=self.collision_world_mode,
+                    collision_world_mode=(
+                        "physics_schema"
+                        if task_uses_physics_schema(self.collision_world_mode)
+                        else "legacy_stage_scan"
+                    ),
                 )
                 controllers[robot_name][controller_name].reset()
 
@@ -954,7 +979,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
     def _enable_manipulation_base_holds(self):
         """Freeze configured mobile-base DOFs for Physics-schema Pick/Place."""
 
-        if self.collision_world_mode != "physics_schema":
+        if not task_uses_physics_schema(self.collision_world_mode):
             return
         for robot in self.task.robots.values():
             enable = getattr(robot, "enable_manipulation_base_hold", None)
@@ -1133,6 +1158,13 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         self._set_fixed_robot_start_poses_after_reset()
 
         self._reset_controllers(self.controllers)
+        if self.collision_scene_manager is not None:
+            self.collision_scene_manager.reset_episode()
+            self.collision_scene_manager.initialize_contact_views()
+        self.safety_monitor.reset()
+        self.execution_supervisor.reset()
+        self._safety_failure_reason = ""
+        self._safety_abort_requested = False
         if hasattr(self, "skills"):
             del self.skills
         self.skills = self._initialize_skills(self.task, self.task_cfg, self.controllers, self.world)
@@ -1206,6 +1238,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                         # target that will never be executed.
                         if skill_success and lr_skill_list:
                             next_skill = lr_skill_list[0]
+                            self._activate_skill_collision_world(next_skill)
                             next_skill.simple_generate_manip_cmds()
                             if hasattr(next_skill, "visualize_target"):
                                 next_skill.visualize_target(self.world)
@@ -1234,6 +1267,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                     for skill in skill_sequences[0]:
                         if not skill:
                             continue
+                        self._activate_skill_collision_world(skill[0])
                         skill[0].simple_generate_manip_cmds()
                         if len(skill[0].manip_list) == 0:
                             self._safety_failure_reason = getattr(
@@ -1260,11 +1294,25 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
 
     def _start_dag_ready_skills(self, skills, should_continue):
         nodes_by_id = skills["nodes_by_id"]
+        arm_manipulation_running = any(
+            node["state"] == "running"
+            and node["controller_name"] in {"left", "right"}
+            and node.get("collision_world_mode") != PASSTHROUGH_MODE
+            for node in skills["nodes"]
+        )
         for node in skills["nodes"]:
             if not self._dag_ready_to_start(node, nodes_by_id):
                 continue
 
+            is_arm_manipulation = (
+                node["controller_name"] in {"left", "right"}
+                and node.get("collision_world_mode") != PASSTHROUGH_MODE
+            )
+            if arm_manipulation_running and is_arm_manipulation:
+                continue
+
             skill = node["skill"]
+            self._activate_skill_collision_world(skill)
             skill.simple_generate_manip_cmds()
             if hasattr(skill, "visualize_target"):
                 skill.visualize_target(self.world)
@@ -1279,6 +1327,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 should_continue = False
                 continue
             node["state"] = "running"
+            arm_manipulation_running = arm_manipulation_running or is_arm_manipulation
             if len(skill.manip_list) == 0 and not skill.is_ready():
                 should_continue = True
         return should_continue
@@ -1391,6 +1440,21 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 return str(cfg_name)
         return str(skill.__class__.__name__).lower()
 
+    def _activate_skill_collision_world(self, skill) -> None:
+        mode = getattr(skill, "collision_world_mode", PASSTHROUGH_MODE)
+        if mode == PASSTHROUGH_MODE:
+            return
+        controller = getattr(skill, "controller", None)
+        activate = getattr(controller, "activate_collision_world_mode", None)
+        if not callable(activate):
+            if mode == "physics_schema":
+                raise RuntimeError(
+                    f"Physics-schema Skill {self._skill_display_name(skill)!r} "
+                    "requires an active manipulator controller"
+                )
+            return
+        activate(mode)
+
     def get_failure_context(self) -> dict:
         """Return the recorded failure fields for the current episode."""
         json_data_logger = getattr(getattr(self, "logger", None), "json_data_logger", {})
@@ -1438,6 +1502,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 # arm.  Do not index it as if it contained a first Skill.
                 if not lr_skill_list:
                     continue
+                self._activate_skill_collision_world(lr_skill_list[0])
                 lr_skill_list[0].simple_generate_manip_cmds()
                 if hasattr(lr_skill_list[0], "visualize_target"):
                     lr_skill_list[0].visualize_target(self.world)
@@ -1700,6 +1765,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
 
     def _forward_or_hold(self, skill):
         controller = skill.controller
+        self._activate_skill_collision_world(skill)
         command = skill.manip_list[0]
         if not isinstance(command, MotionPhaseCommand):
             return controller.forward(command)
