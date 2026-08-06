@@ -27,6 +27,8 @@ nav2_skill:
         cost_weight: 0.5
   costmap:
     footprint_padding: 0.04
+  local_costmap:
+    footprint_padding: 0.0
   planner_server:
     minimum_turning_radius: 0.0
   velocity_smoother:

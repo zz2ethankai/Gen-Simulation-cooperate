@@ -325,10 +325,6 @@ def _merge_costmap_config(target: dict, overrides: dict) -> None:
 
 def _validate_matching_costmap_constraints(local_costmap: dict, global_costmap: dict) -> None:
     comparisons = {
-        "footprint_padding": (
-            local_costmap.get("footprint_padding"),
-            global_costmap.get("footprint_padding"),
-        ),
         "inflation_layer.cost_scaling_factor": (
             local_costmap.get("inflation_layer", {}).get("cost_scaling_factor"),
             global_costmap.get("inflation_layer", {}).get("cost_scaling_factor"),

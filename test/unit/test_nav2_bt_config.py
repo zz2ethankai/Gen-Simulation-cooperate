@@ -203,10 +203,12 @@ class Nav2BehaviorTreeConfigTests(unittest.TestCase):
         goal_angle_weight = follow_path["GoalAngleCritic"]["cost_weight"]
         self.assertTrue(follow_path["PathAlignCritic"]["use_path_orientations"])
         shared_costmap_padding = virtual_config["nav2_skill"]["costmap"]["footprint_padding"]
+        local_costmap_padding = virtual_config["nav2_skill"]["local_costmap"]["footprint_padding"]
 
         self.assertEqual(twirling_weight, 0.5)
         self.assertLess(twirling_weight, goal_angle_weight)
         self.assertEqual(shared_costmap_padding, 0.04)
+        self.assertEqual(local_costmap_padding, 0.0)
 
     def test_rotation_shim_and_mppi_share_conservative_angular_limits(self):
         repo_root = Path(__file__).resolve().parents[2]
@@ -259,8 +261,8 @@ class Nav2BehaviorTreeConfigTests(unittest.TestCase):
         local = params["local_costmap"]["local_costmap"]["ros__parameters"]
         global_ = params["global_costmap"]["global_costmap"]["ros__parameters"]
         self.assertEqual(local["footprint"], global_["footprint"])
-        self.assertEqual(local["footprint_padding"], 0.04)
-        self.assertEqual(local["footprint_padding"], global_["footprint_padding"])
+        self.assertEqual(local["footprint_padding"], 0.0)
+        self.assertEqual(global_["footprint_padding"], 0.04)
         self.assertEqual(
             local["inflation_layer"]["inflation_radius"],
             global_["inflation_layer"]["inflation_radius"],
@@ -278,15 +280,27 @@ class Nav2BehaviorTreeConfigTests(unittest.TestCase):
             0.5,
         )
 
-    def test_global_and_local_costmap_constraint_mismatch_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "footprint_padding"):
+    def test_global_and_local_costmaps_may_use_different_padding(self):
+        _validate_matching_costmap_constraints(
+            {
+                "footprint_padding": 0.0,
+                "inflation_layer": {"cost_scaling_factor": 3.0, "inflation_radius": 0.4},
+            },
+            {
+                "footprint_padding": 0.04,
+                "inflation_layer": {"cost_scaling_factor": 3.0, "inflation_radius": 0.4},
+            },
+        )
+
+    def test_global_and_local_costmap_inflation_mismatch_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "inflation_layer.inflation_radius"):
             _validate_matching_costmap_constraints(
                 {
-                    "footprint_padding": 0.04,
-                    "inflation_layer": {"cost_scaling_factor": 3.0, "inflation_radius": 0.4},
+                    "footprint_padding": 0.0,
+                    "inflation_layer": {"cost_scaling_factor": 3.0, "inflation_radius": 0.3},
                 },
                 {
-                    "footprint_padding": 0.02,
+                    "footprint_padding": 0.04,
                     "inflation_layer": {"cost_scaling_factor": 3.0, "inflation_radius": 0.4},
                 },
             )

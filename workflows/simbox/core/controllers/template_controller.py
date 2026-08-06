@@ -993,6 +993,12 @@ class TemplateController(BaseController):
                 manager.restore_world(command.active_object)
                 self._phase_bookkeeping_done = True
 
+        if (
+            command.phase == MotionPhase.TERMINAL_PLACE_DESCENT
+            and command.params.get("contact_complete", False)
+        ):
+            return self.hold_action()
+
         if command.gripper_action:
             if not hasattr(self, command.gripper_action):
                 raise AttributeError(f"unknown gripper action: {command.gripper_action}")
@@ -1005,20 +1011,121 @@ class TemplateController(BaseController):
             self._phase_dwell_count += 1
             position, orientation = self.get_ee_pose()
             return self.ee_forward(position, orientation, skip_plan=True)
+        plan_validator = None
+        if (
+            command.phase == MotionPhase.TERMINAL_PLACE_DESCENT
+            and command.params.get("continuous_descent", False)
+        ):
+            plan_validator = lambda plan: self._validate_continuous_place_plan(
+                command, plan
+            )
         return self.ee_forward(
             command.target_position,
             command.target_orientation,
             # Planning-target identity and physical completion are different
-            # contracts.  In particular, terminal Pick/Place samples are
-            # spaced by exactly ``terminal_step_m`` and use that same value as
-            # their completion tolerance.  Passing the tolerance here made a
-            # new 5 mm target fail the strict ``delta > eps`` plan trigger,
-            # while the measured EE could still be just outside completion:
-            # no plan, no completion, and an infinite hold loop.  Keep target
-            # change detection tight; ``is_phase_command_complete`` applies
-            # the command's actual completion tolerance separately.
+            # contracts. Passing completion tolerance here can suppress a
+            # needed plan while the measured EE is still outside completion,
+            # causing an infinite hold. Keep target-change detection tight;
+            # ``is_phase_command_complete`` applies physical tolerance.
             eps=command.planning_epsilon,
+            plan_validator=plan_validator,
         )
+
+    def _validate_continuous_place_plan(self, command: MotionPhaseCommand, plan) -> bool:
+        """Reject a fast descent that is indirect or advances too far per frame."""
+
+        start_position, _ = self.get_ee_pose()
+        positions = []
+        for joint_position in plan.position:
+            point, _ = self.forward_kinematic(
+                joint_position.detach().cpu().numpy()
+            )
+            positions.append(point)
+        positions = np.asarray(positions, dtype=float)
+        if not len(positions) or not np.all(np.isfinite(positions)):
+            LOGGER.warning(
+                "[PhaseDebug] continuous-place-plan-invalid robot=%s arm=%s reason=non_finite_path",
+                self.name,
+                self.lr_name,
+            )
+            return False
+
+        direct_vector = np.asarray(command.target_position, dtype=float) - start_position
+        direct_length = float(np.linalg.norm(direct_vector))
+        path_length = float(np.sum(np.linalg.norm(np.diff(positions, axis=0), axis=1)))
+        if direct_length <= 1e-9:
+            path_length_ratio = 1.0 if path_length <= 1e-9 else float("inf")
+            max_deviation = path_length
+        else:
+            direction = direct_vector / direct_length
+            relative = positions - start_position
+            projection = np.clip(relative @ direction, 0.0, direct_length)
+            closest = start_position + projection[:, None] * direct_vector / direct_length
+            path_length_ratio = path_length / direct_length
+            max_deviation = float(
+                np.max(np.linalg.norm(positions - closest, axis=1))
+            )
+
+        executed = positions[:: self.ds_ratio]
+        executed_with_start = np.concatenate(
+            [np.asarray(start_position, dtype=float).reshape(1, 3), executed], axis=0
+        )
+        max_step = float(
+            np.max(np.linalg.norm(np.diff(executed_with_start, axis=0), axis=1))
+        )
+        max_allowed_step = float(command.params["max_cartesian_step_m"])
+        max_allowed_ratio = float(command.params["max_path_length_ratio"])
+        max_allowed_deviation = float(command.params["max_path_deviation_m"])
+        valid_limits = (
+            np.isfinite(max_allowed_step)
+            and max_allowed_step > 0.0
+            and np.isfinite(max_allowed_ratio)
+            and max_allowed_ratio >= 1.0
+            and np.isfinite(max_allowed_deviation)
+            and max_allowed_deviation >= 0.0
+        )
+        valid = bool(
+            valid_limits
+            and max_step <= max_allowed_step + 1e-6
+            and path_length_ratio <= max_allowed_ratio + 1e-6
+            and max_deviation <= max_allowed_deviation + 1e-6
+        )
+        log = LOGGER.info if valid else LOGGER.warning
+        log(
+            "[PhaseDebug] continuous-place-plan robot=%s arm=%s valid=%s waypoints=%d "
+            "stride=%d max_step=%.6f/%.6f path_ratio=%.4f/%.4f "
+            "max_deviation=%.6f/%.6f",
+            self.name,
+            self.lr_name,
+            valid,
+            len(positions),
+            self.ds_ratio,
+            max_step,
+            max_allowed_step,
+            path_length_ratio,
+            max_allowed_ratio,
+            max_deviation,
+            max_allowed_deviation,
+        )
+        return valid
+
+    def complete_terminal_place_on_contact(self, command: MotionPhaseCommand) -> None:
+        """Cancel the remaining descent without resetting phase completion state."""
+
+        if command is not self._active_phase_command:
+            return
+        self.cmd_plan = None
+        self.cmd_idx = 0
+        self._phase_plan_finished = True
+        self._last_arm_action = None
+        if not command.params.get("contact_stop_logged", False):
+            LOGGER.info(
+                "[PhaseDebug] contact-stop robot=%s arm=%s phase=%s",
+                self.name,
+                self.lr_name,
+                command.phase.value,
+            )
+            command.params["contact_stop_logged"] = True
 
     def is_phase_command_complete(self, command: MotionPhaseCommand) -> bool:
         if command is not self._active_phase_command:
@@ -1137,6 +1244,7 @@ class TemplateController(BaseController):
         eps=1e-4,
         skip_plan=False,
         gripper_action=None,
+        plan_validator=None,
     ):
         ee_trans = self.tensor_args.to_device(ee_trans)
         ee_ori = self.tensor_args.to_device(ee_ori)
@@ -1147,6 +1255,7 @@ class TemplateController(BaseController):
             torch.norm(self._ee_ori - ee_ori) > eps,
         )
         if not skip_plan:
+            new_plan_created = False
             if plan_flag:
                 self.cmd_plan = None
                 self.cmd_idx = 0
@@ -1200,6 +1309,7 @@ class TemplateController(BaseController):
                             self.ds_ratio,
                         )
                         self.num_plan_failed = 0
+                        new_plan_created = True
                     else:
                         print("Plan did not converge to a solution.")
                         self._phase_plan_failed = True
@@ -1241,6 +1351,7 @@ class TemplateController(BaseController):
                             self.ds_ratio,
                         )
                         self.num_plan_failed = 0
+                        new_plan_created = True
                     else:
                         print("Plan did not converge to a solution.")
                         self._phase_plan_failed = True
@@ -1252,6 +1363,17 @@ class TemplateController(BaseController):
                             self._last_command_name,
                             self.num_plan_failed,
                         )
+            if (
+                new_plan_created
+                and self.cmd_plan is not None
+                and plan_validator is not None
+                and not bool(plan_validator(self.cmd_plan))
+            ):
+                self.cmd_plan = None
+                self.cmd_idx = 0
+                self._last_arm_action = None
+                self._phase_plan_failed = True
+                self.num_plan_failed += 1
             if self.cmd_plan and self._step_idx % 1 == 0:
                 cmd_state = self.cmd_plan[self.cmd_idx]
                 arm_action = cmd_state.position.cpu().numpy()

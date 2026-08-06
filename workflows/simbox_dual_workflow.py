@@ -1663,6 +1663,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 and allowed_support_contact > 0.0
             ):
                 command.params["contact_complete"] = True
+                controller.complete_terminal_place_on_contact(command)
                 skill.manip_list[:] = [command] + [
                     later
                     for later in skill.manip_list[1:]

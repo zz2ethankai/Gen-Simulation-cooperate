@@ -232,8 +232,46 @@ class Place(BaseSkill):
         start = np.asarray(start, dtype=float)
         goal = np.asarray(goal, dtype=float)
         distance = float(np.linalg.norm(goal - start))
-        count = max(1, int(np.ceil(distance / float(step_m))))
+        count = max(1, int(np.ceil(distance / float(step_m) - 1e-9)))
         return [start + (goal - start) * (index / count) for index in range(1, count + 1)]
+
+    @staticmethod
+    def _resolve_terminal_step(pick_place_cfg: dict) -> float:
+        value = pick_place_cfg.get(
+            "place_terminal_step_m",
+            pick_place_cfg.get("terminal_step_m", 0.01),
+        )
+        try:
+            step_m = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Place terminal step must be a positive finite number") from exc
+        if not np.isfinite(step_m) or step_m <= 0.0:
+            raise ValueError("Place terminal step must be a positive finite number")
+        return step_m
+
+    @staticmethod
+    def _resolve_terminal_tolerance(pick_place_cfg: dict, step_m: float) -> float:
+        value = pick_place_cfg.get(
+            "place_terminal_tolerance_m", min(0.005, step_m)
+        )
+        try:
+            tolerance_m = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "Place terminal tolerance must be a positive finite number"
+            ) from exc
+        if not np.isfinite(tolerance_m) or tolerance_m <= 0.0:
+            raise ValueError("Place terminal tolerance must be a positive finite number")
+        if tolerance_m > step_m:
+            raise ValueError("Place terminal tolerance must not exceed the terminal step")
+        return tolerance_m
+
+    @staticmethod
+    def _use_continuous_terminal_descent(pick_place_cfg: dict) -> bool:
+        value = pick_place_cfg.get("place_continuous_descent", True)
+        if not isinstance(value, bool):
+            raise ValueError("place_continuous_descent must be a boolean")
+        return value
 
     def _physics_schema_generate_manip_cmds(self):
         """Generate no-contact transit plus bounded placement-contact phases."""
@@ -274,7 +312,11 @@ class Place(BaseSkill):
         pre_position, pre_orientation = np.asarray(result[0][0]), np.asarray(result[0][1])
         place_position, place_orientation = np.asarray(result[1][0]), np.asarray(result[1][1])
         pick_place_cfg = self.task.cfg.get("planning", {}).get("pick_place", {})
-        terminal_step = float(pick_place_cfg.get("terminal_step_m", 0.005))
+        terminal_step = self._resolve_terminal_step(pick_place_cfg)
+        terminal_tolerance = self._resolve_terminal_tolerance(
+            pick_place_cfg, terminal_step
+        )
+        continuous_descent = self._use_continuous_terminal_descent(pick_place_cfg)
         max_terminal = float(pick_place_cfg.get("max_terminal_distance_m", 0.10))
         settle_steps = int(pick_place_cfg.get("place_settle_steps", 10))
         distance = float(np.linalg.norm(place_position - pre_position))
@@ -298,7 +340,15 @@ class Place(BaseSkill):
                 completion_tolerance=tolerance,
             )
         ]
-        terminal_points = self._terminal_samples(pre_position, place_position, terminal_step)
+        # A continuous MotionGen trajectory avoids paying its minimum trajectory
+        # duration once per centimeter. Contact is still checked every physics
+        # frame, and terminal_step remains the maximum accepted Cartesian
+        # advance between two executed actions.
+        terminal_points = (
+            [place_position]
+            if continuous_descent
+            else self._terminal_samples(pre_position, place_position, terminal_step)
+        )
         for point_index, point in enumerate(terminal_points):
             ratio = (point_index + 1) / len(terminal_points)
             quat = (1.0 - ratio) * pre_orientation + ratio * place_orientation
@@ -313,7 +363,29 @@ class Place(BaseSkill):
                     support_object=support_name,
                     allow_target_finger_contact=True,
                     allow_object_support_contact=True,
-                    completion_tolerance={"position_m": terminal_step, "orientation_rad": tolerance["orientation_rad"]},
+                    completion_tolerance={
+                        "position_m": terminal_tolerance,
+                        "orientation_rad": tolerance["orientation_rad"],
+                    },
+                    params=(
+                        {
+                            "continuous_descent": True,
+                            "max_cartesian_step_m": terminal_step,
+                            "max_path_length_ratio": float(
+                                pick_place_cfg.get(
+                                    "place_terminal_max_path_length_ratio", 1.5
+                                )
+                            ),
+                            "max_path_deviation_m": float(
+                                pick_place_cfg.get(
+                                    "place_terminal_max_path_deviation_m",
+                                    terminal_step,
+                                )
+                            ),
+                        }
+                        if continuous_descent
+                        else {}
+                    ),
                 )
             )
         commands.extend(
