@@ -1,7 +1,7 @@
 """ROS-free static navigation primitives for SimBox.
 
-The planner is intentionally small and deterministic: an occupancy image is
-inflated by the mobile footprint, A* searches an 8-connected grid, and a
+The planner is intentionally small and deterministic: A* searches an
+8-connected center-cell occupancy grid, and a
 waypoint P controller emits one body-frame twist per physics cycle.  Dynamic
 approach sampling is reused as plain-data geometry; no external action, TF,
 clock, or controller process is involved.
@@ -74,7 +74,7 @@ class NavigationPlan:
 
 
 class GridAStarPlanner:
-    """Footprint-inflated A* over a static map image."""
+    """Center-cell A* over a static map image, matching the example skill."""
 
     def __init__(self, *, resolution: float = 0.05, safety_distance_m: float = 0.35, proximity_weight: float = 2.0):
         self.resolution = float(resolution)
@@ -99,36 +99,11 @@ class GridAStarPlanner:
         # The map image uses the conventional top-left row origin.  A* uses
         # bottom-left rows so world y increases with the row index.
         occupied = np.flipud(image) < 250
-        radius_m = max((math.hypot(x, y) for x, y in self._footprint_points), default=0.0) + self._footprint_padding_m
-        radius_cells = int(math.ceil(radius_m / self.resolution))
-        self._grid = self._inflate_grid(occupied, radius_cells)
+        # The reference skill checks only the robot center against occupancy.
+        # Keep footprint arguments for API/debug compatibility, but do not
+        # inflate the map or reject cells based on the mobile-base volume.
+        self._grid = occupied.astype(bool)
         self._distance_field = self._compute_distance_field(self._grid)
-
-    @staticmethod
-    def _inflate_grid(occupied: np.ndarray, radius_cells: int) -> np.ndarray:
-        if radius_cells <= 0:
-            return occupied.astype(bool)
-        try:
-            from scipy.ndimage import binary_dilation
-
-            axis = np.arange(-radius_cells, radius_cells + 1)
-            xx, yy = np.meshgrid(axis, axis)
-            structure = xx * xx + yy * yy <= radius_cells * radius_cells
-            return binary_dilation(occupied, structure=structure)
-        except ImportError:
-            pass
-        inflated = occupied.astype(bool).copy()
-        occupied_indices = np.argwhere(occupied)
-        for row, col in occupied_indices:
-            row_min = max(0, int(row) - radius_cells)
-            row_max = min(occupied.shape[0] - 1, int(row) + radius_cells)
-            col_min = max(0, int(col) - radius_cells)
-            col_max = min(occupied.shape[1] - 1, int(col) + radius_cells)
-            for rr in range(row_min, row_max + 1):
-                for cc in range(col_min, col_max + 1):
-                    if (rr - int(row)) ** 2 + (cc - int(col)) ** 2 <= radius_cells ** 2:
-                        inflated[rr, cc] = True
-        return inflated
 
     @staticmethod
     def _compute_distance_field(grid: np.ndarray) -> np.ndarray | None:
@@ -216,9 +191,8 @@ class GridAStarPlanner:
             points.append(tuple(map(float, goal_xy)))
         else:
             points[-1] = tuple(map(float, goal_xy))
-        # Keep every grid waypoint.  The local controller and footprint
-        # preflight consume these points; collapsing them into a long segment
-        # can cut across an obstacle between two individually valid cells.
+        # Keep every grid waypoint so the controller follows the A* route
+        # rather than cutting directly across occupied center cells.
         return points
 
     def plan_to_goals(
@@ -455,9 +429,8 @@ def select_approach_goal(*, approach_config: ApproachConfig, target_xy: tuple[fl
         proximity_weight=float(planner_cfg.get("proximity_weight", 2.0)),
     )
     if static_map is not None:
-        # Candidate preflight can evaluate hundreds of poses.  Map inflation
-        # and the distance field depend only on this navigation request, not
-        # on an individual candidate, so build them once.
+        # Candidate preflight can evaluate hundreds of poses.  The occupancy
+        # grid and distance field depend only on this navigation request.
         planner.set_static_map(static_map, footprint_points=footprint_points, footprint_padding_m=padding)
     checked = []
     eligible = []

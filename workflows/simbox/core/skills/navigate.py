@@ -253,7 +253,7 @@ class Navigate(BaseSkill):
             self._approach_debug = debug
             if goal is None:
                 self.failure_reason = "no_reachable_approach_goal"
-                self.error_message = "No approach candidate passed footprint collision and local A* checks"
+                self.error_message = "No approach candidate passed center-cell occupancy and local A* checks"
                 return False
             self.goal_x, self.goal_y, self.goal_yaw = goal
         self._plan = build_navigation_plan(
@@ -266,7 +266,7 @@ class Navigate(BaseSkill):
         )
         if self._plan is None:
             self.failure_reason = "local_plan_failed"
-            self.error_message = "Local footprint-aware A* could not find a collision-free path"
+            self.error_message = "Local center-cell A* could not find a collision-free path"
             return False
         self._controller = WaypointController(
             max_linear_velocity=float(self.controller_cfg.get("max_linear_velocity", 0.35)),

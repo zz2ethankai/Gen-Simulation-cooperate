@@ -112,7 +112,7 @@ class LocalNavigationTests(unittest.TestCase):
                 places=6,
             )
 
-    def test_footprint_collision_checks_padding_and_unknown_cells(self):
+    def test_center_collision_ignores_footprint_padding(self):
         image = np.full((20, 20), 254, dtype=np.uint8)
         image[10, 10] = 0
         static_map = {"image": image, "resolution": 0.1, "origin": [0.0, 0.0, 0.0]}
@@ -120,22 +120,22 @@ class LocalNavigationTests(unittest.TestCase):
         blocked = check_footprint_static_collision(
             static_map=static_map,
             footprint_points=footprint,
-            x=1.05,
-            # PGM row 10 corresponds to map y=0.85 because row zero is the
-            # top of the image while the YAML origin is the bottom-left.
-            y=0.85,
+            x=1.0,
+            # PGM row 10 corresponds to world y=0.86 with the current
+            # image-pixel rounding convention.
+            y=0.86,
         )
         self.assertFalse(blocked["ok"])
         clear = check_footprint_static_collision(
             static_map=static_map,
             footprint_points=footprint,
-            x=1.05,
-            y=0.85,
+            x=0.8,
+            y=0.86,
             footprint_padding_m=0.2,
         )
-        self.assertFalse(clear["ok"])
+        self.assertTrue(clear["ok"])
 
-    def test_path_collision_reports_intermediate_pose(self):
+    def test_path_collision_checks_discrete_waypoints_only(self):
         image = np.full((30, 30), 254, dtype=np.uint8)
         image[15, 10:20] = 0
         static_map = {"image": image, "resolution": 0.1, "origin": [0.0, 0.0, 0.0]}
@@ -144,12 +144,13 @@ class LocalNavigationTests(unittest.TestCase):
             static_map=static_map,
             footprint_points=footprint,
             path_poses=[
-                {"x": 0.5, "y": 1.55, "yaw": 0.0},
-                {"x": 2.5, "y": 1.55, "yaw": 0.0},
+                {"x": 0.5, "y": 1.36, "yaw": 0.0},
+                {"x": 2.5, "y": 1.36, "yaw": 0.0},
             ],
         )
-        self.assertFalse(result["ok"])
-        self.assertIsNotNone(result["first_blocked_index"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["sampled_pose_count"], 2)
+        self.assertEqual(result["interpolated_pose_count"], 0)
 
     def test_candidate_selection_requires_path_success(self):
         candidates = [
@@ -199,7 +200,7 @@ class LocalNavigationTests(unittest.TestCase):
         self.assertTrue(all(call.kwargs["planner"] is planner_cls.return_value for call in build_plan.call_args_list))
         self.assertTrue(debug["selected"]["path_ok"])
 
-    def test_astar_routes_around_inflated_wall(self):
+    def test_astar_routes_around_occupied_wall(self):
         image = np.full((30, 30), 254, dtype=np.uint8)
         image[:, 15] = 0
         image[2:8, 15] = 254

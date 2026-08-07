@@ -187,63 +187,59 @@ def check_footprint_static_collision(
     free_value_min: int = 250,
     footprint_padding_m: float = 0.0,
 ) -> dict[str, Any]:
+    """Check the map cell under the robot center.
+
+    The local-navigation reference implementation treats the occupancy map as
+    a point-robot map.  ``footprint_points``, yaw, and padding remain accepted
+    so existing callers and debug artifacts stay compatible, but they are not
+    used to inflate or rasterize the robot body.
+    """
     image = np.asarray(static_map["image"])
     resolution = float(static_map["resolution"])
     origin = list(static_map["origin"])
     if resolution <= 0.0:
         raise ValueError("static map resolution must be positive")
-    footprint_padding_m = max(float(footprint_padding_m), 0.0)
-    footprint_padding_cells = int(math.ceil(footprint_padding_m / resolution)) if footprint_padding_m > 0.0 else 0
     height, width = image.shape[:2]
-    world_polygon = transform_footprint_points(footprint_points, x=x, y=y, yaw=yaw)
-    pixel_polygon = [
-        _world_to_image_pixel(wx, wy, origin_x=float(origin[0]), origin_y=float(origin[1]), resolution=resolution, height=height)
-        for wx, wy in world_polygon
-    ]
-    mask = _polygon_mask(height=height, width=width, polygon=pixel_polygon)
-    if not mask.any():
+    pixel_x, pixel_y = _world_to_image_pixel(
+        float(x),
+        float(y),
+        origin_x=float(origin[0]),
+        origin_y=float(origin[1]),
+        resolution=resolution,
+        height=height,
+    )
+    if not (0 <= pixel_x < width and 0 <= pixel_y < height):
         return {
             "ok": False,
-            "reason": "footprint_out_of_bounds",
+            "reason": "center_out_of_bounds",
             "sampled_cells": 0,
             "blocked_cells": 0,
             "footprint_blocked_cells": 0,
             "padding_blocked_cells": 0,
             "unknown_cells": 0,
-            "out_of_bounds_vertices": _out_of_bounds_vertices(pixel_polygon, width=width, height=height),
-            "footprint_padding_m": float(footprint_padding_m),
-            "footprint_padding_cells": int(footprint_padding_cells),
-            "footprint_world": world_polygon,
+            "out_of_bounds_vertices": 1,
+            "footprint_padding_m": 0.0,
+            "footprint_padding_cells": 0,
+            "footprint_world": [],
         }
-
-    out_of_bounds_vertices = _out_of_bounds_vertices(pixel_polygon, width=width, height=height)
-    padding_out_of_bounds = _padding_out_of_bounds(pixel_polygon, width=width, height=height, padding_cells=footprint_padding_cells)
-    padded_mask = _dilate_mask(mask, footprint_padding_cells)
-    values = image[padded_mask]
-    footprint_values = image[mask]
-    padding_values = image[np.logical_and(padded_mask, np.logical_not(mask))]
-    unknown_cells = int(np.count_nonzero(values < 0)) if np.issubdtype(values.dtype, np.signedinteger) else 0
-    blocked_cells = int(np.count_nonzero(values < int(free_value_min)))
-    footprint_blocked_cells = int(np.count_nonzero(footprint_values < int(free_value_min)))
-    padding_blocked_cells = int(np.count_nonzero(padding_values < int(free_value_min)))
-    ok = blocked_cells == 0 and unknown_cells == 0 and out_of_bounds_vertices == 0 and not padding_out_of_bounds
-    reason = "" if ok else "static_footprint_collision"
-    if out_of_bounds_vertices or padding_out_of_bounds:
-        reason = "footprint_out_of_bounds"
+    value = image[pixel_y, pixel_x]
+    unknown_cells = int(value < 0) if np.issubdtype(image.dtype, np.signedinteger) else 0
+    blocked_cells = int(value < int(free_value_min))
+    ok = blocked_cells == 0 and unknown_cells == 0
     return {
         "ok": bool(ok),
-        "reason": reason,
-        "sampled_cells": int(values.size),
-        "unpadded_sampled_cells": int(footprint_values.size),
+        "reason": "" if ok else "static_center_collision",
+        "sampled_cells": 1,
+        "unpadded_sampled_cells": 1,
         "blocked_cells": blocked_cells,
-        "footprint_blocked_cells": footprint_blocked_cells,
-        "padding_blocked_cells": padding_blocked_cells,
+        "footprint_blocked_cells": blocked_cells,
+        "padding_blocked_cells": 0,
         "unknown_cells": unknown_cells,
-        "out_of_bounds_vertices": int(out_of_bounds_vertices),
-        "padding_out_of_bounds": bool(padding_out_of_bounds),
-        "footprint_padding_m": float(footprint_padding_m),
-        "footprint_padding_cells": int(footprint_padding_cells),
-        "footprint_world": world_polygon,
+        "out_of_bounds_vertices": 0,
+        "padding_out_of_bounds": False,
+        "footprint_padding_m": 0.0,
+        "footprint_padding_cells": 0,
+        "footprint_world": [],
     }
 
 
@@ -256,7 +252,7 @@ def check_path_static_collision(
     footprint_padding_m: float = 0.0,
     initial_padding_egress_distance_m: float = 0.0,
 ) -> dict[str, Any]:
-    """Check every path pose and the footprint sweep between adjacent poses."""
+    """Check each discrete A* waypoint at the robot center."""
     blocked_results = []
     normalized_poses = [_path_pose(pose) for pose in path_poses or []]
     sampled_pose_count = 0
@@ -276,8 +272,6 @@ def check_path_static_collision(
         nonlocal sampled_pose_count, interpolated_pose_count
         nonlocal ignored_initial_padding_pose_count, initial_egress_exited
         sampled_pose_count += 1
-        if segment_fraction not in {0.0, 1.0}:
-            interpolated_pose_count += 1
         result = check_footprint_static_collision(
             static_map=static_map,
             footprint_points=footprint_points,
@@ -327,35 +321,13 @@ def check_path_static_collision(
                 }
             )
 
-    if normalized_poses:
+    for index, pose in enumerate(normalized_poses):
         check_sample(
-            normalized_poses[0],
-            index=0,
+            pose,
+            index=index,
             segment_index=None,
             segment_fraction=0.0,
         )
-    for index in range(1, len(normalized_poses)):
-        previous_pose = normalized_poses[index - 1]
-        pose = normalized_poses[index]
-        sample_count = _path_segment_sample_count(
-            static_map=static_map,
-            footprint_points=footprint_points,
-            previous_pose=previous_pose,
-            pose=pose,
-        )
-        yaw_delta = wrap_to_pi(pose["yaw"] - previous_pose["yaw"])
-        for sample_index in range(1, sample_count + 1):
-            fraction = float(sample_index) / float(sample_count)
-            check_sample(
-                {
-                    "x": previous_pose["x"] + fraction * (pose["x"] - previous_pose["x"]),
-                    "y": previous_pose["y"] + fraction * (pose["y"] - previous_pose["y"]),
-                    "yaw": wrap_to_pi(previous_pose["yaw"] + fraction * yaw_delta),
-                },
-                index=index,
-                segment_index=index - 1,
-                segment_fraction=fraction,
-            )
 
     return {
         "ok": len(blocked_results) == 0,
@@ -368,7 +340,7 @@ def check_path_static_collision(
         "first_blocked_result": blocked_results[0] if blocked_results else {},
         "blocked_summary": blocked_results[:20],
         "free_value_min": int(free_value_min),
-        "footprint_padding_m": float(max(float(footprint_padding_m), 0.0)),
+        "footprint_padding_m": 0.0,
         "initial_padding_egress_distance_m": initial_egress_distance,
     }
 
