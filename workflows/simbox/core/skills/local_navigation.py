@@ -218,6 +218,85 @@ class GridAStarPlanner:
             points[-1] = tuple(map(float, goal_xy))
         return self._simplify(points)
 
+    def plan_to_goals(
+        self,
+        start_xy: tuple[float, float],
+        goal_xy_list: list[tuple[float, float]],
+        *,
+        max_solutions: int = 10,
+    ) -> dict[int, list[tuple[float, float]]]:
+        """Run one A* search and stop after reaching enough goal cells."""
+        if not goal_xy_list or max_solutions <= 0:
+            return {}
+        if self._grid is None:
+            return {
+                index: [tuple(map(float, start_xy)), tuple(map(float, goal_xy))]
+                for index, goal_xy in enumerate(goal_xy_list[:max_solutions])
+            }
+        requested_start = self._world_to_grid(*start_xy)
+        start = self._nearest_valid(requested_start)
+        if start is None:
+            return {}
+        requested_goals = [self._world_to_grid(*goal_xy) for goal_xy in goal_xy_list]
+        goal_nodes: dict[tuple[int, int], list[int]] = {}
+        for index, requested_goal in enumerate(requested_goals):
+            goal = self._nearest_valid(requested_goal)
+            if goal is not None:
+                goal_nodes.setdefault(goal, []).append(index)
+        if not goal_nodes:
+            return {}
+        frontier: list[tuple[float, int, tuple[int, int]]] = [(0.0, 0, start)]
+        came_from: dict[tuple[int, int], tuple[int, int]] = {}
+        cost_so_far = {start: 0.0}
+        counter = 0
+        found: dict[int, list[tuple[float, float]]] = {}
+        neighbors = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+        while frontier and len(found) < min(int(max_solutions), len(goal_xy_list)):
+            _, _, current = heapq.heappop(frontier)
+            if current in goal_nodes:
+                nodes = [current]
+                while nodes[-1] != start:
+                    nodes.append(came_from[nodes[-1]])
+                nodes.reverse()
+                grid_points = [self._grid_to_world(row, col) for row, col in nodes]
+                for index in goal_nodes[current]:
+                    points = list(grid_points)
+                    requested_goal = goal_xy_list[index]
+                    if start != requested_start:
+                        points.insert(0, tuple(map(float, start_xy)))
+                    else:
+                        points[0] = tuple(map(float, start_xy))
+                    if current != requested_goals[index]:
+                        points.append(tuple(map(float, requested_goal)))
+                    else:
+                        points[-1] = tuple(map(float, requested_goal))
+                    found[index] = self._simplify(points)
+                    if len(found) >= int(max_solutions):
+                        break
+                if len(found) >= int(max_solutions):
+                    break
+            for dr, dc in neighbors:
+                nxt = (current[0] + dr, current[1] + dc)
+                if not self._valid(nxt):
+                    continue
+                if dr and dc and (not self._valid((current[0] + dr, current[1])) or not self._valid((current[0], current[1] + dc))):
+                    continue
+                step_cost = math.sqrt(2.0) if dr and dc else 1.0
+                clearance_penalty = 0.0
+                if self._distance_field is not None and self.safety_distance_m > 0.0:
+                    clearance_m = float(self._distance_field[nxt]) * self.resolution
+                    if clearance_m < self.safety_distance_m:
+                        clearance_penalty = self.proximity_weight * (self.safety_distance_m - clearance_m) / self.resolution
+                new_cost = cost_so_far[current] + step_cost + clearance_penalty
+                if new_cost >= cost_so_far.get(nxt, float("inf")):
+                    continue
+                cost_so_far[nxt] = new_cost
+                came_from[nxt] = current
+                heuristic = min(math.hypot(goal[0] - nxt[0], goal[1] - nxt[1]) for goal in goal_nodes)
+                counter += 1
+                heapq.heappush(frontier, (new_cost + heuristic, counter, nxt))
+        return found
+
     @staticmethod
     def _simplify(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
         if len(points) <= 2:
@@ -291,7 +370,7 @@ class WaypointController:
         return body_vx, body_vy, wz, False, {"waypoint_index": self.waypoint_index, "waypoint_count": len(self.path), "distance_to_goal": distance, "yaw_error": yaw_error}
 
 
-def build_navigation_plan(*, start_pose: tuple[float, float, float], goal: tuple[float, float, float], static_map: dict[str, Any] | None, footprint_points: list[list[float]], footprint_padding_m: float = 0.0, planner_cfg: dict[str, Any] | None = None, planner: GridAStarPlanner | None = None) -> NavigationPlan | None:
+def build_navigation_plan(*, start_pose: tuple[float, float, float], goal: tuple[float, float, float], static_map: dict[str, Any] | None, footprint_points: list[list[float]], footprint_padding_m: float = 0.0, planner_cfg: dict[str, Any] | None = None, planner: GridAStarPlanner | None = None, planned_points: list[tuple[float, float]] | None = None) -> NavigationPlan | None:
     planner_cfg = planner_cfg or {}
     if planner is None:
         planner = GridAStarPlanner(
@@ -301,7 +380,7 @@ def build_navigation_plan(*, start_pose: tuple[float, float, float], goal: tuple
         )
         if static_map is not None:
             planner.set_static_map(static_map, footprint_points=footprint_points, footprint_padding_m=footprint_padding_m)
-    points = planner.plan((start_pose[0], start_pose[1]), (goal[0], goal[1]))
+    points = planned_points if planned_points is not None else planner.plan((start_pose[0], start_pose[1]), (goal[0], goal[1]))
     if not points:
         return None
     poses = []
@@ -381,20 +460,33 @@ def select_approach_goal(*, approach_config: ApproachConfig, target_xy: tuple[fl
         # on an individual candidate, so build them once.
         planner.set_static_map(static_map, footprint_points=footprint_points, footprint_padding_m=padding)
     checked = []
-    for candidate in sort_candidates_for_preflight(candidates):
+    eligible = []
+    for candidate in candidates:
         goal = (float(candidate["x"]), float(candidate["y"]), float(candidate["yaw"]))
         static_result = {"ok": True}
         if static_map is not None:
             static_result = check_footprint_static_collision(static_map=static_map, footprint_points=footprint_points, x=goal[0], y=goal[1], yaw=goal[2], footprint_padding_m=padding)
-        plan = build_navigation_plan(start_pose=start_pose, goal=goal, static_map=static_map, footprint_points=footprint_points, footprint_padding_m=padding, planner_cfg=planner_cfg, planner=planner) if static_result.get("ok", False) else None
         candidate = dict(candidate)
         candidate["static_ok"] = bool(static_result.get("ok", False))
-        candidate["path_ok"] = plan is not None
+        candidate["path_ok"] = False
         candidate["static_check"] = static_result
-        if plan is not None:
-            candidate["path"] = plan.path
         checked.append(candidate)
-        if plan is not None:
-            break
-    selected = choose_best_reachable_candidate(checked)
+        if static_result.get("ok", False):
+            eligible.append((len(checked) - 1, goal))
+    max_solutions = max(1, int(planner_cfg.get("max_approach_solutions", 10)))
+    paths = planner.plan_to_goals(
+        (start_pose[0], start_pose[1]),
+        [goal for _, goal in eligible],
+        max_solutions=max_solutions,
+    )
+    reachable = []
+    for eligible_index, path in paths.items():
+        checked_index, goal = eligible[eligible_index]
+        plan = build_navigation_plan(start_pose=start_pose, goal=goal, static_map=static_map, footprint_points=footprint_points, footprint_padding_m=padding, planner_cfg=planner_cfg, planner=planner, planned_points=path)
+        if plan is None:
+            continue
+        checked[checked_index]["path_ok"] = True
+        checked[checked_index]["path"] = plan.path
+        reachable.append(checked[checked_index])
+    selected = min(reachable, key=lambda candidate: (float(candidate.get("distance_to_target", float("inf"))), int(candidate.get("index", 0)))) if reachable else None
     return (None if selected is None else (float(selected["x"]), float(selected["y"]), float(selected["yaw"]))), {"candidates": checked, "selected": selected}

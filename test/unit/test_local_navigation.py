@@ -171,12 +171,14 @@ class LocalNavigationTests(unittest.TestCase):
         with patch.object(_LOCAL_NAV_MODULE, "resolve_footprint_points", return_value=[[-0.1, -0.1], [0.1, 0.1]]), patch.object(
             _LOCAL_NAV_MODULE, "sample_approach_candidates", return_value=candidates
         ), patch.object(
-            _LOCAL_NAV_MODULE, "sort_candidates_for_preflight", side_effect=lambda items: items
-        ), patch.object(_LOCAL_NAV_MODULE, "check_footprint_static_collision", return_value={"ok": True}), patch.object(
+            _LOCAL_NAV_MODULE, "check_footprint_static_collision", return_value={"ok": True}
+        ), patch.object(
             _LOCAL_NAV_MODULE, "GridAStarPlanner"
-        ) as planner_cls, patch.object(
-            _LOCAL_NAV_MODULE, "build_navigation_plan", side_effect=[None, successful_plan]
-        ) as build_plan:
+        ) as planner_cls, patch.object(_LOCAL_NAV_MODULE, "build_navigation_plan", return_value=successful_plan) as build_plan:
+            planner_cls.return_value.plan_to_goals.return_value = {
+                0: [(0.0, 0.0), (0.5, 0.5)],
+                1: [(0.0, 0.0), (0.6, 0.5)],
+            }
             goal, debug = _LOCAL_NAV_MODULE.select_approach_goal(
                 approach_config=ApproachConfig(target_name="tray"),
                 target_xy=(1.0, 1.0),
@@ -185,12 +187,13 @@ class LocalNavigationTests(unittest.TestCase):
                 base_cfg={},
             )
 
-        self.assertEqual(goal, (0.6, 0.5, 0.0))
+        self.assertEqual(goal, (0.5, 0.5, 0.0))
         self.assertEqual(planner_cls.call_count, 1)
         planner_cls.return_value.set_static_map.assert_called_once()
+        planner_cls.return_value.plan_to_goals.assert_called_once()
+        self.assertEqual(planner_cls.return_value.plan_to_goals.call_args.kwargs["max_solutions"], 10)
         self.assertEqual(build_plan.call_count, 2)
-        self.assertIs(build_plan.call_args_list[0].kwargs["planner"], planner_cls.return_value)
-        self.assertIs(build_plan.call_args_list[1].kwargs["planner"], planner_cls.return_value)
+        self.assertTrue(all(call.kwargs["planner"] is planner_cls.return_value for call in build_plan.call_args_list))
         self.assertTrue(debug["selected"]["path_ok"])
 
     def test_astar_routes_around_inflated_wall(self):
@@ -209,6 +212,21 @@ class LocalNavigationTests(unittest.TestCase):
         self.assertIsNotNone(path)
         self.assertGreaterEqual(len(path), 2)
         self.assertTrue(any(abs(point[1] - 1.5) > 0.1 for point in path))
+
+    def test_multi_goal_astar_stops_after_requested_solution_count(self):
+        image = np.full((30, 30), 254, dtype=np.uint8)
+        static_map = {"image": image, "resolution": 0.1, "origin": [0.0, 0.0, 0.0]}
+        planner = GridAStarPlanner(safety_distance_m=0.0)
+        planner.set_static_map(static_map, footprint_points=[[-0.02, -0.02], [0.02, 0.02]])
+
+        paths = planner.plan_to_goals(
+            (0.5, 0.5),
+            [(2.5, 2.5), (2.0, 0.5), (1.0, 0.5)],
+            max_solutions=2,
+        )
+
+        self.assertEqual(len(paths), 2)
+        self.assertTrue(set(paths).issubset({0, 1, 2}))
 
     def test_navigation_plan_preserves_measured_start_yaw(self):
         start_pose = (0.0, 0.0, -0.7)
