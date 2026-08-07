@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -172,6 +173,31 @@ class LocalNavigationTests(unittest.TestCase):
         self.assertIsNotNone(path)
         self.assertGreaterEqual(len(path), 2)
         self.assertTrue(any(abs(point[1] - 1.5) > 0.1 for point in path))
+
+    def test_navigation_plan_preserves_measured_start_yaw(self):
+        start_pose = (0.0, 0.0, -0.7)
+        goal = (1.0, 0.0, 1.2)
+        static_map = {
+            "image": np.full((20, 20), 254, dtype=np.uint8),
+            "resolution": 0.1,
+            "origin": [-1.0, -1.0, 0.0],
+        }
+        footprint = [[-0.2, -0.1], [-0.2, 0.1], [0.2, 0.1], [0.2, -0.1]]
+        with patch.object(GridAStarPlanner, "plan", return_value=[(0.0, 0.0), (1.0, 0.0)]), patch(
+            "simbox_local_navigation.check_path_static_collision", return_value={"ok": True}
+        ) as check_path:
+            plan = _LOCAL_NAV_MODULE.build_navigation_plan(
+                start_pose=start_pose,
+                goal=goal,
+                static_map=static_map,
+                footprint_points=footprint,
+                planner_cfg={"safety_distance_m": 0.0},
+            )
+
+        self.assertIsNotNone(plan)
+        poses = check_path.call_args.kwargs["path_poses"]
+        self.assertAlmostEqual(poses[0]["yaw"], start_pose[2])
+        self.assertAlmostEqual(poses[-1]["yaw"], goal[2])
 
     def test_waypoint_controller_rotates_world_velocity_with_current_yaw(self):
         controller = WaypointController(max_linear_velocity=0.5, rotate_first_error_rad=math.pi)

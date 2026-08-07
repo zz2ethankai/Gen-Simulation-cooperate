@@ -305,7 +305,11 @@ def build_navigation_plan(*, start_pose: tuple[float, float, float], goal: tuple
         return None
     poses = []
     for index, (x, y) in enumerate(points):
-        if index < len(points) - 1:
+        if index == 0:
+            # The robot is already at this pose.  Preserve its measured yaw
+            # so collision checks do not invent an in-place turn at startup.
+            yaw = float(start_pose[2])
+        elif index < len(points) - 1:
             next_x, next_y = points[index + 1]
             yaw = math.atan2(next_y - y, next_x - x)
         else:
