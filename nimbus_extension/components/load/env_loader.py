@@ -1,3 +1,4 @@
+import importlib
 import os
 import time
 from fractions import Fraction
@@ -128,6 +129,28 @@ def _patch_curobo_quad_triangulation_launch_device(logger) -> None:
     launch_with_matching_curobo_quad_device._simbox_curobo_quad_device_patch = True
     wp.launch = launch_with_matching_curobo_quad_device
     logger.info("Patched Warp launch device for CuRobo quad mesh triangulation")
+
+
+def _ensure_simbox_sensor_extension_ready(simulation_app, *, max_wait_sec: float = 30.0) -> None:
+    """Enable SimBox's camera dependency before importing its workflow module."""
+
+    from omni.isaac.core.utils.extensions import enable_extension
+
+    extension_name = "omni.isaac.sensor"
+    enable_extension(extension_name)
+    deadline = time.monotonic() + max(float(max_wait_sec), 1.0)
+    last_error = None
+    while time.monotonic() < deadline:
+        simulation_app.update()
+        try:
+            importlib.import_module(extension_name)
+            return
+        except Exception as exc:  # pylint: disable=broad-except
+            last_error = exc
+
+    raise RuntimeError(
+        "SimBox camera dependency 'omni.isaac.sensor' was not ready after enabling its Isaac extension"
+    ) from last_error
 
 
 class EnvLoader(SceneLoader):
@@ -329,6 +352,8 @@ class EnvLoader(SceneLoader):
         # Import workflow extensions and create workflow
         from workflows import import_extensions
 
+        if workflow_type == "SimBoxDualWorkFlow":
+            _ensure_simbox_sensor_extension_ready(self.simulation_app)
         import_extensions(workflow_type)
         workflow_kwargs = {
             "scene_info": scene_info,
