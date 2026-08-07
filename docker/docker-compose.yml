@@ -1,4 +1,4 @@
-name: ${INTERNDATA_COMPOSE_PROJECT:-isaac-nav2-stack}
+name: ${INTERNDATA_COMPOSE_PROJECT:-simbox-isaac}
 
 services:
   isaac:
@@ -23,14 +23,10 @@ services:
       OMNI_KIT_ALLOW_ROOT: "1"
       ISAAC_SIM_PATH: /isaac-sim
       CUROBO_PATH: /opt/curobo
-      ROS_DISTRO: humble
-      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
-      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
-      FASTDDS_BUILTIN_TRANSPORTS: UDPv4
       LIVESTREAM: ${LIVESTREAM:-0}
       INTERNDATA_RUN_IMPORT_CHECKS: ${INTERNDATA_RUN_IMPORT_CHECKS:-0}
       INTERNDATA_AUTOSTART_LAUNCHER: ${INTERNDATA_AUTOSTART_LAUNCHER:-1}
-      INTERNDATA_LAUNCHER_CONFIG: ${INTERNDATA_LAUNCHER_CONFIG:?INTERNDATA_LAUNCHER_CONFIG must be set by scripts/docker/up_nav2_stack.sh}
+      INTERNDATA_LAUNCHER_CONFIG: ${INTERNDATA_LAUNCHER_CONFIG:?INTERNDATA_LAUNCHER_CONFIG must be set by scripts/docker/up_simbox_isaac.sh}
       INTERNDATA_LAUNCHER_EXTRA_ARGS: ${INTERNDATA_LAUNCHER_EXTRA_ARGS:-}
       INTERNDATA_LAUNCHER_ARGS_JSON: "${INTERNDATA_LAUNCHER_ARGS_JSON:-[]}"
       INTERNDATA_TASK_CONFIG: ${INTERNDATA_TASK_CONFIG:-}
@@ -52,35 +48,3 @@ services:
       - ..:/workspace:rw
     working_dir: /workspace
     entrypoint: ["/entrypoint.sh"]
-
-  nav2:
-    build:
-      context: ..
-      dockerfile: docker/nav2/Dockerfile
-    image: local/ros2-humble-nav2:latest
-    container_name: ${INTERNDATA_NAV2_CONTAINER_NAME:-nav2}
-    network_mode: host
-    stdin_open: true
-    tty: true
-    environment:
-      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
-      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
-      FASTDDS_BUILTIN_TRANSPORTS: UDPv4
-      TURTLEBOT3_MODEL: waffle
-      INTERNDATA_AUTOSTART_ROS_STACK: "1"
-      # Each Nav2 stack should use its own session UUID so bootstrap config,
-      # bootstrap map, exported maps, and bridge request/result directories do
-      # not collide across concurrently running containers.
-      INTERNDATA_NAV2_SESSION_UUID: ${INTERNDATA_NAV2_SESSION_UUID:-nav2_default}
-      # Startup selection is injected from compose instead of being hardcoded
-      # in docker/nav2/entrypoint.sh.
-      INTERNDATA_NAV2_ROBOT_CONFIG: ${INTERNDATA_NAV2_ROBOT_CONFIG:-}
-      INTERNDATA_NAV2_ROBOT_NAME: ${INTERNDATA_NAV2_ROBOT_NAME:-}
-      INTERNDATA_NAV2_SKILL_OVERRIDES_JSON: ${INTERNDATA_NAV2_SKILL_OVERRIDES_JSON:-}
-      INTERNDATA_BASE_CONFIG: ${INTERNDATA_BASE_CONFIG:-}
-      # The remaining bootstrap/config paths are derived from the UUID inside
-      # the container unless you explicitly override them.
-    volumes:
-      - ..:/workspace/InterndataEngine:rw
-    working_dir: /workspace/InterndataEngine
-    entrypoint: ["/workspace/InterndataEngine/docker/nav2/entrypoint.sh"]

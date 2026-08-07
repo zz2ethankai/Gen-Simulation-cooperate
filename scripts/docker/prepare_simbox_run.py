@@ -8,8 +8,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTAINER_ROOT = Path("/workspace")
@@ -36,47 +34,6 @@ def _optional_path(raw: str, *, directory: bool, kind: str) -> tuple[str, str]:
     if directory:
         host_path.mkdir(parents=True, exist_ok=True)
     return str(host_path), container_path
-
-
-def _load_mapping(path: Path, *, kind: str) -> dict[str, Any]:
-    value = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    if not isinstance(value, dict):
-        raise ValueError(f"{kind} must contain a YAML mapping: {path}")
-    return value
-
-
-def _task_runtime(task_path: Path) -> dict[str, Any]:
-    document = _load_mapping(task_path, kind="task config")
-    tasks = document.get("tasks")
-    if not isinstance(tasks, list) or not tasks or not isinstance(tasks[0], dict):
-        raise ValueError(f"task config must contain one or more tasks: {task_path}")
-    robots = tasks[0].get("robots")
-    if not isinstance(robots, list) or not robots or not isinstance(robots[0], dict):
-        raise ValueError(f"task config must contain a robot: {task_path}")
-    robot = robots[0]
-    robot_name = str(robot.get("name") or "").strip()
-    robot_config_raw = str(robot.get("robot_config_file") or "").strip()
-    if not robot_name or not robot_config_raw:
-        raise ValueError(f"task robot requires name and robot_config_file: {task_path}")
-    robot_config_path, _ = _repo_path(
-        robot_config_raw,
-        must_exist=True,
-        kind="robot config",
-    )
-    robot_config = _load_mapping(robot_config_path, kind="robot config")
-    if robot_config.get("deprecated", False):
-        raise ValueError(f"task uses deprecated robot config: {robot_config_raw}")
-    base = robot_config.get("base")
-    needs_nav2 = isinstance(base, dict) and bool(base.get("base_config_file"))
-    base_config = str(base.get("base_config_file")) if needs_nav2 else ""
-    if needs_nav2:
-        _repo_path(base_config, must_exist=True, kind="base config")
-    return {
-        "robot_name": robot_name,
-        "robot_config": robot_config_raw,
-        "base_config": base_config,
-        "needs_nav2": needs_nav2,
-    }
 
 
 def build_contract(args: argparse.Namespace) -> dict[str, Any]:
@@ -110,7 +67,6 @@ def build_contract(args: argparse.Namespace) -> dict[str, Any]:
         directory=True,
         kind="debug output directory",
     )
-    runtime = _task_runtime(task_host)
     launcher_args = [
         f"--name={args.run_name}",
         f"--random_seed={args.random_seed}",
@@ -126,7 +82,6 @@ def build_contract(args: argparse.Namespace) -> dict[str, Any]:
     if any("\n" in item or "\r" in item for item in launcher_args):
         raise ValueError("launcher arguments may not contain newlines")
     return {
-        **runtime,
         "task_host": str(task_host),
         "task_container": task_container,
         "launcher_host": str(launcher_host),

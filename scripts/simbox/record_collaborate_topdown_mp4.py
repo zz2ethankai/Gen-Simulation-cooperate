@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Record a top-down MP4 from collaborate arena while driving SplitAloha via ROS.
+"""Record a top-down MP4 from collaborate arena while driving SplitAloha locally.
 
 This script loads a real collaborate task, patches missing robot_config_file entries in-memory,
 adds a debug camera at scene center (0,0,5m) facing downward, and records a moving MP4.
-Motion profile: either local cmd_vel feedback control or Nav2 goal navigation.
+Motion profile: local body-twist feedback control through the SimBox base driver.
 """
 
 import argparse
@@ -28,7 +28,6 @@ sys.path.append("./")
 sys.path.append("./data_engine")
 sys.path.append("workflows/simbox")
 
-from geometry_msgs.msg import Twist  # pylint: disable=wrong-import-position
 from omni.isaac.core import World  # pylint: disable=wrong-import-position  # type: ignore[import-not-found]
 import omni.physx as physx  # pylint: disable=wrong-import-position  # type: ignore[import-not-found]
 
@@ -342,11 +341,6 @@ def main():
         help="Output path figure path (default: <output-path stem>_path.png)",
     )
     parser.add_argument(
-        "--use-nav2",
-        action="store_true",
-        help="Use Nav2 action navigation instead of local cmd_vel feedback control",
-    )
-    parser.add_argument(
         "--auto-detour-goal",
         action="store_true",
         help="Auto-pick a detour goal with blocked straight line and clear goal area",
@@ -357,16 +351,10 @@ def main():
         default=0.45,
         help="Required free-space radius around auto-selected detour goal (m)",
     )
-    parser.add_argument(
-        "--nav2-success-status",
-        type=int,
-        default=4,
-        help="Nav2 action status code treated as success (default: 4 = SUCCEEDED)",
-    )
     args = parser.parse_args()
 
     temp_task_cfg = None
-    bridge = None
+    base_driver = None
     try:
         temp_task_cfg = _build_temp_task_cfg(args.task_cfg_source, args.split_aloha_usd_relpath)
 
@@ -388,11 +376,10 @@ def main():
 
         split_aloha = _find_split_aloha(workflow)
 
-        # Reuse workflow-managed ROS base modules to avoid duplicate nodes.
-        bridge = workflow._ros_base_bridges.get(split_aloha.name)
-        controller = workflow._ros_base_command_controllers.get(split_aloha.name)
-        if bridge is None or controller is None:
-            raise RuntimeError("Workflow ROS base bridge/controller is not initialized for SplitAloha")
+        base_driver = workflow.get_local_base_driver(split_aloha.name)
+        if base_driver is None:
+            raise RuntimeError("Workflow local base driver is not initialized for SplitAloha")
+        base_driver.prepare_for_navigation()
 
         # Camera at scene center, 5m above floor, looking straight down in USD axes.
         debug_camera_cfg = {
@@ -406,14 +393,6 @@ def main():
         }
         workflow.task._load_camera(debug_camera_cfg)
         camera = workflow.task.cameras["topdown_global_debug_camera"]
-
-        command_pub = bridge.node.create_publisher(Twist, bridge.ros_cfg["cmd_vel_topic"], 10)
-
-        if bool(args.use_nav2):
-            raise RuntimeError(
-                "Legacy --use-nav2 recording mode was removed. "
-                "Use the current navigate skill pipeline instead of the deprecated local Nav2Navigator path."
-            )
 
         output_filename = Path(args.output_path).name
         output_root = Path(args.output_root)
@@ -430,7 +409,7 @@ def main():
         else:
             path_plot_path = run_dir / f"{out_path.stem}_path.png"
 
-        # Warmup for stable rendering and ROS callback sync.
+        # Warmup for stable rendering and local-base state initialization.
         for _ in range(max(int(args.warmup_steps), 0)):
             workflow._step_world(render=True)
 
@@ -487,7 +466,7 @@ def main():
         trajectory_xy: list[tuple[float, float]] = []
         reached_target = False
         reached_step = -1
-        nav2_result_status = None
+        navigation_result_status = None
 
         for step_idx in range(max_steps):
             current_world_pose = split_aloha.get_world_pose()
@@ -503,27 +482,23 @@ def main():
             heading_err = _wrap_angle(desired_heading - current_yaw)
             yaw_err = _wrap_angle(target_yaw - current_yaw)
 
-            cmd = Twist()
             if dist_err > position_tolerance:
                 linear_cmd = min(linear_speed_limit, linear_kp * dist_err)
                 heading_scale = max(0.0, math.cos(heading_err))
                 linear_cmd *= heading_scale
                 angular_cmd = max(-angular_speed_limit, min(angular_speed_limit, angular_kp * heading_err))
-                cmd.linear.x = float(linear_cmd)
-                cmd.angular.z = float(angular_cmd)
+                base_driver.set_command(float(linear_cmd), 0.0, float(angular_cmd))
             else:
                 if not require_yaw or abs(yaw_err) <= yaw_tolerance:
                     reached_target = True
                     reached_step = step_idx
-                    command_pub.publish(Twist())
+                    base_driver.set_command(0.0, 0.0, 0.0)
                     workflow._step_world(render=True)
                     frame = _normalize_rgb(camera.get_observations()["color_image"])
                     frames.append(frame)
                     break
-                cmd.linear.x = 0.0
-                cmd.angular.z = float(max(-angular_speed_limit, min(angular_speed_limit, angular_kp * yaw_err)))
-
-                command_pub.publish(cmd)
+                angular_cmd = max(-angular_speed_limit, min(angular_speed_limit, angular_kp * yaw_err))
+                base_driver.set_command(0.0, 0.0, float(angular_cmd))
 
             workflow._step_world(render=True)
             frame = _normalize_rgb(camera.get_observations()["color_image"])
@@ -532,7 +507,7 @@ def main():
         # Tail frames after reaching target for clearer video ending.
         if reached_target:
             for _ in range(arrival_hold_steps):
-                command_pub.publish(Twist())
+                base_driver.set_command(0.0, 0.0, 0.0)
                 workflow._step_world(render=True)
                 frame = _normalize_rgb(camera.get_observations()["color_image"])
                 frames.append(frame)
@@ -585,7 +560,7 @@ def main():
                 "target_world_x": float(target_world_xy[0]),
                 "target_world_y": float(target_world_xy[1]),
                 "target_world_yaw": target_world_yaw,
-                "navigation_mode": "nav2" if bool(args.use_nav2) else "local_cmd_vel",
+                "navigation_mode": "local_base_driver",
                 "require_yaw": require_yaw,
                 "max_steps": max_steps,
                 "linear_speed_limit": linear_speed_limit,
@@ -607,7 +582,7 @@ def main():
                 "start_world_xy": [float(start_world_xy[0]), float(start_world_xy[1])],
                 "final_world_xy": [float(final_world_xy[0]), float(final_world_xy[1])],
                 "world_planar_displacement": world_planar_displacement,
-                "nav2_result_status": nav2_result_status,
+                "navigation_result_status": navigation_result_status,
                 "trajectory_point_count": len(trajectory_xy),
             },
             "detour_goal_selection": detour_goal_meta,
@@ -627,6 +602,11 @@ def main():
         print(json.dumps(report, indent=2))
 
     finally:
+        if base_driver is not None:
+            try:
+                base_driver.finalize_after_navigation()
+            except Exception:
+                pass
         if temp_task_cfg and os.path.exists(temp_task_cfg):
             os.remove(temp_task_cfg)
         simulation_app.close()

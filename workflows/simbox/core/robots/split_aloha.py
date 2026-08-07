@@ -108,7 +108,7 @@ class SplitAlohaActual(TemplateRobot):
 
     def _setup_mobile_base_interface(self):
         mobile_root = os.path.dirname(os.path.dirname(self.fl_base_path))
-        base_frame = str(self.base_cfg.get("ros", {}).get("base_frame", "base_link"))
+        base_frame = str(self.base_cfg.get("base_frame", "base_link"))
         candidate_path = f"{mobile_root}/{base_frame}"
         if get_prim_at_path(candidate_path).IsValid():
             self.mobile_base_prim_path = candidate_path
@@ -301,9 +301,9 @@ class SplitAlohaActual(TemplateRobot):
         if not self.base_steering_joint_indices and not self.base_wheel_joint_indices:
             return obs
 
-        bridge = getattr(self, "_simbox_ros_base_bridge", None)
-        if bridge is not None and hasattr(bridge, "get_logging_state_snapshot"):
-            base_state = bridge.get_logging_state_snapshot()
+        driver = getattr(self, "_simbox_local_base_driver", None)
+        if driver is not None and hasattr(driver, "get_logging_state_snapshot"):
+            base_state = driver.get_logging_state_snapshot()
         else:
             translation, orientation = self.get_mobile_base_pose()
             joint_state = self.get_base_joint_state()
@@ -416,7 +416,9 @@ class SplitAloha(SplitAlohaActual):
             ],
             dtype=np.float32,
         )
-        hard_limits = self.base_cfg["platform"]["nav2"]["controller_hard_limits"]
+        platform_cfg = self.base_cfg["platform"]
+        local_navigation_cfg = platform_cfg["local_navigation"]
+        hard_limits = local_navigation_cfg["controller_hard_limits"]
         max_velocity = np.asarray(hard_limits["max_velocity"], dtype=np.float32).reshape(-1)
         min_velocity = np.asarray(hard_limits["min_velocity"], dtype=np.float32).reshape(-1)
         if max_velocity.size != 3 or min_velocity.size != 3:

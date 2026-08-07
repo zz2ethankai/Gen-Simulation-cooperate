@@ -1,4 +1,4 @@
-"""Isaac Sim static-map exporter for Nav2."""
+"""Isaac Sim static-map exporter for the ROS-free local navigator."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
 
 class IsaacStaticMapExporter:
-    """Export Isaac scene collision geometry into a Nav2-compatible static map."""
+    """Export Isaac scene collision geometry into a local occupancy map."""
 
     def __init__(self, workflow, robot, base_cfg: dict, scene_name: str = "scene"):
         self.workflow = workflow
@@ -21,10 +21,9 @@ class IsaacStaticMapExporter:
         self.base_cfg = base_cfg
         self.scene_name = str(scene_name or "scene")
 
-        self.ros_cfg = self.base_cfg.get("ros", {})
-        self.localization_cfg = self.ros_cfg.get("localization", {})
+        self.localization_cfg = self.base_cfg.get("local_navigation", {}).get("map", {})
         if not isinstance(self.localization_cfg, dict):
-            raise TypeError("base_cfg['ros']['localization'] must be a dict when present")
+            raise TypeError("base_cfg['local_navigation']['map'] must be a dict")
 
         self._resolution = float(self.localization_cfg.get("map_resolution", 0.02))
         self._z_min = float(self.localization_cfg.get("map_z_min", 0.0))
@@ -382,10 +381,11 @@ class IsaacStaticMapExporter:
         if localization_points is not None:
             return self._normalize_footprint_points(localization_points)
 
-        nav2_skill_cfg = self.base_cfg.get("nav2_skill", {})
-        if isinstance(nav2_skill_cfg, dict):
-            return self._normalize_footprint_points(nav2_skill_cfg.get("footprint_points"))
-        return []
+        platform_cfg = self.base_cfg.get("platform", {})
+        local_navigation_cfg = platform_cfg.get("local_navigation", {}) if isinstance(platform_cfg, dict) else {}
+        return self._normalize_footprint_points(
+            local_navigation_cfg.get("footprint_points") if isinstance(local_navigation_cfg, dict) else None
+        )
 
     @staticmethod
     def _normalize_footprint_points(points) -> list[tuple[float, float]]:

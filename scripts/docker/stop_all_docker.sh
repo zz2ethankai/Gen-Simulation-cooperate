@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Default safety setting. Keep this at 0 to stop only InterndataEngine containers
-# created by scripts/docker/up_nav2_stack*.sh. Set to 1 to stop every running
+# created by scripts/docker/up_simbox_isaac.sh. Set to 1 to stop every running
 # Docker container on the host.
 DEFAULT_STOP_EVERY_RUNNING_CONTAINER="0"
 
@@ -15,7 +15,7 @@ else
     docker ps --format '{{.Names}}' \
       | sort \
       | awk '
-          $0 == "isaac" || $0 == "nav2" || $0 ~ /^isaac-/ || $0 ~ /^nav2-/ {
+          $0 == "isaac" || $0 ~ /^isaac-/ {
             print
           }
         '

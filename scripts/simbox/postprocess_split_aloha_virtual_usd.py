@@ -248,7 +248,7 @@ def patch_stage(stage: Usd.Stage) -> dict:
             "The source dormant planar joints were deleted and recreated; they were not assumed usable.",
             "The virtual articulation is anchored to the world through a fixed root joint.",
             "Physical steering and wheel joints are fixed; wheel and base-link ground-contact collisions are disabled.",
-            "The real chassis footprint remains in Nav2; lifting-body, upper-body, and arm collision remain enabled.",
+            "The real chassis footprint remains in the local navigation map; lifting-body, upper-body, and arm collision remain enabled.",
         ],
     }
 

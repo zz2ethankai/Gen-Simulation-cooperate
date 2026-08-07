@@ -46,10 +46,6 @@ json_field() {
 task_container="$(json_field task_container)"
 launcher_container="$(json_field launcher_container)"
 launcher_args_json="$(json_field launcher_args)"
-robot_name="$(json_field robot_name)"
-robot_config="$(json_field robot_config)"
-base_config="$(json_field base_config)"
-needs_nav2="$(json_field needs_nav2)"
 event_container="$(json_field episode_event_container)"
 debug_container="$(json_field debug_output_container)"
 
@@ -62,37 +58,8 @@ sanitize_id() {
 }
 
 stack_id="$(sanitize_id "${INTERNDATA_STACK_ID:-${RUN_NAME}-$$}")"
-compose_project="isaac-nav2-stack-${stack_id}"
+compose_project="simbox-isaac-${stack_id}"
 isaac_container="isaac-${stack_id}"
-nav2_container="nav2-${stack_id}"
-
-allocate_ros_domain() {
-    local lock_root="${REPO_ROOT}/output/docker_runtime/ros_domain_locks"
-    mkdir -p "${lock_root}"
-    local domain
-    for domain in $(seq 20 219); do
-        exec {ROS_DOMAIN_LOCK_FD}>"${lock_root}/${domain}.lock"
-        if flock -n "${ROS_DOMAIN_LOCK_FD}"; then
-            ros_domain_id="${domain}"
-            return 0
-        fi
-        eval "exec ${ROS_DOMAIN_LOCK_FD}>&-"
-    done
-    return 1
-}
-
-if [[ -n "${ROS_DOMAIN_ID:-}" ]]; then
-    [[ "${ROS_DOMAIN_ID}" =~ ^(0|[1-9][0-9]*)$ && "${ROS_DOMAIN_ID}" -le 232 ]] || {
-        printf 'Invalid ROS_DOMAIN_ID: %s (expected 0-232)\n' "${ROS_DOMAIN_ID}" >&2
-        exit 2
-    }
-    ros_domain_id="${ROS_DOMAIN_ID}"
-else
-    allocate_ros_domain || {
-        printf 'No free ROS_DOMAIN_ID in [20, 219].\n' >&2
-        exit 2
-    }
-fi
 
 write_metadata() {
     local status="$1"
@@ -104,9 +71,6 @@ write_metadata() {
         "${stack_id}" \
         "${compose_project}" \
         "${isaac_container}" \
-        "${nav2_container}" \
-        "${needs_nav2}" \
-        "${ros_domain_id}" \
         "${GPU_ID}" \
         "${task_container}" <<'PY'
 import json
@@ -120,10 +84,8 @@ payload = {
     "stack_id": sys.argv[4],
     "compose_project": sys.argv[5],
     "isaac_container": sys.argv[6],
-    "nav2_container": sys.argv[7] if sys.argv[8] == "true" else None,
-    "ros_domain_id": int(sys.argv[9]),
-    "host_gpu_id": int(sys.argv[10]),
-    "task_container": sys.argv[11],
+    "host_gpu_id": int(sys.argv[7]),
+    "task_container": sys.argv[8],
 }
 path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
@@ -132,32 +94,20 @@ PY
 export INTERNDATA_STACK_ID="${stack_id}"
 export INTERNDATA_COMPOSE_PROJECT="${compose_project}"
 export INTERNDATA_ISAAC_CONTAINER_NAME="${isaac_container}"
-export INTERNDATA_NAV2_CONTAINER_NAME="${nav2_container}"
 export INTERNDATA_COMPOSE_FILE="${COMPOSE_FILE}"
 export INTERNDATA_ISAAC_GPU_DEVICE_IDS="${GPU_ID}"
 export INTERNDATA_LAUNCHER_CONFIG="${launcher_container}"
 export INTERNDATA_LAUNCHER_ARGS_JSON="${launcher_args_json}"
 export INTERNDATA_TASK_CONFIG="${task_container}"
-export INTERNDATA_NAV2_SESSION_UUID="nav2_${stack_id}"
-export INTERNDATA_NAV2_ROBOT_NAME="${robot_name}"
-export INTERNDATA_NAV2_ROBOT_CONFIG="${robot_config}"
-export INTERNDATA_BASE_CONFIG="${base_config}"
 export INTERNDATA_EPISODE_EVENT_PATH="${event_container}"
 export INTERNDATA_RANDOM_SEED="${RANDOM_SEED}"
 export INTERNDATA_GPU="${GPU_ID}"
 export INTERNDATA_TASK_PATH="${task_container}"
 export SIMBOX_DEBUG_OUTPUT_DIR="${debug_container}"
-export ROS_DOMAIN_ID="${ros_domain_id}"
-
-services=(isaac)
-if [[ "${needs_nav2}" == "true" ]]; then
-    services+=(nav2)
-fi
-
 if [[ "${DRY_RUN:-0}" == "1" ]]; then
     write_metadata dry_run 0
-    printf 'INTERNDATA_STACK_ID=%q ROS_DOMAIN_ID=%q INTERNDATA_ISAAC_GPU_DEVICE_IDS=%q ' "${stack_id}" "${ros_domain_id}" "${GPU_ID}"
-    printf '%q ' "${SCRIPT_DIR}/up_nav2_stack.sh" --single --stack-id "${stack_id}" --gpu "${GPU_ID}" --launcher-config "${launcher_container}" --keep-nav2 "${services[@]}"
+    printf 'INTERNDATA_STACK_ID=%q INTERNDATA_ISAAC_GPU_DEVICE_IDS=%q ' "${stack_id}" "${GPU_ID}"
+    printf '%q ' "${SCRIPT_DIR}/up_simbox_isaac.sh" --stack-id "${stack_id}" --gpu "${GPU_ID}" --launcher-config "${launcher_container}"
     printf '\nlauncher_args_json=%s\n' "${launcher_args_json}"
     exit 0
 fi
@@ -174,12 +124,12 @@ docker compose version >/dev/null 2>&1 || runtime_unavailable "Docker Compose pl
 docker info >/dev/null 2>&1 || runtime_unavailable "Docker daemon is unavailable."
 
 set +e
-required_images="$(docker compose -f "${COMPOSE_FILE}" config --images "${services[@]}")"
+required_images="$(docker compose -f "${COMPOSE_FILE}" config --images isaac)"
 compose_config_status=$?
 set -e
 if [[ "${compose_config_status}" -ne 0 || -z "${required_images}" ]]; then
     write_metadata start_failed 4
-    printf 'DOCKER_START_FAILED: could not resolve images for services: %s.\n' "${services[*]}" >&2
+    printf 'DOCKER_START_FAILED: could not resolve the Isaac image.\n' >&2
     exit 4
 fi
 while IFS= read -r image; do
@@ -201,7 +151,6 @@ cleanup() {
         wait "${log_pid}" >/dev/null 2>&1 || true
     fi
     if [[ "${started}" == "1" ]]; then
-        docker stop "${nav2_container}" >/dev/null 2>&1 || true
         docker stop "${isaac_container}" >/dev/null 2>&1 || true
         docker compose -f "${COMPOSE_FILE}" -p "${compose_project}" down --remove-orphans >/dev/null 2>&1 || true
     fi
@@ -218,14 +167,10 @@ trap 'handle_signal 143' TERM
 
 write_metadata starting
 started=1
-INTERNDATA_STOP_NAV2_WHEN_ISAAC_EXITS=0 \
-    "${SCRIPT_DIR}/up_nav2_stack.sh" \
-        --single \
+    "${SCRIPT_DIR}/up_simbox_isaac.sh" \
         --stack-id "${stack_id}" \
         --gpu "${GPU_ID}" \
-        --launcher-config "${launcher_container}" \
-        --keep-nav2 \
-        "${services[@]}" || {
+        --launcher-config "${launcher_container}" || {
     printf 'DOCKER_START_FAILED: stack %s did not start.\n' "${stack_id}" >&2
     write_metadata start_failed 4
     exit 4

@@ -11,15 +11,15 @@ steering_command_sign: 1.0
 virtual_drive_stiffness: 0.0
 virtual_linear_drive_damping: 2500.0
 virtual_linear_drive_max_force: 9000.0
-# Sized to realize the Nav2 yaw acceleration limit under the virtual base's
-# measured inertia, including terminal deceleration during RotationShim turns.
+# Sized to realize the local controller's yaw acceleration limit under the
+# virtual base's measured inertia, including terminal deceleration.
 virtual_yaw_drive_damping: 2500.0
 virtual_yaw_drive_max_force: 6000.0
 body_twist_deadband: 0.0001
 debug_history_size: 4096
 platform:
   profile: virtual_base
-  nav2:
+  local_navigation:
     footprint_points:
       - [0.18, 0.32]
       - [-0.58, 0.32]
@@ -33,18 +33,3 @@ platform:
       min_velocity: [-1.00, -1.00, -0.5]
       max_accel: [0.80, 0.80, 1.00]
       max_decel: [-1.20, -1.20, -1.50]
-ros:
-  cmd_vel_topic: /cmd_vel
-  joint_state_topic: /joint_states
-  odom_topic: /odom
-  tf_enabled: true
-  base_frame: mobilebase0_base
-  odom_frame: odom
-  localization:
-    map_z_min: 0.0
-    map_z_max: 1.25
-  virtual_odom:
-    enabled: false
-    publish_twist: true
-    use_world_z: true
-    default_z: 0.0

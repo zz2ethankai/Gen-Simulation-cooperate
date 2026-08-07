@@ -12,6 +12,7 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+COMPOSE_PATH = REPO_ROOT / "docker" / "docker-compose.yml"
 SCRIPT_PATH = REPO_ROOT / "scripts" / "docker" / "prepare_simbox_run.py"
 SPEC = importlib.util.spec_from_file_location("prepare_simbox_run", SCRIPT_PATH)
 assert SPEC is not None and SPEC.loader is not None
@@ -35,34 +36,26 @@ def _args(task_config: str, **overrides):
     return argparse.Namespace(**values)
 
 
-def test_contract_uses_container_paths_and_container_local_gpu_indices():
+def test_compose_defines_only_isaac_without_ros_nav2_runtime_fields():
+    compose = COMPOSE_PATH.read_text(encoding="utf-8")
+
+    assert "  isaac:" in compose
+    assert "  nav2:" not in compose
+    assert "ROS_DOMAIN_ID" not in compose
+    assert "INTERNDATA_NAV2_" not in compose
+
+
+def test_contract_is_isaac_only_and_uses_container_local_gpu_indices():
     task = "workflows/simbox/core/configs/tasks/example/sort_the_rubbish.yaml"
 
     contract = prepare_simbox_run.build_contract(_args(task))
 
     assert contract["task_container"] == f"/workspace/{task}"
     assert contract["launcher_container"] == "/workspace/configs/de_plan_with_render_template.yaml"
-    assert contract["robot_name"] == "split_aloha"
-    assert contract["robot_config"] == "workflows/simbox/core/configs/robots/split_aloha.yaml"
-    assert contract["needs_nav2"] is True
+    assert "needs_nav2" not in contract
+    assert not any(key.startswith("robot_") or key.startswith("base_") for key in contract)
     assert "--load_stage.scene_loader.args.simulator.active_gpu=0" in contract["launcher_args"]
     assert "--load_stage.scene_loader.args.simulator.physics_gpu=0" in contract["launcher_args"]
-
-
-def test_contract_rejects_deprecated_robot_config(monkeypatch, tmp_path):
-    monkeypatch.setattr(prepare_simbox_run, "REPO_ROOT", tmp_path)
-    (tmp_path / "configs").mkdir()
-    (tmp_path / "configs" / "launcher.yaml").write_text("name: test\n", encoding="utf-8")
-    (tmp_path / "robot.yaml").write_text("deprecated: true\n", encoding="utf-8")
-    (tmp_path / "task.yaml").write_text(
-        "tasks:\n  - robots:\n      - name: old\n        robot_config_file: robot.yaml\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="deprecated robot config"):
-        prepare_simbox_run.build_contract(
-            _args("task.yaml", launcher_config="configs/launcher.yaml")
-        )
 
 
 def test_contract_rejects_paths_outside_repository(monkeypatch, tmp_path):
@@ -86,7 +79,8 @@ def test_docker_runner_dry_run_never_requires_local_isaac_or_conda():
         env.update(
             {
                 "DRY_RUN": "1",
-                "ROS_DOMAIN_ID": "77",
+                "ROS_DOMAIN_ID": "233",
+                "INTERNDATA_NAV2_ROBOT_NAME": "must-not-be-exported",
                 "TASK_CONFIG": "workflows/simbox/core/configs/tasks/example/sort_the_rubbish.yaml",
                 "RUN_NAME": "agent/test/attempt_00",
                 "OUTPUT_DIR": str(run_dir / "data"),
@@ -106,15 +100,19 @@ def test_docker_runner_dry_run_never_requires_local_isaac_or_conda():
         )
 
         assert completed.returncode == 0, completed.stderr
-        assert "up_nav2_stack.sh" in completed.stdout
-        assert "isaac nav2" in completed.stdout
+        assert "up_simbox_isaac.sh" in completed.stdout
+        assert "isaac nav2" not in completed.stdout
+        assert "ROS_DOMAIN_ID" not in completed.stdout
+        assert "INTERNDATA_NAV2_" not in completed.stdout
         assert "conda" not in completed.stdout.lower()
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         assert metadata["status"] == "dry_run"
         assert metadata["host_gpu_id"] == 0
+        assert "nav2_container" not in metadata
+        assert "ros_domain_id" not in metadata
 
 
-def test_docker_runner_rejects_invalid_ros_domain_before_docker_start():
+def test_docker_runner_ignores_ros_domain_environment():
     output_root = REPO_ROOT / "output"
     output_root.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="docker_invalid_domain_test_", dir=output_root) as raw_dir:
@@ -123,7 +121,7 @@ def test_docker_runner_rejects_invalid_ros_domain_before_docker_start():
         env.update(
             {
                 "DRY_RUN": "1",
-                "ROS_DOMAIN_ID": "233",
+                "ROS_DOMAIN_ID": "not-used",
                 "TASK_CONFIG": "workflows/simbox/core/configs/tasks/example/sort_the_rubbish.yaml",
                 "INTERNDATA_DOCKER_METADATA_PATH": str(run_dir / "docker_runtime.json"),
                 "SIMBOX_DEBUG_OUTPUT_DIR": str(run_dir / "simbox_debug"),
@@ -139,8 +137,8 @@ def test_docker_runner_rejects_invalid_ros_domain_before_docker_start():
             check=False,
         )
 
-        assert completed.returncode == 2
-        assert "Invalid ROS_DOMAIN_ID" in completed.stderr
+        assert completed.returncode == 0, completed.stderr
+        assert "ROS_DOMAIN_ID" not in completed.stdout
 
 
 def _write_fake_docker(path: Path, body: str) -> None:
@@ -153,7 +151,6 @@ def _runner_env(run_dir: Path, fake_bin: Path) -> dict[str, str]:
     env.update(
         {
             "PATH": f"{fake_bin}:{env['PATH']}",
-            "ROS_DOMAIN_ID": "77",
             "TASK_CONFIG": "workflows/simbox/core/configs/tasks/example/sort_the_rubbish.yaml",
             "RUN_NAME": "agent/test/attempt_00",
             "INTERNDATA_DOCKER_METADATA_PATH": str(run_dir / "docker_runtime.json"),
@@ -172,7 +169,7 @@ def test_docker_runner_reports_missing_required_image(tmp_path):
         if [[ "$1" == "compose" && "$2" == "version" ]]; then exit 0; fi
         if [[ "$1" == "info" ]]; then exit 0; fi
         if [[ "$1" == "compose" && "$*" == *"config --images"* ]]; then
-            printf '%s\\n' local/isaac-sim-test:latest local/nav2-test:latest
+            printf '%s\\n' local/isaac-sim-test:latest
             exit 0
         fi
         if [[ "$1" == "image" && "$2" == "inspect" ]]; then exit 1; fi
@@ -211,7 +208,7 @@ def test_docker_runner_sigterm_records_interrupt_and_cleans_stack(tmp_path):
         if [[ "$1" == "compose" && "$2" == "version" ]]; then exit 0; fi
         if [[ "$1" == "info" ]]; then exit 0; fi
         if [[ "$1" == "compose" && "$*" == *"config --images"* ]]; then
-            printf '%s\\n' local/isaac-sim-test:latest local/nav2-test:latest
+            printf '%s\\n' local/isaac-sim-test:latest
             exit 0
         fi
         if [[ "$1" == "image" && "$2" == "inspect" ]]; then exit 0; fi
@@ -253,6 +250,5 @@ def test_docker_runner_sigterm_records_interrupt_and_cleans_stack(tmp_path):
         assert metadata["status"] == "interrupted"
         assert metadata["exit_code"] == 143
         calls = calls_path.read_text(encoding="utf-8")
-        assert "stop nav2-" in calls
         assert "stop isaac-" in calls
         assert "down --remove-orphans" in calls

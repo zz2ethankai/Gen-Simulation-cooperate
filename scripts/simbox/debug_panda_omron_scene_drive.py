@@ -211,16 +211,6 @@ def run() -> int:
             workflow.randomization()
             trace_samples.append(_record(robot, "after_randomization", 0))
 
-        # This is a direct wheel-physics probe by default; disable the ROS/Nav2
-        # runtime so it cannot overwrite the test wheel targets or leave a
-        # stale /clock publisher after bridge shutdown.
-        if not args.keep_bridge and hasattr(workflow, "_destroy_ros_base_bridges"):
-            if hasattr(workflow, "_destroy_navigation_session_managers"):
-                workflow._destroy_navigation_session_managers()
-            if hasattr(workflow, "_destroy_nav2_clock_publisher"):
-                workflow._destroy_nav2_clock_publisher()
-            workflow._destroy_ros_base_bridges()
-
         if args.trace_reset_only:
             trace_points = {
                 0,

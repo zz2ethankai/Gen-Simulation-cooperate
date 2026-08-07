@@ -52,7 +52,7 @@ def _load_robot_cfg(robot_config: Path) -> dict:
 
     for ref in _iter_config_refs(base_override.get("base_config_file")):
         _deep_update_dict(merged_base, _load_yaml((repo_root / ref).resolve()))
-    for ref in _iter_config_refs(base_override.get("nav_config_file")):
+    for ref in _iter_config_refs(base_override.get("local_navigation_config_file")):
         _deep_update_dict(merged_base, _load_yaml((repo_root / ref).resolve()))
     _deep_update_dict(merged_base, base_override)
 

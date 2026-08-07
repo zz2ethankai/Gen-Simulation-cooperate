@@ -4,7 +4,7 @@
 The script is intentionally Isaac-free so it can run in lightweight conda
 environments. It builds a configuration-level 2D obstacle map from arena YAML
 fixtures and their delivered metadata sizes, then overlays task navigation
-points and the Nav2 base footprint.
+points and the configured mobile-base footprint.
 """
 
 from __future__ import annotations
@@ -332,7 +332,7 @@ def main() -> int:
 
     footprint_points = [
         (float(x), float(y))
-        for x, y in base["platform"]["nav2"]["footprint_points"]
+        for x, y in base["platform"]["local_navigation"]["footprint_points"]
     ]
 
     obstacles: list[dict[str, Any]] = []
@@ -525,7 +525,7 @@ def main() -> int:
         "layout/world x-y: arena room frame",
         "floor/local: origin at floor center",
         "nav point layout = floor center + task position",
-        "outlined polygons: current Nav2 footprint at yaw",
+        "outlined polygons: configured base footprint at yaw",
         "yellow circle: pick_target; green circle: place_target",
         "yellow dashed circle: reachability radius around nav point",
     ]

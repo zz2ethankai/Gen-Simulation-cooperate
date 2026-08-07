@@ -1,4 +1,4 @@
-name: simbox_pipe_nav2
+name: simbox_pipe_local_navigation
 load_stage:
   scene_loader:                            # Scene loader (plan process)
     type: env_loader
@@ -17,11 +17,11 @@ load_stage:
         active_gpu: 0                      # Assigned host GPU is exposed as container-local GPU 0
         physics_gpu: 0
         renderer: RayTracedLighting        # Isaac Sim 4.1 options: RayTracedLighting, PathTracing
-        planning_step_render: true         # Nav2 base physics needs the same rendered world step path as plan_with_render
+        planning_step_render: true         # Mobile-base physics uses the rendered world-step path from plan_with_render
         disable_viewport_updates: true     # Render products still update; skip the unused viewport in headless planning
 
         # Minimum-cost planning preset. Planning needs rendered world steps for
-        # Nav2/physics synchronization, but it does not need photorealistic RGB.
+        # Mobile-base physics does not need photorealistic RGB.
         rt_new_denoiser: false
         rt_shadows_enabled: false
         rt_direct_lighting_enabled: false

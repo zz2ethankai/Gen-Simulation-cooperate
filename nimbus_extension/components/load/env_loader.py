@@ -317,11 +317,6 @@ class EnvLoader(SceneLoader):
         if applied_renderer_settings:
             self.logger.info(f"Applied renderer settings: {applied_renderer_settings}")
 
-        if workflow_type == "SimBoxDualWorkFlow":
-            from nav2.bridge.clock import ensure_isaac_ros2_bridge_ready
-
-            ensure_isaac_ros2_bridge_ready(simulation_app=self.simulation_app)
-
         self.logger.info(f"simulator params: physics dt={physics_dt}, rendering dt={rendering_dt}")
         from omni.isaac.core import World
 

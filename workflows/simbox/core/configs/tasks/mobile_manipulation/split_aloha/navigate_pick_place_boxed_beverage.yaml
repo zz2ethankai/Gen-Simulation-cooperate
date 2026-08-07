@@ -217,7 +217,7 @@ tasks:
                 yaw_goal_tolerance: 0.05
                 startup_timeout_sec: 60.0
                 runtime_timeout_sec: 180.0
-                output_root: output/ros_bridge/skills
+                output_root: output/local_navigation/skills
                 scene_name: navigate_pick_place_boxed_beverage
               -
                 id: nav_to_place
@@ -228,7 +228,7 @@ tasks:
                 yaw_goal_tolerance: 0.10
                 startup_timeout_sec: 60.0
                 runtime_timeout_sec: 180.0
-                output_root: output/ros_bridge/skills
+                output_root: output/local_navigation/skills
                 scene_name: navigate_pick_place_boxed_beverage
 
             left:

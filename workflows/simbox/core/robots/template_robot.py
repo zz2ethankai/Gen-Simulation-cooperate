@@ -70,6 +70,7 @@ class TemplateRobot(Robot):
         self._manipulation_base_hold_active = False
         self._manipulation_base_hold_indices = np.asarray([], dtype=np.int64)
         self._manipulation_base_hold_positions = np.asarray([], dtype=float)
+        self._manipulation_base_hold_saved_drive = None
 
     def _setup_joint_indices(self):
         """Setup joint indices. Override in subclass."""
@@ -346,6 +347,14 @@ class TemplateRobot(Robot):
             raise RuntimeError(f"robot {self.name} does not expose articulation max efforts")
         max_efforts = np.asarray(max_efforts, dtype=float).copy()
 
+        if self._manipulation_base_hold_saved_drive is None:
+            self._manipulation_base_hold_saved_drive = {
+                "indices": indices.copy(),
+                "kps": kps[indices].copy(),
+                "kds": kds[indices].copy(),
+                "max_efforts": max_efforts[indices].copy(),
+            }
+
         stiffness = float(config.get("stiffness", 100000.0))
         damping = float(config.get("damping", 3000.0))
         max_effort = float(config.get("max_effort", 10000.0))
@@ -372,6 +381,36 @@ class TemplateRobot(Robot):
             damping,
             max_effort,
         )
+
+    def suspend_manipulation_base_hold(self) -> bool:
+        """Restore navigation drive gains while a mobile-base skill is active."""
+        if not self._manipulation_base_hold_active:
+            return False
+        saved = self._manipulation_base_hold_saved_drive
+        if not isinstance(saved, dict):
+            raise RuntimeError(f"robot {self.name} has no saved base drive state")
+        indices = np.asarray(saved["indices"], dtype=np.int64)
+        controller = self.get_articulation_controller()
+        kps, kds = controller.get_gains()
+        max_efforts = controller.get_max_efforts()
+        if max_efforts is None:
+            raise RuntimeError(f"robot {self.name} does not expose articulation max efforts")
+        kps = np.asarray(kps, dtype=float).copy()
+        kds = np.asarray(kds, dtype=float).copy()
+        max_efforts = np.asarray(max_efforts, dtype=float).copy()
+        kps[indices] = saved["kps"]
+        kds[indices] = saved["kds"]
+        max_efforts[indices] = saved["max_efforts"]
+        controller.set_gains(kps=kps, kds=kds)
+        controller.set_max_efforts(max_efforts)
+        self._manipulation_base_hold_active = False
+        return True
+
+    def resume_manipulation_base_hold(self) -> None:
+        """Hold the base at its current pose after navigation finishes."""
+        if self._manipulation_base_hold_saved_drive is None:
+            return
+        self.enable_manipulation_base_hold()
 
     def get_observations(self) -> dict:
         joint_state = self.get_joints_state()
@@ -406,7 +445,7 @@ class TemplateRobot(Robot):
                 "qvel": self._array_debug_summary(qvel),
             },
             "articulation": self._articulation_pose_debug(),
-            "base_bridge": self._base_bridge_debug(),
+            "base_driver": self._base_bridge_debug(),
         }
         output_dir = os.environ.get("SIMBOX_DEBUG_OUTPUT_DIR", "output/simbox_debug")
         try:
@@ -461,7 +500,7 @@ class TemplateRobot(Robot):
         return payload
 
     def _base_bridge_debug(self) -> dict:
-        bridge = getattr(self, "_simbox_ros_base_bridge", None)
+        bridge = getattr(self, "_simbox_local_base_driver", None)
         if bridge is None:
             return {"available": False}
         payload = {
@@ -481,7 +520,7 @@ class TemplateRobot(Robot):
                 }
         for attr in (
             "_navigation_active",
-            "_has_nav2_command",
+            "_has_command",
             "_last_requested_steering",
             "_last_requested_wheel_velocities",
             "_last_applied_wheel_velocities",

@@ -243,5 +243,5 @@ tasks:
         yaw_goal_tolerance: 0.1
         startup_timeout_sec: 60.0
         runtime_timeout_sec: 300.0
-        output_root: output/ros_bridge/skills
+        output_root: output/local_navigation/skills
         scene_name: navigate_asset_switchback_narrow

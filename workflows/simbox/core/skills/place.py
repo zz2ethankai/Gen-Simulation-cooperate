@@ -70,7 +70,7 @@ class Place(BaseSkill):
         self.align_plane_x_axis = self.skill_cfg.get("align_plane_x_axis", None)
         self.align_plane_y_axis = self.skill_cfg.get("align_plane_y_axis", None)
         self.align_obj_tol = self.skill_cfg.get("align_obj_tol", None)
-        self.output_root = str(self.skill_cfg.get("output_root", "output/ros_bridge/skills"))
+        self.output_root = str(self.skill_cfg.get("output_root", "output/local_navigation/skills"))
         self.debug_tag = f"{robot.name}_place_{self.pick_obj.name}_to_{self.place_obj.name}_{int(time.time() * 1000)}"
         self.debug_dir = os.path.join(self.output_root, self.debug_tag)
         self._success_check_debug_path = None

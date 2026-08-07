@@ -46,7 +46,7 @@ class Open(BaseSkill):
         ]
         self.collision_valid = True
         self.process_valid = True
-        self.output_root = str(self.skill_cfg.get("output_root", "output/ros_bridge/skills"))
+        self.output_root = str(self.skill_cfg.get("output_root", "output/local_navigation/skills"))
         self.debug_tag = f"{robot.name}_open_{art_obj_name}_{int(time.time() * 1000)}"
         self.debug_dir = os.path.join(self.output_root, self.debug_tag)
         self._plan_failure_debug_path = None

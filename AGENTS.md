@@ -4,18 +4,18 @@
 
 - Scene-4 task `positions` are floor-center relative. Convert to world/layout XY with `world_x = floor_center_x + x` and `world_y = floor_center_y + y`; do not add another reference frame field.
 - Keep generated scene-4 skill graphs short. The expected basic-task shape is usually five skills: `nav_to_pick`, `pick_*`, `nav_to_place`, `place_*`, `home_*`.
-- Navigation always uses the `RotationShimController -> primary_controller` chain; task YAML must not override or disable it.
+- Navigation uses the ROS-free local A* and waypoint controller; task YAML must not reintroduce external Nav2/ROS control.
 - Do not fix base navigation by editing dummy/mobile_support nodes; they are not on the effective mobile-base control path.
 - Use generated nav overlays and reports as design evidence only. A collision-free overlay does not prove 4WIS stability or arm reachability.
 
 ## Validation Workflow
 
 - Use `/home/dyf/miniconda3/envs/anygrasp/bin/python` for scene-4 helper scripts and compile checks.
-- Start Nav2/Isaac through `scripts/docker/up_nav2_stack.sh isaac nav2` or the validation wrapper that calls it; avoid ad-hoc container startup.
-- For real validation, prefer `scripts/simbox/verify_scene4_tasks.py --start-nav2 ...`. Judge success from `output/scene4_task_validation/scene4_validation_summary.json`, per-task logs, and skill snapshots.
+- Start Isaac through `scripts/docker/up_simbox_isaac.sh` or the validation wrapper that calls it; avoid ad-hoc container startup.
+- For real validation, prefer the Scene-4 validation wrapper when present, or `scripts/docker/run_simbox_task.sh` for one task. Judge success from the validation summary, per-task logs, and skill snapshots.
 - A successful run needs `Task is successful, mode=plan_with_render` and no `[LmdbLogger] Episode failed`; a video or missing traceback is not enough.
 - Keep `emit_obs_on_failure` disabled for strict validation. Placeholder observations can hide retry/reset behavior.
-- Stop and inspect the first failure when using `--stop-on-failure`; use `output/ros_bridge/skills/*` snapshots before changing logic.
+- Stop and inspect the first failure when using `--stop-on-failure`; use `output/local_navigation/skills/*` snapshots before changing logic.
 
 ## Reset And Randomization
 
@@ -29,7 +29,7 @@
 
 - Navigation points must balance obstacle clearance, 4WIS dynamic stability, and arm reachability. A point that is valid on the 2D map can still be too close to counters or force a bad lateral approach.
 - If navigation reports `bridge_aborted`, compare `world_xy`, `nav_xy`, `world_dist`, `nav_dist`, yaw error, and the bridge command history before changing task points.
-- If the base state becomes invalid, inspect roll/pitch, wheel/steering commands, and restore-after-navigation traces. Do not assume Nav2 path planning is the root cause.
+- If the base state becomes invalid, inspect roll/pitch, wheel/steering commands, and restore-after-navigation traces. Do not assume local A* path planning is the root cause.
 
 ## Pick Skill Debugging
 

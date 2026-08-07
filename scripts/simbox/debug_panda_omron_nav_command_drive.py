@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check PandaOmron wheel response under Nav2-like differential commands."""
+"""Check PandaOmron wheel response under local differential-drive commands."""
 
 from __future__ import annotations
 

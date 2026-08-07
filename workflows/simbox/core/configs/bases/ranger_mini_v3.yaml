@@ -1,5 +1,6 @@
 wheel_base: 0.494
 track_width: 0.364
+base_frame: base_link
 wheel_radius: 0.09
 ackermann_split_steering: true
 ackermann_split_wheel_speeds: true
@@ -21,7 +22,7 @@ module_speed_deadband: 0.00001
 debug_history_size: 4096
 platform:
   profile: ranger_mini_v3
-  nav2:
+  local_navigation:
     footprint_points:
       - [-0.395, 0.250]
       - [0.055, 0.250]
@@ -37,10 +38,9 @@ platform:
       - [-0.395, -0.250]
     # Inflation radius was raised from 0.34 to improve footprint checking, but
     # 0.75 m blocked narrow passages and made goals unreachable. Use 0.55 m as a
-    # compromise: it is below the circumscribed radius so Nav2 logs a warning and
-    # disables the possibly-inscribed shortcut, but the full footprint check still
-    # runs. This avoids both the old "plan through obstacles" bug and the new
-    # "no valid path" failure.
+    # compromise below the circumscribed radius while the full footprint sweep
+    # still runs. This avoids both planning through obstacles and blocking every
+    # narrow passage.
     inflation_radius_m: 0.34
     minimum_turning_radius_m: 0.47644
     max_steer_angle_ackermann: 0.6981
@@ -49,16 +49,3 @@ platform:
       min_velocity: [-0.45, -0.32, -0.75]
       max_accel: [0.45, 0.45, 0.90]
       max_decel: [-0.45, -0.45, -0.90]
-ros:
-  ranger_model: ranger_mini_v3
-  cmd_vel_topic: /cmd_vel
-  joint_state_topic: /joint_states
-  odom_topic: /odom
-  tf_enabled: true
-  base_frame: base_link
-  odom_frame: odom
-  virtual_odom:
-    enabled: false
-    publish_twist: true
-    use_world_z: true
-    default_z: 0.0

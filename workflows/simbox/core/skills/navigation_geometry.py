@@ -1,4 +1,4 @@
-"""Dynamic approach-goal sampling and static map checks for Nav2 skills."""
+"""Dynamic approach-goal sampling and static map checks for local navigation."""
 
 from __future__ import annotations
 
@@ -131,26 +131,27 @@ def _candidate_angle(index: int) -> float:
     return (float(index) * golden_angle) % (2.0 * math.pi)
 
 
-def resolve_nav2_footprint_points(base_cfg: dict[str, Any]) -> list[list[float]]:
-    skill_cfg = base_cfg.get("nav2_skill", {}) if isinstance(base_cfg, dict) else {}
-    points = _normalize_footprint_points(skill_cfg.get("footprint_points") if isinstance(skill_cfg, dict) else None)
+def resolve_mobile_footprint_points(base_cfg: dict[str, Any]) -> list[list[float]]:
+    platform_cfg = base_cfg.get("platform", {}) if isinstance(base_cfg, dict) else {}
+    navigation_cfg = platform_cfg.get("local_navigation", {}) if isinstance(platform_cfg, dict) else {}
+    points = _normalize_footprint_points(
+        navigation_cfg.get("footprint_points") if isinstance(navigation_cfg, dict) else None
+    )
     if points:
         return points
-    return get_mobile_base_platform(base_cfg).default_nav2_footprint_points(base_cfg)
+    return get_mobile_base_platform(base_cfg).default_navigation_footprint_points(base_cfg)
 
 
 def resolve_approach_footprint_padding_m(base_cfg: dict[str, Any], config: ApproachConfig) -> float:
     if config.footprint_padding_m is not None:
         return float(config.footprint_padding_m)
-    skill_cfg = base_cfg.get("nav2_skill", {}) if isinstance(base_cfg, dict) else {}
-    shared_costmap = skill_cfg.get("costmap", {}) if isinstance(skill_cfg, dict) else {}
-    if isinstance(shared_costmap, dict) and "footprint_padding" in shared_costmap:
-        return max(float(shared_costmap.get("footprint_padding", 0.0)), 0.0)
-    if isinstance(skill_cfg, dict) and "approach_footprint_padding" in skill_cfg:
-        return max(float(skill_cfg.get("approach_footprint_padding", 0.0)), 0.0)
-    local_costmap = skill_cfg.get("local_costmap", {}) if isinstance(skill_cfg, dict) else {}
-    if isinstance(local_costmap, dict):
-        return max(float(local_costmap.get("footprint_padding", 0.0)), 0.0)
+    navigation_cfg = base_cfg.get("local_navigation", {}) if isinstance(base_cfg, dict) else {}
+    if isinstance(navigation_cfg, dict):
+        if "footprint_padding_m" in navigation_cfg:
+            return max(float(navigation_cfg.get("footprint_padding_m", 0.0)), 0.0)
+        shared_costmap = navigation_cfg.get("costmap", {})
+        if isinstance(shared_costmap, dict) and "footprint_padding" in shared_costmap:
+            return max(float(shared_costmap.get("footprint_padding", 0.0)), 0.0)
     return 0.0
 
 
@@ -182,7 +183,7 @@ def check_footprint_static_collision(
     footprint_points: list[list[float]],
     x: float,
     y: float,
-    yaw: float,
+    yaw: float = 0.0,
     free_value_min: int = 250,
     footprint_padding_m: float = 0.0,
 ) -> dict[str, Any]:

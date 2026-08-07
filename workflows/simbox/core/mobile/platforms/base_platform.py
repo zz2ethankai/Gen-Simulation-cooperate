@@ -33,25 +33,21 @@ class MobileBasePlatform(ABC):
         return value
 
     @abstractmethod
-    def default_nav2_footprint_points(self, base_cfg: dict) -> list[list[float]]:
-        """Return Nav2 footprint points for this chassis."""
+    def default_navigation_footprint_points(self, base_cfg: dict) -> list[list[float]]:
+        """Return local-navigation footprint points for this chassis."""
 
     @abstractmethod
-    def default_nav2_inflation_radius_m(self, base_cfg: dict) -> float:
-        """Return Nav2 inflation radius for this chassis."""
+    def default_navigation_inflation_radius_m(self, base_cfg: dict) -> float:
+        """Return local-navigation inflation radius for this chassis."""
 
     @abstractmethod
-    def default_nav2_minimum_turning_radius_m(self, base_cfg: dict) -> float:
-        """Return Nav2 minimum turning radius for this chassis."""
+    def default_navigation_minimum_turning_radius_m(self, base_cfg: dict) -> float:
+        """Return local-navigation minimum turning radius for this chassis."""
 
     @abstractmethod
     def max_steer_angle_ackermann(self, base_cfg: dict) -> float:
         """Return the chassis Ackermann steering cap."""
 
     @abstractmethod
-    def nav2_controller_hard_limits(self, base_cfg: dict) -> dict:
-        """Return the required controller hard limits shared across Nav2 control layers."""
-
-    @abstractmethod
-    def build_bridge(self, robot, *, node_name: str):
-        """Construct the Isaac-side ROS bridge for this chassis."""
+    def navigation_controller_hard_limits(self, base_cfg: dict) -> dict:
+        """Return the body-velocity and acceleration limits for local control."""

@@ -439,10 +439,10 @@ class PandaOmron(TemplateRobot):
         if not self.base_wheel_joint_indices:
             raise ValueError("PandaOmron base wheel joint indices are not initialized")
 
-        bridge = getattr(self, "_simbox_ros_base_bridge", None)
-        if bridge is None or not hasattr(bridge, "get_logging_state_snapshot"):
-            raise ValueError("PandaOmron requires an active ROS base bridge for base observation logging")
-        base_state = bridge.get_logging_state_snapshot()
+        driver = getattr(self, "_simbox_local_base_driver", None)
+        if driver is None or not hasattr(driver, "get_logging_state_snapshot"):
+            raise ValueError("PandaOmron requires an active local base driver for base observation logging")
+        base_state = driver.get_logging_state_snapshot()
 
         obs["states.base.pose"] = np.asarray(base_state["pose"], dtype=np.float32)
         obs["states.base.twist_body"] = np.asarray(base_state["twist_body"], dtype=np.float32)

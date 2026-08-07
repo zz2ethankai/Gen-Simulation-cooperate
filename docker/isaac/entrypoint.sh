@@ -4,8 +4,6 @@ set -e
 export ISAAC_SIM_PATH="${ISAAC_SIM_PATH:-/isaac-sim}"
 export CUROBO_PATH="${CUROBO_PATH:-/opt/curobo}"
 export INTERNDATA_RUN_IMPORT_CHECKS="${INTERNDATA_RUN_IMPORT_CHECKS:-0}"
-export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
-export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 export INTERNDATA_AUTOSTART_LAUNCHER="${INTERNDATA_AUTOSTART_LAUNCHER:-0}"
 export INTERNDATA_LAUNCHER_CONFIG="${INTERNDATA_LAUNCHER_CONFIG:-configs/de_plan_with_render_template.yaml}"
 export INTERNDATA_LAUNCHER_EXTRA_ARGS="${INTERNDATA_LAUNCHER_EXTRA_ARGS:-}"
@@ -14,8 +12,6 @@ export SETUPTOOLS_SCM_PRETEND_VERSION="${SETUPTOOLS_SCM_PRETEND_VERSION:-0.7.0}"
 export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CUROBO="${SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CUROBO:-${SETUPTOOLS_SCM_PRETEND_VERSION}}"
 
 for lib_dir in \
-  "${ISAAC_SIM_PATH}/exts/omni.isaac.ros2_bridge/humble/lib" \
-  "${ISAAC_SIM_PATH}/exts/omni.isaac.ros2_bridge/foxy/lib" \
   "${ISAAC_SIM_PATH}/exts/omni.isaac.ml_archive/pip_prebundle/torch/lib" \
   "${ISAAC_SIM_PATH}/exts/omni.isaac.ml_archive/pip_prebundle/nvidia/cuda_runtime/lib" \
   "${ISAAC_SIM_PATH}/kit/exts/omni.cuda.libs/bin"
@@ -44,8 +40,7 @@ run_default_entry() {
 
   if [ "${LIVESTREAM:-0}" = "1" ]; then
     exec "${ISAAC_SIM_PATH}/isaac-sim.sh" \
-      --no-window \
-      --/isaac/startup/ros_bridge_extension=omni.isaac.ros2_bridge
+      --no-window
   fi
 
   exec bash

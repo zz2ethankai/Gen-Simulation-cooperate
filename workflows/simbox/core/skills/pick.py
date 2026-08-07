@@ -40,7 +40,7 @@ class Pick(BaseSkill):
         self.skill_cfg = cfg
         object_name = self.skill_cfg["objects"][0]
         self.pick_obj = task.objects[object_name]
-        self.output_root = str(self.skill_cfg.get("output_root", "output/ros_bridge/skills"))
+        self.output_root = str(self.skill_cfg.get("output_root", "output/local_navigation/skills"))
         self.debug_tag = f"{robot.name}_pick_{object_name}_{int(time.time() * 1000)}"
         self.debug_dir = os.path.join(self.output_root, self.debug_tag)
         self._sample_debug = {}

@@ -68,9 +68,10 @@ left_gripper_home: [0.04]
 
 base:
   base_config_file: workflows/simbox/core/configs/bases/omron_diff_drive.yaml
-  nav_config_file:
-    - nav2/config/default_nav.yaml
-    - nav2/config/panda_omron_nav.yaml
+  local_navigation_config_file: workflows/simbox/core/configs/navigation/default_local_navigation.yaml
+  local_navigation:
+    map:
+      map_z_max: 1.25
   steering_joint_names: []
   wheel_joint_names:
     - left_wheel_joint

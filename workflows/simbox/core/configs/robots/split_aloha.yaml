@@ -100,9 +100,7 @@ virtual_base_joint_paths:
 
 base:
   base_config_file: workflows/simbox/core/configs/bases/split_aloha_virtual_base.yaml
-  nav_config_file:
-    - nav2/config/default_nav.yaml
-    - nav2/config/split_aloha_virtual_nav.yaml
+  local_navigation_config_file: workflows/simbox/core/configs/navigation/default_local_navigation.yaml
   steering_joint_names: []
   wheel_joint_names: [mobile_translate_x, mobile_translate_y, mobile_rotate]
   base_velocity_joint_names: [mobile_translate_x, mobile_translate_y, mobile_rotate]

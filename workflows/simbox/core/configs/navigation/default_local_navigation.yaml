@@ -1,0 +1,27 @@
+local_navigation:
+  runtime_timeout_sec: 180.0
+  footprint_padding_m: 0.0
+  planner:
+    map_resolution: 0.05
+    safety_distance_m: 0.35
+    proximity_weight: 2.0
+    initial_padding_egress_distance_m: 0.0
+  controller:
+    max_linear_velocity: 0.35
+    max_angular_velocity: 0.8
+    waypoint_tolerance_m: 0.25
+    position_tolerance_m: 0.10
+    yaw_tolerance_rad: 0.10
+    rotate_first_error_rad: 0.20
+    linear_gain: 2.0
+    angular_gain: 2.0
+  map:
+    map_output_dir: output/local_navigation_maps
+    map_resolution: 0.02
+    map_z_min: 0.0
+    map_z_max: 1.50
+    map_bounds_padding_m: 0.75
+    robot_clear_radius_m: 0.70
+    map_border_obstacle_thickness_m: 0.15
+    map_min_obstacle_height_m: 0.04
+    map_include_visual_wall_geometry: true

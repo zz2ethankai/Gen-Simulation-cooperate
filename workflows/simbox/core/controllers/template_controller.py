@@ -149,7 +149,7 @@ class TemplateController(BaseController):
         self._curobo_plan_debug_counter = 0
         self._curobo_plan_debug_dir = os.environ.get(
             "SIMBOX_CUROBO_PLAN_DEBUG_DIR",
-            os.path.join("output", "ros_bridge", "skills", "curobo_plan_debug"),
+            os.path.join("output", "local_navigation", "skills", "curobo_plan_debug"),
         )
         self._configure_execution_stride()
         LOGGER.info(

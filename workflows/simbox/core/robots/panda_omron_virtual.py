@@ -71,7 +71,9 @@ class PandaOmronVirtual(PandaOmron):
         linear_drive_max_force = float(self.base_cfg["virtual_linear_drive_max_force"])
         yaw_drive_damping = float(self.base_cfg["virtual_yaw_drive_damping"])
         yaw_drive_max_force = float(self.base_cfg["virtual_yaw_drive_max_force"])
-        hard_limits = self.base_cfg["platform"]["nav2"]["controller_hard_limits"]
+        platform_cfg = self.base_cfg["platform"]
+        local_navigation_cfg = platform_cfg["local_navigation"]
+        hard_limits = local_navigation_cfg["controller_hard_limits"]
         max_velocity = np.asarray(hard_limits["max_velocity"], dtype=np.float32).reshape(-1)
         min_velocity = np.asarray(hard_limits["min_velocity"], dtype=np.float32).reshape(-1)
         if max_velocity.size != 3 or min_velocity.size != 3:

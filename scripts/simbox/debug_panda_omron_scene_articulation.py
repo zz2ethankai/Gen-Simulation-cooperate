@@ -156,7 +156,7 @@ def _merge_base_configs(base_cfg: dict):
     override_cfg = dict(base_cfg)
     merged_base_cfg = {}
     base_config_file = override_cfg.get("base_config_file")
-    nav_config_file = override_cfg.get("nav_config_file")
+    local_navigation_config_file = override_cfg.get("local_navigation_config_file")
 
     if base_config_file:
         with open(base_config_file, "r", encoding="utf-8") as handle:
@@ -164,13 +164,17 @@ def _merge_base_configs(base_cfg: dict):
         if isinstance(loaded_base_cfg, dict):
             merged_base_cfg = dict(loaded_base_cfg)
 
-    if nav_config_file:
-        nav_config_files = nav_config_file if isinstance(nav_config_file, list) else [nav_config_file]
-        for nav_config_path in nav_config_files:
-            with open(nav_config_path, "r", encoding="utf-8") as handle:
-                loaded_nav_cfg = yaml.load(handle, Loader=Loader)
-            if isinstance(loaded_nav_cfg, dict):
-                _deep_update_dict(merged_base_cfg, loaded_nav_cfg)
+    if local_navigation_config_file:
+        config_files = (
+            local_navigation_config_file
+            if isinstance(local_navigation_config_file, list)
+            else [local_navigation_config_file]
+        )
+        for config_path in config_files:
+            with open(config_path, "r", encoding="utf-8") as handle:
+                loaded_navigation_cfg = yaml.load(handle, Loader=Loader)
+            if isinstance(loaded_navigation_cfg, dict):
+                _deep_update_dict(merged_base_cfg, loaded_navigation_cfg)
 
     _deep_update_dict(merged_base_cfg, override_cfg)
     base_cfg.clear()
@@ -391,12 +395,6 @@ def run() -> int:
         else:
             workflow = create_workflow(workflow_type, world, scene_loader_cfg["cfg_path"])
             workflow.init_task(0)
-            if not args.keep_bridges and hasattr(workflow, "_destroy_navigation_session_managers"):
-                workflow._destroy_navigation_session_managers()
-            if not args.keep_bridges and hasattr(workflow, "_destroy_nav2_clock_publisher"):
-                workflow._destroy_nav2_clock_publisher()
-            if not args.keep_bridges and hasattr(workflow, "_destroy_ros_base_bridges"):
-                workflow._destroy_ros_base_bridges()
             robot = _find_robot(workflow)
         dof_names = list(robot._articulation_view.dof_names)
         report.update(

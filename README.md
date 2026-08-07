@@ -102,12 +102,12 @@ If `docker/isaac/entrypoint.sh` is not executable on your checkout, fix it
 before building:
 
 ```bash
-chmod +x docker/isaac/entrypoint.sh docker/nav2/entrypoint.sh
+chmod +x docker/isaac/entrypoint.sh scripts/docker/up_simbox_isaac.sh
 ```
 
 ### 4. Build and start
 
-Build the split Isaac/Nav2 stack:
+Build the Isaac image:
 
 ```bash
 docker compose -f docker/docker-compose.yml build
@@ -116,7 +116,7 @@ docker compose -f docker/docker-compose.yml build
 Start the default single-GPU stack:
 
 ```bash
-scripts/docker/up_nav2_stack_single_gpu.sh
+scripts/docker/up_simbox_isaac.sh
 ```
 
 Stop the stack:
@@ -129,12 +129,9 @@ scripts/docker/stop_all_docker.sh
 
 For more details, please check [Documentation](https://internrobotics.github.io/InternDataEngine-Docs/).
 
-## Split ROS / Isaac Sim Deployment
+## Isaac Sim Deployment
 
-The repository now includes an in-repo split deployment layout for running Isaac Sim and ROS/Nav2 as separate services:
-
-- `docker/isaac/`: Isaac Sim image and runtime entrypoint
-- `nav2/`: standalone Nav2 package containing container assets, ROS-side helpers, and shared client/runtime code
+SimBox navigation runs inside Isaac through the local A* planner and mobile-base driver. The deployment uses one Isaac service and does not require ROS or Nav2.
 
 Prerequisites:
 
@@ -142,91 +139,32 @@ Prerequisites:
 - NVIDIA Container Toolkit and a visible GPU on the host
 - Enough local disk space for Isaac caches under `.docker/isaac-sim/`
 
-Build the split stack from the repository root with:
+Build the image from the repository root with:
 
 ```bash
 docker compose -f docker/docker-compose.yml build
 ```
 
-Start the default single-GPU stack with:
+Start the default single-GPU container with:
 
 ```bash
-scripts/docker/up_nav2_stack_single_gpu.sh
+scripts/docker/up_simbox_isaac.sh
 ```
 
-The helper script can be run directly. Its default settings live at the top of
-`scripts/docker/up_nav2_stack_single_gpu.sh`:
+To select a GPU and limit the Isaac CPU scheduling quota:
 
 ```bash
-DEFAULT_LAUNCHER_CONFIG="configs/de_plan_with_render_template.yaml"
-DEFAULT_SINGLE_GPU_DEVICE_IDS="0"
-DEFAULT_ROS_DOMAIN_ID="0"
-DEFAULT_SERVICES=(isaac nav2)
-```
-
-To limit CPU scheduling quota per container, use the wrapper options (or set
-the equivalent `INTERNDATA_ISAAC_CPUS` and `INTERNDATA_NAV2_CPUS` environment
-variables):
-
-```bash
-scripts/docker/up_nav2_stack.sh --isaac-cpus 16 --nav2-cpus 2 isaac nav2
+scripts/docker/up_simbox_isaac.sh --gpu 0 --isaac-cpus 16
 ```
 
 `cpus` is a Docker CPU quota, not a physical-core pinning policy.
 
-Use `configs/de_plan_with_render_template.yaml` for plan-with-render runs, or
-change `DEFAULT_LAUNCHER_CONFIG` to `configs/de_pipe_template.yaml` for the
-pipeline template. The script exports the selected config into Compose; the
-choice is intentionally not hardcoded in `docker/docker-compose.yml`.
-
-Start multiple isolated GPU stacks with:
-
-```bash
-scripts/docker/up_nav2_stack_multi_gpu.sh
-```
-
-Give every parallel stack the same Docker CPU quota with:
-
-```bash
-INTERNDATA_PARALLEL_ISAAC_CPUS=16 INTERNDATA_PARALLEL_NAV2_CPUS=2 \
-  scripts/docker/up_nav2_stack_multi_gpu.sh
-```
-
-The multi-GPU defaults are `12` CPUs for Isaac and `6` for Nav2 in each stack.
-
-The multi-GPU defaults live at the top of
-`scripts/docker/up_nav2_stack_multi_gpu.sh`:
-
-```bash
-DEFAULT_LAUNCHER_CONFIG="configs/de_plan_with_render_template.yaml"
-DEFAULT_PARALLEL_GPU_COUNT="4"
-DEFAULT_PARALLEL_GPUS=""
-DEFAULT_STACKS_PER_GPU="2"
-DEFAULT_ROS_DOMAIN_BASE="10"
-DEFAULT_STOP_NAV2_WHEN_ISAAC_EXITS="1"
-```
-
-When `DEFAULT_PARALLEL_GPUS` is empty, the script starts GPUs
-`0..DEFAULT_PARALLEL_GPU_COUNT-1`. To use a non-contiguous set, set it to a
-comma-separated list such as `0,2,3`. Set `DEFAULT_STACKS_PER_GPU` to run more
-than one stack on each selected GPU. For example, `DEFAULT_PARALLEL_GPUS="0,1"`
-and `DEFAULT_STACKS_PER_GPU="2"` starts four stacks: two on GPU 0 and two on
-GPU 1.
-
-Each stack gets separate container names, Nav2 session IDs, ROS domain IDs, and
-Isaac cache/log directories. The launcher output name is not suffixed per GPU,
-so generated data continues to use the output directory selected by the data
-engine config, such as `output/simbox_plan_with_render/`.
-
-By default, the scripts watch each Isaac container and stop the matching Nav2
-container after Isaac exits. Set `DEFAULT_STOP_NAV2_WHEN_ISAAC_EXITS="0"` in the
-script if you want Nav2 to keep running after Isaac finishes.
+Use `--launcher-config configs/de_pipe_template.yaml` for the pipeline template. Parallel workers should pass distinct `--stack-id` and `--gpu` values so their container names and Isaac cache directories remain isolated.
 
 Watch logs:
 
 ```bash
 docker compose -f docker/docker-compose.yml logs -f isaac
-docker compose -f docker/docker-compose.yml logs -f nav2
 ```
 
 Stop the stack:
@@ -235,14 +173,10 @@ Stop the stack:
 scripts/docker/stop_all_docker.sh
 ```
 
-By default, this stop script only stops containers named `isaac`, `nav2`,
-`isaac-*`, and `nav2-*`. To stop every running Docker container on the host,
+By default, this stop script only stops containers named `isaac` and `isaac-*`. To stop every running Docker container on the host,
 edit `DEFAULT_STOP_EVERY_RUNNING_CONTAINER="1"` at the top of the script.
 
-The default single-stack startup behavior is:
-
-- `isaac` autostarts `launcher.py` with the config selected in `scripts/docker/up_nav2_stack_single_gpu.sh`
-- `nav2` autostarts the in-repo Nav2 bridge and bringup stack
+The `isaac` service autostarts `launcher.py` with the config selected by `scripts/docker/up_simbox_isaac.sh`.
 
 Generated data and logs are written to:
 
@@ -255,10 +189,8 @@ If you prefer to run from the `docker/` directory directly, the equivalent comma
 ```bash
 cd docker
 docker compose build
-../scripts/docker/up_nav2_stack_single_gpu.sh
+../scripts/docker/up_simbox_isaac.sh
 ```
-
-By default, the Isaac workflow writes external Nav2 runtime requests to `output/ros_bridge/runtime_requests`, and the ROS service watches that directory to launch or refresh the corresponding Nav2 stack.
 
 ## License and Citation
 All the code within this repo are under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/). Please consider citing our papers if it helps your research.

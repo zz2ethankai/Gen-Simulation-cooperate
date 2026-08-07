@@ -139,7 +139,7 @@ def _build_probe_floor_task(task_cfg: dict, arena_cfg_path: str) -> dict:
     ]
     nav_task.pop("distractors", None)
     nav_task.pop("mem_distractors", None)
-    nav_task.pop("nav2_obstacles", None)
+    nav_task.pop("navigation_obstacles", None)
     env_map_cfg = dict(nav_task.get("env_map", {}))
     if env_map_cfg:
         env_map_cfg["apply_randomization"] = False
@@ -324,7 +324,6 @@ def run_steering_probe(
         world = _build_world(simulator_cfg)
         workflow = create_workflow(workflow_type, world, task_cfg_path)
         workflow.init_task(0)
-        workflow._destroy_ros_base_bridges()
 
         robot = _find_split_aloha(workflow)
         steering_positions = _steering_pattern(steering_pattern, steer_angle)
@@ -438,7 +437,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--output-path",
-        default="output/ros_bridge/split_aloha_base_probe.json",
+        default="output/local_navigation/split_aloha_base_probe.json",
         help="Where to save the probe output JSON",
     )
     parser.add_argument(
