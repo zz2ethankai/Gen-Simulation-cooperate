@@ -669,13 +669,44 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             try:
                 driver = build_local_base_driver(robot, world=self.world)
             except KeyError:
-                continue
+                raise RuntimeError(
+                    f"Unsupported local base profile for mobile robot '{robot_name}'"
+                ) from None
             except Exception as exc:
                 raise RuntimeError(f"Failed to initialize local base driver for '{robot_name}'") from exc
             self._local_base_drivers[robot_name] = driver
             setattr(robot, "_simbox_local_base_driver", driver)
         if self._local_base_drivers:
             print(f"[local-base-driver] Initialized {sorted(self._local_base_drivers.keys())}")
+
+    def _ensure_local_base_driver_bindings(self):
+        """Restore robot-to-driver bindings before reading observations.
+
+        Isaac task resets can recreate or reinitialize robot wrappers while the
+        workflow-level driver registry remains alive.  Observation logging must
+        see the same driver object that the workflow steps, so repair the
+        binding at this lifecycle boundary instead of weakening robot logging.
+        """
+        drivers = getattr(self, "_local_base_drivers", {})
+        needs_reinit = False
+        for robot_name, robot in getattr(self.task, "robots", {}).items():
+            if not hasattr(robot, "get_base_interface") or not hasattr(robot, "apply_base_command"):
+                continue
+            driver = drivers.get(robot_name)
+            if driver is None or getattr(robot, "_simbox_local_base_driver", None) is not driver:
+                needs_reinit = True
+                break
+        if needs_reinit:
+            self._initialize_local_base_drivers()
+
+        for robot_name, robot in getattr(self.task, "robots", {}).items():
+            if not hasattr(robot, "get_base_interface") or not hasattr(robot, "apply_base_command"):
+                continue
+            driver = getattr(robot, "_simbox_local_base_driver", None)
+            if driver is None or not hasattr(driver, "get_logging_state_snapshot"):
+                raise RuntimeError(
+                    f"Local base driver binding missing for mobile robot '{robot_name}'"
+                )
 
     def _step_local_base_drivers(self):
         if not self._local_base_drivers:
@@ -1922,6 +1953,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         max_episode_length = self.task_cfg["data"]["max_episode_length"]
         episode_stats = {"succeed_times": 0, "current_times": 0}
 
+        self._ensure_local_base_driver_bindings()
         self._reset_fixed_robot_start_states_after_physics(clear_debug_history=True)
         for _ in range(10):
             obs = self.world.get_observations()
