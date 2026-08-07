@@ -220,6 +220,23 @@ class LocalBaseDriver:
                 "steering_velocities": [float(v) for v in np.asarray(joint_state.get("steering_velocities", ())).reshape(-1)],
                 "wheel_velocities": [float(v) for v in np.asarray(joint_state.get("wheel_velocities", ())).reshape(-1)]}
 
+    def get_actual_twist_body(self) -> np.ndarray:
+        """Return the current measured body twist without advancing log state.
+
+        Skill scheduling runs after a physics step, whereas observation logging
+        runs before it.  Keeping this query read-only lets Navigate wait for
+        the latest physical motion to settle without corrupting the next
+        observation's pose-delta measurement.
+        """
+        translation, orientation = self._get_robot_base_pose()
+        translation = np.asarray(translation, dtype=np.float32).reshape(3)
+        dt = max(self._last_step_dt, 1.0e-3)
+        linear_world = (translation - self._last_actual_translation) / dt
+        linear_body = self._world_linear_velocity_to_body(linear_world, orientation)
+        yaw = self._yaw_from_wxyz(orientation)
+        yaw_rate = self._wrap_angle(yaw - self._last_actual_yaw) / dt
+        return np.asarray([linear_body[0], linear_body[1], yaw_rate], dtype=np.float32)
+
     def has_non_finite_state(self) -> bool:
         return self._non_finite_state_detected
 

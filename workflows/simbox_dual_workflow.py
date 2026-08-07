@@ -693,9 +693,14 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             if not hasattr(robot, "get_base_interface") or not hasattr(robot, "apply_base_command"):
                 continue
             driver = drivers.get(robot_name)
-            if driver is None or getattr(robot, "_simbox_local_base_driver", None) is not driver:
+            if driver is None or not hasattr(driver, "get_logging_state_snapshot"):
                 needs_reinit = True
                 break
+            # Isaac can recreate the robot wrapper during a reset while the
+            # workflow-owned driver remains valid. Rebind that driver instead
+            # of destroying it and invalidating active Navigate skills.
+            if getattr(robot, "_simbox_local_base_driver", None) is not driver:
+                setattr(robot, "_simbox_local_base_driver", driver)
         if needs_reinit:
             self._initialize_local_base_drivers()
 
@@ -707,6 +712,12 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 raise RuntimeError(
                     f"Local base driver binding missing for mobile robot '{robot_name}'"
                 )
+
+    def _get_observations(self):
+        """Read observations only after repairing mobile-base driver bindings."""
+
+        self._ensure_local_base_driver_bindings()
+        return self.world.get_observations()
 
     def _step_local_base_drivers(self):
         if not self._local_base_drivers:
@@ -851,7 +862,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
 
         # Warmup
         for _ in range(20):
-            self.world.get_observations()
+            self._get_observations()
             self._init_static_objects(self.task)
             self._step_world(render=False)
         self._reset_fixed_robot_start_states_after_physics(clear_debug_history=True)
@@ -911,7 +922,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
 
         # Warmup
         for _ in range(20):
-            self.world.get_observations()
+            self._get_observations()
             self._init_static_objects(self.task)
             self._step_world(render=False)
         self._reset_fixed_robot_start_states_after_physics(clear_debug_history=True)
@@ -958,7 +969,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         self._initialize_local_base_drivers()
 
         for _ in range(20):
-            self.world.get_observations()
+            self._get_observations()
             self._init_static_objects(self.task)
             self._step_world(render=False)
         self._reset_fixed_robot_start_states_after_physics(clear_debug_history=True)
@@ -1630,7 +1641,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
 
         self._reset_fixed_robot_start_states_after_physics(clear_debug_history=True)
         for _ in range(10):
-            obs = self.world.get_observations()
+            obs = self._get_observations()
             # self._init_static_objects(self.task)
             self._step_world(render=step_render)
         self._reset_fixed_robot_start_states_after_physics(clear_debug_history=True)
@@ -1641,7 +1652,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             or (self._skills_complete() and not episode_success)
             or (not should_continue)
         ):
-            obs = self.world.get_observations()
+            obs = self._get_observations()
             action_dict = {}
             self._active_execution_step_id = step_id
             record_flag = True
@@ -1702,7 +1713,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 end = True
                 for j_idx in range(1, 7):
                     self._step_world(render=step_render)
-                    obs = self.world.get_observations()
+                    obs = self._get_observations()
                     log_dual_obs(
                         self.logger,
                         obs,
@@ -1956,7 +1967,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         self._ensure_local_base_driver_bindings()
         self._reset_fixed_robot_start_states_after_physics(clear_debug_history=True)
         for _ in range(10):
-            obs = self.world.get_observations()
+            obs = self._get_observations()
             # self._init_static_objects(self.task)
             self._step_world(render=True)
         self._reset_fixed_robot_start_states_after_physics(clear_debug_history=True)
@@ -1972,7 +1983,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             or (self._skills_complete() and not episode_success)
             or (not should_continue)
         ):
-            obs = self.world.get_observations()
+            obs = self._get_observations()
             action_dict = {}
             self._active_execution_step_id = step_id
             record_flag = True
@@ -2033,7 +2044,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 end = True
                 for j_idx in range(1, 7):
                     self._step_world(render=True)
-                    obs = self.world.get_observations()
+                    obs = self._get_observations()
                     log_dual_obs(
                         self.logger,
                         obs,
@@ -2089,7 +2100,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 # shift instead of producing an empty gripper/action list.
                 action_dict = {}
                 for failure_step in range(2):
-                    obs = self.world.get_observations()
+                    obs = self._get_observations()
                     log_dual_obs(
                         self.logger,
                         obs,

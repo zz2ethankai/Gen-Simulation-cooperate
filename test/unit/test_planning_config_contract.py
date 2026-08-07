@@ -21,6 +21,7 @@ from core.planning.config_contract import (  # noqa: E402
     resolve_collision_world_mode,
     resolve_runtime_skill_collision_world_mode,
     resolve_skill_collision_world_mode,
+    resolve_skill_test_mode,
     task_uses_physics_schema,
     validate_planning_contract,
 )
@@ -282,25 +283,32 @@ def test_workspace_probe_cannot_leak_into_a_normal_task():
         )
 
 
-def test_object_identity_arity_and_ik_only_mode_are_rejected():
+def test_object_identity_arity_is_rejected_but_ik_is_legacy_compatible():
     with pytest.raises(ValueError, match="exactly 2 object identities"):
         validate_planning_contract(
             _task({"name": "Place", "objects": ["a"]}), "physics_schema"
         )
-    with pytest.raises(ValueError, match="test_mode=forward"):
-        validate_planning_contract(
-            _task({"name": "Pick", "objects": ["a"], "test_mode": "ik"}),
-            "physics_schema",
-        )
+    validate_planning_contract(
+        _task({"name": "Pick", "objects": ["a"], "test_mode": "ik"}),
+        "physics_schema",
+    )
 
 
-def test_hybrid_keeps_physics_skill_contract_strict():
+def test_hybrid_keeps_object_identity_contract_strict():
     with pytest.raises(ValueError, match="exactly 2 object identities"):
         validate_planning_contract(
             _task({"name": "Place", "objects": ["a"]}), HYBRID_MODE
         )
-    with pytest.raises(ValueError, match="test_mode=forward"):
-        validate_planning_contract(
-            _task({"name": "Pick", "objects": ["a"], "test_mode": "ik"}),
-            HYBRID_MODE,
-        )
+    validate_planning_contract(
+        _task({"name": "Pick", "objects": ["a"], "test_mode": "ik"}),
+        HYBRID_MODE,
+    )
+
+
+@pytest.mark.parametrize("mode", [PHYSICS_SCHEMA_MODE, HYBRID_MODE])
+def test_physics_schema_skill_ignores_deprecated_ik_test_mode(mode):
+    assert resolve_skill_test_mode({"test_mode": "ik"}, mode) == "forward"
+
+
+def test_explicit_legacy_skill_preserves_ik_test_mode():
+    assert resolve_skill_test_mode({"test_mode": "ik"}, LEGACY_STAGE_SCAN_MODE) == "ik"

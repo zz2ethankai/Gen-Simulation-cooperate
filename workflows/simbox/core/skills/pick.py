@@ -7,6 +7,7 @@ from copy import deepcopy
 
 import numpy as np
 from core.planning.grasp_plan_evaluator import GraspPlanEvaluator
+from core.planning.config_contract import resolve_skill_test_mode
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand
 from core.skills.base_skill import BaseSkill, register_skill
 from core.utils.constants import CUROBO_BATCH_SIZE
@@ -565,13 +566,16 @@ class Pick(BaseSkill):
         transforms = self.sample_ee_pose()
         evaluator = GraspPlanEvaluator(self.controller, self._debug_log)
         missing = evaluator.missing_attach_prims(self.pick_obj.attach_collision_prim_paths)
+        test_mode = resolve_skill_test_mode(
+            self.skill_cfg, getattr(self.controller, "collision_world_mode", "legacy_stage_scan")
+        )
         self.plan_evaluation = evaluator.evaluate(
             transforms,
             self.sampled_scores,
             pregrasp_offset_m=float(self.skill_cfg.get("pre_grasp_offset", 0.1)),
             attach_prim_paths=self.pick_obj.attach_collision_prim_paths,
             fixed_orientation=self.fixed_orientation,
-            test_mode=str(self.skill_cfg.get("test_mode", "forward")),
+            test_mode=test_mode,
             attach_config_failure_code=self.pick_obj.attach_collision_failure_code,
             attach_candidate_paths=self.pick_obj.attach_collision_candidates,
             attach_missing_paths=missing,

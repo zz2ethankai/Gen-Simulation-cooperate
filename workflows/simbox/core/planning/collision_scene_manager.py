@@ -283,6 +283,16 @@ class CollisionSceneManager:
                     paths.add(str(current.GetPath()))
                     break
                 current = current.GetParent()
+        # A number of imported object assets place the collision mesh under a
+        # sibling branch of the rigid body (rather than below it).  In that
+        # layout the collider-to-ancestor walk above is intentionally empty,
+        # but the object still has a valid rigid body sensor root.  Resolve
+        # those roots from the object subtree before declaring the asset
+        # incompatible with contact auditing.
+        if not paths:
+            for prim in Usd.PrimRange(self.stage.GetPrimAtPath(root_path)):
+                if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                    paths.add(str(prim.GetPath()))
         return sorted(paths)
 
     def _rigid_body_ancestor_path(
@@ -373,6 +383,36 @@ class CollisionSceneManager:
                 if self._explicitly_noncollidable(entity):
                     self.schema_exclusions[root_path] = (
                         "config_declared_visual_only_and_stage_has_no_enabled_collider"
+                    )
+                    continue
+                # Some legacy arenas register visual-only fixture roots (for
+                # example ``background0``) in the task entity collection even
+                # though the referenced USD subtree contains no CollisionAPI
+                # at all.  There is no physics contract to audit in that
+                # case, so keep it out of the physics-schema world.  A
+                # configured/claimed collider still follows the strict path
+                # below and cannot be silently ignored.
+                has_collision_api = any(
+                    prim.HasAPI(UsdPhysics.CollisionAPI)
+                    for prim in Usd.PrimRange(root)
+                )
+                cfg = getattr(entity, "cfg", {}) or {}
+                physics_cfg = cfg.get("physics", {}) or {}
+                claims_collision = any(
+                    value is True
+                    for value in (
+                        physics_cfg.get("collision_enabled"),
+                        cfg.get("collision_enabled"),
+                        cfg.get("collision"),
+                        (cfg.get("source_physics", {}) or {}).get("collision_enabled"),
+                    )
+                )
+                if not enabled_collision_prims and not has_collision_api and not claims_collision:
+                    self.schema_exclusions[root_path] = "visual_only_no_collision_api"
+                    LOGGER.info(
+                        "[CollisionWorld] skipping visual-only entity without CollisionAPI: %s (%s)",
+                        entity_name,
+                        root_path,
                     )
                     continue
                 message = f"entity has no supported enabled collider: {entity_name} ({root_path})"

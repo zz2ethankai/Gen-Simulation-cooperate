@@ -8,6 +8,7 @@ import os
 import time
 import traceback
 from copy import deepcopy
+from pathlib import Path
 
 import numpy as np
 from core.robots.base_robot import register_robot
@@ -19,6 +20,7 @@ from omni.isaac.core.utils.transformations import (
     tf_matrix_from_pose,
 )
 from scipy.interpolate import interp1d
+from pxr import Usd
 
 from core.utils.joint_index_resolver import (
     JOINT_GROUP_FIELDS,
@@ -45,12 +47,17 @@ class TemplateRobot(Robot):
         self.cfg = cfg
 
         # Create prim
-        usd_path = f"{asset_root}/{cfg['path']}"
+        usd_path = self._resolve_usd_path(asset_root, cfg["path"])
         prim_path = f"{root_prim_path}/{cfg['name']}"
         create_prim(usd_path=usd_path, prim_path=prim_path)
-        super().__init__(prim_path, cfg["name"], *args, **kwargs)
+        articulation_prim_path = self._find_articulation_root(prim_path)
+        super().__init__(articulation_prim_path, cfg["name"], *args, **kwargs)
 
+        # The articulation view must target the USD articulation root.  Keep
+        # robot_prim_path at the wrapper so existing asset-relative paths stay
+        # stable for robots whose root is a child prim.
         self.robot_prim_path = prim_path
+        self.articulation_prim_path = articulation_prim_path
 
         # Gripper parameters (from cfg, no .get())
         self.gripper_max_width = cfg["gripper_max_width"]
@@ -71,6 +78,32 @@ class TemplateRobot(Robot):
         self._manipulation_base_hold_indices = np.asarray([], dtype=np.int64)
         self._manipulation_base_hold_positions = np.asarray([], dtype=float)
         self._manipulation_base_hold_saved_drive = None
+
+    @staticmethod
+    def _resolve_usd_path(asset_root: str, path: str) -> str:
+        """Resolve both asset-root-relative and repository-relative robot paths."""
+
+        configured = Path(str(path)).expanduser()
+        if configured.is_absolute() and configured.exists():
+            return str(configured.resolve())
+        rooted = Path(asset_root).expanduser() / configured
+        if rooted.exists():
+            return str(rooted.resolve())
+        if configured.exists():
+            return str(configured.resolve())
+        return str(rooted.resolve())
+
+    @staticmethod
+    def _find_articulation_root(wrapper_path: str) -> str:
+        """Use the applied USD articulation root when the asset has a wrapper prim."""
+
+        wrapper = get_prim_at_path(wrapper_path)
+        if not wrapper.IsValid():
+            return wrapper_path
+        for prim in Usd.PrimRange(wrapper):
+            if any("ArticulationRootAPI" in schema for schema in prim.GetAppliedSchemas()):
+                return str(prim.GetPath())
+        return wrapper_path
 
     def _setup_joint_indices(self):
         """Setup joint indices. Override in subclass."""

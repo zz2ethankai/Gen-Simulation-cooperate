@@ -5,6 +5,7 @@ from copy import deepcopy
 
 import numpy as np
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand
+from core.planning.config_contract import resolve_skill_test_mode
 from core.skills.base_skill import BaseSkill, register_skill
 from core.utils.box import Box, get_bbox_center_and_corners
 from core.utils.constants import CUROBO_BATCH_SIZE
@@ -655,7 +656,10 @@ class Place(BaseSkill):
             for index in range(T_base_ee_places.shape[0]):
                 p_base_ee_pregrasp, q_base_ee_pregrasp = p_base_ee_preplaces[index], q_base_ee_preplaces[index]
                 p_base_ee_grasp, q_base_ee_grasp = p_base_ee_places[index], q_base_ee_places[index]
-                test_mode = self.skill_cfg.get("test_mode", "forward")
+                test_mode = resolve_skill_test_mode(
+                    self.skill_cfg,
+                    getattr(self.controller, "collision_world_mode", "legacy_stage_scan"),
+                )
                 if test_mode == "forward":
                     result_pre = self.controller.test_single_forward(p_base_ee_pregrasp, q_base_ee_pregrasp)
                 elif test_mode == "ik":

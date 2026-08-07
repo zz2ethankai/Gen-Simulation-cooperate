@@ -84,6 +84,19 @@ def task_uses_physics_schema(collision_world_mode: str) -> bool:
     return str(collision_world_mode) in {PHYSICS_SCHEMA_MODE, HYBRID_MODE}
 
 
+def resolve_skill_test_mode(skill_cfg: Any, collision_world_mode: str) -> str:
+    """Resolve legacy test_mode without weakening Physics-schema planning.
+
+    ``test_mode: ik`` is retained only for explicit legacy-stage-scan Skills.
+    Migrated Pick and Place Skills always require forward planning so that their
+    transit paths are collision-validated.
+    """
+
+    if str(collision_world_mode) in {PHYSICS_SCHEMA_MODE, HYBRID_MODE}:
+        return "forward"
+    return str(skill_cfg.get("test_mode", "forward"))
+
+
 def resolve_collision_world_mode(
     task_cfg: dict[str, Any], requested_mode: str | None
 ) -> tuple[str, str]:
@@ -169,9 +182,4 @@ def validate_planning_contract(task_cfg: dict[str, Any], collision_world_mode: s
                             raise ValueError(
                                 f"physics_schema {skill_name} requires exactly "
                                 f"{expected_count} object identities, got {object_count}"
-                            )
-                        if str(skill_cfg.get("test_mode", "forward")) != "forward":
-                            raise ValueError(
-                                f"physics_schema {skill_name} requires test_mode=forward "
-                                "because IK-only checks do not validate a collision-free path"
                             )

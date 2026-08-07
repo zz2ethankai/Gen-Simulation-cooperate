@@ -40,8 +40,8 @@ def parse_approach_config(cfg: dict[str, Any]) -> ApproachConfig | None:
     if not target_name:
         return None
 
-    min_distance = float(cfg.get("approach_min_distance", 0.55))
-    max_distance = float(cfg.get("approach_max_distance", 0.85))
+    min_distance = float(cfg.get("approach_min_distance", 0.45))
+    max_distance = float(cfg.get("approach_max_distance", 0.65))
     sample_count = int(cfg.get("approach_sample_count", 512))
     footprint_padding_m = cfg.get("approach_footprint_padding", None)
     footprint_padding_m = None if footprint_padding_m is None else float(footprint_padding_m)

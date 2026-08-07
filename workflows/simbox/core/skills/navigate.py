@@ -93,6 +93,38 @@ class Navigate(BaseSkill):
         nested_controller_cfg = cfg_container.get("local_navigation", {})
         if isinstance(nested_controller_cfg, dict):
             self.controller_cfg.update(nested_controller_cfg)
+        platform_cfg = base_cfg.get("platform", {}) if isinstance(base_cfg, dict) else {}
+        platform_navigation_cfg = (
+            platform_cfg.get("local_navigation", {})
+            if isinstance(platform_cfg, dict)
+            else {}
+        )
+        settle_cfg = dict(platform_navigation_cfg.get("settle", {}))
+        settle_cfg.update(self.local_navigation_cfg.get("settle", {}))
+        for cfg_key, settle_key in (
+            ("settle_linear_speed_tolerance", "linear_speed_tolerance"),
+            ("settle_angular_speed_tolerance", "angular_speed_tolerance"),
+            ("settle_consecutive_steps", "consecutive_steps"),
+        ):
+            if cfg_key in cfg_container:
+                settle_cfg[settle_key] = cfg_container[cfg_key]
+        self.settle_linear_speed_tolerance = float(
+            settle_cfg.get("linear_speed_tolerance", 0.005)
+        )
+        self.settle_angular_speed_tolerance = float(
+            settle_cfg.get("angular_speed_tolerance", 0.005)
+        )
+        self.settle_consecutive_steps = int(settle_cfg.get("consecutive_steps", 8))
+        if (
+            not math.isfinite(self.settle_linear_speed_tolerance)
+            or not math.isfinite(self.settle_angular_speed_tolerance)
+            or self.settle_linear_speed_tolerance < 0.0
+            or self.settle_angular_speed_tolerance < 0.0
+            or self.settle_consecutive_steps < 1
+        ):
+            raise ValueError("Navigate settling tolerances must be non-negative and consecutive_steps must be positive")
+        self._goal_reached = False
+        self._settle_streak = 0
         self.approach_config = parse_approach_config(cfg_container)
         if self.approach_config is None:
             self.goal_x, self.goal_y, self.goal_yaw = self._resolve_goal_pose(task, cfg)
@@ -177,10 +209,12 @@ class Navigate(BaseSkill):
         return False
 
     def _get_driver(self):
-        if self._driver is not None:
-            return self._driver
         if self.workflow is not None and hasattr(self.workflow, "get_local_base_driver"):
-            self._driver = self.workflow.get_local_base_driver(getattr(self.robot, "name", ""))
+            workflow_driver = self.workflow.get_local_base_driver(
+                getattr(self.robot, "name", "")
+            )
+            if workflow_driver is not None and workflow_driver is not self._driver:
+                self._driver = workflow_driver
         if self._driver is None:
             self.failure_reason = "local_driver_unavailable"
             self.error_message = "Workflow did not initialize a local base driver"
@@ -336,6 +370,25 @@ class Navigate(BaseSkill):
             self._local_success = False
             self._write_debug("timeout")
             return
+        if self._goal_reached:
+            driver.set_command(0.0, 0.0, 0.0)
+            actual_twist = driver.get_actual_twist_body()
+            planar_speed = math.hypot(float(actual_twist[0]), float(actual_twist[1]))
+            yaw_rate = abs(float(actual_twist[2]))
+            if (
+                planar_speed <= self.settle_linear_speed_tolerance
+                and yaw_rate <= self.settle_angular_speed_tolerance
+            ):
+                self._settle_streak += 1
+            else:
+                self._settle_streak = 0
+            if self._settle_streak < self.settle_consecutive_steps:
+                return
+            driver.finalize_after_navigation()
+            self._local_done = True
+            self._local_success = True
+            self._write_debug("succeeded")
+            return
         try:
             body_vx, body_vy, body_wz, done, _ = self._controller.command(
                 self._get_pose(),
@@ -353,10 +406,9 @@ class Navigate(BaseSkill):
                 self._write_debug("control_error")
             return
         if done:
-            driver.finalize_after_navigation()
-            self._local_done = True
-            self._local_success = True
-            self._write_debug("succeeded")
+            self._goal_reached = True
+            self._settle_streak = 0
+            driver.set_command(0.0, 0.0, 0.0)
 
     def is_done(self):
         return bool(self._local_done)
