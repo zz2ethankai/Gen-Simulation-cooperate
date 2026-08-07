@@ -216,6 +216,16 @@ class LocalNavigationTests(unittest.TestCase):
         self.assertGreaterEqual(len(path), 2)
         self.assertTrue(any(abs(point[1] - 1.5) > 0.1 for point in path))
 
+    def test_astar_preserves_intermediate_grid_waypoints(self):
+        image = np.full((30, 30), 254, dtype=np.uint8)
+        image[14:17, 14:17] = 0
+        static_map = {"image": image, "resolution": 0.1, "origin": [0.0, 0.0, 0.0]}
+        planner = GridAStarPlanner(safety_distance_m=0.0)
+        planner.set_static_map(static_map, footprint_points=[[-0.02, -0.02], [0.02, 0.02]])
+        path = planner.plan((0.5, 0.5), (2.5, 2.5))
+        self.assertIsNotNone(path)
+        self.assertGreater(len(path), 2)
+
     def test_multi_goal_astar_stops_after_requested_solution_count(self):
         image = np.full((30, 30), 254, dtype=np.uint8)
         static_map = {"image": image, "resolution": 0.1, "origin": [0.0, 0.0, 0.0]}

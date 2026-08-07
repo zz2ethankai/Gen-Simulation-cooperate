@@ -216,7 +216,10 @@ class GridAStarPlanner:
             points.append(tuple(map(float, goal_xy)))
         else:
             points[-1] = tuple(map(float, goal_xy))
-        return self._simplify(points)
+        # Keep every grid waypoint.  The local controller and footprint
+        # preflight consume these points; collapsing them into a long segment
+        # can cut across an obstacle between two individually valid cells.
+        return points
 
     def plan_to_goals(
         self,
@@ -273,7 +276,7 @@ class GridAStarPlanner:
                         points.append((float(requested_goal[0]), float(requested_goal[1])))
                     else:
                         points[-1] = (float(requested_goal[0]), float(requested_goal[1]))
-                    found[index] = self._simplify(points)
+                    found[index] = points
                     if len(found) >= int(max_solutions):
                         break
                 if len(found) >= int(max_solutions):
