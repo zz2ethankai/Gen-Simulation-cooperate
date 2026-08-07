@@ -291,15 +291,16 @@ class WaypointController:
         return body_vx, body_vy, wz, False, {"waypoint_index": self.waypoint_index, "waypoint_count": len(self.path), "distance_to_goal": distance, "yaw_error": yaw_error}
 
 
-def build_navigation_plan(*, start_pose: tuple[float, float, float], goal: tuple[float, float, float], static_map: dict[str, Any] | None, footprint_points: list[list[float]], footprint_padding_m: float = 0.0, planner_cfg: dict[str, Any] | None = None) -> NavigationPlan | None:
+def build_navigation_plan(*, start_pose: tuple[float, float, float], goal: tuple[float, float, float], static_map: dict[str, Any] | None, footprint_points: list[list[float]], footprint_padding_m: float = 0.0, planner_cfg: dict[str, Any] | None = None, planner: GridAStarPlanner | None = None) -> NavigationPlan | None:
     planner_cfg = planner_cfg or {}
-    planner = GridAStarPlanner(
-        resolution=float(planner_cfg.get("map_resolution", static_map.get("resolution", 0.05) if static_map else 0.05)),
-        safety_distance_m=float(planner_cfg.get("safety_distance_m", 0.35)),
-        proximity_weight=float(planner_cfg.get("proximity_weight", 2.0)),
-    )
-    if static_map is not None:
-        planner.set_static_map(static_map, footprint_points=footprint_points, footprint_padding_m=footprint_padding_m)
+    if planner is None:
+        planner = GridAStarPlanner(
+            resolution=float(planner_cfg.get("map_resolution", static_map.get("resolution", 0.05) if static_map else 0.05)),
+            safety_distance_m=float(planner_cfg.get("safety_distance_m", 0.35)),
+            proximity_weight=float(planner_cfg.get("proximity_weight", 2.0)),
+        )
+        if static_map is not None:
+            planner.set_static_map(static_map, footprint_points=footprint_points, footprint_padding_m=footprint_padding_m)
     points = planner.plan((start_pose[0], start_pose[1]), (goal[0], goal[1]))
     if not points:
         return None
@@ -369,13 +370,23 @@ def select_approach_goal(*, approach_config: ApproachConfig, target_xy: tuple[fl
     padding = resolve_approach_footprint_padding_m(base_cfg, approach_config)
     context = build_armbase_target_context(robot_cfg, approach_config)
     candidates = sample_approach_candidates(approach_config, target_xy, context)
+    planner = GridAStarPlanner(
+        resolution=float(planner_cfg.get("map_resolution", static_map.get("resolution", 0.05) if static_map else 0.05)),
+        safety_distance_m=float(planner_cfg.get("safety_distance_m", 0.35)),
+        proximity_weight=float(planner_cfg.get("proximity_weight", 2.0)),
+    )
+    if static_map is not None:
+        # Candidate preflight can evaluate hundreds of poses.  Map inflation
+        # and the distance field depend only on this navigation request, not
+        # on an individual candidate, so build them once.
+        planner.set_static_map(static_map, footprint_points=footprint_points, footprint_padding_m=padding)
     checked = []
     for candidate in sort_candidates_for_preflight(candidates):
         goal = (float(candidate["x"]), float(candidate["y"]), float(candidate["yaw"]))
         static_result = {"ok": True}
         if static_map is not None:
             static_result = check_footprint_static_collision(static_map=static_map, footprint_points=footprint_points, x=goal[0], y=goal[1], yaw=goal[2], footprint_padding_m=padding)
-        plan = build_navigation_plan(start_pose=start_pose, goal=goal, static_map=static_map, footprint_points=footprint_points, footprint_padding_m=padding, planner_cfg=planner_cfg) if static_result.get("ok", False) else None
+        plan = build_navigation_plan(start_pose=start_pose, goal=goal, static_map=static_map, footprint_points=footprint_points, footprint_padding_m=padding, planner_cfg=planner_cfg, planner=planner) if static_result.get("ok", False) else None
         candidate = dict(candidate)
         candidate["static_ok"] = bool(static_result.get("ok", False))
         candidate["path_ok"] = plan is not None

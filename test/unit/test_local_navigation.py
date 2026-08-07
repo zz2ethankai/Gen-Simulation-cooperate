@@ -157,6 +157,42 @@ class LocalNavigationTests(unittest.TestCase):
         selected = choose_best_reachable_candidate(candidates)
         self.assertEqual(selected["x"], 2.0)
 
+    def test_approach_preflight_reuses_one_static_planner(self):
+        static_map = {
+            "image": np.full((20, 20), 254, dtype=np.uint8),
+            "resolution": 0.1,
+            "origin": [0.0, 0.0, 0.0],
+        }
+        candidates = [
+            {"x": 0.5, "y": 0.5, "yaw": 0.0, "distance_to_target": 0.5},
+            {"x": 0.6, "y": 0.5, "yaw": 0.0, "distance_to_target": 0.6},
+        ]
+        successful_plan = SimpleNamespace(path=[{"x": 0.0, "y": 0.0, "yaw": 0.0}])
+        with patch.object(_LOCAL_NAV_MODULE, "resolve_footprint_points", return_value=[[-0.1, -0.1], [0.1, 0.1]]), patch.object(
+            _LOCAL_NAV_MODULE, "sample_approach_candidates", return_value=candidates
+        ), patch.object(
+            _LOCAL_NAV_MODULE, "sort_candidates_for_preflight", side_effect=lambda items: items
+        ), patch.object(_LOCAL_NAV_MODULE, "check_footprint_static_collision", return_value={"ok": True}), patch.object(
+            _LOCAL_NAV_MODULE, "GridAStarPlanner"
+        ) as planner_cls, patch.object(
+            _LOCAL_NAV_MODULE, "build_navigation_plan", side_effect=[None, successful_plan]
+        ) as build_plan:
+            goal, debug = _LOCAL_NAV_MODULE.select_approach_goal(
+                approach_config=ApproachConfig(target_name="tray"),
+                target_xy=(1.0, 1.0),
+                start_pose=(0.0, 0.0, 0.0),
+                static_map=static_map,
+                base_cfg={},
+            )
+
+        self.assertEqual(goal, (0.6, 0.5, 0.0))
+        self.assertEqual(planner_cls.call_count, 1)
+        planner_cls.return_value.set_static_map.assert_called_once()
+        self.assertEqual(build_plan.call_count, 2)
+        self.assertIs(build_plan.call_args_list[0].kwargs["planner"], planner_cls.return_value)
+        self.assertIs(build_plan.call_args_list[1].kwargs["planner"], planner_cls.return_value)
+        self.assertTrue(debug["selected"]["path_ok"])
+
     def test_astar_routes_around_inflated_wall(self):
         image = np.full((30, 30), 254, dtype=np.uint8)
         image[:, 15] = 0
