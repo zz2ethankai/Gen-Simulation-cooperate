@@ -268,7 +268,6 @@ class Navigate(BaseSkill):
             self.failure_reason = "local_plan_failed"
             self.error_message = "Local footprint-aware A* could not find a collision-free path"
             return False
-        profile = str(dict(base_cfg.get("platform", {})).get("profile", "")).strip().lower().replace("-", "_")
         self._controller = WaypointController(
             max_linear_velocity=float(self.controller_cfg.get("max_linear_velocity", 0.35)),
             max_angular_velocity=float(self.controller_cfg.get("max_angular_velocity", 0.8)),
@@ -278,7 +277,6 @@ class Navigate(BaseSkill):
             rotate_first_error_rad=float(self.controller_cfg.get("rotate_first_error_rad", 0.2)),
             linear_gain=float(self.controller_cfg.get("linear_gain", 2.0)),
             angular_gain=float(self.controller_cfg.get("angular_gain", 2.0)),
-            holonomic=profile not in {"differential_drive", "diff_drive", "omron_diff_drive", "panda_omron_base"},
         )
         self._controller.reset(self._plan.path)
         driver.prepare_for_navigation()

@@ -320,7 +320,7 @@ class GridAStarPlanner:
 class WaypointController:
     """Waypoint P controller that always uses the current pose yaw."""
 
-    def __init__(self, *, max_linear_velocity: float = 0.35, max_angular_velocity: float = 0.8, waypoint_tolerance_m: float = 0.25, position_tolerance_m: float = 0.1, yaw_tolerance_rad: float = 0.1, rotate_first_error_rad: float = 0.2, linear_gain: float = 2.0, angular_gain: float = 2.0, holonomic: bool = True):
+    def __init__(self, *, max_linear_velocity: float = 0.35, max_angular_velocity: float = 0.8, waypoint_tolerance_m: float = 0.25, position_tolerance_m: float = 0.1, yaw_tolerance_rad: float = 0.1, rotate_first_error_rad: float = 0.2, linear_gain: float = 2.0, angular_gain: float = 2.0):
         self.max_linear_velocity = max(float(max_linear_velocity), 0.0)
         self.max_angular_velocity = max(float(max_angular_velocity), 0.0)
         self.waypoint_tolerance_m = max(float(waypoint_tolerance_m), 0.0)
@@ -329,7 +329,6 @@ class WaypointController:
         self.rotate_first_error_rad = max(float(rotate_first_error_rad), 0.0)
         self.linear_gain = max(float(linear_gain), 0.0)
         self.angular_gain = max(float(angular_gain), 0.0)
-        self.holonomic = bool(holonomic)
         self.path: list[dict[str, float]] = []
         self.waypoint_index = 0
 
@@ -360,16 +359,11 @@ class WaypointController:
         else:
             speed = min(self.max_linear_velocity, self.linear_gain * target_distance)
             world_vx, world_vy = speed * dx / target_distance, speed * dy / target_distance
-        control_yaw_error = yaw_error
-        if not self.holonomic and distance > self.position_tolerance_m and target_distance > 1.0e-6:
-            control_yaw_error = wrap_to_pi(math.atan2(dy, dx) - yaw)
-        if distance > self.position_tolerance_m and abs(control_yaw_error) > self.rotate_first_error_rad:
+        if distance > self.position_tolerance_m and abs(yaw_error) > self.rotate_first_error_rad:
             world_vx = world_vy = 0.0
         body_vx = world_vx * math.cos(yaw) + world_vy * math.sin(yaw)
         body_vy = -world_vx * math.sin(yaw) + world_vy * math.cos(yaw)
-        if not self.holonomic:
-            body_vy = 0.0
-        wz = float(np.clip(self.angular_gain * control_yaw_error, -self.max_angular_velocity, self.max_angular_velocity))
+        wz = float(np.clip(self.angular_gain * yaw_error, -self.max_angular_velocity, self.max_angular_velocity))
         return body_vx, body_vy, wz, False, {"waypoint_index": self.waypoint_index, "waypoint_count": len(self.path), "distance_to_goal": distance, "yaw_error": yaw_error}
 
 

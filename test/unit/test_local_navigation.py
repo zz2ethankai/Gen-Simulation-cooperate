@@ -15,7 +15,7 @@ _DRIVER_SPEC = importlib.util.spec_from_file_location("simbox_local_base_driver"
 _DRIVER_MODULE = importlib.util.module_from_spec(_DRIVER_SPEC)
 sys.modules[_DRIVER_SPEC.name] = _DRIVER_MODULE
 _DRIVER_SPEC.loader.exec_module(_DRIVER_MODULE)
-LocalVirtualBaseDriver = _DRIVER_MODULE.LocalVirtualBaseDriver
+LocalBaseDriver = _DRIVER_MODULE.LocalBaseDriver
 
 _LOCAL_NAV_PATH = Path(__file__).resolve().parents[2] / "workflows/simbox/core/skills/local_navigation.py"
 _LOCAL_NAV_SPEC = importlib.util.spec_from_file_location("simbox_local_navigation", _LOCAL_NAV_PATH)
@@ -68,6 +68,12 @@ class _FakeVirtualRobot:
     def get_nav_base_pose(self):
         return self.pose
 
+    def get_mobile_base_pose(self):
+        return self.pose
+
+    def set_mobile_base_world_pose(self, translation, orientation):
+        self.pose = (np.asarray(translation, dtype=np.float32), np.asarray(orientation, dtype=np.float32))
+
     def get_base_joint_state(self):
         return {
             "steering_positions": np.zeros(0, dtype=np.float32),
@@ -75,9 +81,6 @@ class _FakeVirtualRobot:
             "steering_velocities": np.zeros(0, dtype=np.float32),
             "wheel_velocities": np.zeros(3, dtype=np.float32),
         }
-
-    def apply_base_command(self, steering_positions, wheel_velocities, *, step_dt):
-        self.commands.append((np.asarray(steering_positions), np.asarray(wheel_velocities), float(step_dt)))
 
     def suspend_manipulation_base_hold(self):
         self.hold_suspended += 1
@@ -274,41 +277,32 @@ class LocalNavigationTests(unittest.TestCase):
         self.assertAlmostEqual(vx, 0.0, places=6)
         self.assertAlmostEqual(vy, -0.5, places=6)
 
-    def test_virtual_driver_clamps_and_applies_local_twist(self):
+    def test_driver_executes_unconstrained_body_twist(self):
         robot = _FakeVirtualRobot()
         world = SimpleNamespace(current_time=1.0)
-        driver = LocalVirtualBaseDriver(robot, world=world)
+        driver = LocalBaseDriver(robot, world=world)
         driver.prepare_for_navigation()
         driver.set_command(2.0, -2.0, 2.0)
 
         driver.step(step_dt=0.1)
-
-        np.testing.assert_allclose(robot.commands[-1][1], [0.5, -0.4, 0.8])
+        pose, orientation = robot.get_nav_base_pose()
+        np.testing.assert_allclose(pose[:2], [0.2, -0.2], atol=1e-6)
+        self.assertAlmostEqual(driver.get_logging_action_snapshot()["vy_body"], -2.0)
         action = driver.get_logging_action_snapshot()
-        self.assertEqual(action["vx_body"], 0.5)
-        self.assertAlmostEqual(action["vy_body"], -0.4)
-        self.assertAlmostEqual(action["wz_body"], 0.8)
+        self.assertEqual(action["execution_mode"], "direct_body_twist")
         driver.finalize_after_navigation()
         self.assertEqual(robot.hold_suspended, 1)
         self.assertEqual(robot.hold_resumed, 1)
 
-    def test_virtual_driver_respects_body_acceleration_and_deceleration(self):
+    def test_driver_does_not_apply_wheel_acceleration_shaping(self):
         robot = _FakeVirtualRobot()
-        limits = robot.base_cfg["platform"]["local_navigation"]["controller_hard_limits"]
-        limits["max_accel"] = [1.0, 1.0, 1.0]
-        limits["max_decel"] = [-2.0, -2.0, -2.0]
         world = SimpleNamespace(current_time=1.0)
-        driver = LocalVirtualBaseDriver(robot, world=world)
+        driver = LocalBaseDriver(robot, world=world)
         driver.prepare_for_navigation()
         driver.set_command(0.5, 0.0, 0.0)
 
         driver.step(step_dt=0.1)
-        np.testing.assert_allclose(robot.commands[-1][1], [0.1, 0.0, 0.0])
-        driver.step(step_dt=0.1)
-        np.testing.assert_allclose(robot.commands[-1][1], [0.2, 0.0, 0.0])
-        driver.set_command(0.0, 0.0, 0.0)
-        driver.step(step_dt=0.1)
-        np.testing.assert_allclose(robot.commands[-1][1], [0.0, 0.0, 0.0])
+        np.testing.assert_allclose(robot.get_nav_base_pose()[0][0], 0.05, atol=1e-6)
 
 
 if __name__ == "__main__":
