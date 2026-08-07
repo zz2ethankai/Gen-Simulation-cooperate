@@ -1,8 +1,8 @@
-"""Direct body-twist executor used by the ROS-free local navigation skill.
+"""Body-twist executor used by the ROS-free local navigation skill.
 
-Navigation is intentionally independent from the simulated chassis.  A plan
-emits a body-frame twist and this driver integrates it in the navigation frame;
-it never derives steering angles or wheel speeds.
+Virtual mobile bases consume the twist through their X/Y/yaw articulation
+joints. Other profiles retain the direct-pose fallback used by local tests and
+non-virtual assets. No physical wheel or steering mapping is performed.
 """
 
 from __future__ import annotations
@@ -28,12 +28,24 @@ class BaseCommand:
 
 
 class LocalBaseDriver:
-    """Execute a local-navigation body twist by updating the base pose directly."""
+    """Execute a local-navigation body twist without chassis kinematics."""
 
     def __init__(self, robot, *, world=None):
         self.robot = robot
         self.world = world
         self.base_cfg = robot.get_base_interface()["base_cfg"]
+        platform_cfg = self.base_cfg.get("platform", {})
+        profile = str(platform_cfg.get("profile", "") if isinstance(platform_cfg, dict) else "").strip().lower().replace("-", "_")
+        self._uses_virtual_base_joints = profile in {
+            "virtual_base",
+            "omni_virtual_base",
+            "panda_omron_virtual",
+            "panda_omron_virtual_base",
+        }
+        signs = np.asarray(self.base_cfg.get("base_velocity_command_signs", [1.0, 1.0, 1.0]), dtype=np.float32).reshape(-1)
+        if self._uses_virtual_base_joints and (signs.size != 3 or not np.all(np.isfinite(signs))):
+            raise ValueError("Virtual base velocity command signs must contain three finite values")
+        self._virtual_base_velocity_signs = signs if self._uses_virtual_base_joints else np.ones(3, dtype=np.float32)
         self._command_timeout = float(self.base_cfg.get("command_timeout", 0.25))
         now = self._now_sec()
         self._command = BaseCommand.zero(received_time_sec=now)
@@ -80,6 +92,8 @@ class LocalBaseDriver:
         self.set_command(0.0, 0.0, 0.0)
 
     def finalize_after_navigation(self) -> None:
+        if self._navigation_active and self._uses_virtual_base_joints:
+            self._apply_virtual_base_command(BaseCommand.zero(received_time_sec=self._now_sec()), self._last_step_dt)
         self._navigation_active = False
         self._has_command = False
         self._command = BaseCommand.zero(received_time_sec=self._now_sec())
@@ -114,6 +128,9 @@ class LocalBaseDriver:
         self._apply_command(command, dt)
 
     def _apply_command(self, command: BaseCommand, dt: float) -> None:
+        if self._uses_virtual_base_joints:
+            self._apply_virtual_base_command(command, dt)
+            return
         nav_translation, nav_orientation = self._get_robot_base_pose()
         nav_translation = np.asarray(nav_translation, dtype=np.float32).reshape(3)
         nav_yaw = self._yaw_from_wxyz(nav_orientation)
@@ -130,6 +147,33 @@ class LocalBaseDriver:
         self._debug_command_history.append({
             "time_sec": float(self._now_sec()), "dt": float(dt),
             "command": {"vx_body": command.vx_body, "vy_body": command.vy_body, "wz_body": command.wz_body},
+        })
+
+    def _apply_virtual_base_command(self, command: BaseCommand, dt: float) -> None:
+        velocities = np.asarray(
+            [command.vx_body, command.vy_body, command.wz_body],
+            dtype=np.float32,
+        ) * self._virtual_base_velocity_signs
+        apply = getattr(self.robot, "apply_base_command", None)
+        if not callable(apply):
+            raise ValueError("Virtual base robot must provide apply_base_command")
+        try:
+            apply(
+                steering_positions=np.zeros(0, dtype=np.float32),
+                wheel_velocities=velocities,
+                step_dt=float(dt),
+            )
+        except TypeError:
+            apply(
+                steering_positions=np.zeros(0, dtype=np.float32),
+                wheel_velocities=velocities,
+            )
+        self._last_step_command = command
+        self._debug_command_history.append({
+            "time_sec": float(self._now_sec()),
+            "dt": float(dt),
+            "command": {"vx_body": command.vx_body, "vy_body": command.vy_body, "wz_body": command.wz_body},
+            "execution_mode": "virtual_base_joint_velocity_target",
         })
 
     def _nav_pose_to_mobile_pose(self, target_nav_translation, target_nav_yaw, nav_translation, nav_orientation):
@@ -151,7 +195,7 @@ class LocalBaseDriver:
         command = self._last_step_command
         return {"vx_body": command.vx_body, "vy_body": command.vy_body, "wz_body": command.wz_body,
                 "navigation_active": self._navigation_active, "has_local_command": self._has_command,
-                "execution_mode": "direct_body_twist",
+                "execution_mode": "virtual_base_joint_velocity_target" if self._uses_virtual_base_joints else "direct_body_twist",
                 # Legacy logger keys are intentionally empty: no wheel command
                 # is generated by this executor.
                 "requested_steering": [], "requested_wheel_velocities": [],

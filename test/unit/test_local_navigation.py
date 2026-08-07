@@ -74,6 +74,15 @@ class _FakeVirtualRobot:
     def set_mobile_base_world_pose(self, translation, orientation):
         self.pose = (np.asarray(translation, dtype=np.float32), np.asarray(orientation, dtype=np.float32))
 
+    def apply_base_command(self, steering_positions, wheel_velocities, *, step_dt=None):
+        self.commands.append(
+            {
+                "steering_positions": np.asarray(steering_positions, dtype=np.float32).copy(),
+                "wheel_velocities": np.asarray(wheel_velocities, dtype=np.float32).copy(),
+                "step_dt": step_dt,
+            }
+        )
+
     def get_base_joint_state(self):
         return {
             "steering_positions": np.zeros(0, dtype=np.float32),
@@ -288,7 +297,7 @@ class LocalNavigationTests(unittest.TestCase):
         self.assertAlmostEqual(vx, 0.0, places=6)
         self.assertAlmostEqual(vy, -0.5, places=6)
 
-    def test_driver_executes_unconstrained_body_twist(self):
+    def test_driver_sends_unconstrained_twist_to_virtual_base_joints(self):
         robot = _FakeVirtualRobot()
         world = SimpleNamespace(current_time=1.0)
         driver = LocalBaseDriver(robot, world=world)
@@ -296,12 +305,14 @@ class LocalNavigationTests(unittest.TestCase):
         driver.set_command(2.0, -2.0, 2.0)
 
         driver.step(step_dt=0.1)
-        pose, orientation = robot.get_nav_base_pose()
-        np.testing.assert_allclose(pose[:2], [0.2, -0.2], atol=1e-6)
+        np.testing.assert_allclose(robot.commands[-1]["steering_positions"], [], atol=1e-6)
+        np.testing.assert_allclose(robot.commands[-1]["wheel_velocities"], [2.0, -2.0, 2.0], atol=1e-6)
+        self.assertEqual(robot.commands[-1]["step_dt"], 0.1)
         self.assertAlmostEqual(driver.get_logging_action_snapshot()["vy_body"], -2.0)
         action = driver.get_logging_action_snapshot()
-        self.assertEqual(action["execution_mode"], "direct_body_twist")
+        self.assertEqual(action["execution_mode"], "virtual_base_joint_velocity_target")
         driver.finalize_after_navigation()
+        np.testing.assert_allclose(robot.commands[-1]["wheel_velocities"], [0.0, 0.0, 0.0], atol=1e-6)
         self.assertEqual(robot.hold_suspended, 1)
         self.assertEqual(robot.hold_resumed, 1)
 
@@ -313,7 +324,7 @@ class LocalNavigationTests(unittest.TestCase):
         driver.set_command(0.5, 0.0, 0.0)
 
         driver.step(step_dt=0.1)
-        np.testing.assert_allclose(robot.get_nav_base_pose()[0][0], 0.05, atol=1e-6)
+        np.testing.assert_allclose(robot.commands[-1]["wheel_velocities"], [0.5, 0.0, 0.0], atol=1e-6)
 
 
 if __name__ == "__main__":
