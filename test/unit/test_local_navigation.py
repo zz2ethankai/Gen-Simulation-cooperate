@@ -228,6 +228,17 @@ class LocalNavigationTests(unittest.TestCase):
         self.assertEqual(len(paths), 2)
         self.assertTrue(set(paths).issubset({0, 1, 2}))
 
+    def test_multi_goal_astar_accepts_approach_yaw(self):
+        image = np.full((20, 20), 254, dtype=np.uint8)
+        static_map = {"image": image, "resolution": 0.1, "origin": [0.0, 0.0, 0.0]}
+        planner = GridAStarPlanner(safety_distance_m=0.0)
+        planner.set_static_map(static_map, footprint_points=[[-0.02, -0.02], [0.02, 0.02]])
+
+        paths = planner.plan_to_goals((0.5, 0.5), [(1.5, 1.5, 0.7), (1.0, 0.5, -1.2)], max_solutions=2)
+
+        self.assertEqual(len(paths), 2)
+        self.assertTrue(all(len(point) == 2 for path in paths.values() for point in path))
+
     def test_navigation_plan_preserves_measured_start_yaw(self):
         start_pose = (0.0, 0.0, -0.7)
         goal = (1.0, 0.0, 1.2)

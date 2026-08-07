@@ -230,14 +230,17 @@ class GridAStarPlanner:
             return {}
         if self._grid is None:
             return {
-                index: [tuple(map(float, start_xy)), tuple(map(float, goal_xy))]
+                index: [tuple(map(float, start_xy)), (float(goal_xy[0]), float(goal_xy[1]))]
                 for index, goal_xy in enumerate(goal_xy_list[:max_solutions])
             }
         requested_start = self._world_to_grid(*start_xy)
         start = self._nearest_valid(requested_start)
         if start is None:
             return {}
-        requested_goals = [self._world_to_grid(*goal_xy) for goal_xy in goal_xy_list]
+        # Approach candidates carry (x, y, yaw), while the occupancy grid is
+        # purely planar.  Keep yaw for the final navigation goal, but only
+        # project x/y into the A* grid.
+        requested_goals = [self._world_to_grid(float(goal_xy[0]), float(goal_xy[1])) for goal_xy in goal_xy_list]
         goal_nodes: dict[tuple[int, int], list[int]] = {}
         for index, requested_goal in enumerate(requested_goals):
             goal = self._nearest_valid(requested_goal)
@@ -267,9 +270,9 @@ class GridAStarPlanner:
                     else:
                         points[0] = tuple(map(float, start_xy))
                     if current != requested_goals[index]:
-                        points.append(tuple(map(float, requested_goal)))
+                        points.append((float(requested_goal[0]), float(requested_goal[1])))
                     else:
-                        points[-1] = tuple(map(float, requested_goal))
+                        points[-1] = (float(requested_goal[0]), float(requested_goal[1]))
                     found[index] = self._simplify(points)
                     if len(found) >= int(max_solutions):
                         break
