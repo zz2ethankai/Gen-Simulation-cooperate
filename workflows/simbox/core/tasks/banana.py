@@ -64,7 +64,7 @@ class BananaBaseTask(BaseTask):
         self.particlesPath = None
         self.particlesPbdMaterialPath = None
         self.particlesVisualMaterialPath = None
-        self._defaultFluidPath = Sdf.Path("/World/task_0/fulid")
+        self._defaultFluidPath = Sdf.Path("/World/task_0/fluid")
 
     def set_up_scene(self, scene: Scene) -> None:
         super().set_up_scene(scene)

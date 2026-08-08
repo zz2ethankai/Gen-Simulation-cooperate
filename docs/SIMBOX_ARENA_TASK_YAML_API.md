@@ -1256,7 +1256,7 @@ skills:
 | `approach_axis` | `+x/-x/+y/-y/+z/-z` | 否 | `+x` | 当前观测 `-x`。 |
 | `z_offset` | `float` | 否 | `0.0` | 最终 z 偏移。 |
 | `obj_axis_offset` | `list[[axis,value]]` | 否 | 无 | 在计算目标前沿被移动对象局部 `x`、`y`、`z` 轴偏移。 |
-| `dummy_forward` | `dict` | 否 | 无 | 注意当前该分支会调用未实现的 `get_tgt_js()`，启用会失败，除非子类补实现。 |
+| `dummy_forward` | `dict` | 否 | 无 | 已弃用；为兼容旧配置允许出现，但会被忽略并发出弃用提示。 |
 
 ### `rotate` 子配置
 

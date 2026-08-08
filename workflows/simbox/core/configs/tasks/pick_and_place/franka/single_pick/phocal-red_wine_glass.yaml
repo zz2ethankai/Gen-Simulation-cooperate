@@ -92,6 +92,14 @@ tasks:
         max_translation_noise: 0.03
         max_orientation_noise: 5.0
       -
+        name: ${tasks.0.robots.0.name}_pick_debug
+        translation: [0.085, 0.0, -0.02]
+        orientation: [0.153, 0.690, 0.690, 0.153]
+        camera_axes: usd
+        camera_file: workflows/simbox/core/configs/cameras/realsense_d455_v3_1080p.yaml
+        parent: "${tasks.0.robots.0.name}/fr3/panda_hand"
+        apply_randomization: False
+      -
         name: ${tasks.0.robots.0.name}_head
         translation: [0.0, 0.65, 1.24]
         orientation: [0.000, 0.000, -0.466, -0.885]

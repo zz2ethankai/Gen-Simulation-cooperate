@@ -204,6 +204,37 @@ def test_world_colliders_and_consolidated_attach_prim_are_separate_contracts():
         CollisionSceneManager(stage, task, {"strict": True})
 
 
+def test_refresh_after_task_reset_re_discovers_reloaded_attach_path():
+    stage = Usd.Stage.CreateInMemory()
+    stage.DefinePrim("/World/task_0/glass", "Xform")
+    _cube(stage, "/World/task_0/glass/Scan_009")
+    entity = types.SimpleNamespace(
+        prim_path="/World/task_0/glass",
+        attach_collision_prim_paths=["/World/task_0/glass/Scan_009"],
+    )
+    task = types.SimpleNamespace(
+        fixtures={},
+        objects={"glass": entity},
+        distractors={},
+        cfg={
+            "skills": [
+                {"robot": [{"left": [{"name": "Pick", "objects": ["glass"]}], "right": []}]}
+            ]
+        },
+    )
+    manager = CollisionSceneManager(stage, task, {"strict": True})
+
+    stage.RemovePrim("/World/task_0/glass")
+    stage.DefinePrim("/World/task_0/glass", "Xform")
+    _cube(stage, "/World/task_0/glass/Scan_013")
+    entity.attach_collision_prim_paths = ["/World/task_0/glass/Scan_013"]
+
+    manager.refresh_after_task_reset()
+
+    assert manager.attach_prim_paths["glass"] == ["/World/task_0/glass/Scan_013"]
+    assert manager.collision_prim_paths == ["/World/task_0/glass/Scan_013"]
+
+
 def test_attached_pose_tracking_uses_the_rigidbody_that_carries_attach_collider():
     stage = Usd.Stage.CreateInMemory()
     stage.DefinePrim("/World/task_0/bottle", "Xform")

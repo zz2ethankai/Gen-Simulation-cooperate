@@ -1,7 +1,8 @@
 # pylint: skip-file
+import warnings
+
 import numpy as np
 from core.skills.base_skill import BaseSkill, register_skill
-from core.utils.interpolate_utils import linear_interpolation
 from omegaconf import DictConfig
 from omni.isaac.core.controllers import BaseController
 from omni.isaac.core.robots.robot import Robot
@@ -27,6 +28,13 @@ class Approach_Rotate(BaseSkill):
         self.move_obj = task.objects[cfg["objects"][0]]
         self.approach_obj = task.objects[cfg["objects"][1]]
         self.skill_cfg = cfg
+        if "dummy_forward" in cfg:
+            warnings.warn(
+                "approach_rotate.dummy_forward is deprecated and ignored; "
+                "remove it from the task configuration.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         self.rotate_cfg = self.skill_cfg.get("rotate", None)
 
         self.T_world_base = get_relative_transform(
@@ -57,23 +65,6 @@ class Approach_Rotate(BaseSkill):
         )
         manip_list.append(cmd)
 
-        self.dummy_forward_cfg = self.skill_cfg.get("dummy_forward", None)
-        if self.dummy_forward_cfg:
-            curr_js, tgt_js = self.get_tgt_js()
-            interp_js_list = linear_interpolation(curr_js, tgt_js, self.dummy_forward_cfg.get("num_steps", 10))
-            for js in interp_js_list:
-                p_base_ee, q_base_ee = self.controller.forward_kinematic(js)
-                cmd = (
-                    p_base_ee,
-                    q_base_ee,
-                    "dummy_forward",
-                    {
-                        "arm_action": js,
-                        "gripper_state": self.dummy_forward_cfg.get("gripper_state", 1.0),
-                    },
-                )
-                manip_list.append(cmd)
-
         self.p_base_ee_tgt, self.q_base_ee_tgt = self.getTgtPose()
         cmd = (
             self.p_base_ee_tgt,
@@ -84,9 +75,6 @@ class Approach_Rotate(BaseSkill):
         manip_list.append(cmd)
 
         self.manip_list = manip_list
-
-    def get_tgt_js(self):
-        raise NotImplementedError
 
     def getTgtPose(self):
 

@@ -634,7 +634,10 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                     collision_activation_distance=robot.get("collision_activation_distance", 0.03),
                     task=task,
                     world=world,
-                    ignore_substring=robot.get("ignore_substring", ["material", "Plane", "conveyor", "scene", "table"]),
+                    # Let each controller provide its own collision-filter defaults.
+                    # In particular, fluid-capable controllers must ignore the
+                    # runtime particle isosurface during legacy Stage scans.
+                    ignore_substring=robot.get("ignore_substring"),
                     use_batch=robot.get("use_batch", False),
                     trajectory_visualizer=self.trajectory_visualizer,
                     skill_target_visualizer=self.skill_target_visualizer,
@@ -780,6 +783,11 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
 
     def _reset_controllers(self, controllers):
         """Reset all controllers."""
+        # Randomized retry resets can replace an object's USD subtree and its
+        # exact attach collider path.  Rebuild the Physics-schema collision
+        # records/world before TemplateController.reset() audits them.
+        if self.collision_scene_manager is not None:
+            self.collision_scene_manager.refresh_after_task_reset()
         for _, controller in controllers.items():
             for _, ctrl in controller.items():
                 ctrl.reset()

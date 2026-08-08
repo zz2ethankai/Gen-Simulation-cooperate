@@ -258,6 +258,7 @@ filter_z_dir: [downward, 100, 160]
 | `pre_grasp_offset` | `float` | 否 | `0.1` | 建议 `>= 0`。 |
 | `post_grasp_offset_min/max` | `float` | 否 | `0.05/0.05` | min `<=` max。 |
 | `gripper_change_steps` | `int` | 否 | `40` | 建议 `> 0`。 |
+| `final_gripper_state` | `int` | 否 | `-1` | `-1` 保持闭合；`1` 在 post-grasp 后打开。 |
 | `filter_*_dir` | 2/3 元数组 | 否 | 无 | 可先参考 `x: [forward,90]`、`z: [downward,140]`，省略 y。 |
 | `direction_to_obj` | `left` / `right` | 否 | 无 | 候选侧面硬筛选。 |
 | `test_mode` | `forward` / `ik` | 否 | `forward` | 候选可达性检查。 |
@@ -265,8 +266,7 @@ filter_z_dir: [downward, 100, 160]
 
 `manualpick.is_success()` 只检查 gripper-object contact，不读取 `process_valid` 或 `lift_th`；
 它的 `is_done()` 也使用代码固定的 `t_eps=1e-3`、`o_eps=5e-3`。
-当前 post-grasp 分支还引用未初始化的 `self.gripper_cmd`；默认 post offset 为 `0.05`，因此该 Skill
-存在运行时 `AttributeError` 风险，不能作为新任务的推荐抓取 Skill。
+post-grasp 默认保持夹爪闭合；如需改变最终夹爪状态，可设置 `final_gripper_state` 为 `1`（打开）。
 
 ### 5.3 使用预定义离散姿态的抓取：`dexpick`
 
@@ -454,7 +454,7 @@ horizontal + `position_constraint: gripper` 不读取 `pre_place_align/place_ali
 | `obj_axis_offset` | `list[[axis,offset]]` | 否 | 无 | axis 仅 `x/y/z`。 |
 | `hold_vec_weight` | 6 元数组 / `null` | 否 | `null` | pose cost。 |
 | `ignore_substring` | `list[str]` | 否 | `[]` | 碰撞忽略项。 |
-| `dummy_forward` | `dict` | 否 | 无 | **当前不可用**：启用会调用直接抛出 `NotImplementedError` 的 `get_tgt_js()`。 |
+| `dummy_forward` | `dict` | 否 | 无 | **已弃用**：为兼容旧配置允许出现，但会被忽略并发出弃用提示。 |
 
 | `rotate.*` | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
@@ -813,11 +813,11 @@ Skill 没有统一的严格 schema。一个拼错的可选字段可能被静默�
 | `dexpick.post_grasp_offset` | 不读取；使用 min/max。 |
 | `manualpick.update_pose_cost_metric_none` | 不读取。 |
 | `manualpick.manual_adjust_ori` | 每个旋转被重复应用两遍。 |
-| `manualpick` post-grasp | 引用未初始化的 `self.gripper_cmd`，默认路径存在 `AttributeError` 风险。 |
+| `manualpick` post-grasp | 使用 `final_gripper_state` 控制 post-grasp 夹爪状态，默认闭合。 |
 | `gripper__action.post_action`, `post_action_offset` | 不读取。 |
 | `flip.ee_axis` | 不读取。 |
 | `pour__water__succ.gripper` | 不读取。 |
-| `approach__rotate.dummy_forward` | 会进入未实现函数，当前不可用。 |
+| `approach__rotate.dummy_forward` | 已弃用；参数会被忽略并发出弃用提示。 |
 | `home` | 固定步数且过冲；优先用 `heuristic__skill mode: home`，但后者也有 1.25 插值系数。 |
 | `rotate` | 已注册但当前 Task YAML 无使用样例，需资产级 runtime 验证。 |
 | `place` 无合法姿态候选 | 会回退到未过滤随机姿态，不会因过滤为空自动失败。 |

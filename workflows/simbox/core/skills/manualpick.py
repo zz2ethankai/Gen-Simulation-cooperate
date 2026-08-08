@@ -52,6 +52,18 @@ class Manualpick(BaseSkill):
         self.manip_list = []
         self.pickcontact_view = task.pickcontact_views[robot.name][lr_arm][object_name]
 
+        # Keep the picked object secured during post-grasp motion.  This
+        # mirrors Pick's final-gripper-state contract; manualpick always
+        # defaults to a closed gripper unless the task explicitly requests
+        # the legacy open-final state.
+        final_gripper_state = self.skill_cfg.get("final_gripper_state", -1)
+        if final_gripper_state == 1:
+            self.gripper_cmd = "open_gripper"
+        elif final_gripper_state == -1:
+            self.gripper_cmd = "close_gripper"
+        else:
+            raise ValueError(f"final_gripper_state must be 1 or -1, got {final_gripper_state}")
+
     @staticmethod
     def _get_world_pose_from_path(prim_path):
         return get_world_pose(prim_path)

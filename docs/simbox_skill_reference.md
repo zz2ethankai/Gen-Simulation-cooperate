@@ -1266,7 +1266,7 @@ rotate:
   rotate_obj_euler: [[0, 0, -30], [0, 0, 30]]
 ```
 
-注意：源码里 `dummy_forward` 路径依赖尚未实现的 `get_tgt_js()`，普通任务不要随意启用这个分支。
+注意：`approach_rotate` 中的 `dummy_forward` 已弃用。旧配置仍可加载，但该参数会被忽略；普通任务应使用正常的 EE 位姿规划路径。
 
 参数怎么读：
 

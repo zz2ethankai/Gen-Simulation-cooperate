@@ -2762,7 +2762,7 @@ docker compose -f docker/docker-compose.yml up -d
 
 ## 已知限制
 
-- `approach_rotate` 当前不建议用于生产任务。该 skill 已注册，但内部 `get_tgt_js()` 仍未实现；当配置启用 `dummy_forward` 时会触发 `NotImplementedError`。
+- `approach_rotate.dummy_forward` 已弃用。旧配置仍可加载，但该参数会被忽略并发出弃用提示；`approach_rotate` 使用正常的 EE 位姿规划路径。
 - `track` 当前成功判定偏宽松。代码使用“位置接近或姿态接近”即成功，而不是同时满足两者；适合演示或可视化用途，严格评测时需要谨慎。
 - `dynamicpick` 采用特殊调度方式。它不是空实现，但不在 `simple_generate_manip_cmds()` 中直接生成轨迹，而是依赖调度器持续轮询 `is_ready()` 后再内部触发预测与轨迹生成。
 

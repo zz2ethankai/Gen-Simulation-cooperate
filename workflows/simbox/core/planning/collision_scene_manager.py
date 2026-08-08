@@ -1285,6 +1285,95 @@ class CollisionSceneManager:
         self.sync_dynamic_poses(0, interval_steps=1, force=True)
         self.assert_invariants()
 
+    def refresh_after_task_reset(self) -> None:
+        """Re-discover colliders after a task reload and rebuild bound worlds.
+
+        A randomized retry can delete and recreate a rigid-object USD.  The
+        replacement may expose a different exact collider path, while the
+        manager records and CuRobo world still contain the previous path.  A
+        normal ``reset_episode`` only resets state on those old records, so
+        this refresh must run before controller ``reset()`` audits the world.
+        """
+
+        # Clear any attachment left by the failed episode before replacing the
+        # world.  This is intentionally done against the currently bound
+        # controllers, before their old records are discarded below.
+        for key, controller in self.controllers.items():
+            if getattr(controller, "collision_world_mode", "physics_schema") != "physics_schema":
+                continue
+            has_attached = getattr(controller, "has_attached_collision_spheres", None)
+            detach = getattr(controller, "detach_obj", None)
+            if not callable(has_attached) or not callable(detach):
+                continue
+            try:
+                if has_attached():
+                    detach()
+            except Exception as exc:  # pragma: no cover - Isaac/CuRobo reset path
+                raise CollisionSceneError(
+                    f"failed to clear attached CuRobo state before task reset: {key}: {exc}"
+                ) from exc
+
+        # Every structure below is keyed by exact Stage prim paths.  Do not
+        # carry any of it over when the task has replaced a USD subtree.
+        self.schema_exclusions.clear()
+        self.records.clear()
+        self.attach_prim_paths.clear()
+        self.path_to_entity.clear()
+        self._pose_matrices.clear()
+        self.controller_enabled.clear()
+        self._controller_reference_matrices.clear()
+        self.controller_audits.clear()
+        self._temporary_disabled.clear()
+        self._pending_detach.clear()
+        self._retreating_placed.clear()
+        self._attached_relative_pose.clear()
+        self.object_state_events.clear()
+        self._robot_environment_contact_views.clear()
+        self._finger_environment_contact_views.clear()
+        self._object_environment_contact_views.clear()
+        self._object_environment_filter_paths.clear()
+
+        self._discover()
+
+        # Rebuild each bound Physics-schema CuRobo world before the workflow
+        # calls TemplateController.reset().  That reset calls update() and
+        # audit_controller(), so doing this afterwards would audit a stale
+        # world and reproduce ATTACH_COLLISION_PRIM_NOT_IN_CUROBO_WORLD.
+        for key, controller in self.controllers.items():
+            if getattr(controller, "collision_world_mode", "physics_schema") != "physics_schema":
+                continue
+            self.controller_enabled[key] = {
+                path: True for path in self.collision_prim_paths
+            }
+            self._temporary_disabled[key] = set()
+            self._controller_reference_matrices[key] = self._world_matrix(
+                controller.reference_prim_path
+            )
+
+            world = self.build_world_config(controller.reference_prim_path)
+            motion_gen = getattr(controller, "motion_gen", None)
+            if motion_gen is None:
+                raise CollisionSceneError(
+                    f"controller has no CuRobo motion generator during task reset: {key}"
+                )
+            clear_cache = getattr(motion_gen, "clear_world_cache", None)
+            if callable(clear_cache):
+                clear_cache()
+            update_world = getattr(motion_gen, "update_world", None)
+            if not callable(update_world):
+                raise CollisionSceneError(
+                    f"controller cannot rebuild CuRobo world during task reset: {key}"
+                )
+            update_world(world)
+            controller.world_cfg = world
+            controller.world_model = motion_gen.world_collision
+            signature_fn = getattr(controller, "_make_world_update_signature", None)
+            if callable(signature_fn):
+                controller._world_update_signature = signature_fn(world)
+            self.audit_controller(controller)
+
+        self.world_revision += 1
+
     def export(self, episode_dir: str | Path) -> None:
         directory = Path(episode_dir)
         directory.mkdir(parents=True, exist_ok=True)

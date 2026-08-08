@@ -950,7 +950,7 @@ skill 引用示例：
 注册名：`approach_rotate`  
 实现：`workflows/simbox/core/skills/approach_rotate.py`  
 功能：先沿指定轴接近目标对象，再根据可选子配置对被抓物体做旋转。
-实现特性：目标位姿是通过“当前 EE 相对被抓物体的变换”映射出来的，所以 success 本质上也是 EE 位姿成功，而不是直接检查接近对象的距离或接触。当前状态：此 skill 未完全实现，`get_tgt_js()` 仍为 `NotImplementedError`；如果配置启用 `dummy_forward`，运行时会直接报错。仓库内当前也没有任务在使用它，建议视为未完成 skill。
+实现特性：目标位姿是通过“当前 EE 相对被抓物体的变换”映射出来的，所以 success 本质上也是 EE 位姿成功，而不是直接检查接近对象的距离或接触。`dummy_forward` 已弃用：为兼容旧配置仍允许出现，但会被忽略，skill 使用正常的 EE 位姿规划路径。
 
 | Key | 值类型 / 候选值 | 含义 |
 | --- | --- | --- |
@@ -960,9 +960,9 @@ skill 引用示例：
 | `success_threshold` | `float` | 平移成功阈值。 |
 | `hold_vec_weight` | `list[float]`, usually len=6 | pose cost metric。 |
 | `ignore_substring` | `list[str]` | 碰撞过滤附加忽略名单。 |
-| `dummy_forward` | `dict` | 预插值关节运动配置。注意当前若启用会调用未实现的 `get_tgt_js()`。 |
-| `dummy_forward.num_steps` | `int` | 插值步数。 |
-| `dummy_forward.gripper_state` | `float` or `int`, usually `-1` / `1` | 插值阶段夹爪状态。 |
+| `dummy_forward` | `dict` | 已弃用；为兼容旧配置保留，但内容会被忽略。 |
+| `dummy_forward.num_steps` | `int` | 已弃用，不读取。 |
+| `dummy_forward.gripper_state` | `float` or `int`, usually `-1` / `1` | 已弃用，不读取。 |
 | `obj_axis_offset` | `list[list[str, float]]` | 目标物体局部轴偏移。 |
 | `z_offset` | `float` | 最终末端 z 偏移。 |
 | `approach_axis` | `str`, one of `+x` / `-x` / `+y` / `-y` / `+z` / `-z` | 以目标物体哪个局部轴作为接近方向。 |
