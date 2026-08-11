@@ -251,7 +251,65 @@ class Navigate(BaseSkill):
         cfg = getattr(self.robot, "cfg", {})
         return cfg if isinstance(cfg, dict) else {}
 
+    def _timing_phase(self, name, category, metadata=None):
+        scope = getattr(self, "_timing_scope", None)
+        if scope is None:
+            return None
+        try:
+            return scope.phase(name, category=category, metadata=metadata).start()
+        except Exception:
+            # Navigation must remain usable when optional telemetry is broken.
+            return None
+
+    @staticmethod
+    def _finish_timing_phase(phase, success, error=None):
+        if phase is None:
+            return
+        try:
+            phase.finish(
+                success=bool(success),
+                reason=(str(error) if error is not None else None),
+                error=error,
+            )
+        except Exception:
+            pass
+
+    def _start_execution_timing(self):
+        if getattr(self, "_timing_execution_phase", None) is not None:
+            return
+        workflow_start = getattr(self.workflow, "_start_skill_execution_phase", None)
+        if callable(workflow_start):
+            workflow_start(self, "navigation.execution")
+            return
+        phase = self._timing_phase(
+            "navigation.execution",
+            "execution",
+            metadata={"skill": "navigate"},
+        )
+        if phase is not None:
+            self._timing_execution_phase = phase
+
     def _begin_plan(self):
+        phase = self._timing_phase(
+            "navigation.plan",
+            "planner",
+            metadata={"skill": "navigate"},
+        )
+        try:
+            planned = self._begin_plan_impl()
+        except Exception as exc:
+            self._finish_timing_phase(phase, False, exc)
+            raise
+        self._finish_timing_phase(
+            phase,
+            planned,
+            None if planned else RuntimeError(self.failure_reason or "navigation_plan_failed"),
+        )
+        if planned:
+            self._start_execution_timing()
+        return planned
+
+    def _begin_plan_impl(self):
         driver = self._get_driver()
         if driver is None:
             return False

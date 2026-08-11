@@ -23,21 +23,25 @@ from core.utils.plan_utils import (
     filter_paths_by_rotation_error,
     sort_by_difference_js,
 )
-from curobo.cuda_robot_model.cuda_robot_model import CudaRobotModel
-from curobo.geom.sdf.world import CollisionCheckerType
-from curobo.geom.sphere_fit import SphereFitType
-from curobo.geom.types import WorldConfig
-from curobo.types.base import TensorDeviceType
-from curobo.types.math import Pose
-from curobo.types.robot import JointState, RobotConfig
-from curobo.util.usd_helper import UsdHelper
-from curobo.util_file import get_world_configs_path, join_path, load_yaml
-from curobo.wrap.reacher.ik_solver import IKSolver, IKSolverConfig
-from curobo.wrap.reacher.motion_gen import (
+from core.planning.curobo_v2_compat import (
+    CudaRobotModel,
+    CollisionCheckerType,
+    IKSolver,
+    IKSolverConfig,
+    JointState,
     MotionGen,
     MotionGenConfig,
     MotionGenPlanConfig,
+    Pose,
     PoseCostMetric,
+    RobotConfig,
+    SphereFitType,
+    TensorDeviceType,
+    UsdHelper,
+    WorldConfig,
+    get_world_configs_path,
+    join_path,
+    load_yaml,
 )
 from omni.isaac.core import World
 from omni.isaac.core.controllers import BaseController
@@ -55,6 +59,31 @@ from core.planning.motion_command import MotionPhase, MotionPhaseCommand
 LOGGER = logging.getLogger("de_logger")
 
 
+def _record_attachment_rollback_failure(
+    primary_error: Exception, operation: str, rollback_error: Exception
+) -> None:
+    """Attach rollback diagnostics without replacing the triggering error."""
+
+    failures = list(
+        getattr(primary_error, "_attachment_rollback_failures", ())
+    )
+    failures.append((operation, rollback_error))
+    try:
+        primary_error._attachment_rollback_failures = tuple(failures)
+    except Exception:  # pragma: no cover - built-in exceptions allow attributes
+        pass
+
+    add_note = getattr(primary_error, "add_note", None)
+    if callable(add_note):
+        try:
+            add_note(
+                "Attachment rollback failed during "
+                f"{operation}: {type(rollback_error).__name__}: {rollback_error}"
+            )
+        except Exception:  # pragma: no cover - diagnostics must not mask root cause
+            pass
+
+
 # pylint: disable=line-too-long,unused-argument
 class TemplateController(BaseController):
     """Base controller for CuRobo-based motion planning. Supports single and batch planning."""
@@ -68,11 +97,12 @@ class TemplateController(BaseController):
         constrain_grasp_approach: bool = False,
         collision_activation_distance: float = 0.03,
         ignore_substring: Optional[List[str]] = None,
-        use_batch: bool = False,
+        use_batch: bool = True,
         trajectory_visualizer=None,
         skill_target_visualizer=None,
         collision_scene_manager=None,
         collision_world_mode: str = "legacy_stage_scan",
+        timing_recorder=None,
         **kwargs,
     ) -> None:
         super().__init__(name=name)
@@ -83,6 +113,11 @@ class TemplateController(BaseController):
         self.trajectory_visualizer = trajectory_visualizer
         self.collision_scene_manager = collision_scene_manager
         self.collision_world_mode = str(collision_world_mode)
+        # Timing is explicitly bound by the workflow to the currently running
+        # skill.  Do not resolve planner ownership through the recorder's
+        # process/context-global active scope: DAG skills may run together.
+        self.timing_recorder = timing_recorder
+        self._timing_scope = None
         self.ignore_substring = list(self._get_default_ignore_substring())
         if ignore_substring is not None:
             self.ignore_substring = list(ignore_substring)
@@ -116,6 +151,14 @@ class TemplateController(BaseController):
         self._ee_ori = 0.0
         self._gripper_state = 1.0
         self._gripper_joint_position = np.array([1.0])
+        self._legacy_disabled_attach_names = []
+        # A native CuRobo reset clears SceneData, while the high-level world
+        # and its signature remain valid.  Keep this separate from the
+        # signature so physics-schema updates can reload once before pose
+        # synchronization without forcing an update on every frame.
+        self._world_cache_invalidated = False
+        self._world_cleanup_failed = False
+        self._world_cleanup_error = None
         self._last_command_name = "unknown"
         self.idx_list = None
         # Keep the command object itself, not ``id(command)``.  CPython may
@@ -160,6 +203,106 @@ class TemplateController(BaseController):
             float(self.motion_gen.interpolation_dt),
             self.ds_ratio,
         )
+
+    def bind_timing_scope(self, scope):
+        """Bind planner telemetry to one concrete skill invocation."""
+
+        self._timing_scope = scope
+        return scope
+
+    def push_timing_scope(self, scope):
+        """Temporarily select the scope owning the current controller call."""
+
+        previous = self._timing_scope
+        self._timing_scope = scope
+        return previous
+
+    def restore_timing_scope(self, previous):
+        """Restore the scope that was active before a controller call."""
+
+        self._timing_scope = previous
+
+    def clear_timing_scope(self, scope=None):
+        """Clear a timing binding without disturbing a newer skill binding."""
+
+        if scope is None or self._timing_scope is scope:
+            self._timing_scope = None
+
+    def bind_timing_recorder(self, timing_recorder=None, scope=None):
+        """Optional compatibility binding interface for timing-aware callers."""
+
+        self.timing_recorder = timing_recorder
+        return self.bind_timing_scope(scope)
+
+    def _start_curobo_timing_phase(self, operation: str):
+        scope = getattr(self, "_timing_scope", None)
+        if scope is None or not bool(getattr(scope, "_is_active", True)):
+            return None
+        try:
+            phase = scope.curobo(
+                f"curobo.{operation}",
+                metadata={"controller": self.name, "arm": self.lr_name, "operation": operation},
+            )
+            return phase.start()
+        except Exception:
+            # Telemetry must never change planner behavior.
+            LOGGER.debug("Failed to start CuRobo timing phase", exc_info=True)
+            return None
+
+    @staticmethod
+    def _finish_curobo_timing_phase(phase, success: bool, error=None):
+        if phase is None:
+            return
+        try:
+            phase.finish(
+                success=bool(success),
+                reason=(str(error) if error is not None else None),
+                error=error,
+            )
+        except Exception:
+            LOGGER.debug("Failed to finish CuRobo timing phase", exc_info=True)
+
+    def _synchronize_planner_cuda(self):
+        device = getattr(getattr(self, "tensor_args", None), "device", None)
+        if getattr(device, "type", None) == "cuda":
+            torch.cuda.synchronize(device)
+
+    def _run_timed_curobo_call(self, operation: str, call):
+        """Run one real MotionGen/IK query with complete CUDA-synchronized timing."""
+
+        scope = getattr(self, "_timing_scope", None)
+        # Do not add synchronization fences when the workflow has not bound a
+        # Skill timing scope.  Initialization, probes, and non-episode callers
+        # must retain their original execution path and overhead.
+        if scope is None or not bool(getattr(scope, "_is_active", True)):
+            return call()
+        # Flush work queued while preparing the query before opening the
+        # measured span.  The planner span must not absorb a preceding physics
+        # or world-update fence; the post-call fence is part of the complete
+        # host-visible planner duration.
+        self._synchronize_planner_cuda()
+        phase = self._start_curobo_timing_phase(operation)
+        if phase is None:
+            try:
+                return call()
+            finally:
+                # If telemetry itself failed, still drain the planner stream
+                # so a diagnostic degradation cannot leave an async query
+                # running past its caller.  Never mask the business result.
+                try:
+                    self._synchronize_planner_cuda()
+                except Exception:
+                    LOGGER.debug("Failed to drain unrecorded planner call", exc_info=True)
+        try:
+            # The synchronization belongs inside the measured phase so CUDA
+            # graph/kernel work is included on both sides of the host call.
+            result = call()
+            self._synchronize_planner_cuda()
+        except Exception as exc:
+            self._finish_curobo_timing_phase(phase, False, exc)
+            raise
+        self._finish_curobo_timing_phase(phase, True)
+        return result
 
     def _configure_execution_stride(self) -> None:
         if self.collision_world_mode == "physics_schema":
@@ -224,13 +367,14 @@ class TemplateController(BaseController):
         )
 
     def _load_robot(self, robot_file: str) -> None:
-        self.robot_cfg = load_yaml(robot_file)["robot_cfg"]
+        loaded = load_yaml(robot_file)
+        self.robot_cfg = loaded.get("robot_cfg", loaded)
 
     def _load_kin_model(self) -> None:
-        urdf_file = self.robot_cfg["kinematics"]["urdf_path"]
-        base_link = self.robot_cfg["kinematics"]["base_link"]
-        ee_link = self.robot_cfg["kinematics"]["ee_link"]
-        robot_cfg = RobotConfig.from_basic(urdf_file, base_link, ee_link, self.tensor_args)
+        # Use the same normalized YAML and v0.8 RobotCfg as MotionGen.  The
+        # old from_basic path loses tool_frames/cspace and resolves assets from
+        # a different config root.
+        robot_cfg = RobotConfig.from_config(self.robot_file, self.tensor_args)
         self.kin_model = CudaRobotModel(robot_cfg.kinematics)
 
     def _load_world(self, use_default: bool = True) -> None:
@@ -347,11 +491,20 @@ class TemplateController(BaseController):
                 raise ValueError
         except (TypeError, ValueError):
             manipulation_time_dilation = 0.8
+        configured_plan_attempts = pick_place_cfg.get(
+            "max_plan_attempts",
+            4 if self.collision_world_mode == "physics_schema" else 10,
+        )
+        try:
+            max_plan_attempts = max(1, int(configured_plan_attempts))
+        except (TypeError, ValueError):
+            max_plan_attempts = 4 if self.collision_world_mode == "physics_schema" else 10
         pose_metric = None
         if self.constrain_grasp_approach:
             pose_metric = PoseCostMetric.create_grasp_approach_metric(
                 offset_position=0.1,
                 linear_axis=self._get_grasp_approach_linear_axis(),
+                device_cfg=self.tensor_args.device_cfg,
             )
         if self.use_batch:
             self.plan_config = MotionGenPlanConfig(
@@ -363,12 +516,13 @@ class TemplateController(BaseController):
                 enable_finetune_trajopt=True,
                 parallel_finetune=True,
                 time_dilation_factor=manipulation_time_dilation,
+                pose_cost_metric=pose_metric,
             )
         else:
             self.plan_config = MotionGenPlanConfig(
                 enable_graph=False,
                 enable_graph_attempt=7,
-                max_attempts=10,
+                max_attempts=max_plan_attempts,
                 pose_cost_metric=pose_metric,
                 enable_finetune_trajopt=True,
                 time_dilation_factor=manipulation_time_dilation,
@@ -377,13 +531,18 @@ class TemplateController(BaseController):
             self.robot_cfg,
             self.world_cfg,
             self.tensor_args,
+            robot_file=self.robot_file,
+            max_goalset=CUROBO_BATCH_SIZE if self.use_batch else 1,
             interpolation_dt=0.01,
             collision_activation_distance=self.collision_activation_distance,
             trajopt_tsteps=32,
             collision_checker_type=CollisionCheckerType.MESH,
+            # Isaac Sim 6 provides CUDA 12, so CuRobo v0.8 can reset captured
+            # graphs when the physics-schema world or attachment shape changes.
             use_cuda_graph=True,
             self_collision_check=True,
             collision_cache=self._get_motion_gen_collision_cache(),
+            max_batch_size=CUROBO_BATCH_SIZE if self.use_batch else 1,
             num_trajopt_seeds=12,
             num_graph_seeds=12,
             optimize_dt=True,
@@ -394,6 +553,8 @@ class TemplateController(BaseController):
         ik_config = IKSolverConfig.load_from_robot_config(
             self.robot_cfg,
             self.world_cfg,
+            robot_file=self.robot_file,
+            max_goalset=CUROBO_BATCH_SIZE if self.use_batch else 1,
             rotation_threshold=0.05,
             position_threshold=0.005,
             num_seeds=20,
@@ -403,6 +564,7 @@ class TemplateController(BaseController):
             use_cuda_graph=True,
             collision_checker_type=CollisionCheckerType.MESH,
             collision_cache={"obb": 700, "mesh": 700},
+            max_batch_size=CUROBO_BATCH_SIZE if self.use_batch else 1,
         )
         self.ik_solver = IKSolver(ik_config)
         self.motion_gen = MotionGen(motion_gen_config)
@@ -622,15 +784,35 @@ class TemplateController(BaseController):
 
     def _update_world_if_changed(self, obstacles: WorldConfig) -> None:
         signature = self._make_world_update_signature(obstacles)
-        if self.motion_gen is not None and signature != getattr(self, "_world_update_signature", None):
+        needs_update = (
+            signature != getattr(self, "_world_update_signature", None)
+            or getattr(self, "_world_cache_invalidated", False)
+        )
+        if self.motion_gen is not None and needs_update:
             self.motion_gen.update_world(obstacles)
+            self._world_cache_invalidated = False
         self.world_cfg = obstacles
         self._world_update_signature = signature
 
     def update(self) -> None:
+        if getattr(self, "_world_cleanup_failed", False):
+            error = getattr(self, "_world_cleanup_error", None)
+            message = (
+                "CuRobo world cleanup failed; refusing world update and "
+                "dynamic-pose sync until reset cleanup succeeds"
+            )
+            if error is None:
+                raise RuntimeError(message)
+            raise RuntimeError(message) from error
         if self.collision_world_mode == "physics_schema":
+            # CollisionSceneManager refreshes the high-level world before a
+            # controller reset, but reset-time clear_world_cache() empties
+            # native SceneData after that signature is recorded.  Reload that
+            # unchanged world exactly once, before any dynamic-pose sync.
+            if getattr(self, "_world_cache_invalidated", False):
+                self._update_world_if_changed(self.world_cfg)
             self.collision_scene_manager.sync_dynamic_poses(
-                self._step_idx, interval_steps=1, force=True
+                self._step_idx, interval_steps=1, force=False
             )
             self.collision_scene_manager.audit_controller(self)
             return
@@ -649,8 +831,11 @@ class TemplateController(BaseController):
         if target == "legacy_stage_scan" and manager is not None:
             manager.prepare_controller_for_legacy(self)
         if target == self.collision_world_mode:
-            if target == "physics_schema" and manager is not None:
-                manager.refresh_controller_reference_world(self)
+            # This method is called from the workflow before every control
+            # step.  Refreshing all exact obstacle poses here made a moving
+            # reference update the complete 230-object world on every frame.
+            # Planning paths call _refresh_reference_world_for_planning()
+            # immediately before the actual CuRobo query instead.
             return
 
         self.clear_plan_and_hold()
@@ -685,15 +870,66 @@ class TemplateController(BaseController):
         ).get_collision_check_world()
         self._update_world_if_changed(obstacles)
 
+    def _refresh_reference_world_for_planning(self) -> None:
+        """Synchronize a moved mobile reference once before a CuRobo query."""
+
+        if self.collision_world_mode != "physics_schema":
+            return
+        manager = self.collision_scene_manager
+        if manager is not None:
+            manager.refresh_controller_reference_world(self)
+
+    def _compat_managed_attached_obstacle_names(self) -> tuple[str, ...]:
+        names = getattr(self.motion_gen, "attached_obstacle_names", None)
+        if names is None:
+            names = getattr(self.motion_gen, "_compat_attached_obstacle_names", ())
+        return tuple(names or ())
+
+    def _reenable_legacy_disabled_attach_objects(
+        self, already_enabled_names=()
+    ) -> None:
+        already_enabled = set(already_enabled_names)
+        pending = [
+            name
+            for name in dict.fromkeys(self._legacy_disabled_attach_names)
+            if name not in already_enabled
+        ]
+        for index, object_name in enumerate(pending):
+            try:
+                self.motion_gen.world_coll_checker.enable_obstacle(
+                    enable=True, name=object_name
+                )
+            except Exception:
+                # Successfully restored names do not need another attempt;
+                # retain the failed name and remaining descendants for a
+                # fail-closed retry, then preserve the original exception.
+                self._legacy_disabled_attach_names = pending[index:]
+                raise
+        self._legacy_disabled_attach_names = []
+
     def _clear_attached_object_state(self) -> None:
         if self.motion_gen is None:
             return
+        self._world_cleanup_failed = True
         try:
+            compat_names = self._compat_managed_attached_obstacle_names()
+            # Compat detach restores its exact attached obstacles.  Restore
+            # only the controller-owned legacy descendants next, while
+            # SceneData is still populated, then clear the native cache.
             self.motion_gen.detach_object_from_robot()
-            self.motion_gen.clear_world_cache()
+            self._reenable_legacy_disabled_attach_objects(compat_names)
+
+            # A native clear can fail after partially mutating SceneData.  Mark
+            # it invalid before the call so no later update can sync against an
+            # empty or partial cache.
+            self._world_cache_invalidated = True
             self._world_update_signature = None
+            self.motion_gen.clear_world_cache()
         except Exception as exc:
-            print(f"[curobo-controller] Failed to clear attached object state during reset: {exc}")
+            self._world_cleanup_error = exc
+            raise
+        self._world_cleanup_failed = False
+        self._world_cleanup_error = None
         # LEGACY_END
 
     def reset(self, ignore_substring: Optional[str] = None) -> None:
@@ -760,13 +996,15 @@ class TemplateController(BaseController):
         return _field("velocities"), _field("accelerations"), _field("jerks")
 
     def plan_batch(self, ee_translation_goal_batch, ee_orientation_goal_batch, sim_js, js_names):
-        t1 = time.time()
-        torch.cuda.synchronize()
+        # Batch planning is also a real CuRobo query.  Keep it consistent with
+        # plan(): a mobile-base reference must be synchronized after
+        # navigation and immediately before the captured-graph query.
+        self._refresh_reference_world_for_planning()
         sim_js_positions = (sim_js.positions)[np.newaxis, :]
         ik_goal = Pose(
             position=self.tensor_args.to_device(ee_translation_goal_batch),
             quaternion=self.tensor_args.to_device(ee_orientation_goal_batch),
-            batch=CUROBO_BATCH_SIZE,
+            batch_size=CUROBO_BATCH_SIZE,
         )
         velocities, accelerations, jerks = self._joint_state_derivatives(sim_js)
         cu_js = JointState(
@@ -777,19 +1015,20 @@ class TemplateController(BaseController):
             joint_names=js_names,
         )
         cu_js = cu_js.get_ordered_joint_state(self.cmd_js_names)
-        result = self.motion_gen.plan_batch(cu_js, ik_goal, self.plan_config.clone())
-        t2 = time.time()
-        torch.cuda.synchronize()
-        print("plan batch duration :", t2 - t1)
+        result = self._run_timed_curobo_call(
+            "plan_batch",
+            lambda: self.motion_gen.plan_batch(cu_js, ik_goal, self.plan_config.clone()),
+        )
         return result
 
     def plan(self, ee_translation_goal, ee_orientation_goal, sim_js: JointState, js_names: list):
+        self._refresh_reference_world_for_planning()
         velocities, accelerations, jerks = self._joint_state_derivatives(sim_js)
         if self.use_batch:
             ik_goal = Pose(
                 position=self.tensor_args.to_device(ee_translation_goal.unsqueeze(0).expand(CUROBO_BATCH_SIZE, -1)),
                 quaternion=self.tensor_args.to_device(ee_orientation_goal.unsqueeze(0).expand(CUROBO_BATCH_SIZE, -1)),
-                batch=CUROBO_BATCH_SIZE,
+                batch_size=CUROBO_BATCH_SIZE,
             )
             cu_js = JointState(
                 position=self.tensor_args.to_device(np.tile((sim_js.positions)[np.newaxis, :], (CUROBO_BATCH_SIZE, 1))),
@@ -799,7 +1038,10 @@ class TemplateController(BaseController):
                 joint_names=js_names,
             )
             cu_js = cu_js.get_ordered_joint_state(self.cmd_js_names)
-            return self.motion_gen.plan_batch(cu_js, ik_goal, self.plan_config.clone())
+            return self._run_timed_curobo_call(
+                "plan_batch",
+                lambda: self.motion_gen.plan_batch(cu_js, ik_goal, self.plan_config.clone()),
+            )
         ik_goal = Pose(
             position=self.tensor_args.to_device(ee_translation_goal),
             quaternion=self.tensor_args.to_device(ee_orientation_goal),
@@ -812,11 +1054,17 @@ class TemplateController(BaseController):
             joint_names=js_names,
         )
         cu_js = cu_js.get_ordered_joint_state(self.cmd_js_names)
-        return self.motion_gen.plan_single(cu_js.unsqueeze(0), ik_goal, self.plan_config.clone())
+        return self._run_timed_curobo_call(
+            "plan_single",
+            lambda: self.motion_gen.plan_single(cu_js.unsqueeze(0), ik_goal, self.plan_config.clone()),
+        )
 
     def plan_joint_positions(self, goal_arm_positions: np.ndarray):
         """Plan to an exact arm configuration in the active collision world."""
 
+        refresh = getattr(self, "_refresh_reference_world_for_planning", None)
+        if callable(refresh):
+            refresh()
         goal_arm_positions = np.asarray(goal_arm_positions, dtype=float).reshape(-1)
         if len(goal_arm_positions) != len(self.arm_indices):
             raise ValueError(
@@ -843,10 +1091,13 @@ class TemplateController(BaseController):
             jerk=self.tensor_args.to_device(zeros),
             joint_names=self.robot.dof_names,
         ).get_ordered_joint_state(self.cmd_js_names)
-        result = self.motion_gen.plan_single_js(
-            start_state.unsqueeze(0),
-            goal_state.unsqueeze(0),
-            self.plan_config.clone(),
+        result = self._run_timed_curobo_call(
+            "plan_single_js",
+            lambda: self.motion_gen.plan_single_js(
+                start_state.unsqueeze(0),
+                goal_state.unsqueeze(0),
+                self.plan_config.clone(),
+            ),
         )
         self._log_plan_result("plan_joint_positions", result, goal_arm_positions)
         return result
@@ -1505,6 +1756,18 @@ class TemplateController(BaseController):
                 if descendant not in resolved_names and descendant not in disabled_names:
                     disabled_names.append(descendant)
 
+        # A later requested path can resolve an exact name that an earlier
+        # parent path tentatively classified for disabling.  Finalize the
+        # roles globally so attachment is the semantic winner, while keeping
+        # first-seen order within each exact-name list.
+        resolved_names = list(dict.fromkeys(resolved_names))
+        resolved_name_set = set(resolved_names)
+        disabled_names = list(
+            dict.fromkeys(
+                name for name in disabled_names if name not in resolved_name_set
+            )
+        )
+
         return resolved_names, disabled_names
 
     def attach_objects(
@@ -1524,7 +1787,7 @@ class TemplateController(BaseController):
             acceleration=self.tensor_args.to_device(sim_js.velocities) * 0.0,
             jerk=self.tensor_args.to_device(sim_js.velocities) * 0.0,
             joint_names=js_names,
-        )
+        ).get_ordered_joint_state(self.cmd_js_names)
         missing = [path for path in paths if self.motion_gen.world_model.get_obstacle(path) is None]
         if missing:
             raise ValueError(f"attach collision prims are not in CuRobo world: {missing}")
@@ -1533,7 +1796,7 @@ class TemplateController(BaseController):
             cu_js,
             paths,
             link_name=link_name,
-            sphere_fit_type=SphereFitType.VOXEL_VOLUME_SAMPLE_SURFACE,
+            sphere_fit_type=SphereFitType.VOXEL,
             world_objects_pose_offset=world_objects_pose_offset,
         )
         LOGGER.warning("[AttachDebug] attached=%s disabled_world_obstacles=%s", attached, paths)
@@ -1571,7 +1834,7 @@ class TemplateController(BaseController):
             acceleration=self.tensor_args.to_device(sim_js.velocities) * 0.0,
             jerk=self.tensor_args.to_device(sim_js.velocities) * 0.0,
             joint_names=js_names,
-        )
+        ).get_ordered_joint_state(self.cmd_js_names)
         paths = [path.strip() for path in obj_prim_paths]
         missing = [path for path in paths if self.motion_gen.world_model.get_obstacle(path) is None]
         if missing:
@@ -1583,7 +1846,7 @@ class TemplateController(BaseController):
                 cu_js,
                 paths,
                 link_name="attached_object",
-                sphere_fit_type=SphereFitType.VOXEL_VOLUME_SAMPLE_SURFACE,
+                sphere_fit_type=SphereFitType.VOXEL,
             )
             if attached is False:
                 return False, None, None
@@ -1607,24 +1870,64 @@ class TemplateController(BaseController):
             acceleration=self.tensor_args.to_device(sim_js.velocities) * 0.0,
             jerk=self.tensor_args.to_device(sim_js.velocities) * 0.0,
             joint_names=js_names,
-        )
+        ).get_ordered_joint_state(self.cmd_js_names)
         object_names, disabled_names = self._resolve_attach_object_names(obj_prim_path)
         legacy_offset = Pose.from_list(
-            [0, 0, 0.01, 1, 0, 0, 0], self.tensor_args
+            [0, 0, 0.01, 1, 0, 0, 0],
+            device_cfg=self.tensor_args.device_cfg,
         )
         attached = self.motion_gen.attach_objects_to_robot(
             cu_js,
             object_names,
             link_name=link_name,
-            sphere_fit_type=SphereFitType.VOXEL_VOLUME_SAMPLE_SURFACE,
+            sphere_fit_type=SphereFitType.VOXEL,
             world_objects_pose_offset=legacy_offset,
         )
-        for object_name in disabled_names:
-            self.motion_gen.world_coll_checker.enable_obstacle(enable=False, name=object_name)
+        disabled_now = []
+        try:
+            for object_name in disabled_names:
+                self.motion_gen.world_coll_checker.enable_obstacle(
+                    enable=False, name=object_name
+                )
+                # Record each completed mutation before attempting the next
+                # descendant so a mid-loop failure is recoverable.
+                disabled_now.append(object_name)
+                if object_name not in self._legacy_disabled_attach_names:
+                    self._legacy_disabled_attach_names.append(object_name)
+        except Exception as primary_error:
+            # Restore every descendant that this call disabled.  One restore
+            # failure must not prevent the remaining restores or native
+            # detach; failed names stay tracked for reset-time cleanup.
+            for object_name in reversed(disabled_now):
+                try:
+                    self.motion_gen.world_coll_checker.enable_obstacle(
+                        enable=True, name=object_name
+                    )
+                except Exception as rollback_error:
+                    _record_attachment_rollback_failure(
+                        primary_error,
+                        f"re-enable legacy obstacle {object_name!r}",
+                        rollback_error,
+                    )
+                else:
+                    self._legacy_disabled_attach_names = [
+                        name
+                        for name in self._legacy_disabled_attach_names
+                        if name != object_name
+                    ]
+            try:
+                self.motion_gen.detach_object_from_robot()
+            except Exception as rollback_error:
+                _record_attachment_rollback_failure(
+                    primary_error, "detach compat attachment", rollback_error
+                )
+            raise
         return attached
 
     def detach_obj(self):
+        compat_names = self._compat_managed_attached_obstacle_names()
         self.motion_gen.detach_object_from_robot()
+        self._reenable_legacy_disabled_attach_objects(compat_names)
 
     def has_attached_collision_spheres(self, link_name="attached_object") -> bool:
         spheres = (
@@ -1643,7 +1946,7 @@ class TemplateController(BaseController):
                 stacklevel=2,
             )
             self.collision_scene_manager.sync_dynamic_poses(
-                self._step_idx, interval_steps=1, force=True
+                self._step_idx, interval_steps=1, force=False
             )
             return
         self._legacy_update_specific(ignore_substring, reference_prim_path)
@@ -1660,8 +1963,13 @@ class TemplateController(BaseController):
 
     def test_single_ik(self, ee_trans, ee_ori):
         assert not self.use_batch
+        refresh = getattr(self, "_refresh_reference_world_for_planning", None)
+        if callable(refresh):
+            refresh()
         ik_goal = Pose(position=self.tensor_args.to_device(ee_trans), quaternion=self.tensor_args.to_device(ee_ori))
-        result = self.ik_solver.solve_single(ik_goal)
+        result = self._run_timed_curobo_call(
+            "ik.solve_single", lambda: self.ik_solver.solve_single(ik_goal)
+        )
         succ = result.success.item()
         if succ:  # pylint: disable=simplifiable-if-statement
             return True
@@ -1681,27 +1989,162 @@ class TemplateController(BaseController):
     def test_batch_forward_from_paths(self, ee_trans_batch_np, ee_ori_batch_np, start_paths):
         """Plan each terminal target from its matching pre-grasp endpoint."""
 
+        refresh = getattr(self, "_refresh_reference_world_for_planning", None)
+        if callable(refresh):
+            refresh()
         ee_trans_batch = self.tensor_args.to_device(ee_trans_batch_np)
         ee_ori_batch = self.tensor_args.to_device(ee_ori_batch_np)
-        starts = torch.stack([path.position[-1] for path in start_paths])
+        if not start_paths:
+            raise ValueError(
+                "batch terminal planning requires at least one named pre-grasp path"
+            )
+
+        # A CuRobo path may contain the full robot state (7 arm + 2 locked
+        # finger joints), while ``cmd_js_names`` contains only active aliases.
+        # Preserve and normalize the path's explicit names; never relabel a
+        # wider endpoint position tensor with the active-joint list.
+        reference_names = None
+        terminal_positions = []
+        for path_index, path in enumerate(start_paths):
+            names = getattr(path, "joint_names", None)
+            if names is None or isinstance(names, (str, bytes)):
+                raise ValueError(
+                    "batch pre-grasp endpoint must provide explicit joint_names: "
+                    f"path_index={path_index}"
+                )
+            names = list(names)
+            if not names or len(set(names)) != len(names):
+                raise ValueError(
+                    "batch pre-grasp endpoint joint_names must be non-empty and "
+                    f"unique: path_index={path_index}, joint_names={names!r}"
+                )
+
+            position = getattr(path, "position", None)
+            if position is None:
+                raise ValueError(
+                    "batch pre-grasp endpoint must provide position: "
+                    f"path_index={path_index}"
+                )
+            if not isinstance(position, torch.Tensor):
+                position = self.tensor_args.to_device(position)
+            if position.ndim < 2 or position.shape[0] < 1:
+                raise ValueError(
+                    "batch pre-grasp endpoint position must be a non-empty "
+                    "trajectory with shape [time, dof]: "
+                    f"path_index={path_index}, position_shape={tuple(position.shape)}"
+                )
+            if position.shape[-1] != len(names):
+                raise ValueError(
+                    "batch pre-grasp endpoint position DOF count does not match "
+                    f"its joint_names: path_index={path_index}, "
+                    f"position_shape={tuple(position.shape)}, joint_names={names!r}"
+                )
+
+            if reference_names is None:
+                reference_names = names
+            elif set(names) != set(reference_names):
+                raise ValueError(
+                    "batch pre-grasp endpoints must expose the same named joint "
+                    f"contract: path_index={path_index}, expected={reference_names!r}, "
+                    f"got={names!r}"
+                )
+
+            normalized_path = path
+            if names != reference_names:
+                reorder = getattr(path, "get_ordered_joint_state", None)
+                if not callable(reorder):
+                    raise ValueError(
+                        "batch pre-grasp endpoint joint order differs but the "
+                        "path cannot reorder by explicit names: "
+                        f"path_index={path_index}"
+                    )
+                normalized_path = reorder(reference_names)
+                position = getattr(normalized_path, "position", None)
+                if position is None or position.ndim < 2:
+                    raise ValueError(
+                        "reordered batch pre-grasp endpoint has invalid position: "
+                        f"path_index={path_index}"
+                    )
+                if position.shape[-1] != len(reference_names):
+                    raise ValueError(
+                        "reordered batch pre-grasp endpoint position DOF count "
+                        "does not match its joint_names: "
+                        f"path_index={path_index}, position_shape={tuple(position.shape)}"
+                    )
+            terminal_positions.append(position[-1])
+
+        starts = torch.stack(terminal_positions)
         zeros = torch.zeros_like(starts)
         start_state = JointState(
             position=starts,
             velocity=zeros,
             acceleration=zeros,
             jerk=zeros,
-            joint_names=self.cmd_js_names,
+            joint_names=reference_names,
         )
-        goal = Pose(position=ee_trans_batch, quaternion=ee_ori_batch, batch=len(start_paths))
-        result = self.motion_gen.plan_batch(start_state, goal, self.plan_config.clone())
+        goal = Pose(position=ee_trans_batch, quaternion=ee_ori_batch, batch_size=len(start_paths))
+        result = self._run_timed_curobo_call(
+            "plan_batch",
+            lambda: self.motion_gen.plan_batch(start_state, goal, self.plan_config.clone()),
+        )
         self._log_plan_result("test_batch_forward_from_pregrasp", result)
         return result
 
     def measure_cartesian_path(self, path, start_position, goal_position):
         """Return path/direct length ratio and maximum straight-line deviation."""
 
+        path_names = getattr(path, "joint_names", None)
+        if path_names is None or isinstance(path_names, (str, bytes)):
+            raise ValueError(
+                "Cartesian path measurement requires explicit joint_names; "
+                "positional trajectory mapping is unsupported"
+            )
+        path_names = list(path_names)
+        path_position = getattr(path, "position", None)
+        if path_position is None or path_position.ndim < 2:
+            raise ValueError(
+                "Cartesian path measurement requires a non-empty [time, dof] "
+                f"position tensor, got {getattr(path_position, 'shape', None)}"
+            )
+        if path_position.shape[0] < 1 or path_position.shape[-1] != len(path_names):
+            raise ValueError(
+                "Cartesian path position DOF count does not match its joint_names: "
+                f"position_shape={tuple(path_position.shape)}, joint_names={path_names!r}"
+            )
+        if not path_names or len(set(path_names)) != len(path_names):
+            raise ValueError(
+                "Cartesian path joint_names must be non-empty and unique: "
+                f"{path_names!r}"
+            )
+
+        # CuRobo's trajectory/result contract may be full (7 arm + 2 locked
+        # fingers), while the kinematics model is deliberately active-arm
+        # only.  Reduce by the explicit active names before FK; never slice a
+        # nine-dimensional tensor positionally.
+        active_names = list(self.raw_js_names)
+        if set(path_names) != set(active_names) or path_names != active_names:
+            reorder = getattr(path, "get_ordered_joint_state", None)
+            if not callable(reorder):
+                raise ValueError(
+                    "Cartesian path joint order/contract differs from active arm "
+                    "names but the path cannot reorder by explicit names: "
+                    f"path_names={path_names!r}, active_names={active_names!r}"
+                )
+            path = reorder(active_names)
+            path_position = getattr(path, "position", None)
+            if path_position is None or path_position.ndim < 2:
+                raise ValueError(
+                    "reordered Cartesian path has an invalid position tensor"
+                )
+            if path_position.shape[-1] != len(active_names):
+                raise ValueError(
+                    "reordered Cartesian path position DOF count does not match "
+                    f"active arm names: position_shape={tuple(path_position.shape)}, "
+                    f"active_names={active_names!r}"
+                )
+
         positions = []
-        for joint_position in path.position:
+        for joint_position in path_position:
             point, _ = self.forward_kinematic(joint_position.detach().cpu().numpy())
             positions.append(point)
         positions = np.asarray(positions, dtype=float)
@@ -1799,21 +2242,40 @@ class TemplateController(BaseController):
     ):
         """Plan one terminal target from a successful pre-grasp endpoint."""
 
+        refresh = getattr(self, "_refresh_reference_world_for_planning", None)
+        if callable(refresh):
+            refresh()
         start_position = start_path.position[-1]
+        start_joint_names = getattr(start_path, "joint_names", None)
+        if start_joint_names is None:
+            raise ValueError(
+                "pre-grasp endpoint must provide explicit joint_names; "
+                "positional trajectory mapping is unsupported"
+            )
+        start_joint_names = list(start_joint_names)
+        if start_position.shape[-1] != len(start_joint_names):
+            raise ValueError(
+                "pre-grasp endpoint position DOF count does not match its "
+                f"joint_names: position_shape={tuple(start_position.shape)}, "
+                f"joint_names={start_joint_names!r}"
+            )
         zeros = torch.zeros_like(start_position)
         start_state = JointState(
             position=start_position,
             velocity=zeros,
             acceleration=zeros,
             jerk=zeros,
-            joint_names=self.cmd_js_names,
+            joint_names=start_joint_names,
         )
         goal = Pose(
             position=self.tensor_args.to_device(ee_trans),
             quaternion=self.tensor_args.to_device(ee_ori),
         )
-        result = self.motion_gen.plan_single(
-            start_state.unsqueeze(0), goal, self.plan_config.clone()
+        result = self._run_timed_curobo_call(
+            "plan_single",
+            lambda: self.motion_gen.plan_single(
+                start_state.unsqueeze(0), goal, self.plan_config.clone()
+            ),
         )
         self._log_plan_result(
             "test_single_forward_from_pregrasp", result, target=ee_trans
