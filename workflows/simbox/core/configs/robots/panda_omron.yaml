@@ -8,7 +8,7 @@ robot_file:
 
 gripper_max_width: 0.08
 gripper_min_width: 0.0
-tcp_offset: 0.1043
+tcp_offset: 0.1034
 
 solver_position_iteration_count: 128
 solver_velocity_iteration_count: 4
