@@ -406,8 +406,6 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         if self.task_cfg.get("debug_topdown_check") or os.environ.get("INTERNDATA_DEBUG_TOPDOWN") == "1":
             capture_topdown_screenshot(
                 self.task_cfg["data"]["task_dir"],
-                self.world,
-                task_cameras=getattr(self.task, "cameras", None),
             )
         self.logger = LmdbLogger(
             task_dir=self.task_cfg["data"]["task_dir"],

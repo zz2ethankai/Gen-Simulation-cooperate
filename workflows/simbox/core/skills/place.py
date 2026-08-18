@@ -350,6 +350,11 @@ class Place(BaseSkill):
             if continuous_descent
             else self._terminal_samples(pre_position, place_position, terminal_step)
         )
+        print(
+            f"[PlaceDebug] descent object={object_name} support={support_name} "
+            f"distance={distance:.5f} step={terminal_step:.5f} "
+            f"commands={len(terminal_points)} continuous={continuous_descent}"
+        )
         for point_index, point in enumerate(terminal_points):
             ratio = (point_index + 1) / len(terminal_points)
             quat = (1.0 - ratio) * pre_orientation + ratio * place_orientation
@@ -1034,6 +1039,25 @@ class Place(BaseSkill):
                 },
             )
             return success
+        elif success_mode == "front":
+            bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
+            pick_x, pick_y = self.pick_obj.get_local_pose()[0][:2]
+            place_xy_min = bbox_place_obj.min[:2]
+            place_xy_max = bbox_place_obj.max[:2]
+            success = bool(
+                pick_y > place_xy_max[1] + self.skill_cfg.get("threshold", 0.03)
+            )
+            self._record_success_check_debug(
+                success=success,
+                failure_reasons=[] if success else ["not_beyond_place_bbox_y"],
+                details={
+                    "pick_xy": [float(pick_x), float(pick_y)],
+                    "place_xy_min": list(place_xy_min),
+                    "place_xy_max": list(place_xy_max),
+                    "threshold": float(self.skill_cfg.get("threshold", 0.03)),
+                },
+            )
+            return success
         elif success_mode == "cup":
             bbox_pick_obj = compute_bbox(self.pick_obj.prim)
             bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
@@ -1078,4 +1102,21 @@ class Place(BaseSkill):
             failure_reasons=["unsupported_success_mode"],
             details={"success_mode": success_mode},
         )
-        return False
+        raise ValueError(f"unknown Place success_mode: {success_mode!r}")
+
+    def is_terminal_success(self):
+        if self.failure_reason or self.manip_list:
+            return False
+        if getattr(self.controller, "collision_world_mode", "") != "physics_schema":
+            return True
+        manager = getattr(self.controller, "collision_scene_manager", None)
+        record = manager.records.get(self.pick_obj.name) if manager is not None else None
+        raw_state = getattr(record, "state", None)
+        return getattr(raw_state, "value", raw_state) == "placed_world"
+
+    @staticmethod
+    def _world_bounds(value):
+        return {
+            "minimum": [float(item) for item in value.min],
+            "maximum": [float(item) for item in value.max],
+        }

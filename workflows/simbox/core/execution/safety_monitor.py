@@ -81,7 +81,7 @@ DEFAULT_THRESHOLDS = {
     "arm_velocity_hard_rad_s": 8.0,
     "soft_trigger_consecutive_steps": 3,
     "attached_object_slip_translation_m": 0.02,
-    "attached_object_slip_rotation_deg": 10.0,
+    "attached_object_slip_rotation_deg": 20.0,
 }
 
 

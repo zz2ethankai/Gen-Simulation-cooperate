@@ -1,8 +1,4 @@
-<div align="center">
-
 # InternDataEngine
-
-</div>
 
 InternDataEngine 是面向具身智能的合成数据生成引擎，基于 NVIDIA Isaac Sim 和 Nimbus 运行。SimBox 移动操作中的导航由 Isaac 内部的本地 A* 规划器和移动底盘驱动执行，无需 ROS 或 Nav2。
 
@@ -20,7 +16,7 @@ InternDataEngine 是面向具身智能的合成数据生成引擎，基于 NVIDI
 - 宿主机 Python 3.10+
 - `7z` 命令行工具
 - 足够磁盘空间存放资产压缩包、解压后的资产、Docker 镜像和 Isaac Sim cache。
-  当前 `InternDataAssets/` 解压后约 200 GB。
+当前 `InternDataAssets/` 解压后约 200 GB。
 
 快速检查：
 
@@ -77,6 +73,18 @@ test -L workflows/simbox/panda_drake
 ```bash
 chmod +x docker/isaac/entrypoint.sh scripts/docker/up_simbox_isaac.sh
 ```
+
+### 执行配置文件功能解析
+
+填写`scripts/docker/up_simbox_isaac.sh` 中
+
+```
+DEFAULT_LAUNCHER_CONFIG="configs/de_plan_with_render_template.yaml"
+```
+
+每个配置详解如下,
+
+
 
 ## Isaac Sim Docker 部署
 
@@ -152,3 +160,4 @@ DEFAULT_STOP_EVERY_RUNNING_CONTAINER="1"
 ```bash
 scripts/docker/stop_all_docker.sh
 ```
+

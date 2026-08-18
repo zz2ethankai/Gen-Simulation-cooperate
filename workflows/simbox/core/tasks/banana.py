@@ -636,9 +636,12 @@ class BananaBaseTask(BaseTask):
                     f"envmap_lib={cfg['envmap_lib']!r}, searched={os.path.abspath(envmap_dir)!r}"
                 )
             if cfg.get("apply_randomization", False):
-                envmap_id = random.randint(0, len(envmap_hdr_path_list) - 1)
-                intensity = random.uniform(cfg["intensity_range"][0], cfg["intensity_range"][1])
-                rotation = [random.uniform(cfg["rotation_range"][0], cfg["rotation_range"][1]) for _ in range(3)]
+                envmap_id = int(np.random.randint(0, len(envmap_hdr_path_list)))
+                intensity = float(np.random.uniform(cfg["intensity_range"][0], cfg["intensity_range"][1]))
+                rotation = [
+                    float(np.random.uniform(cfg["rotation_range"][0], cfg["rotation_range"][1]))
+                    for _ in range(3)
+                ]
             else:
                 envmap_id = 0
                 intensity = 1000.0

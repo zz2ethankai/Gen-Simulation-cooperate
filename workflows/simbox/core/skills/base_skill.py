@@ -77,6 +77,9 @@ class BaseSkill(ABC):
     def is_success(self):
         raise NotImplementedError
 
+    def is_terminal_success(self):
+        return self.is_success()
+
     def update(self):
         pass
 

@@ -51,6 +51,10 @@ class RigidObject(RigidPrim):
         self.gap = cfg.get("gap", None)
         self.mass = cfg.get("mass", None)
         kwargs["mass"] = cfg.get("mass", None)
+        # Local rotational-symmetry axis ("x"/"y"/"z" or 3-vector).  The
+        # collision-scene slip metric ignores roll about this axis because it is
+        # a physically meaningless gauge DOF (e.g. a cup's free spin).
+        self.attach_slip_ignore_axis = cfg.get("attach_slip_ignore_axis", None)
 
         # ===== Initialize =====
         create_prim(prim_path=prim_path, usd_path=self.usd_path)

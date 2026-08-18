@@ -25,6 +25,13 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_int(name: str) -> int | None:
+    try:
+        return int(os.environ[name])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _directory_size(path: Path) -> int:
     total = 0
     try:
@@ -121,9 +128,13 @@ def emit_episode_saved(
     episode_dirs: list[str | Path],
     num_steps: int,
     failure_reason: str | None = None,
+    failing_subtask_id: str | None = None,
     task_name: str | None = None,
     task_dir: str | None = None,
     collect_info: str | None = None,
+    predicate_results: list[dict[str, Any]] | None = None,
+    task_predicate_success: bool | None = None,
+    world_revision: int | None = None,
 ) -> None:
     event_path_raw = os.environ.get("INTERNDATA_EPISODE_EVENT_PATH")
     if not event_path_raw:
@@ -146,18 +157,27 @@ def emit_episode_saved(
         "time": datetime.now(timezone.utc).isoformat(),
         "time_unix": time.time(),
         "run_id": os.environ.get("INTERNDATA_RUN_ID", ""),
+        "variant_id": os.environ.get("INTERNDATA_VARIANT_ID", ""),
+        "profile_id": os.environ.get("INTERNDATA_PROFILE_ID", ""),
+        "profile_hash": os.environ.get("INTERNDATA_PROFILE_HASH", ""),
+        "source_hash": os.environ.get("INTERNDATA_SOURCE_HASH", ""),
+        "scene_revision": os.environ.get("INTERNDATA_SCENE_REVISION", ""),
+        "world_revision": world_revision,
         "job_id": os.environ.get("INTERNDATA_JOB_ID", ""),
         "worker": os.environ.get("INTERNDATA_WORKER", ""),
         "gpu": os.environ.get("INTERNDATA_GPU", ""),
         "task_path": os.environ.get("INTERNDATA_TASK_PATH", ""),
         "dataset_root": os.environ.get("INTERNDATA_DATASET_ROOT", ""),
-        "seed": os.environ.get("INTERNDATA_RANDOM_SEED", ""),
+        "seed": _env_int("INTERNDATA_RANDOM_SEED"),
         "status": status,
         "failure_reason": failure_reason or "",
+        "failing_subtask_id": failing_subtask_id or "",
         "finalized": True,
         "task_name": task_name or "",
         "task_dir": task_dir or "",
         "collect_info": collect_info or "",
+        "predicate_results": list(predicate_results or []),
+        "task_predicate_success": task_predicate_success,
         "episode_dirs": [path.as_posix() for path in episode_paths],
         "primary_episode_dir": episode_paths[0].as_posix() if episode_paths else "",
         "num_steps": action_steps,
