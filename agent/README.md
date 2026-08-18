@@ -1,6 +1,6 @@
 # InternDataEngine 通用任务 Agent
 
-新安装仓库需要迁移或合并 Agent、Workspace、SimBox/CuRobo 底层和 Docker 并行生成能力时，先阅读 `[MIGRATION.md](./MIGRATION.md)`。
+新安装仓库需要迁移或合并 Agent、Workspace、SimBox/CuRobo 底层和 Docker 并行生成能力时，先阅读 [MIGRATION.md](./MIGRATION.md)。
 
 ## 1. 项目定位
 
@@ -112,29 +112,36 @@ SimBox phase 内部重规划与 Agent 配置修订是两层预算。phase 内部
 
 ```text
 TaskRequest
-→ inventory硬约束过滤和语义选择
-→ 选择现有SceneCapabilityManifest
-→ 拆分Subtask并先为每个Subtask确定左/右臂
-→ 为所有中心物品分别生成workspace annulus候选
-→ 查找一个能服务全部中心物品的共同底座位姿
-→ 使用每个Subtask已指定手臂做CuRobo planning-only验证
-→ 全部Subtask编译进一个physics-schema SimBox YAML
-→ 单GPU、单episode顺序执行
-→ 读取结构化诊断证据
-→ 单一原因修订（最多2次）
-→ 经验留存
+→ Inventory / Normalize 得到 SceneSpec 与 SupportGraph
+→ LLM 只生成与机器人型号无关的 SemanticTaskPlan
+→ EmbodimentResolver 绑定 profile、instance 和每个 Subtask 的手臂
+→ PlacementAdapter 生成机器人候选位姿
+→ 必要时 SceneLayout 对派生场景做 K=8、G=5、四队列演化
+→ 确定性编译与 schema / support / spawn / collision 检查
+→ required-arm Pick+Place CuRobo gate
+→ 单机器人、单 episode 顺序执行全部 Subtask
+→ Structured Trace / Evidence / Failure Classification
+→ typed layout、Skill 或 next-candidate 修复（最多2次）
+→ debug seed 候选与 held-out qualification 分离
 ```
 
-没有现有场景覆盖任务时，Agent 输出 `SceneCompositionRequest`，记录建议基础场景、所需资产、空间关系、机器人能力和验证要求。v1 不自动装配和运行新场景。多个中心物品没有共同底座位姿时，当前返回 `NO_COMMON_WORKSPACE_CANDIDATE` 或 `NO_COMMON_CUROBO_WORKSPACE_CANDIDATE` 并停止。
+机器人按放置方式走两套几何适配器，而不是按型号写主流程分支：
+
+- `floor_standing`：SplitAloha、Lift2。机器人 region 相对 floor，候选围绕目标工作面采样，并检查底盘 footprint、上层 collision layer 和臂基座偏移；操作期间底盘和升降自由度锁定。
+- `support_mounted`：FR3、FrankaRobotiq85。机器人 region 相对真实安装支撑面，底座 footprint 必须完整落在实测支撑多边形内；支撑面仍保留在 Physics/CuRobo 碰撞世界中。
+
+具体手臂、相机、CuRobo、数据 schema 和数值几何全部来自 canonical robot profile。同一 SemanticTaskPlan 可以派生多个 profile variant；只有 admission 状态允许的 variant 才能进入 episode，`implemented` 不等于已支持，`qualified` 必须有 held-out 原始 artifact 证据。
+
+没有现有场景覆盖任务时，Agent 输出 `SceneCompositionRequest`，记录建议基础场景、所需资产、空间关系、机器人能力和验证要求。v1 不自动装配和运行新场景。已有场景出现布局、支撑、遮挡或共同工作空间失败时，Orchestrator 调用受类型约束的 SceneLayout 搜索，生成派生 scene revision，依次经过静态检查、Workspace 和 Pick+Place CuRobo gate；没有通过 gate 的候选才以明确 failure code 阻断。
 
 跨 workspace 自动导航不属于当前能力。可靠 Nav 接入后，无共同位姿的分支才改为“执行前一 Subtask → Nav 到下一已验证点位 → 继续执行”；接入前不使用开环底盘动作伪装成 Nav。
 
 ### 3.1 已确认的能力边界与待实现项
 
 - `dual_arm_simultaneous` 继续关闭，但保留 TaskPlan 表达和显式报错；未来完成双臂并发碰撞世界、执行和失败恢复验证后再开放。
-- 每个可执行 Subtask 必须先确定 `arm: left|right`，之后才为所有中心物品生成候选。多个独立中心物品共用一个已验证底座位姿、生成一个 SimBox YAML，并在同一 episode 内按 subtask/stage/phase 顺序执行；例如左臂 `pick cup -> place tray`，再右臂 `pick spoon -> place tray`。
+- 语义计划使用 `any_single_arm` 或用户明确的左右臂约束；确定性 `ExecutionVariant` 在 Workspace 之前绑定 profile、instance 和每个 Subtask 的具体手臂。多个中心物品在同一 variant 中共用一个已验证底座位姿并顺序执行。
 - 数据生成默认开启，由 `config.yaml` 的 `generation.enabled` 控制。Agent 仅在用户明确要求生成或不生成时写布尔覆盖，否则返回 `null`，由 Orchestrator 使用默认值。
-- 任务成功判定与失败反馈需要独立设计规范，覆盖 Skill、phase、subtask 和 task 四层判定、证据优先级、失败码、是否可重试和对应修订动作。当前已有部分 evidence/failure-code 基础设施，但统一规范和多 subtask 聚合成功语义仍为待定项。
+- 严格成功要求 finalized task predicate、零 safety event、Physics/CuRobo exact audit；请求数据生成时还要求 action/state、相机视频、LMDB 与 metadata 完整。确定性 failure router 先于受限 LLM diagnosis。
 
 ## 4. 目录职责
 
@@ -146,32 +153,32 @@ TaskRequest
 - `evidence.py`：归一化 SimBox 诊断产物并确定主失败；
 - `retention.py`：经验分流、候选记录和晋升门槛；
 - `task_ir/`：对原生任务 YAML 的紧凑、无损表示，供知识聚合脚本复用；
-- `registry/`：Skill 契约、语义别名和失败码；
+- `workflow/`：语义规划策略与结构化模板；
+- `tools/`：scene ingest、SceneSpec/SupportGraph、SceneLayout、演化调度、trace 和 failure routing；
+- `robot_skills/`：Agent 可编排的机器人 Skill 契约和 qualification admission；
+- `registry/`：语义别名和失败码；
 - `experience/`：通用 playbook、调试工具候选和经验索引。
 
-规划阶段实际加载三类约束：`prompts/plan.md` 提供结构化输出要求；
-`prompts/Agent任务规划与Skill编排规范.md` 提供 subtask、手臂、执行模式以及 Pick/Place 参数含义；
-`prompts/Agent中心物品选择与机器人初始位姿生成规范.md` 提供中心物品识别、先选手臂、再生成候选以及共同位姿规则。
-参数的机器可读类型、枚举、范围和所有权以 `registry/skill_contracts.yaml` 为准，
+规划阶段加载 `workflow/templates/plan.md`、`workflow/task_planning_policy.md` 和
+`workflow/object_role_policy.md`。物体/机器人布局不在 Prompt 中计算，由 `tools/scene_layout/` 处理。
+参数的机器可读类型、枚举、范围和所有权以 `robot_skills/contracts.yaml` 为准，
 `resolver.py` 必须在配置编译前强制校验，不能只依赖 LLM 遵守文字说明。
 
 ### 4.1 配置分工和覆盖顺序
 
 为保持简单，当前不把默认值拆成许多小文件，而是采用四个职责明确的入口：
 
-- `config.yaml`：Agent 全局运行策略和确定性默认值，包括 backend、路径、执行预算、数据生成、机器人 profile/默认手臂、共同位姿阈值、Physics Schema 和 Pick/Place 默认参数；
-- `registry/skill_contracts.yaml`：Agent 能写哪些 Skill 参数，以及每个参数的类型、范围和所有权；
-- `SceneCapabilityManifest` 与源任务 YAML：场景中真实存在的机器人、对象、区域、资产能力和基础场景配置；
-- `TaskPlan`：本次请求的语义选择，只保存对象、Subtask、手臂、Skill 顺序和用户明确给出的合法覆盖值。
+- `config.yaml`：Agent 全局运行策略、执行预算、数据生成、共同位姿阈值、Physics Schema 和 Skill 默认参数；
+- canonical robot YAML：机器人 profile、放置族、臂、相机、数据 adapter 和 capability 的唯一数值真源；
+- `robot_skills/contracts.yaml` 与 `registry/robot_admissions.yaml`：参数所有权与可执行 qualification 状态；
+- `SceneCapabilityManifest` 与源任务 YAML：场景实例、对象、区域和资产能力；
+- `TaskPlan`：对象、关系、Skill 顺序和机器人 capability 需求；`ExecutionVariant` 保存 profile、instance 和 arm binding。
 
 最终 YAML 一律由 `compiler.py` 生成。普通 Skill 参数采用“全局默认 → relation 默认 → Agent 明确覆盖”的顺序；`test_mode`、碰撞世界和资产 Prim path 等 compiler/asset-owned 字段不能被 Agent 覆盖。这样 Agent 不直接编辑源 YAML，也不会把默认参数重复写进每个 TaskPlan。
 
 ## 5. 使用方法
 
-Agent 控制进程在仓库根目录的 Python 环境中运行；所有 Workspace Probe、
-CuRobo、Isaac Sim 和 Nav2 执行都强制通过
-`scripts/docker/run_simbox_task.sh` 启动独立 Docker stack。没有宿主机仿真
-回退路径，Docker 不可用时运行会直接停止并生成基础设施诊断。
+在仓库根目录和 `interndata` 环境中运行。
 
 首次使用或场景/资产变化后建立 inventory：
 
@@ -179,13 +186,9 @@ CuRobo、Isaac Sim 和 Nav2 执行都强制通过
 conda run -n interndata python -m agent index
 ```
 
-两步走战略:
+两步走战略：
 
 ```bash
-conda run -n interndata python -m agent plan \
-  --prompt " 抓取面包片，将面包片完整、稳定地放入金属托盘内部；抓取橙子，将橙子完整、稳定地放入同一个金属托盘内部。" 2>/dev/null
-用franka把苹果放进金属托盘
-
 # Step 1: 只规划（指定 run-id 方便后续引用）
 conda run -n interndata python -m agent plan \
   --prompt "把白色杯子放到托盘里" \
@@ -222,6 +225,134 @@ conda run -n interndata python -m agent diagnose \
   --run-dir output/agent_runs/<run_id>
 ```
 
+对冻结的 held-out `HeldOutVariantArtifact` 列表执行 qualification：
+
+```bash
+conda run -n interndata python -m agent qualify \
+  --artifacts output/agent_runs/<run_id>/heldout_artifacts.json \
+  --output-dir output/agent_runs/<run_id>/qualification
+```
+
+输入文件必须是 JSON 数组，每项只包含由 episode 固化的 `identity` 和
+`artifact_manifest_path`。`identity` 包含
+`run_id/variant_id/seed/profile_id/profile_hash/source_hash/scene_revision/world_revision`；
+每个 attempt 的 `trace.jsonl` 事件另带与目录名一致的 `attempt_id`。
+qualification 会重算 manifest 中每个原始成员的大小和 SHA-256，并绑定 manifest、
+evaluation、evidence 的 identity、attempt 和 `variant_signature`；evaluation/evidence
+路径必须属于 manifest 声明的同一个 attempt，不接受调用者另行指定。该命令只生成
+`qualification_summary.json`，不会修改 `registry/robot_admissions.yaml`。
+
+### 5.1 场景观察和 CuRobo 规划诊断
+
+这两个入口属于确定性 `debug_tool`，不是 Pick/Place 一类机器人 Skill，也不需要先
+打开 Codex。Codex、Claude Code 和其他 Agent 只需调用相同命令。
+
+如果只想快速核对场景平面布局和候选坐标，不启动 Isaac：
+
+```bash
+conda run -n interndata python -m agent view \
+  --task path/to/task.yaml \
+  --output-dir output/debug/layout \
+  --mode layout
+```
+
+输出包含 `layout.png`、`layout_manifest.json`、`stdout.log` 和
+`view_summary.json`。物理材质、真实碰撞和机器人模型需要使用
+下面默认的 `--mode physics`，或直接使用 `agent probe` 的运行时截图。
+
+只加载任务并生成独立的机器人观察视角：
+
+```bash
+conda run -n interndata python -m agent view \
+  --task path/to/task.yaml \
+  --output-dir output/debug/view \
+  --camera-height-m 1.2 \
+  --gpu 2
+```
+
+默认由确定性 `robot_target_overhead_v1` 模板读取仿真中的机器人和中心物品实际位姿，
+换算成独立世界相机；相机不会挂在机器人 Prim 下，也不会随着机械臂运动。模板参数位于
+`config.yaml` 的 `debug.topdown_template_params`：`height_m` 控制相对高度，
+`look_fraction` 控制画面中心在机器人与物品之间的位置。默认局部正俯视用于减少墙、
+上柜和台面遮挡；需要斜视时可把模板改为 `robot_target_diagonal_v1`，再使用它的
+`behind_m/side_m`。分辨率和焦距由 `topdown_resolution`、
+`topdown_focal_length_mm` 控制；`topdown_eye/topdown_target` 保持 `null` 时使用模板。
+命令行的 `--camera-height-m`、`--camera-look-fraction`、
+`--camera-look-height-m` 可做单次相对构图调整；斜视模板还支持
+`--camera-behind-m` 和 `--camera-side-m`。这些参数只影响本次调用，不会改写配置文件。
+一次性绝对坐标覆盖参数：
+
+```bash
+conda run -n interndata python -m agent view \
+  --task path/to/task.yaml \
+  --output-dir output/debug/close_view \
+  --eye 0.5 0.5 2.2 \
+  --target 0.0 0.0 0.8 \
+  --focal-length-mm 24 \
+  --width 1280 --height 960 \
+  --gpu 2
+```
+
+输出主图是 `debug_overview/rgb_0000.png`，同时保留 `stdout.log`、
+`visualization_manifest.json` 和 `view_summary.json`。这是透视相机：将 `eye` 沿着“相机到
+target”的方向靠近目标会看得更近，增大焦距也会缩小视野；提高分辨率只增加细节，
+不会改变构图。`--view topdown` 是严格正交俯视图，正交投影的覆盖范围由房间尺寸决定，
+单纯降低相机高度不会放大物体；需要近看时使用默认的 `debug_overview`。
+
+对已有 Workspace manifest 运行一次 Pick planning-only CuRobo Probe：
+
+```bash
+conda run -n interndata python -m agent probe \
+  --manifest output/agent_runs/<run_id>/variants/<variant_id>/subtasks/<subtask_id>/workspace/candidates.json \
+  --output-dir output/debug/<case> \
+  --candidate-id <candidate_id> \
+  --gpu 2
+```
+
+如果手上只有单个 SimBox task，可先生成同一格式的 Workspace manifest：
+
+```bash
+conda run -n interndata python scripts/simbox/plan_support_mounted_workspace.py \
+  --task path/to/task.yaml \
+  --target <object_name> \
+  --arm left \
+  --output-dir output/debug/workspace
+```
+
+然后把 `output/debug/workspace/candidates.json` 传给 `agent probe`。在完整 Agent
+流程中，这个 manifest 已由 Workspace 阶段生成，不需要重复执行脚本。
+
+工具从 manifest 推导目标对象、required arm 和 attach collision path，复制 manifest 后
+调用标准 Workspace validator；不会修改原 manifest。默认在 Probe 发布结果前输出：
+
+```text
+probe_summary.json
+candidates.json
+probes/<candidate_id>/seed_<seed>/
+  probe_task.yaml
+  stdout.log
+  results/<candidate_id>.<arm>.json
+  diagnostics/overview.png
+  diagnostics/trajectory_debug.usda  # 至少存在一段成功规划路径时才生成
+```
+
+`trajectory_debug.usda` 中橙色点是 CuRobo 规划关节路径经正运动学得到的末端轨迹；
+它是非物理可视化，不是第二条规划轨迹。Probe 默认关闭容易遮挡画面的绿色机器人碰撞球，
+只有任务显式启用 `visualization.curobo_trajectory.show_robot_spheres` 时才同时写入。
+若 terminal grasp 失败但 pregrasp 成功，工具仍可导出 pregrasp 段；两段都没有时结果会
+明确写 `no_selected_path`，不会生成假的轨迹。碰撞隔离实验可追加
+`--collision-world target-only|empty`、`--disable-collision-entity <name>` 或精确 Prim
+path 参数；这些选项只用于 A/B 定位，标准运行仍使用完整 Physics/CuRobo 世界。
+
+四个阶段的边界如下：
+
+| 入口 | 是否启动 Isaac/PhysX/CuRobo | 是否移动机械臂 | 是否生成正式数据 |
+|---|---:|---:|---:|
+| `agent plan` | 否 | 否 | 否 |
+| `agent probe`（默认 Pick gate） | 是 | 否，只规划并保持当前位姿 | 否 |
+| validator 不带 `--planning-only` | 是 | 是，只做有界 Pick 验证 | 是，但不是完整任务 episode |
+| `agent run/resume` 通过 gate 后 | 是 | 是，顺序执行全部 Subtask | 由 `generation.enabled` 决定，默认是 |
+
 也可以在 Codex 对话框中说：
 
 > 使用 InternDataEngine Agent，执行“把白色杯子放到托盘里”，GPU 0，最多修订两次。
@@ -235,22 +366,59 @@ conda run -n interndata python -m agent diagnose \
 ```text
 request.json
 selection.json
-task_plan.json
+source_snapshot.json
+scene_spec.json
+semantic_task_plan.json
+execution_variants.json
 state.json
+trace.jsonl
 workspace_manifests.json
-subtasks/<subtask_id>/workspace/
-workspace_selection/position_selection.json
-attempts/<attempt>/
-  task.yaml
-  task_plan.json
-  command.json
-  stdout.log
-  episode_events.jsonl
-  evidence.json
-  diagnosis.json
+variants/<variant_id>/
+  parent.json
+  robot_profile.snapshot.yaml
+  base_task.yaml
+  subtasks/<subtask_id>/workspace/candidates.json
+  subtasks/<subtask_id>/workspace/probes/<candidate_id>/seed_<seed>/
+    results/<candidate_id>.<arm>.json
+  subtasks/<subtask_id>/workspace/place_probes/<candidate_id>/seed_<seed>/
+    results/<candidate_id>.<arm>.json
+  workspace_selection/position_selection.json
+  attempts/<attempt>/
+    task.yaml
+    semantic_task_plan.json
+    command.json
+    trace.jsonl
+    stdout.log
+    episode_events.jsonl
+    evidence.json
+    evaluation.json
+    artifact_manifest.json
+    diagnosis.json
+    repair.json
+    screenshots/
+      topdown.png
+    data/<episode_dir>/
+      collision_world_audit.json
+      object_state_events.jsonl
+      safety_events.jsonl
+      images.rgb.<camera>/demo.mp4
 run_report.json
 run_report.md
 retention.json
 ```
+
+`artifact_manifest.json` 不复制运行产物，而是按真实位置索引 compiled task、
+workspace/static validation、spawn settle、collision audit、Pick/Place probe、
+trace、日志、截图、视频、数据、evaluation 和 evidence。每项记录
+`required/present/path/sha256`；必需产物缺失时写入明确的
+`ARTIFACT_*_MISSING`，不会创建空 JSON 使检查误通过。多文件项同时记录成员路径与
+成员哈希；manifest 本身也记录 episode identity 和 compiled task signature。
+
+Collision audit、视频和 episode 数据的真实目录来自 `evidence.json` 的
+`episode_dir`；Pick/Place probe 路径来自 workspace manifest 的
+`planning_probe_artifacts`。启用 `debug.topdown_check` 时，episode 结束后的俯视截图
+写入当前 `attempts/<attempt>/screenshots/topdown.png` 并由 manifest 索引。Pick/Place
+前后等固定阶段截图尚未接入 runtime；截图保持为可选证据，不能把普通相机视频当成
+阶段截图。
 
 源任务、场景和资产保持只读。Agent 自动生成的机器人 Skill 只以 candidate 形式进入 `workflows/simbox/core/skills/generated/<category>/candidates/`，通过晋升门槛前不会进入 active registry。

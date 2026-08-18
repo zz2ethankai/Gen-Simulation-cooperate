@@ -1,58 +1,102 @@
-# FR3 robot configuration
-# Single-arm 7-DOF robot
-
-# Robot info
+profile_id: fr3_support_mounted_v1
 target_class: FR3
-path: "workflows/simbox/assets/franka/robot.usd"
+path: workflows/simbox/assets/franka/robot.usd
 
-# CuRobo file
-robot_file:
-  - workflows/simbox/curobo/src/curobo/content/configs/robot/fr3_left_arm.yml
+placement:
+  family: support_mounted
+  support_role: task_support
+  footprint_m: [0.40, 0.40]
+  collision_layers: []
+  base_contact_offset_m: 0.0
+  authored_forward_yaw_offset_deg: 0.0
 
-# Gripper parameters
-gripper_max_width: 0.08
-gripper_min_width: 0.0
-tcp_offset: 0.1043
+base:
+  operation_mode: locked
+  locked_joint_names: []
+  joint_groups: {}
+  hold:
+    stiffness: 100000.0
+    damping: 3000.0
+    max_effort: 10000.0
 
-# Solver parameters
-solver_position_iteration_count: 128
-solver_velocity_iteration_count: 4
-stabilization_threshold: 0.005
+arms:
+  left:
+    controller: FR3
+    curobo_file: workflows/simbox/curobo/src/curobo/content/configs/robot/fr3_left_arm.yml
+    command_joint_names: [panda_joint1, panda_joint2, panda_joint3, panda_joint4, panda_joint5, panda_joint6, panda_joint7]
+    trajectory_joint_names: [panda_joint1, panda_joint2, panda_joint3, panda_joint4, panda_joint5, panda_joint6, panda_joint7]
+    joint_indices: [0, 1, 2, 3, 4, 5, 6]
+    ee_path: fr3/panda_hand
+    base_path: fr3/panda_link0
+    arm_base_xy_m: null
+    home: [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
+    home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    filter_paths: [fr3/panda_leftfinger, fr3/panda_rightfinger]
+    forbid_collision_paths:
+      - fr3/panda_link2
+      - fr3/panda_link3
+      - fr3/panda_link4
+      - fr3/panda_link5
+      - fr3/panda_link6
+      - fr3/panda_link7
+      - fr3/panda_link8
+      - fr3/panda_hand
+    gripper:
+      joint_names: [panda_finger_joint1]
+      joint_indices: [7]
+      max_width: 0.08
+      min_width: 0.0
+      tcp_offset: 0.1043
+      home: [0.04]
+      keypoints:
+        tool_head: [0.0, 0.0, 0.1034, 1.0]
+        tool_tail: [0.0, 0.0, 0.0584, 1.0]
+        tool_side: [0.0, 0.04, 0.1034, 1.0]
+      action:
+        adapter: signed_clip
+        params:
+          command: [1.0]
+          invert: false
+          clip: [0.0, 0.04]
 
-# Joint names are authoritative; indices are legacy compatibility fallbacks.
-left_joint_names: [panda_joint1, panda_joint2, panda_joint3, panda_joint4, panda_joint5, panda_joint6, panda_joint7]
-left_joint_indices: [0, 1, 2, 3, 4, 5, 6]
-left_gripper_indices: [7]
+camera_rig:
+  - name_suffix: hand
+    save_name: hand
+    translation: [0.085, 0.0, -0.02]
+    orientation: [0.153, 0.690, 0.690, 0.153]
+    camera_axes: usd
+    camera_file: workflows/simbox/core/configs/cameras/realsense_d435i.yaml
+    parent_suffix: fr3/panda_hand
+    apply_randomization: true
+    max_translation_noise: 0.03
+    max_orientation_noise: 5.0
+  - name_suffix: head
+    save_name: head
+    translation: [0.0, 0.65, 1.24]
+    orientation: [0.0, 0.0, -0.466, -0.885]
+    camera_axes: usd
+    camera_file: workflows/simbox/core/configs/cameras/realsense_d455_v3.yaml
+    parent_suffix: ''
+    apply_randomization: true
+    max_translation_noise: 0.06
+    max_orientation_noise: 10.0
 
-# Paths (relative to robot_prim_path)
-fl_ee_path: "fr3/panda_hand"
-fl_base_path: "fr3/panda_link0"
+data_adapter:
+  arms:
+    left:
+      action_name: ''
+      joint_position_key: states.joint.position
+      gripper_position_key: states.gripper.position
+      gripper_pose_key: states.gripper.pose
 
-# Gripper keypoints
-fl_gripper_keypoints:
-  tool_head: [0.0, 0.0, 0.1034, 1]
-  tool_tail: [0.0, 0.0, 0.0584, 1]
-  tool_side: [0.0, 0.04, 0.1034, 1]
+capabilities: [pick, place]
+collision_world_modes: [physics_schema]
 
-# Collision paths
-fl_filter_paths:
-  - "fr3/panda_leftfinger"
-  - "fr3/panda_rightfinger"
-fl_forbid_collision_paths:
-  - "fr3/panda_link2"
-  - "fr3/panda_link3"
-  - "fr3/panda_link4"
-  - "fr3/panda_link5"
-  - "fr3/panda_link6"
-  - "fr3/panda_link7"
-  - "fr3/panda_link8"
-  - "fr3/panda_hand"
+physics:
+  solver_position_iteration_count: 128
+  solver_velocity_iteration_count: 4
+  stabilization_threshold: 0.005
 
-# Pose processing (Z-axis gripper)
-R_ee_graspnet: [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]]
-ee_axis: "z"
-
-# Default joint home positions
-left_joint_home: [0, -0.785, 0, -2.356, 0, 1.571, 0.785]
-left_joint_home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-left_gripper_home: [0.04]
+kinematics:
+  R_ee_graspnet: [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]]
+  ee_axis: z

@@ -31,3 +31,10 @@ def test_phase_identity_uses_object_reference_not_reusable_python_id():
     assert "self._active_phase_command = command" in source
     assert "command is self._active_phase_command" in source
     assert "_active_phase_command_token" not in source
+
+
+def test_topdown_capture_uses_runtime_artifact_directory_not_task_name():
+    source = (ROOT / "workflows/simbox_dual_workflow.py").read_text(encoding="utf-8")
+
+    assert 'os.environ.get("INTERNDATA_SCREENSHOT_DIR")' in source
+    assert 'capture_topdown_screenshot(self.task_cfg["data"]["task_dir"])' not in source

@@ -4,12 +4,10 @@ Implementation is intentionally split under :mod:`core.workspace`; callers
 should import this facade rather than depending on internal module layout.
 """
 
-from core.workspace import (  # noqa: F401
+from ..workspace import (  # noqa: F401
     CuroboCandidateResult,
-    DEFAULT_ROBOT_PROFILES,
     GeometryCandidate,
     PickAttemptResult,
-    RobotProfile,
     SamplingConfig,
     WorkspaceManifest,
     WorkspacePlanningError,
@@ -17,6 +15,7 @@ from core.workspace import (  # noqa: F401
     audit_assets,
     build_manifest,
     compile_pick_task,
+    compile_pick_place_probe_task,
     compile_probe_task,
     compile_existing_pose_probe_task,
     dump_json,
@@ -24,13 +23,21 @@ from core.workspace import (  # noqa: F401
     generate_manifest_file,
     load_yaml,
 )
+from ..robots.profile import (  # noqa: F401
+    PlacementFamily,
+    RobotModelProfile,
+    RobotProfileError,
+    load_robot_profile,
+    load_robot_profile_for_task,
+)
 
 __all__ = [
     "CuroboCandidateResult",
-    "DEFAULT_ROBOT_PROFILES",
     "GeometryCandidate",
     "PickAttemptResult",
-    "RobotProfile",
+    "PlacementFamily",
+    "RobotModelProfile",
+    "RobotProfileError",
     "SamplingConfig",
     "WorkspaceManifest",
     "WorkspacePlanningError",
@@ -38,10 +45,13 @@ __all__ = [
     "audit_assets",
     "build_manifest",
     "compile_pick_task",
+    "compile_pick_place_probe_task",
     "compile_probe_task",
     "compile_existing_pose_probe_task",
     "dump_json",
     "dump_yaml",
     "generate_manifest_file",
     "load_yaml",
+    "load_robot_profile",
+    "load_robot_profile_for_task",
 ]

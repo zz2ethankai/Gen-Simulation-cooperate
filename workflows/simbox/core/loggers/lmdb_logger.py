@@ -133,6 +133,7 @@ class LmdbLogger(BaseLogger):
         video_fps: int = 30,
         min_inttype: int = 0,
         max_inttype: int = 2**24 - 1,
+        robot_data_adapters: dict | None = None,
     ):
         super().__init__(
             task_dir=task_dir,
@@ -147,6 +148,11 @@ class LmdbLogger(BaseLogger):
         self.video_fps = int(video_fps)
         self.min_inttype = min_inttype
         self.max_inttype = max_inttype
+        self.robot_data_adapters = dict(robot_data_adapters or {})
+        self._video_temp_dir = None
+        self._video_writers = {}
+        self._video_temp_paths = {}
+        self._video_frame_counts = {}
 
     def close(self):
         pass
@@ -213,13 +219,10 @@ class LmdbLogger(BaseLogger):
 
             # Save objects
             meta_info["keys"]["object_data"] = []
-            for key, value in object_data.items():
-                if "robotiq" in robot_name and key == "states.gripper.position":
-                    value = [action_data["master_actions.gripper.position"][0]] + (
-                        action_data["master_actions.gripper.position"]
-                    )[:-1]
-                txn.put(key.encode("utf-8"), pickle.dumps(value))
-                meta_info["keys"]["object_data"].append(key.encode("utf-8"))
+            if robot_name in self.object_data_logger:
+                for key, value in self.object_data_logger[robot_name].items():
+                    txn.put(key.encode("utf-8"), pickle.dumps(value))
+                    meta_info["keys"]["object_data"].append(key.encode("utf-8"))
 
             # Save master actions
             meta_info["keys"]["action_data"] = []
@@ -242,22 +245,14 @@ class LmdbLogger(BaseLogger):
                     txn.put(new_key.encode("utf-8"), pickle.dumps(value))
                     meta_info["keys"]["action_data"].append(new_key.encode("utf-8"))
 
-            action_keys = action_data
-            if (
-                "master_actions.left_gripper.openness" in action_keys
-                and "master_actions.right_gripper.openness" in action_keys
-            ):
-                left_gripper_openness = action_data["master_actions.left_gripper.openness"]
-                right_gripper_openness = action_data["master_actions.right_gripper.openness"]
-
-                txn.put("actions.left_gripper.openness".encode("utf-8"), pickle.dumps(left_gripper_openness))
-                meta_info["keys"]["action_data"].append("actions.left_gripper.openness".encode("utf-8"))
-                txn.put("actions.right_gripper.openness".encode("utf-8"), pickle.dumps(right_gripper_openness))
-                meta_info["keys"]["action_data"].append("actions.right_gripper.openness".encode("utf-8"))
-            elif "master_actions.gripper.openness" in action_keys:
-                gripper_openness = action_data["master_actions.gripper.openness"]
-                txn.put("actions.gripper.openness".encode("utf-8"), pickle.dumps(gripper_openness))
-                meta_info["keys"]["action_data"].append("actions.gripper.openness".encode("utf-8"))
+            for key, value in self.action_data_logger.get(robot_name, {}).items():
+                if not key.startswith("master_actions.") or not key.endswith(
+                    "gripper.openness"
+                ):
+                    continue
+                action_key = key.replace("master_actions.", "actions.", 1)
+                txn.put(action_key.encode("utf-8"), pickle.dumps(value))
+                meta_info["keys"]["action_data"].append(action_key.encode("utf-8"))
 
             # Save color images
             if save_img:

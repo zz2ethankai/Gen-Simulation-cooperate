@@ -249,16 +249,16 @@ def sample_table_edge(
     edge_dy = edge_end[1] - edge_start[1]
     edge_length = math.hypot(edge_dx, edge_dy)
 
-    fw, fd = footprint
-    margin = fw / 2.0
-    usable = edge_length - fw
+    inward_extent, edge_extent = footprint
+    margin = edge_extent / 2.0
+    usable = edge_length - edge_extent
 
     if usable <= 0.0:
         return []
 
     inward_rad = math.radians(inward_yaw_deg)
-    inset_x = (fd / 2.0) * math.cos(inward_rad)
-    inset_y = (fd / 2.0) * math.sin(inward_rad)
+    inset_x = (inward_extent / 2.0) * math.cos(inward_rad)
+    inset_y = (inward_extent / 2.0) * math.sin(inward_rad)
 
     candidates: list[GeometryCandidate] = []
     for i in range(count):

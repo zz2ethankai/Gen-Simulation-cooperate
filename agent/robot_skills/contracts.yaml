@@ -1,9 +1,9 @@
-version: 2
+version: 3
 skills:
   - name: pick
     category: pick
     object_count: 1
-    supported_robots: [split_aloha]
+    required_capabilities: [pick]
     collision_world_modes: [physics_schema]
     preconditions: [object_in_world, object_rigid_body, collision_schema_available]
     effects: [object_held]
@@ -94,7 +94,7 @@ skills:
   - name: place
     category: place
     object_count: 2
-    supported_robots: [split_aloha]
+    required_capabilities: [place]
     collision_world_modes: [physics_schema]
     preconditions: [object_held, target_support_in_world]
     effects: [object_released, target_relation_satisfied]
@@ -157,8 +157,17 @@ skills:
         allowed_values: [object, gripper]
       success_mode:
         value_type: string
-        description: Place 成功判定方式；inside 不是合法值，容器内通常使用 xybbox 或 3diou。
+        description: 非 on/inside 关系的 Place 成功判定方式；on/inside 的严格谓词由编译器生成，insert 在 v1 中不准入。
         allowed_values: [3diou, height, xybbox, left, right, flower, cup]
+      semantic_relation:
+        value_type: string
+        description: TaskPlan 关系的派生快照，用于最终 evidence；Agent 不得直接设置。
+        owner: compiler
+        allowed_values: [on, inside, left_of, right_of, next_to, hang, insert, none]
+      relation_predicate:
+        value_type: object
+        description: 编译器从当前场景几何和确定性阈值生成的最终关系谓词。
+        owner: compiler
       success_th:
         value_type: number
         description: 3D IoU、flower 或 cup 成功模式使用的阈值。

@@ -342,15 +342,7 @@ class TemplateRobot(Robot):
         self._articulation_view.set_joint_position_targets(positions, joint_indices=indices)
 
     def enable_manipulation_base_hold(self) -> None:
-        """Hold explicitly configured mobile-base DOFs during Pick/Place.
-
-        SplitAloha's planar base joints intentionally have zero drive gain in
-        the delivered USD because navigation controls them.  A manipulation
-        episode, however, must not let arm reaction/contact forces move those
-        joints while CuRobo is executing in an arm-base frame.  Joint names in
-        robot config are the contract; no asset-name or numeric-index guessing
-        is used here.
-        """
+        """Hold profile-declared base and lift DOFs during manipulation."""
 
         config = self.cfg.get("manipulation_base_hold", {})
         if not config or not bool(config.get("enabled", False)):
@@ -662,7 +654,7 @@ class TemplateRobot(Robot):
         T_obj_tcp[:, :3, 3] = poses[:, 13:16] * grasp_scale
         scores = poses[:, 0]
         widths = np.clip(poses[:, 1:2], self.gripper_min_width, self.gripper_max_width)
-        depths = poses[:, 3:4]
+        depths = poses[:, 3:4] * grasp_scale
 
         if tcp_offset is None:
             tcp_offset = self.tcp_offset

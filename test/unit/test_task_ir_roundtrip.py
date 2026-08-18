@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ROUNDTRIP_CASES = [
     "workflows/simbox/core/configs/tasks/basic/lift2/arrange_the_tableware/arrange_the_tableware_part0.yaml",
     "workflows/simbox/core/configs/tasks/art/franka/open_the_pot/open_the_pot.yaml",
-    "workflows/simbox/core/configs/tasks/navigation/split_aloha/navigate_asset_obstacles.yaml",
+    "workflows/simbox/core/configs/tasks/basic/split_aloha/insert_the_markpen_in_penholder/insert_the_markpen_in_penholder_part0.yaml",
 ]
 
 
@@ -61,7 +61,7 @@ def test_roundtrip_yaml_reparsed_task_ir_still_valid(tmp_path):
     task_ir = parse_task_yaml_to_ir(source_path)
     roundtrip_doc = assemble_task_ir_to_document(task_ir)
 
-    output_path = tmp_path / "navigation_roundtrip.yaml"
+    output_path = tmp_path / "split_aloha_roundtrip.yaml"
     with open(output_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(roundtrip_doc, f, sort_keys=False, allow_unicode=True)
 

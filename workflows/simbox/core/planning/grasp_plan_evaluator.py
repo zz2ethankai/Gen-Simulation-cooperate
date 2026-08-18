@@ -58,7 +58,7 @@ class GraspPlanEvaluator:
         value = getattr(self.controller, "lr_name", None)
         if value in {"left", "right"}:
             return value
-        return "right" if "right" in str(self.controller.robot_file) else "left"
+        raise ValueError("grasp-plan controller must declare arm_id")
 
     @staticmethod
     def _normalize_attach_paths(prim_paths: str | Sequence[str]) -> list[str]:
@@ -179,10 +179,10 @@ class GraspPlanEvaluator:
             raise ValueError("grasp_scores length must match grasp_transforms")
 
         pregrasps = grasps.copy()
-        if "r5a" in str(self.controller.robot_file):
-            pregrasps[:, :3, 3] -= pregrasps[:, :3, 0] * float(pregrasp_offset_m)
-        else:
-            pregrasps[:, :3, 3] -= pregrasps[:, :3, 2] * float(pregrasp_offset_m)
+        approach_axis = int(self.controller.grasp_approach_axis)
+        pregrasps[:, :3, 3] -= pregrasps[:, :3, approach_axis] * float(
+            pregrasp_offset_m
+        )
         pre_positions, pre_orientations = poses_from_tf_matrices(pregrasps)
         positions, orientations = poses_from_tf_matrices(grasps)
         if fixed_orientation is not None:

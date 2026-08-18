@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate tabletop robot base candidates along accessible table edges."""
+"""Generate support-mounted robot candidates along accessible support edges."""
 
 from __future__ import annotations
 
@@ -15,13 +15,13 @@ if str(SIMBOX_ROOT) not in sys.path:
 
 from core.workspace.planner import (  # noqa: E402
     WorkspacePlanningError,
-    generate_tabletop_manifest_file,
+    generate_support_mounted_manifest_file,
 )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate collision-free tabletop robot poses along table edges."
+        description="Generate collision-free support-mounted robot poses along support edges."
     )
     parser.add_argument("--task", required=True, type=Path, help="Input simbox_task.yaml")
     parser.add_argument(
@@ -54,17 +54,17 @@ def main() -> int:
         "preferred_radius_m": args.preferred_radius_m,
     }
     try:
-        manifest = generate_tabletop_manifest_file(
+        manifest = generate_support_mounted_manifest_file(
             task_path, output_dir, args.target, overrides, required_arm=args.arm
         )
     except WorkspacePlanningError as exc:
-        print(f"tabletop workspace planning failed [{exc.code}]: {exc}", file=sys.stderr)
+        print(f"support-mounted workspace planning failed [{exc.code}]: {exc}", file=sys.stderr)
         print(f"manifest: {output_dir / 'candidates.json'}", file=sys.stderr)
         return 2
     feasible_count = sum(item["geometry_feasible"] for item in manifest.geometry_candidates)
     print(f"workspace status: {manifest.status}")
     print(f"geometry candidates: {feasible_count}/{len(manifest.geometry_candidates)}")
-    print(f"required arm: {manifest.required_arm or 'legacy_unspecified'}")
+    print(f"required arm: {manifest.required_arm or 'unspecified'}")
     print(f"manifest: {output_dir / 'candidates.json'}")
     return 0 if feasible_count else 2
 

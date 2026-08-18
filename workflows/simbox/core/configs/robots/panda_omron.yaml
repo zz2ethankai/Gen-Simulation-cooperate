@@ -1,77 +1,31 @@
-# PandaOmron mobile manipulator configuration
-
+# PandaOmron mobile manipulator configuration (canonical profile)
+profile_id: panda_omron_diff_drive_v1
 target_class: PandaOmron
 path: "panda_omron/robot.usd"
 
-robot_file:
-  - workflows/simbox/curobo/src/curobo/content/configs/robot/panda_omron_left_arm.yml
-
-gripper_max_width: 0.08
-gripper_min_width: 0.0
-tcp_offset: 0.1043
-
-solver_position_iteration_count: 128
-solver_velocity_iteration_count: 4
-stabilization_threshold: 0.005
-arm_drive_stiffness: 10000000.0
-arm_drive_damping: 100000.0
-arm_drive_max_force: 600000000.0
-gripper_drive_stiffness: 10000.0
-gripper_drive_damping: 1000.0
-gripper_drive_max_force: 600000000.0
-
-left_joint_names:
-  - robot0_joint1
-  - robot0_joint2
-  - robot0_joint3
-  - robot0_joint4
-  - robot0_joint5
-  - robot0_joint6
-  - robot0_joint7
-left_gripper_joint_names:
-  - panda_finger_joint1
-
-# Isaac 4.1 DOF order after scripts/simbox/postprocess_panda_omron_usd.py:
-# PandaOmron resolves manipulator indices from names after articulation initialization.
-left_joint_indices: [14, 15, 16, 17, 18, 19, 20]
-left_gripper_indices: [21]
-
-mobile_base_path: "robot0_base/mobilebase0_base"
-fl_ee_path: "robot0_base/panda_hand"
-fl_base_path: "robot0_base/robot0_link0"
-fl_base_mount_translation: [0.0, 0.0, 0.7]
-fl_base_mount_orientation: [1.0, 0.0, 0.0, 0.0]
-
-fl_gripper_keypoints:
-  tool_head: [0.0, 0.0, 0.1034, 1]
-  tool_tail: [0.0, 0.0, 0.0584, 1]
-  tool_side: [0.0, 0.04, 0.1034, 1]
-
-fl_filter_paths:
-  - "robot0_base/panda_leftfinger"
-  - "robot0_base/panda_rightfinger"
-fl_forbid_collision_paths:
-  - "robot0_base/robot0_link2"
-  - "robot0_base/robot0_link3"
-  - "robot0_base/robot0_link4"
-  - "robot0_base/robot0_link5"
-  - "robot0_base/robot0_link6"
-  - "robot0_base/robot0_link7"
-  - "robot0_base/panda_hand"
-
-R_ee_graspnet: [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]]
-ee_axis: "z"
-
-left_joint_home: [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
-left_joint_home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-left_gripper_home: [0.04]
+placement:
+  family: floor_standing
+  support_role: floor
+  footprint_m: [0.70, 0.55]
+  collision_layers: []
+  base_contact_offset_m: 0.0
+  authored_forward_yaw_offset_deg: 0.0
 
 base:
+  operation_mode: locked
+  locked_joint_names: []
+  joint_groups: {}
+  hold:
+    stiffness: 100000.0
+    damping: 3000.0
+    max_effort: 10000.0
+  # Mobile-navigation fields (optional; fixed/table bases omit them).
   base_config_file: workflows/simbox/core/configs/bases/omron_diff_drive.yaml
   local_navigation_config_file: workflows/simbox/core/configs/navigation/default_local_navigation.yaml
   local_navigation:
     map:
       map_z_max: 1.25
+  mobile_base_path: robot0_base/mobilebase0_base
   steering_joint_names: []
   wheel_joint_names:
     - left_wheel_joint
@@ -84,3 +38,76 @@ base:
     - left_wheel_link
     - right_wheel_link
   wheel_velocity_command_signs: [1.0, 1.0]
+  wheel_center_to_base_translation: [-0.20, 0.0, -0.085]
+
+arms:
+  left:
+    controller: PandaOmron
+    curobo_file: workflows/simbox/curobo/src/curobo/content/configs/robot/panda_omron_left_arm.yml
+    command_joint_names: [robot0_joint1, robot0_joint2, robot0_joint3, robot0_joint4, robot0_joint5, robot0_joint6, robot0_joint7]
+    trajectory_joint_names: [robot0_joint1, robot0_joint2, robot0_joint3, robot0_joint4, robot0_joint5, robot0_joint6, robot0_joint7]
+    joint_indices: [14, 15, 16, 17, 18, 19, 20]
+    ee_path: robot0_base/panda_hand
+    base_path: robot0_base/robot0_link0
+    arm_base_xy_m: null
+    home: [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
+    home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    filter_paths:
+      - robot0_base/panda_leftfinger
+      - robot0_base/panda_rightfinger
+    forbid_collision_paths:
+      - robot0_base/robot0_link2
+      - robot0_base/robot0_link3
+      - robot0_base/robot0_link4
+      - robot0_base/robot0_link5
+      - robot0_base/robot0_link6
+      - robot0_base/robot0_link7
+      - robot0_base/panda_hand
+    gripper:
+      joint_names: [panda_finger_joint1]
+      joint_indices: [21]
+      max_width: 0.08
+      min_width: 0.0
+      tcp_offset: 0.1043
+      home: [0.04]
+      keypoints:
+        tool_head: [0.0, 0.0, 0.1034, 1]
+        tool_tail: [0.0, 0.0, 0.0584, 1]
+        tool_side: [0.0, 0.04, 0.1034, 1]
+      action:
+        adapter: signed_clip
+        params:
+          command: [1.0]
+          invert: false
+          clip: [0.0, 0.04]
+    # Optional runtime fields projected back as flat keys.
+    base_mount_translation: [0.0, 0.0, 0.7]
+    base_mount_orientation: [1.0, 0.0, 0.0, 0.0]
+    arm_drive_stiffness: 10000000.0
+    arm_drive_damping: 100000.0
+    arm_drive_max_force: 600000000.0
+    gripper_drive_stiffness: 10000.0
+    gripper_drive_damping: 1000.0
+    gripper_drive_max_force: 600000000.0
+
+camera_rig: []
+
+data_adapter:
+  arms:
+    left:
+      action_name: left
+      joint_position_key: states.left_joint.position
+      gripper_position_key: states.left_gripper.position
+      gripper_pose_key: null
+
+capabilities: [pick, place]
+collision_world_modes: [physics_schema]
+
+physics:
+  solver_position_iteration_count: 128
+  solver_velocity_iteration_count: 4
+  stabilization_threshold: 0.005
+
+kinematics:
+  R_ee_graspnet: [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]]
+  ee_axis: z

@@ -1,77 +1,155 @@
-# Lift2 robot configuration
-# Dual-arm 6-DOF robot with lift joint
-
-# Robot info
+profile_id: lift2_floor_standing_v1
 target_class: Lift2
-path: "lift2/robot_invisible.usd"
+path: lift2/robot_invisible.usd
 
-# CuRobo file
-robot_file:
-  - workflows/simbox/curobo/src/curobo/content/configs/robot/r5a_left_arm.yml
-  - workflows/simbox/curobo/src/curobo/content/configs/robot/r5a_right_arm.yml
+placement:
+  family: floor_standing
+  support_role: floor
+  footprint_m: [0.70, 0.40]
+  collision_layers: []
+  base_contact_offset_m: 0.0
+  authored_forward_yaw_offset_deg: 0.0
 
-# Gripper parameters
-gripper_max_width: 0.088
-gripper_min_width: 0.0
-tcp_offset: 0.125
+base:
+  operation_mode: locked
+  locked_joint_names: [mobile_translate_x, mobile_translate_y, mobile_rotate, joint4]
+  joint_groups:
+    planar:
+      joint_names: [mobile_translate_x, mobile_translate_y, mobile_rotate]
+      joint_indices: []
+      home: [0.0, 0.0, 0.0]
+    lift:
+      joint_names: [joint4]
+      joint_indices: [6]
+      home: [0.46]
+  hold:
+    stiffness: 100000.0
+    damping: 3000.0
+    max_effort: 10000.0
 
-# Solver parameters
-solver_position_iteration_count: 128
-solver_velocity_iteration_count: 4
-stabilization_threshold: 0.005
+arms:
+  left:
+    controller: Lift2
+    curobo_file: workflows/simbox/curobo/src/curobo/content/configs/robot/r5a_left_arm.yml
+    command_joint_names: [fl_joint1, fl_joint2, fl_joint3, fl_joint4, fl_joint5, fl_joint6]
+    trajectory_joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
+    joint_indices: [10, 12, 14, 16, 18, 20]
+    ee_path: lift2/lift2/fl/link6
+    base_path: lift2/lift2/fl/base_link
+    arm_base_xy_m: null
+    home: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    filter_paths: [lift2/lift2/fl/link7, lift2/lift2/fl/link8]
+    forbid_collision_paths:
+      - lift2/lift2/fl/link2
+      - lift2/lift2/fl/link3
+      - lift2/lift2/fl/link4
+      - lift2/lift2/fl/link5
+    gripper:
+      joint_names: [fl_joint7]
+      joint_indices: [23]
+      max_width: 0.088
+      min_width: 0.0
+      tcp_offset: 0.125
+      home: [0.044]
+      keypoints:
+        tool_head: [0.135, 0.0, 0.0, 1.0]
+        tool_tail: [0.085, 0.0, 0.0, 1.0]
+        tool_side: [0.135, -0.044, 0.0, 1.0]
+      action:
+        adapter: signed_clip
+        params:
+          command: [1.0]
+          invert: false
+          clip: [0.0, 0.1]
+  right:
+    controller: Lift2
+    curobo_file: workflows/simbox/curobo/src/curobo/content/configs/robot/r5a_right_arm.yml
+    command_joint_names: [fr_joint1, fr_joint2, fr_joint3, fr_joint4, fr_joint5, fr_joint6]
+    trajectory_joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
+    joint_indices: [9, 11, 13, 15, 17, 19]
+    ee_path: lift2/lift2/fr/link6
+    base_path: lift2/lift2/fr/base_link
+    arm_base_xy_m: null
+    home: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    filter_paths: [lift2/lift2/fr/link7, lift2/lift2/fr/link8]
+    forbid_collision_paths:
+      - lift2/lift2/fr/link2
+      - lift2/lift2/fr/link3
+      - lift2/lift2/fr/link4
+      - lift2/lift2/fr/link5
+    gripper:
+      joint_names: [fr_joint7]
+      joint_indices: [21]
+      max_width: 0.088
+      min_width: 0.0
+      tcp_offset: 0.125
+      home: [0.044]
+      keypoints:
+        tool_head: [0.135, 0.0, 0.0, 1.0]
+        tool_tail: [0.085, 0.0, 0.0, 1.0]
+        tool_side: [0.135, -0.044, 0.0, 1.0]
+      action:
+        adapter: signed_clip
+        params:
+          command: [1.0]
+          invert: false
+          clip: [0.0, 0.1]
 
-# Arm joint names are authoritative; indices are legacy compatibility fallbacks.
-left_joint_names: [fl_joint1, fl_joint2, fl_joint3, fl_joint4, fl_joint5, fl_joint6]
-right_joint_names: [fr_joint1, fr_joint2, fr_joint3, fr_joint4, fr_joint5, fr_joint6]
-left_joint_indices: [10, 12, 14, 16, 18, 20]
-right_joint_indices: [9, 11, 13, 15, 17, 19]
-left_gripper_indices: [23]
-right_gripper_indices: [21]
-lift_indices: [6]
+camera_rig:
+  - name_suffix: hand_left
+    save_name: hand_left
+    translation: [0.07, 0.01, 0.08]
+    orientation: [0.62, 0.33, -0.33, -0.62]
+    camera_axes: usd
+    camera_file: workflows/simbox/core/configs/cameras/realsense_d405.yaml
+    parent_suffix: lift2/lift2/fl/link6
+    apply_randomization: false
+    max_translation_noise: 0.02
+    max_orientation_noise: 2.5
+  - name_suffix: hand_right
+    save_name: hand_right
+    translation: [0.07, 0.01, 0.08]
+    orientation: [0.62, 0.33, -0.33, -0.62]
+    camera_axes: usd
+    camera_file: workflows/simbox/core/configs/cameras/realsense_d405.yaml
+    parent_suffix: lift2/lift2/fr/link6
+    apply_randomization: false
+    max_translation_noise: 0.02
+    max_orientation_noise: 2.5
+  - name_suffix: head
+    save_name: head
+    translation: [0.1, 0.02, 0.03]
+    orientation: [0.6602, 0.2534, -0.2534, -0.6602]
+    camera_axes: usd
+    camera_file: workflows/simbox/core/configs/cameras/realsense_d455_v3.yaml
+    parent_suffix: lift2/lift2/h_link6
+    apply_randomization: false
+    max_translation_noise: 0.03
+    max_orientation_noise: 5.0
 
-# Paths
-fl_ee_path: "lift2/lift2/fl/link6"
-fr_ee_path: "lift2/lift2/fr/link6"
-fl_base_path: "lift2/lift2/fl/base_link"
-fr_base_path: "lift2/lift2/fr/base_link"
+data_adapter:
+  arms:
+    left:
+      action_name: left
+      joint_position_key: states.left_joint.position
+      gripper_position_key: states.left_gripper.position
+      gripper_pose_key: null
+    right:
+      action_name: right
+      joint_position_key: states.right_joint.position
+      gripper_position_key: states.right_gripper.position
+      gripper_pose_key: null
 
-# Gripper keypoints
-fl_gripper_keypoints:
-  tool_head: [0.135, 0.0, 0.0, 1]
-  tool_tail: [0.085, 0.0, 0.0, 1]
-  tool_side: [0.135, -0.044, 0.0, 1]
-fr_gripper_keypoints:
-  tool_head: [0.135, 0.0, 0.0, 1]
-  tool_tail: [0.085, 0.0, 0.0, 1]
-  tool_side: [0.135, -0.044, 0.0, 1]
+capabilities: [pick, place]
+collision_world_modes: [physics_schema]
 
-# Collision paths
-fl_filter_paths:
-  - "lift2/lift2/fl/link7"
-  - "lift2/lift2/fl/link8"
-fr_filter_paths:
-  - "lift2/lift2/fr/link7"
-  - "lift2/lift2/fr/link8"
-fl_forbid_collision_paths:
-  - "lift2/lift2/fl/link2"
-  - "lift2/lift2/fl/link3"
-  - "lift2/lift2/fl/link4"
-  - "lift2/lift2/fl/link5"
-fr_forbid_collision_paths:
-  - "lift2/lift2/fr/link2"
-  - "lift2/lift2/fr/link3"
-  - "lift2/lift2/fr/link4"
-  - "lift2/lift2/fr/link5"
+physics:
+  solver_position_iteration_count: 128
+  solver_velocity_iteration_count: 4
+  stabilization_threshold: 0.005
 
-# Pose processing (X-axis gripper)
-R_ee_graspnet: [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]]
-ee_axis: "x"
-
-# Default joint home positions
-left_joint_home: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-right_joint_home: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-left_joint_home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-right_joint_home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-left_gripper_home: [0.044]
-right_gripper_home: [0.044]
-lift_home: [0.46]
+kinematics:
+  R_ee_graspnet: [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]]
+  ee_axis: x

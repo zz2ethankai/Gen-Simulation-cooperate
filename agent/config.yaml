@@ -22,35 +22,50 @@ paths:
 
 scene_roots:
   - InternDataAssets/Bench_2.1_isaacsim/scene_4
+  - InternDataAssets/Bench_2.1_isaacsim
+
+scene_ingest:
+  enabled: true
+  output_root: output/agent_scene_ingest
+  out_dir_rel: assets/basic
+  target_class_task_object: RigidObject
+  task_id_source: scene_name
+  envmap_lib: environment/envmaps
+  max_episode_length: 10000
+  support_fixture: central_work_table
 
 execution:
+  conda_env: interndata
   gpu: 0
+  layout_gpus: [0, 1, 2, 3]
   timeout_sec: 1800
   max_revisions: 2
   retain_experience: true
-  docker:
-    compose_file: docker/docker-compose.yml
-    launcher_config: configs/de_plan_with_render_template.yaml
 
 generation:
   enabled: true
   random_num: 1
-
-robot:
-  default_type: split_aloha
-  default_profile: split_aloha_tabletop_v1
-  default_arm: right
-  allowed_profiles:
-    split_aloha: [split_aloha_tabletop_v1]
-    franka: [franka_tabletop_v1]
-  arms:
-    split_aloha: right
-    franka: left
+  seed: 0
 
 debug:
   topdown_check: true
-  topdown_eye: [1.0, 1.0, 3.5]
-  topdown_target: [0.0, 0.0, 0.8]
+  topdown_template: robot_target_overhead_v1
+  topdown_template_params:
+    height_m: 1.75
+    look_fraction: 0.65
+    look_height_m: 0.0
+  topdown_eye: null
+  topdown_target: null
+  topdown_resolution: [1280, 960]
+  topdown_focal_length_mm: 24.0
+  workspace_probe:
+    # Planning-only CuRobo A/B diagnostic. Exact Stage collider Prim paths only.
+    # PickPlanProbe restores every obstacle after planning; PhysX is unchanged.
+    disable_curobo_obstacle_paths: []
+    # Stronger planning-only isolation: both PhysX and CuRobo are restored in finally.
+    disable_physics_and_curobo_obstacle_paths: []
+    # Registered fixture/object names resolved to exact runtime collision Prim paths.
+    disable_collision_entities: []
 
 workspace:
   common_pose_max_heading_error_deg: 45.0
@@ -62,20 +77,29 @@ planning:
     strict: true
     exact_exclusions: []
   pick_place:
-    terminal_step_m: 0.005
-    place_continuous_descent: true
-    place_terminal_step_m: 0.01
-    place_terminal_tolerance_m: 0.005
-    place_terminal_max_path_length_ratio: 1.5
-    place_terminal_max_path_deviation_m: 0.01
+    terminal_step_m: 0.010
     max_terminal_distance_m: 0.10
     place_settle_steps: 10
+    return_to_episode_initial: true
+    return_steps: 60
+    return_joint_tolerance_rad: 0.03
+  relation_predicate:
+    geometry_tolerance_m: 0.002
+    support_gap_tolerance_m: 0.006
+    minimum_support_contact_n: 0.0
+    max_unexpected_contact_n: 5.0
+  spawn_settle:
+    max_object_linear_speed_m_s: 0.02
+    max_object_angular_speed_rad_s: 0.05
+    max_robot_joint_speed_rad_s: 0.05
+    max_unexpected_contact_n: 5.0
   execution_safety:
     enabled: true
     max_waypoint_stride: 2
     max_replans_per_phase: 2
     hold_steps_before_replan: 5
     dynamic_sync_interval_steps: 5
+    attached_object_slip_rotation_deg: 15.0
 
 skill_defaults:
   pick:
@@ -102,12 +126,10 @@ skill_defaults:
       x_ratio_range: [0.5, 0.5]
       y_ratio_range: [0.5, 0.5]
       position_constraint: object
-      success_mode: xybbox
     inside:
       x_ratio_range: [0.5, 0.5]
       y_ratio_range: [0.5, 0.5]
       position_constraint: object
-      success_mode: xybbox
     left_of:
       x_ratio_range: [-0.30, -0.15]
       y_ratio_range: [0.5, 0.5]

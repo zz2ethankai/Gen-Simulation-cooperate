@@ -30,12 +30,15 @@ def test_parse_basic_task_yaml_to_ir():
     assert isinstance(first_step["object_refs"], list)
 
 
-def test_parse_navigation_task_yaml_to_ir_and_validate_without_assets():
-    yaml_path = ROOT / "workflows/simbox/core/configs/tasks/navigation/split_aloha/navigate_asset_obstacles.yaml"
+def test_parse_split_aloha_pick_place_yaml_to_ir_and_validate_without_assets():
+    yaml_path = (
+        ROOT
+        / "workflows/simbox/core/configs/tasks/basic/split_aloha/insert_the_markpen_in_penholder/insert_the_markpen_in_penholder_part0.yaml"
+    )
     task_ir = parse_task_yaml_to_ir(yaml_path)
 
-    assert task_ir["task_family"] == "navigation"
-    assert any(step["skill_name"] == "navigate" for step in task_ir["skill_steps"])
+    assert task_ir["task_family"] == "basic"
+    assert {step["skill_name"] for step in task_ir["skill_steps"]} >= {"pick", "place"}
 
     validation = validate_task_ir(task_ir, repo_root=ROOT, check_assets=False)
     assert validation["schema_ok"] is True

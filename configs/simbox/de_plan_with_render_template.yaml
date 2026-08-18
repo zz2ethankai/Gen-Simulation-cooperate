@@ -1,0 +1,34 @@
+name: simbox_plan_with_render
+load_stage:
+  scene_loader:                            # Scene loader
+    type: env_loader
+    args:
+      workflow_type: SimBoxDualWorkFlow
+      cfg_path: workflows/simbox/core/configs/tasks/example/sort_the_rubbish.yaml  # Task config path
+      simulator:
+        physics_dt: 1/30                   # Physics update rate
+        rendering_dt: 1/30                 # Render update rate
+        stage_units_in_meters: 1.0         # Stage unit scale
+        headless: True                     # Headless mode (no GUI); set false for visual debugging
+        anti_aliasing: 0                   # Anti-aliasing level
+        active_gpu: 0                      # Rendering GPU (0-indexed, physical GPU)
+        physics_gpu: 0                     # PhysX CUDA GPU in the process-visible namespace
+        cuda_device: 0                     # PyTorch/CuRobo GPU in the process-visible CUDA namespace
+        multi_gpu: false                   # Disable multi-GPU to prevent touching GPU 0
+        max_gpu_count: 1                   # Only use 1 GPU
+  layout_random_generator:                 # Scene randomization
+    type: env_randomizer
+    args:
+      random_num: 6                        # Number of random samples per task
+      strict_mode: true                    # true: output count must equal random_num
+plan_with_render_stage:
+  plan_with_render:                        # Plan and render in a single stage
+    type: plan_with_render
+    args:
+      save_failed: false                  # true: save data even when task fails (for debugging)
+store_stage:
+  writer:                                  # Data writer
+    type: env_writer
+    args:
+      batch_async: true                    # Async writes (better perf, more memory)
+      output_dir: output/${name}/          # Output directory

@@ -13,18 +13,7 @@ SIMBOX_ROOT = ROOT / "workflows" / "simbox"
 if str(SIMBOX_ROOT) not in sys.path:
     sys.path.insert(0, str(SIMBOX_ROOT))
 
-from core.planning.config_contract import (  # noqa: E402
-    HYBRID_MODE,
-    LEGACY_STAGE_SCAN_MODE,
-    PASSTHROUGH_MODE,
-    PHYSICS_SCHEMA_MODE,
-    resolve_collision_world_mode,
-    resolve_runtime_skill_collision_world_mode,
-    resolve_skill_collision_world_mode,
-    resolve_skill_test_mode,
-    task_uses_physics_schema,
-    validate_planning_contract,
-)
+from core.planning.config_contract import validate_planning_contract  # noqa: E402
 
 
 def _task(skill, *, both_arms=False):
@@ -40,200 +29,6 @@ def test_standard_pick_and_place_are_accepted():
         ]
     }
     validate_planning_contract(task, "physics_schema")
-
-
-def test_auto_enables_physics_schema_for_supported_task():
-    task = {
-        "skills": [
-            {"robot": [{"left": [{"name": "Pick", "objects": ["a"]}], "right": []}]},
-            {
-                "robot": [
-                    {
-                        "left": [
-                            {"name": "Place", "objects": ["a", "support"]}
-                        ],
-                        "right": [],
-                    }
-                ]
-            },
-        ]
-    }
-
-    mode, reason = resolve_collision_world_mode(task, "auto")
-
-    assert mode == "physics_schema"
-    assert "support physics_schema" in reason
-
-
-def test_auto_uses_hybrid_for_physics_pick_place_and_legacy_home():
-    task = {
-        "skills": [
-            {
-                "robot": [
-                    {
-                        "left": [
-                            {"name": "Pick", "objects": ["a"]},
-                            {"name": "Place", "objects": ["a", "support"]},
-                            {"name": "heuristic__skill", "mode": "home"},
-                        ],
-                        "right": [],
-                    }
-                ]
-            }
-        ]
-    }
-
-    mode, _ = resolve_collision_world_mode(task, "auto")
-
-    assert mode == HYBRID_MODE
-    assert resolve_skill_collision_world_mode("pick", "auto") == PHYSICS_SCHEMA_MODE
-    assert (
-        resolve_skill_collision_world_mode("heuristic__skill", "auto")
-        == LEGACY_STAGE_SCAN_MODE
-    )
-
-
-def test_attached_home_uses_conditional_physics_adapter_in_hybrid():
-    skill = {"name": "heuristic__skill", "mode": "home"}
-
-    assert (
-        resolve_runtime_skill_collision_world_mode(
-            skill, "auto", attached_object=True
-        )
-        == PHYSICS_SCHEMA_MODE
-    )
-    assert (
-        resolve_runtime_skill_collision_world_mode(
-            skill, "auto", attached_object=False
-        )
-        == LEGACY_STAGE_SCAN_MODE
-    )
-
-
-def test_attached_adapter_does_not_weaken_explicit_legacy_or_other_modes():
-    assert (
-        resolve_runtime_skill_collision_world_mode(
-            {"name": "heuristic__skill", "mode": "home"},
-            "legacy_stage_scan",
-            attached_object=True,
-        )
-        == LEGACY_STAGE_SCAN_MODE
-    )
-    assert (
-        resolve_runtime_skill_collision_world_mode(
-            {"name": "heuristic__skill", "mode": "abs_qpos"},
-            "auto",
-            attached_object=True,
-        )
-        == LEGACY_STAGE_SCAN_MODE
-    )
-    assert (
-        resolve_runtime_skill_collision_world_mode(
-            {"name": "close", "mode": "home"},
-            "auto",
-            attached_object=True,
-        )
-        == LEGACY_STAGE_SCAN_MODE
-    )
-
-
-def test_auto_keeps_physics_schema_with_observe_hold_passthrough():
-    task = {
-        "skills": [
-            {
-                "robot": [
-                    {
-                        "left": [
-                            {"name": "Pick", "objects": ["a"]},
-                            {"name": "Place", "objects": ["a", "support"]},
-                            {"name": "Observe_Hold", "hold_steps": 10},
-                        ],
-                        "right": [],
-                    }
-                ]
-            }
-        ]
-    }
-
-    mode, _ = resolve_collision_world_mode(task, "auto")
-
-    assert mode == PHYSICS_SCHEMA_MODE
-    assert (
-        resolve_skill_collision_world_mode("observe_hold", "auto")
-        == PASSTHROUGH_MODE
-    )
-
-
-def test_auto_resolves_hybrid_for_unmigrated_manipulation_skill():
-    task = {
-        "skills": [
-            {
-                "robot": [
-                    {
-                        "left": [
-                            {"name": "Pick", "objects": ["a"]},
-                            {"name": "Place", "objects": ["a", "support"]},
-                            {"name": "Close", "objects": ["drawer"]},
-                        ],
-                        "right": [],
-                    }
-                ]
-            }
-        ]
-    }
-
-    mode, reason = resolve_collision_world_mode(task, "auto")
-
-    assert mode == HYBRID_MODE
-    assert "close" in reason
-    assert task_uses_physics_schema(mode)
-    assert (
-        resolve_skill_collision_world_mode("close", "auto")
-        == LEGACY_STAGE_SCAN_MODE
-    )
-
-
-def test_auto_uses_legacy_for_unmigrated_only_task():
-    task = _task({"name": "heuristic__skill", "mode": "home"})
-
-    mode, reason = resolve_collision_world_mode(task, None)
-
-    assert mode == "legacy_stage_scan"
-    assert "no Physics-schema manipulation skills" in reason
-
-
-def test_auto_does_not_enable_for_non_manipulation_only_task():
-    mode, reason = resolve_collision_world_mode(
-        _task({"name": "Observe_Hold", "hold_steps": 10}),
-        "auto",
-    )
-
-    assert mode == "legacy_stage_scan"
-    assert "no Physics-schema manipulation skills" in reason
-
-
-@pytest.mark.parametrize(
-    "skill",
-    [
-        {"name": "Close", "objects": ["drawer"]},
-        {"name": "heuristic__skill", "mode": "home"},
-    ],
-)
-def test_explicit_physics_schema_remains_strict(skill):
-    task = _task(skill)
-
-    with pytest.raises(ValueError, match="not migrated"):
-        resolve_collision_world_mode(task, "physics_schema")
-
-
-def test_explicit_legacy_mode_is_preserved():
-    mode, reason = resolve_collision_world_mode(
-        _task({"name": "DynamicPick", "objects": ["a"]}),
-        "legacy_stage_scan",
-    )
-
-    assert mode == "legacy_stage_scan"
-    assert reason == "explicit configuration"
 
 
 @pytest.mark.parametrize("name", ["DynamicPick", "ManualPick", "DexPick", "DexPlace", "Open", "Close"])
@@ -260,7 +55,17 @@ def test_two_arm_observe_hold_is_not_concurrent_manipulation():
 
 
 def test_workspace_probe_is_allowed_only_as_sequential_validation_phases():
-    probe = {"name": "pick_plan_probe", "objects": ["a"]}
+    probe = {
+        "name": "pick_plan_probe",
+        "objects": ["a"],
+        "spawn_expectation": {
+            "target_support": "table",
+            "max_object_linear_speed_m_s": 0.02,
+            "max_object_angular_speed_rad_s": 0.05,
+            "max_robot_joint_speed_rad_s": 0.05,
+            "max_unexpected_contact_n": 5.0,
+        },
+    }
     task = {
         "metadata": {"workspace_probe": {"candidate_id": "candidate_0"}},
         "skills": [
@@ -275,6 +80,31 @@ def test_workspace_probe_is_allowed_only_as_sequential_validation_phases():
     validate_planning_contract(task, "physics_schema")
 
 
+def test_place_probe_requires_workspace_metadata_and_two_objects():
+    place_probe = {
+        "name": "place_plan_probe",
+        "objects": ["a", "support"],
+    }
+    task = _task(place_probe)
+    task["metadata"] = {"workspace_probe": {"candidate_id": "candidate_0"}}
+    validate_planning_contract(task, "physics_schema")
+
+    with pytest.raises(ValueError, match="exactly 2 object identities"):
+        invalid = _task({"name": "place_plan_probe", "objects": ["a"]})
+        invalid["metadata"] = {"workspace_probe": {"candidate_id": "candidate_0"}}
+        validate_planning_contract(invalid, "physics_schema")
+
+    with pytest.raises(ValueError, match="requires metadata.workspace_probe"):
+        validate_planning_contract(_task(place_probe), "physics_schema")
+
+    with pytest.raises(ValueError, match="test_mode=forward"):
+        invalid_mode = _task({**place_probe, "test_mode": "ik"})
+        invalid_mode["metadata"] = {
+            "workspace_probe": {"candidate_id": "candidate_0"}
+        }
+        validate_planning_contract(invalid_mode, "physics_schema")
+
+
 def test_workspace_probe_cannot_leak_into_a_normal_task():
     with pytest.raises(ValueError, match="requires metadata.workspace_probe"):
         validate_planning_contract(
@@ -283,32 +113,21 @@ def test_workspace_probe_cannot_leak_into_a_normal_task():
         )
 
 
-def test_object_identity_arity_is_rejected_but_ik_is_legacy_compatible():
+def test_pick_probe_requires_spawn_settle_measurement_contract():
+    task = _task({"name": "pick_plan_probe", "objects": ["a"]})
+    task["metadata"] = {"workspace_probe": {"candidate_id": "candidate_0"}}
+
+    with pytest.raises(ValueError, match="spawn_expectation is missing"):
+        validate_planning_contract(task, "physics_schema")
+
+
+def test_object_identity_arity_and_ik_only_mode_are_rejected():
     with pytest.raises(ValueError, match="exactly 2 object identities"):
         validate_planning_contract(
             _task({"name": "Place", "objects": ["a"]}), "physics_schema"
         )
-    validate_planning_contract(
-        _task({"name": "Pick", "objects": ["a"], "test_mode": "ik"}),
-        "physics_schema",
-    )
-
-
-def test_hybrid_keeps_object_identity_contract_strict():
-    with pytest.raises(ValueError, match="exactly 2 object identities"):
+    with pytest.raises(ValueError, match="test_mode=forward"):
         validate_planning_contract(
-            _task({"name": "Place", "objects": ["a"]}), HYBRID_MODE
+            _task({"name": "Pick", "objects": ["a"], "test_mode": "ik"}),
+            "physics_schema",
         )
-    validate_planning_contract(
-        _task({"name": "Pick", "objects": ["a"], "test_mode": "ik"}),
-        HYBRID_MODE,
-    )
-
-
-@pytest.mark.parametrize("mode", [PHYSICS_SCHEMA_MODE, HYBRID_MODE])
-def test_physics_schema_skill_ignores_deprecated_ik_test_mode(mode):
-    assert resolve_skill_test_mode({"test_mode": "ik"}, mode) == "forward"
-
-
-def test_explicit_legacy_skill_preserves_ik_test_mode():
-    assert resolve_skill_test_mode({"test_mode": "ik"}, LEGACY_STAGE_SCAN_MODE) == "ik"

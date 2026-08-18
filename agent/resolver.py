@@ -2,22 +2,28 @@
 
 from __future__ import annotations
 
+import hashlib
+import itertools
 import json
 import re
 import subprocess
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, TypeVar
-import uuid
+from typing import Any, Mapping, TypeVar
+
 import yaml
+
+from workflows.simbox.core.robots.profile import load_robot_profile
 
 from .contracts import (
     ContractModel,
     Diagnosis,
     EvidenceBundle,
+    ExecutionVariant,
     ResolutionDecision,
     ResolutionMode,
     ResolutionResponse,
+    RobotAdmission,
     SceneCapabilityManifest,
     SceneCompositionRequest,
     SkillContract,
@@ -25,11 +31,23 @@ from .contracts import (
     StageExecutionMode,
     TaskPlan,
 )
+from .robot_skills import (
+    RobotSkillContractError,
+    load_robot_admissions,
+    load_skill_contracts,
+    required_skill_capabilities,
+    validate_profile_skill_admission,
+)
+from .robot_skills.relation_admission import (
+    RelationAdmissionError,
+    validate_relation_admission,
+)
 from .settings import load_agent_settings
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AGENT_DIR = Path(__file__).resolve().parent
+ROBOT_PROFILE_DIR = REPO_ROOT / "workflows" / "simbox" / "core" / "configs" / "robots"
 T = TypeVar("T", bound=ContractModel)
 
 
@@ -40,6 +58,19 @@ class AgentDecisionError(RuntimeError):
 _CODEX_JSON_OBJECT_FIELDS = frozenset(
     {"object_role_overrides", "params", "proposed_interface"}
 )
+
+
+def _free_form_json_object(field_name: str | None, node: dict[str, Any]) -> dict[str, Any]:
+    if field_name not in _CODEX_JSON_OBJECT_FIELDS:
+        raise AgentDecisionError(
+            f"Codex strict schema cannot encode unconstrained object field: {field_name or '<root>'}"
+        )
+    description = node.get("description")
+    detail = "JSON-encoded object. Return a JSON string whose decoded value is an object."
+    return {
+        "type": "string",
+        "description": f"{description} {detail}".strip() if description else detail,
+    }
 
 
 def _codex_strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
@@ -72,16 +103,7 @@ def _codex_strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
 
         properties = node.get("properties")
         if node.get("type") == "object" and not isinstance(properties, dict):
-            if field_name not in _CODEX_JSON_OBJECT_FIELDS:
-                raise AgentDecisionError(
-                    f"Codex strict schema cannot encode unconstrained object field: {field_name or '<root>'}"
-                )
-            description = node.get("description")
-            detail = "JSON-encoded object. Return a JSON string whose decoded value is an object."
-            return {
-                "type": "string",
-                "description": f"{description} {detail}".strip() if description else detail,
-            }
+            return _free_form_json_object(field_name, node)
 
         if isinstance(properties, dict):
             node["required"] = list(properties)
@@ -316,16 +338,6 @@ class CodexBackend:
             raise AgentDecisionError(f"invalid structured Codex response for {name}: {exc}") from exc
 
 
-def load_skill_contracts(path: Path | None = None) -> dict[str, SkillContract]:
-    source = path or AGENT_DIR / "registry" / "skill_contracts.yaml"
-    payload = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
-    result = {}
-    for item in payload.get("skills", []):
-        contract = SkillContract.from_dict(item)
-        result[contract.name] = contract
-    return result
-
-
 def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
@@ -401,7 +413,7 @@ def _validate_parameter_value(
 
 
 def _effective_arm(skill_arm: str, plan_arm: str) -> str:
-    return plan_arm if skill_arm == "auto" else skill_arm
+    return plan_arm if skill_arm in {"auto", "any_single_arm"} else skill_arm
 
 
 def _validate_stage_execution(stage, subtask_arm: str) -> None:
@@ -410,15 +422,43 @@ def _validate_stage_execution(stage, subtask_arm: str) -> None:
     explicit_arms = {arm for arm in arms if arm in {"left", "right"}}
 
     if mode == StageExecutionMode.SINGLE_ARM_SINGLE_SKILL.value:
-        if subtask_arm not in {"left", "right"} or len(stage.skills) != 1 or explicit_arms != {subtask_arm}:
+        if subtask_arm not in {"any_single_arm", "left", "right"} or len(stage.skills) != 1:
             raise AgentDecisionError(
                 f"stage {stage.stage_id} single_arm_single_skill requires exactly one Skill on one arm"
             )
+        if subtask_arm in {"left", "right"} and explicit_arms != {subtask_arm}:
+            raise AgentDecisionError(
+                f"stage {stage.stage_id} single_arm_single_skill has inconsistent arm constraints"
+            )
+        if subtask_arm == "any_single_arm" and len(explicit_arms) > 1:
+            raise AgentDecisionError(
+                f"stage {stage.stage_id} single_arm_single_skill has inconsistent arm constraints"
+            )
+        if subtask_arm == "any_single_arm" and explicit_arms and any(
+            arm not in {"auto", "any_single_arm", *explicit_arms} for arm in arms
+        ):
+            raise AgentDecisionError(
+                f"stage {stage.stage_id} single_arm_single_skill has inconsistent arm constraints"
+            )
         return
     if mode == StageExecutionMode.SINGLE_ARM_SEQUENTIAL.value:
-        if subtask_arm not in {"left", "right"} or len(stage.skills) != 2 or explicit_arms != {subtask_arm}:
+        if subtask_arm not in {"any_single_arm", "left", "right"} or len(stage.skills) != 2:
             raise AgentDecisionError(
                 f"stage {stage.stage_id} single_arm_sequential requires two ordered Skills on one arm"
+            )
+        if subtask_arm in {"left", "right"} and explicit_arms != {subtask_arm}:
+            raise AgentDecisionError(
+                f"stage {stage.stage_id} single_arm_sequential has inconsistent arm constraints"
+            )
+        if subtask_arm == "any_single_arm" and len(explicit_arms) > 1:
+            raise AgentDecisionError(
+                f"stage {stage.stage_id} single_arm_sequential has inconsistent arm constraints"
+            )
+        if subtask_arm == "any_single_arm" and explicit_arms and any(
+            arm not in {"auto", "any_single_arm", *explicit_arms} for arm in arms
+        ):
+            raise AgentDecisionError(
+                f"stage {stage.stage_id} single_arm_sequential has inconsistent arm constraints"
             )
         return
     if mode not in {
@@ -443,6 +483,34 @@ def _validate_stage_execution(stage, subtask_arm: str) -> None:
             )
 
 
+def _validate_strict_relation_chain(subtask, manifest: SceneCapabilityManifest) -> None:
+    relation = str(getattr(subtask.relation, "value", subtask.relation))
+    if len(subtask.stages) != 1:
+        raise AgentDecisionError(
+            f"subtask {subtask.subtask_id} relation={relation!r} requires one same-arm "
+            "Pick followed by Place stage"
+        )
+    stage = subtask.stages[0]
+    mode = str(getattr(stage.execution_mode, "value", stage.execution_mode))
+    skill_names = [skill.name.lower() for skill in stage.skills]
+    if (
+        mode != StageExecutionMode.SINGLE_ARM_SEQUENTIAL.value
+        or skill_names != ["pick", "place"]
+    ):
+        raise AgentDecisionError(
+            f"subtask {subtask.subtask_id} relation={relation!r} requires one same-arm "
+            "Pick followed by Place stage"
+        )
+    try:
+        validate_relation_admission(
+            relation,
+            str(subtask.target_object or ""),
+            manifest.container_regions,
+        )
+    except RelationAdmissionError as exc:
+        raise AgentDecisionError(str(exc)) from exc
+
+
 def _load_aliases(path: Path | None = None) -> dict[str, list[str]]:
     source = path or AGENT_DIR / "registry" / "semantic_aliases.yaml"
     payload = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
@@ -459,6 +527,24 @@ def _manifest_haystack(manifest: SceneCapabilityManifest) -> str:
     for region in manifest.container_regions:
         values.extend(str(value) for value in region.values() if isinstance(value, (str, int, float)))
     return " ".join(values).lower().replace("_", " ")
+
+
+def _plan_skill_names(plan: TaskPlan) -> list[str]:
+    return [
+        skill.name.lower()
+        for subtask in plan.subtasks
+        for stage in subtask.stages
+        for skill in stage.skills
+    ]
+
+
+def _snake_case(value: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", value).lower()
+
+
+def _resolved_source_task(value: str) -> Path:
+    path = Path(value).expanduser()
+    return path.resolve() if path.is_absolute() else (REPO_ROOT / path).resolve()
 
 
 def shortlist_manifests(
@@ -494,9 +580,8 @@ def _compact_manifest(manifest: SceneCapabilityManifest) -> dict[str, Any]:
         "task_id": manifest.task_id,
         "scene_id": manifest.scene_id,
         "source_task": manifest.source_task,
-        "robots": manifest.robots,
+        "robot_instances": [item.to_dict() for item in manifest.robot_instances],
         "active_objects": manifest.active_objects,
-        "robot_mounting": manifest.robot_mounting,
         "objects": [
             {
                 "name": item.name,
@@ -520,10 +605,12 @@ class TaskResolver:
         self,
         backend: CodexBackend|OpenAIBackend,
         skill_contracts: dict[str, SkillContract] | None = None,
+        robot_admissions: Mapping[tuple[str, str, str], RobotAdmission] | None = None,
         settings: dict[str, Any] | None = None,
     ):
         self.backend = backend
         self.skill_contracts = skill_contracts or load_skill_contracts()
+        self.robot_admissions = robot_admissions or load_robot_admissions()
         self.settings = settings or load_agent_settings()
 
     def resolve(
@@ -533,7 +620,9 @@ class TaskResolver:
         artifact_dir: Path,
     ) -> tuple[ResolutionResponse, list[SceneCapabilityManifest]]:
         candidates = shortlist_manifests(prompt, manifests)
-        template = (AGENT_DIR / "prompts" / "plan.md").read_text(encoding="utf-8")
+        template = (AGENT_DIR / "workflow" / "templates" / "plan.md").read_text(
+            encoding="utf-8"
+        )
         decision_prompt = template.replace("{{MODE}}", "RESOLVE").replace("{{USER_PROMPT}}", prompt).replace(
             "{{CANDIDATES}}",
             json.dumps([_compact_manifest(item) for item in candidates], ensure_ascii=False, indent=2),
@@ -548,26 +637,55 @@ class TaskResolver:
             artifact_dir,
             "resolution",
         )
-        candidate_by_id = {item.task_id: item for item in candidates}
-        selected_id = response.resolution.selected_task_id
-        if response.resolution.mode == ResolutionMode.REUSE_EXISTING:
-            if selected_id not in candidate_by_id:
-                raise AgentDecisionError(f"Codex selected a task outside the candidate set: {selected_id}")
-            selected = candidate_by_id[selected_id]
-            if response.resolution.selected_source_task != selected.source_task:
-                raise AgentDecisionError("selected_source_task does not match inventory")
-        elif response.resolution.mode == ResolutionMode.REUSE_SCENE_NEW_TASK:
-            if not response.resolution.selected_scene_id:
+        if response.resolution.mode in {
+            ResolutionMode.REUSE_EXISTING,
+            ResolutionMode.REUSE_SCENE_NEW_TASK,
+        }:
+            self.select_source_manifest(response.resolution, candidates)
+        return response, candidates
+
+    def select_source_manifest(
+        self,
+        decision: ResolutionDecision,
+        candidates: list[SceneCapabilityManifest],
+    ) -> SceneCapabilityManifest:
+        if decision.mode not in {
+            ResolutionMode.REUSE_EXISTING,
+            ResolutionMode.REUSE_SCENE_NEW_TASK,
+        }:
+            raise AgentDecisionError(
+                f"resolution mode {decision.mode!r} does not select an existing scene source"
+            )
+        if not decision.selected_task_id or not decision.selected_source_task:
+            raise AgentDecisionError(
+                f"{decision.mode} requires selected_task_id and selected_source_task"
+            )
+        matches = [
+            manifest
+            for manifest in candidates
+            if manifest.task_id == decision.selected_task_id
+            and _resolved_source_task(manifest.source_task)
+            == _resolved_source_task(decision.selected_source_task)
+        ]
+        if len(matches) != 1:
+            raise AgentDecisionError(
+                "selected_task_id and selected_source_task must identify exactly one candidate"
+            )
+        selected = matches[0]
+        if decision.mode == ResolutionMode.REUSE_SCENE_NEW_TASK:
+            if not decision.selected_scene_id:
                 raise AgentDecisionError(
                     "REUSE_SCENE_NEW_TASK requires selected_scene_id"
                 )
-            scene_ids = {item.scene_id for item in candidates}
-            if response.resolution.selected_scene_id not in scene_ids:
+            if selected.scene_id != decision.selected_scene_id:
                 raise AgentDecisionError(
-                    f"selected_scene_id {response.resolution.selected_scene_id!r} "
-                    f"is not in the candidate set"
+                    "selected scene source does not belong to selected_scene_id"
                 )
-        return response, candidates
+        elif decision.selected_scene_id and selected.scene_id != decision.selected_scene_id:
+            raise AgentDecisionError(
+                "selected scene source does not belong to selected_scene_id"
+            )
+        return selected
 
     def plan(
         self,
@@ -576,24 +694,17 @@ class TaskResolver:
         selected: SceneCapabilityManifest,
         artifact_dir: Path,
     ) -> TaskPlan:
-        template = (AGENT_DIR / "prompts" / "plan.md").read_text(encoding="utf-8")
+        template = (AGENT_DIR / "workflow" / "templates" / "plan.md").read_text(
+            encoding="utf-8"
+        )
         planning_rules = (
-            AGENT_DIR / "prompts" / "Agent任务规划与Skill编排规范.md"
+            AGENT_DIR / "workflow" / "task_planning_policy.md"
         ).read_text(encoding="utf-8")
         center_object_rules = (
-            AGENT_DIR / "prompts" / "Agent中心物品选择与机器人初始位姿生成规范.md"
+            AGENT_DIR / "workflow" / "object_role_policy.md"
         ).read_text(encoding="utf-8")
         skill_values = [item.to_dict() for item in self.skill_contracts.values()]
-        defaults = self._prompt_defaults()
-        if selected.robots:
-            robot_type = selected.robots[0]
-            defaults["robot"]["default_type"] = robot_type
-            allowed = defaults["robot"].get("allowed_profiles", {}).get(robot_type, [])
-            if allowed:
-                defaults["robot"]["default_profile"] = allowed[0]
-            arms = defaults["robot"].get("arms", {})
-            if robot_type in arms:
-                defaults["robot"]["default_arm"] = arms[robot_type]
+        defaults = self._prompt_defaults(selected)
         plan_prompt = template.replace("{{MODE}}", "PLAN").replace("{{USER_PROMPT}}", prompt).replace(
             "{{CANDIDATES}}", "[]"
         ).replace(
@@ -613,22 +724,136 @@ class TaskResolver:
             json.dumps(defaults, ensure_ascii=False, indent=2),
         )
         plan = self.backend.generate(TaskPlan, plan_prompt, artifact_dir, "task_plan")
+        plan = self.normalize_semantic_plan(plan)
         self.validate_plan(plan, selected)
+        if not self.execution_variants(plan):
+            raise AgentDecisionError(
+                "no admitted robot execution variant satisfies the semantic TaskPlan"
+            )
         return plan
 
-    def _prompt_defaults(self) -> dict[str, Any]:
+    def _prompt_defaults(
+        self,
+        manifest: SceneCapabilityManifest | None = None,
+    ) -> dict[str, Any]:
         generation = self.settings.get("generation", {})
-        robot = self.settings.get("robot", {})
-        return {
+        defaults: dict[str, Any] = {
             "generation": {"enabled": bool(generation.get("enabled", True))},
-            "robot": {
-                "default_type": robot.get("default_type", "split_aloha"),
-                "default_profile": robot.get("default_profile", "split_aloha_tabletop_v1"),
-                "default_arm": robot.get("default_arm", "right"),
-                "allowed_profiles": robot.get("allowed_profiles", {}),
-                "arms": robot.get("arms", {}),
-            },
+            "robot": {"selection": "choose one robot_instances entry from the selected manifest"},
         }
+        if manifest is None:
+            return defaults
+        defaults["robot"] = {
+            "source_instances": [
+                {
+                    "instance_name": item.instance_name,
+                    "profile_id": item.profile_id,
+                    "placement_family": item.placement_family,
+                    "available_arms": item.available_arms,
+                    "capabilities": item.capabilities,
+                }
+                for item in manifest.robot_instances
+            ],
+            "semantic_arm_constraint": "any_single_arm",
+        }
+        return defaults
+
+    def normalize_semantic_plan(self, plan: TaskPlan) -> TaskPlan:
+        data = plan.to_dict()
+        skill_names = _plan_skill_names(plan)
+        try:
+            required = required_skill_capabilities(skill_names, self.skill_contracts)
+        except RobotSkillContractError as exc:
+            raise AgentDecisionError(str(exc)) from exc
+        data["robot_requirement"]["required_capabilities"] = sorted(required)
+        return TaskPlan.from_dict(data)
+
+    def execution_variants(
+        self,
+        plan: TaskPlan,
+        profile_paths: list[Path] | None = None,
+        *,
+        admission_states: frozenset[str] = frozenset({"admitted", "qualified"}),
+    ) -> list[ExecutionVariant]:
+        configured_planning = self.settings.get("planning", {})
+        collision_world = (
+            configured_planning.get("collision_world", {})
+            if isinstance(configured_planning, dict)
+            else {}
+        )
+        collision_world_mode = str(collision_world.get("mode", ""))
+        paths = profile_paths or sorted(ROBOT_PROFILE_DIR.glob("*.yaml"))
+        preferred = set(plan.robot_requirement.preferred_profile_ids)
+        skill_names = _plan_skill_names(plan)
+        variants: list[ExecutionVariant] = []
+        for path in paths:
+            profile = load_robot_profile(path)
+            if preferred and profile.profile_id not in preferred:
+                continue
+            try:
+                validate_profile_skill_admission(
+                    profile,
+                    skill_names,
+                    collision_world_mode,
+                    contracts=self.skill_contracts,
+                    admissions=self.robot_admissions,
+                    allowed_states=admission_states,
+                )
+            except RobotSkillContractError:
+                continue
+
+            arm_options: list[tuple[str, ...]] = []
+            for subtask in plan.subtasks:
+                if subtask.arm in {"left", "right"}:
+                    choices = (subtask.arm,) if subtask.arm in profile.arms else ()
+                elif subtask.arm == "any_single_arm":
+                    explicit = {
+                        skill.arm
+                        for stage in subtask.stages
+                        for skill in stage.skills
+                        if skill.arm in {"left", "right"}
+                    }
+                    choices = (
+                        tuple(sorted(explicit & set(profile.arms)))
+                        if explicit
+                        else tuple(sorted(profile.arms))
+                    )
+                else:
+                    choices = ()
+                if not choices:
+                    arm_options = []
+                    break
+                arm_options.append(choices)
+            if not arm_options:
+                continue
+
+            try:
+                config_file = str(path.resolve().relative_to(REPO_ROOT))
+            except ValueError:
+                config_file = str(path.resolve())
+            for arms in itertools.product(*arm_options):
+                binding = {
+                    subtask.subtask_id: arm
+                    for subtask, arm in zip(plan.subtasks, arms, strict=True)
+                }
+                binding_id = "__".join(
+                    f"{subtask_id}-{arm}" for subtask_id, arm in binding.items()
+                )
+                variants.append(
+                    ExecutionVariant(
+                        variant_id=f"{profile.profile_id}__{binding_id}",
+                        instance_name=_snake_case(profile.target_class),
+                        profile_id=profile.profile_id,
+                        robot_config_file=config_file,
+                        placement_family=str(
+                            getattr(profile.placement.family, "value", profile.placement.family)
+                        ),
+                        profile_hash=profile.profile_hash,
+                        collision_world_mode=collision_world_mode,
+                        arm_binding=binding,
+                    )
+                )
+        return sorted(variants, key=lambda item: item.variant_id)
 
     def composition_request(
         self,
@@ -641,7 +866,7 @@ class TaskResolver:
             suggested_base_scene=candidates[0].scene_id if candidates else None,
             required_assets=[],
             required_relations=[],
-            required_robot_capabilities=["split_aloha_manipulation"],
+            required_robot_capabilities=["pick", "place"],
             missing_capabilities=decision.missing_capabilities,
             validation_requirements=[
                 "Physics CollisionAPI audit",
@@ -654,23 +879,37 @@ class TaskResolver:
     def build_synthetic_manifest(
         self,
         decision: ResolutionDecision,
-        candidates: list[SceneCapabilityManifest],
+        template: SceneCapabilityManifest,
     ) -> SceneCapabilityManifest:
-        scene_id = decision.selected_scene_id
-        scene_manifests = [m for m in candidates if m.scene_id == scene_id]
-        if not scene_manifests:
-            raise AgentDecisionError(f"no manifest found for scene: {scene_id}")
-
-        if decision.selected_task_id:
-            template = next(
-                (m for m in scene_manifests if m.task_id == decision.selected_task_id),
-                scene_manifests[0],
+        if decision.mode != ResolutionMode.REUSE_SCENE_NEW_TASK:
+            raise AgentDecisionError(
+                "synthetic manifests require reuse_scene_new_task resolution"
             )
-        else:
-            template = scene_manifests[0]
+        if (
+            decision.selected_task_id != template.task_id
+            or not decision.selected_source_task
+            or _resolved_source_task(decision.selected_source_task)
+            != _resolved_source_task(template.source_task)
+            or decision.selected_scene_id != template.scene_id
+        ):
+            raise AgentDecisionError(
+                "synthetic manifest template does not match the selected scene source"
+            )
 
         synthetic = SceneCapabilityManifest.from_dict(template.to_dict())
-        synthetic.task_id = f"{template.task_id}__synthetic_{uuid.uuid4().hex[:8]}"
+        synthetic_identity = json.dumps(
+            {
+                "source_task": _resolved_source_task(template.source_task).as_posix(),
+                "scene_id": template.scene_id,
+                "object_role_overrides": decision.object_role_overrides,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        synthetic.task_id = "synthetic_" + hashlib.sha256(
+            synthetic_identity.encode("utf-8")
+        ).hexdigest()
 
         overrides = decision.object_role_overrides
         for obj in synthetic.objects:
@@ -681,7 +920,7 @@ class TaskResolver:
             name for name, role in overrides.items()
             if role in {"manipulated", "target"}
         }
-        synthetic.active_objects = list(
+        synthetic.active_objects = sorted(
             set(template.active_objects) | manipulated_names
         )
 
@@ -716,7 +955,9 @@ class TaskResolver:
         artifact_dir: Path,
         images: list[Path] | None = None,
     ) -> Diagnosis:
-        template = (AGENT_DIR / "prompts" / "diagnose.md").read_text(encoding="utf-8")
+        template = (AGENT_DIR / "workflow" / "templates" / "diagnose.md").read_text(
+            encoding="utf-8"
+        )
         prompt = template.replace(
             "{{TASK_PLAN}}", json.dumps(plan.to_dict(), ensure_ascii=False, indent=2)
         ).replace(
@@ -732,23 +973,29 @@ class TaskResolver:
         return self.backend.generate(Diagnosis, prompt, artifact_dir, "diagnosis_llm", images=images)
 
     def validate_plan(self, plan: TaskPlan, manifest: SceneCapabilityManifest) -> None:
-        if plan.selected_task_id != manifest.task_id or Path(plan.source_task) != Path(manifest.source_task):
+        if (
+            plan.selected_task_id != manifest.task_id
+            or _resolved_source_task(plan.source_task)
+            != _resolved_source_task(manifest.source_task)
+        ):
             raise AgentDecisionError("TaskPlan source does not match selected inventory manifest")
-        if plan.robot.robot_type not in manifest.robots:
-            raise AgentDecisionError(f"robot {plan.robot.robot_type!r} is not available in the selected manifest")
-        allowed_profiles = (
-            self.settings.get("robot", {}).get("allowed_profiles", {}).get(plan.robot.robot_type, [])
-        )
-        if plan.robot.robot_profile not in allowed_profiles:
+        skill_names = _plan_skill_names(plan)
+        try:
+            required_capabilities = required_skill_capabilities(
+                skill_names, self.skill_contracts
+            )
+        except RobotSkillContractError as exc:
+            raise AgentDecisionError(str(exc)) from exc
+        if frozenset(plan.robot_requirement.required_capabilities) != required_capabilities:
             raise AgentDecisionError(
-                f"robot profile {plan.robot.robot_profile!r} is not allowed for {plan.robot.robot_type}; "
-                f"allowed={allowed_profiles}"
+                "TaskPlan robot_requirement.required_capabilities must equal the deterministic "
+                f"Skill requirements: {sorted(required_capabilities)}"
             )
         object_names = {item.name for item in manifest.objects}
         if not plan.subtasks:
             raise AgentDecisionError("TaskPlan must contain at least one object subtask")
         for subtask in plan.subtasks:
-            if subtask.arm not in {"left", "right", "both"}:
+            if subtask.arm not in {"any_single_arm", "left", "right", "both"}:
                 raise AgentDecisionError(f"invalid subtask arm: {subtask.arm}")
             if subtask.arm == "both" and not plan.unresolved:
                 raise AgentDecisionError(
@@ -761,7 +1008,11 @@ class TaskResolver:
                 raise AgentDecisionError(f"unknown target object: {subtask.target_object}")
             for stage in subtask.stages:
                 _validate_stage_execution(stage, subtask.arm)
-                seen_pick: dict[str, bool] = {"auto": False, "left": False, "right": False}
+                seen_pick: dict[str, bool] = {
+                    "any_single_arm": False,
+                    "left": False,
+                    "right": False,
+                }
                 for skill in stage.skills:
                     name = skill.name.lower()
                     contract = self.skill_contracts.get(name)
@@ -773,7 +1024,7 @@ class TaskResolver:
                         )
                     if any(item not in object_names for item in skill.objects):
                         raise AgentDecisionError(f"{name} references an unknown object")
-                    if skill.arm not in {"auto", "left", "right"}:
+                    if skill.arm not in {"auto", "any_single_arm", "left", "right"}:
                         raise AgentDecisionError(f"invalid arm: {skill.arm}")
                     unknown_params = set(skill.params) - set(contract.allowed_params)
                     if unknown_params:
@@ -813,9 +1064,11 @@ class TaskResolver:
                             )
                         relation = str(getattr(subtask.relation, "value", subtask.relation))
                         success_mode = skill.params.get("success_mode")
+                        if relation in {"on", "inside", "insert"} and success_mode is not None:
+                            raise AgentDecisionError(
+                                f"place.success_mode is compiler-owned for relation={relation!r}"
+                            )
                         relation_success_modes = {
-                            "on": {"xybbox", "3diou"},
-                            "inside": {"xybbox", "3diou"},
                             "left_of": {"left"},
                             "right_of": {"right"},
                             "next_to": {"left", "right"},
@@ -836,3 +1089,4 @@ class TaskResolver:
                                 raise AgentDecisionError(
                                     f"horizontal Place requires params: {sorted(missing)}"
                                 )
+            _validate_strict_relation_chain(subtask, manifest)

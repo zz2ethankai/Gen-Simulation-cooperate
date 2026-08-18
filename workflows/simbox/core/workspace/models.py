@@ -6,6 +6,8 @@ import math
 from dataclasses import asdict, dataclass, field
 from typing import Any, Mapping
 
+from ..robots.profile import RobotCollisionLayer
+
 
 class WorkspacePlanningError(ValueError):
     """A deterministic workspace-input or geometry failure."""
@@ -96,49 +98,6 @@ class SamplingConfig:
         return asdict(self)
 
 
-@dataclass(frozen=True)
-class RobotCollisionLayer:
-    name: str
-    center_xy_m: tuple[float, float]
-    size_xy_m: tuple[float, float]
-    min_z_m: float
-    max_z_m: float
-
-
-@dataclass(frozen=True)
-class RobotProfile:
-    name: str
-    footprint_m: tuple[float, float]
-    collision_layers: tuple[RobotCollisionLayer, ...] = ()
-    left_arm_base_xy_m: tuple[float, float] | None = None
-    right_arm_base_xy_m: tuple[float, float] | None = None
-
-
-DEFAULT_ROBOT_PROFILES: dict[str, RobotProfile] = {
-    # Enabled CollisionAPI bounds measured directly from the delivered
-    # SplitAloha robot.usd at its authored zero/home joints.  The four wheels
-    # span x=[-0.337, 0.337], y=[-0.2221, 0.2221] m.  The 0.70 x 0.47 envelope
-    # therefore keeps about 13 mm clearance on every side without pretending
-    # the much higher arms occupy the floor plane.  Upper collision is checked
-    # separately with a height-aware home-pose layer.
-    "split_aloha_tabletop_v1": RobotProfile(
-        "split_aloha_tabletop_v1",
-        (0.70, 0.47),
-        (
-            RobotCollisionLayer(
-                # Add 5 cm per horizontal side for authored collision margins
-                # and small mesh-vs-bbox differences observed at room walls.
-                "home_arms", (0.3365, -0.0845), (0.67, 1.05), 1.54, 2.05
-            ),
-        ),
-        left_arm_base_xy_m=(0.36848, 0.306),
-        right_arm_base_xy_m=(0.36848, -0.306),
-    ),
-    "lift2_tabletop_v1": RobotProfile("lift2_tabletop_v1", (0.70, 0.40)),
-    "franka_tabletop_v1": RobotProfile("franka_tabletop_v1", (0.40, 0.40)),
-}
-
-
 @dataclass
 class GeometryCandidate:
     candidate_id: str
@@ -152,6 +111,7 @@ class GeometryCandidate:
     geometry_feasible: bool = False
     obstacle: str | None = None
     rejection_code: str | None = None
+    mount_support: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
@@ -209,7 +169,7 @@ class WorkspaceManifest:
     robot: dict[str, Any]
     geometry_candidates: list[dict[str, Any]]
     required_arm: str | None = None
-    version: int = 3
+    version: int = 4
     curobo_results: list[dict[str, Any]] = field(default_factory=list)
     pick_attempts: list[dict[str, Any]] = field(default_factory=list)
     selected_candidate: dict[str, Any] | None = None

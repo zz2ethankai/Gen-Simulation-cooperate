@@ -1,0 +1,49 @@
+version: 1
+admissions:
+  - &split_aloha_pick
+    profile_id: split_aloha_floor_standing_v1
+    skill: pick
+    collision_world_mode: physics_schema
+    state: admitted
+    profile_hash: 50262db8f173bbd6ba136596bfee17336744a055cb950ef323af606b1b33e7d5
+    evidence_run_ids: []
+    validated_seeds: []
+    last_failure_code: null
+  - <<: *split_aloha_pick
+    skill: place
+
+  - &lift2_pick
+    profile_id: lift2_floor_standing_v1
+    skill: pick
+    collision_world_mode: physics_schema
+    state: implemented
+    profile_hash: 9490f2c512796920b4120480a536343eeeb3d6331e809c7545ae107c6a361997
+    evidence_run_ids: []
+    validated_seeds: []
+    last_failure_code: null
+  - <<: *lift2_pick
+    skill: place
+
+  - &fr3_pick
+    profile_id: fr3_support_mounted_v1
+    skill: pick
+    collision_world_mode: physics_schema
+    state: implemented
+    profile_hash: f81a2da4b91c740242c21214f1bf7ded9eee69c3e5d244d3593ecf9385afbdb5
+    evidence_run_ids: []
+    validated_seeds: []
+    last_failure_code: null
+  - <<: *fr3_pick
+    skill: place
+
+  - &franka_robotiq85_pick
+    profile_id: franka_robotiq85_support_mounted_v1
+    skill: pick
+    collision_world_mode: physics_schema
+    state: implemented
+    profile_hash: 66ca401797ef62d37b879f00bf4e79e8839729867067411d09cbe12aa7a7dce1
+    evidence_run_ids: []
+    validated_seeds: []
+    last_failure_code: null
+  - <<: *franka_robotiq85_pick
+    skill: place

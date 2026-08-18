@@ -2,7 +2,6 @@ from pathlib import Path
 import sys
 
 import pytest
-import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -14,6 +13,7 @@ from core.utils.joint_index_resolver import (  # noqa: E402
     resolve_configured_joint_groups,
     resolve_joint_names,
 )
+from core.robots.profile import load_robot_profile, project_runtime_config  # noqa: E402
 
 
 BENCH21_SPLIT_ALOHA_DOF_NAMES = [
@@ -50,7 +50,7 @@ BENCH21_SPLIT_ALOHA_DOF_NAMES = [
 
 def _split_aloha_config():
     path = REPO_ROOT / "workflows" / "simbox" / "core" / "configs" / "robots" / "split_aloha.yaml"
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
+    return project_runtime_config(load_robot_profile(path))
 
 
 def test_split_aloha_named_groups_match_bench21_runtime_asset():
@@ -62,7 +62,7 @@ def test_split_aloha_named_groups_match_bench21_runtime_asset():
     assert groups["right_gripper"] == [26]
 
 
-def test_named_resolution_tracks_reordered_asset_instead_of_legacy_indices():
+def test_named_resolution_tracks_reordered_asset_instead_of_stale_indices():
     dof_names = ["unrelated", "arm_2", "gripper", "arm_1"]
     config = {
         "left_joint_names": ["arm_1", "arm_2"],
@@ -96,13 +96,14 @@ def test_cross_group_overlap_is_rejected():
         resolve_configured_joint_groups(["joint1"], config)
 
 
-def test_opted_in_robot_configs_declare_complete_authoritative_arm_names():
+def test_all_builtin_robot_configs_declare_authoritative_arm_names():
     config_dir = REPO_ROOT / "workflows" / "simbox" / "core" / "configs" / "robots"
     for path in sorted(config_dir.glob("*.yaml")):
-        config = yaml.safe_load(path.read_text(encoding="utf-8"))
-        if config.get("deprecated", False):
-            continue
-        if not config.get("left_joint_names"):
-            continue
-        if config.get("right_joint_indices"):
-            assert config.get("right_joint_names"), f"{path.name} is missing right_joint_names"
+        profile = load_robot_profile(path)
+        for arm_id, arm in profile.arms.items():
+            assert arm.command_joint_names, (
+                f"{path.name} arm {arm_id} is missing command_joint_names"
+            )
+            assert arm.trajectory_joint_names, (
+                f"{path.name} arm {arm_id} is missing trajectory_joint_names"
+            )

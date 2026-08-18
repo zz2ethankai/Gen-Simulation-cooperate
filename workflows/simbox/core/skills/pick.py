@@ -1545,7 +1545,6 @@ class Pick(BaseSkill):
             contacted,
             threshold,
         )
-
     def is_feasible(self, th=5):
         feasible = self.controller.num_plan_failed <= th and bool(self.process_valid)
         if not feasible and not self._runtime_failure_snapshot_written:
