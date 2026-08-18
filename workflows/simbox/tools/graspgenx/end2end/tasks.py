@@ -401,7 +401,7 @@ class PickAndDropInBinTask(PickAndLiftTask):
         or None if planning failed.
         """
         import torch
-        from curobo.types import JointState, Pose
+        from curobo.types import GoalToolPose, JointState
 
         target_link = profile.tool_frame
         T_world_robot_inv = tra.inverse_matrix(robot_base_T)
@@ -420,15 +420,18 @@ class PickAndDropInBinTask(PickAndLiftTask):
         quat_t = torch.tensor(
             [quat_wxyz.tolist()], device="cuda", dtype=torch.float32
         ).unsqueeze(0)
+        goal = GoalToolPose(
+            tool_frames=[target_link],
+            position=pos_t.reshape(1, 1, 1, 1, 3),
+            quaternion=quat_t.reshape(1, 1, 1, 1, 4),
+        )
         q_start = JointState.from_position(
             torch.tensor([q_start_arr.tolist()], device="cuda", dtype=torch.float32),
             joint_names=planner.joint_names,
         )
         try:
-            from curobo_compat import grasp_goals
-
             result = planner.plan_pose(
-                grasp_goals(target_link, pos_t, quat_t),
+                goal,
                 q_start,
             )
         except Exception as e:

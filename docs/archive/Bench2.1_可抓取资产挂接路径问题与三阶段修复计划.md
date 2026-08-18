@@ -42,9 +42,9 @@ Phone 配置的实际位置见 [`bedroom_phone_placement/simbox_task.yaml` 第 8
 
 `prim_path_child` 和 `attach_prim_path_child` 不能混为一个字段。前者回答“哪个节点代表刚体”，后者回答“抓取时挂接哪块碰撞几何”。不能为了修复挂接路径，把 `prim_path_child` 直接改成很深的 collision Mesh 路径，否则会改变物理刚体的根节点语义。
 
-### 2.2 加载层：缺少字段时直接选择 `children[0]`
+### 2.2 历史加载层问题：缺少字段时选择 `children[0]`
 
-`RigidObject` 当前的核心逻辑是：
+以下是迁移前的历史逻辑，现已不再作为标准路径：
 
 ```python
 rigid_prim_path = os.path.join(self.base_prim_path, cfg["prim_path_child"])
@@ -56,7 +56,7 @@ else:
     self.mesh_prim_path = str(children[0].GetPrimPath())
 ```
 
-代码位置：[`rigid_object.py` 第 52–69 行](../workflows/simbox/core/objects/rigid_object.py#L52-L69)。
+历史代码位置仅用于说明根因；当前 [`rigid_object.py`](../workflows/simbox/core/objects/rigid_object.py) 使用 `rigid_prim_path` 与 `attach_collision_prim_paths`，并通过碰撞语义解析显式或唯一候选。
 
 `GetChildren()` 返回 USD 层级中直接子节点的列表。`children[0]` 只表示“结构上的第一个子节点”，不表示：
 
@@ -65,14 +65,14 @@ else:
 - 它已经进入 CuRobo collision world；
 - 它适合在抓取后挂到机器人上。
 
-官方部分旧资产的结构较扁平，所以第一个 child 恰好是碰撞 Mesh：
+官方部分旧资产的结构较扁平，所以历史回退时第一个 child 恰好是碰撞 Mesh：
 
 ```text
 /World/Aligned                 # RigidBody
 └── /Scan                      # Mesh + Collision
 ```
 
-官方任务也只配置 `prim_path_child: Aligned`，见 [`omniobject3d-bottle.yaml` 第 34–44 行](../workflows/simbox/core/configs/tasks/pick_and_place/split_aloha/single_pick/right/omniobject3d-bottle.yaml#L34-L44)。当前回退逻辑正是为这种扁平结构保留的。
+官方任务也只配置 `prim_path_child: Aligned`，见 [`omniobject3d-bottle.yaml` 第 34–44 行](../workflows/simbox/core/configs/tasks/pick_and_place/split_aloha/single_pick/right/omniobject3d-bottle.yaml#L34-L44)。这解释了旧回退逻辑为何曾经对部分资产有效。
 
 多数 Bench2.1 资产则类似：
 
@@ -108,20 +108,23 @@ ATTACH_PRIM_NOT_IN_CUROBO_WORLD
 
 ### 2.4 Pick 层：同一个错误路径继续传给 attach
 
-Pick 使用 `self.pick_obj.mesh_prim_path` 做两件事：
+当前 Pick 使用 `self.pick_obj.attach_collision_prim_paths` 做两件事：
 
 1. 在 Probe 阶段验证它是否存在于 CuRobo world；
-2. 真正闭合夹爪后，把它传给 `attach_obj`。
+2. 真正闭合夹爪后，把显式路径列表传给 `attach_objects`。
 
 代码位置：[`pick.py` 第 106–120 行](../workflows/simbox/core/skills/pick.py#L106-L120)和 [`pick.py` 第 149–170 行](../workflows/simbox/core/skills/pick.py#L149-L170)。
 
-控制器目前又把单个字符串包装成只含一个元素的列表：
+当前主路径不再调用旧 CuRobo attach wrapper。`CollisionSceneManager.attach_target()` 将显式路径列表传给 [`TemplateController.attach_objects()`](../workflows/simbox/core/controllers/template_controller.py#L1911)，由 controller 调用 native v2 attachment manager：
 
 ```python
-self.motion_gen.attach_objects_to_robot(cu_js, [obj_prim_path], ...)
+self.planner.attachment_manager.attach(
+    cu_js, attachment_meshes, link_name="attached_object",
+    disable_obstacle_names=attach_prim_paths,
+)
 ```
 
-代码位置：[`template_controller.py` 第 537–553 行](../workflows/simbox/core/controllers/template_controller.py#L537-L553)。
+普通执行使用 native `MotionPlanner`；抓取候选使用 native `BatchMotionPlanner`。两者消费同一组显式 attach collision paths。
 
 因此，如果一个资产需要多个 collision leaf Prim 才能覆盖完整物体，当前单路径接口也无法完整表达。这是比 `children[0]` 更深一层的接口限制。
 
@@ -248,7 +251,7 @@ attach_prim_path_child: Aligned/Normalize/Source/base_link/collisions
 
 #### 接口设计
 
-将内部含义不清晰的 `mesh_prim_path` 拆成：
+当前运行时代码已经完成以下字段拆分：
 
 ```python
 self.rigid_prim_path: str
@@ -263,7 +266,7 @@ attach_prim_path_children:
   - Aligned/AttachCollisionProxy
 ```
 
-迁移期可以读取旧字段 `attach_prim_path_child` 并转换成单元素列表，但应发出弃用提示；所有 Bench 配置迁移完成后删除旧字段兼容分支，避免永久双轨。
+当前任务编译器以 `attach_prim_path_children` 作为规范配置；旧单数字段只属于任务配置迁移，不会作为 CuRobo API 传入 planner。CuRobo v1 兼容层已经删除，运行时不存在双 planner 分支。
 
 #### `RigidObject` 修改
 

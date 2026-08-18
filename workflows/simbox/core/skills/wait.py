@@ -1,9 +1,9 @@
 import numpy as np
 from core.skills.base_skill import BaseSkill, register_skill
 from omegaconf import DictConfig
-from omni.isaac.core.controllers import BaseController
-from omni.isaac.core.robots.robot import Robot
-from omni.isaac.core.tasks import BaseTask
+from isaacsim.core.api.controllers import BaseController
+from isaacsim.core.api.robots.robot import Robot
+from isaacsim.core.api.tasks import BaseTask
 
 
 # pylint: disable=consider-using-generator,too-many-public-methods,unused-argument

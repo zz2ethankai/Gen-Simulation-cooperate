@@ -2,9 +2,9 @@ import numpy as np
 import omni.replicator.core as rep
 from core.cameras.base_camera import register_camera
 from core.utils.camera_utils import get_src
-from omni.isaac.core.utils.prims import get_prim_at_path
-from omni.isaac.core.utils.transformations import get_relative_transform
-from omni.isaac.sensor import Camera
+from isaacsim.core.utils.prims import get_prim_at_path
+from isaacsim.core.utils.transformations import get_relative_transform
+from isaacsim.sensors.camera import Camera
 
 
 def _patch_syntheticdata_headless_rendervar():
@@ -24,8 +24,10 @@ def _patch_syntheticdata_headless_rendervar():
     if getattr(SyntheticData, "_simbox_headless_patch_applied", False):
         return
 
-    original_add = SyntheticData._add_rendervar
-    original_remove = SyntheticData._remove_rendervar
+    original_add = getattr(SyntheticData, "_add_rendervar", None)
+    original_remove = getattr(SyntheticData, "_remove_rendervar", None)
+    if not callable(original_add) or not callable(original_remove):
+        return
 
     def _safe_call(func, render_product_path: str, render_var: str, usd_stage=None):
         try:
@@ -165,67 +167,44 @@ class CustomCamera(Camera):
 
     def add_diffuse_albedo_to_frame(self) -> None:
         """Attach the diffuse_albedo annotator to this camera."""
-        if "DiffuseAlbedo" not in self._custom_annotators:
-            self._custom_annotators["DiffuseAlbedo"] = rep.AnnotatorRegistry.get_annotator("DiffuseAlbedo")
-            self._custom_annotators["DiffuseAlbedo"].attach([self._render_product_path])
-        self._current_frame["DiffuseAlbedo"] = None
+        if "DiffuseAlbedo" not in self.get_current_frame():
+            self.attach_annotator("DiffuseAlbedo")
 
     def remove_diffuse_albedo_from_frame(self) -> None:
-        if self._custom_annotators["DiffuseAlbedo"] is not None:
-            self._custom_annotators["DiffuseAlbedo"].detach([self._render_product_path])
-            self._custom_annotators["DiffuseAlbedo"] = None
-        self._current_frame.pop("DiffuseAlbedo", None)
+        self.detach_annotator("DiffuseAlbedo")
 
     def add_specular_albedo_to_frame(self) -> None:
         """Attach the specular_albedo annotator to this camera."""
-        if self._custom_annotators["SpecularAlbedo"] is None:
-            self._custom_annotators["SpecularAlbedo"] = rep.AnnotatorRegistry.get_annotator("SpecularAlbedo")
-            self._custom_annotators["SpecularAlbedo"].attach([self._render_product_path])
-        self._current_frame["SpecularAlbedo"] = None
+        if "SpecularAlbedo" not in self.get_current_frame():
+            self.attach_annotator("SpecularAlbedo")
 
     def remove_specular_albedo_from_frame(self) -> None:
-        if self._custom_annotators["SpecularAlbedo"] is not None:
-            self._custom_annotators["SpecularAlbedo"].detach([self._render_product_path])
-            self._custom_annotators["SpecularAlbedo"] = None
-        self._current_frame.pop("SpecularAlbedo", None)
+        self.detach_annotator("SpecularAlbedo")
 
     def add_direct_diffuse_to_frame(self) -> None:
         """Attach the direct_diffuse annotator to this camera."""
-        if self._custom_annotators["DirectDiffuse"] is None:
-            self._custom_annotators["DirectDiffuse"] = rep.AnnotatorRegistry.get_annotator("DirectDiffuse")
-            self._custom_annotators["DirectDiffuse"].attach([self._render_product_path])
-        self._current_frame["DirectDiffuse"] = None
+        if "DirectDiffuse" not in self.get_current_frame():
+            self.attach_annotator("DirectDiffuse")
 
     def remove_direct_diffuse_from_frame(self) -> None:
-        if self._custom_annotators["DirectDiffuse"] is not None:
-            self._custom_annotators["DirectDiffuse"].detach([self._render_product_path])
-            self._custom_annotators["DirectDiffuse"] = None
-        self._current_frame.pop("DirectDiffuse", None)
+        self.detach_annotator("DirectDiffuse")
 
     def add_indirect_diffuse_to_frame(self) -> None:
         """Attach the indirect_diffuse annotator to this camera."""
-        if self._custom_annotators["IndirectDiffuse"] is None:
-            self._custom_annotators["IndirectDiffuse"] = rep.AnnotatorRegistry.get_annotator("IndirectDiffuse")
-            self._custom_annotators["IndirectDiffuse"].attach([self._render_product_path])
-        self._current_frame["IndirectDiffuse"] = None
+        if "IndirectDiffuse" not in self.get_current_frame():
+            self.attach_annotator("IndirectDiffuse")
 
     def remove_indirect_diffuse_from_frame(self) -> None:
-        if self._custom_annotators["IndirectDiffuse"] is not None:
-            self._custom_annotators["IndirectDiffuse"].detach([self._render_product_path])
-            self._custom_annotators["IndirectDiffuse"] = None
-        self._current_frame.pop("IndirectDiffuse", None)
+        self.detach_annotator("IndirectDiffuse")
 
     def get_observations(self):
         camera2env_pose = get_relative_transform(
             get_prim_at_path(self.prim_path), get_prim_at_path(self.root_prim_path)
         )
 
-        if self.output_mode == "rgb":
-            color_image = self.get_rgba()[..., :3]
-        elif self.output_mode == "diffuse_albedo":
-            color_image = self._custom_annotators["DiffuseAlbedo"].get_data()[..., :3]
-        else:
+        if self.output_mode not in {"rgb", "diffuse_albedo"}:
             raise NotImplementedError
+        color_image = get_src(self, "rgb")
 
         obs = {
             "color_image": color_image,

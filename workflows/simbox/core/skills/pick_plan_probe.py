@@ -101,7 +101,7 @@ class PickPlanProbe(Pick):
                     if is_enabled and (empty_world or path not in target_paths)
                 ]
                 for path in disabled_paths:
-                    self.controller.motion_gen.world_collision.enable_obstacle(path, False)
+                    self.controller.planner.scene_collision_checker.enable_obstacle(path, False)
                 self._debug_log(
                     "diagnostic %s world disabled_obstacle_count=%d"
                     % ("empty" if empty_world else "target-only", len(disabled_paths))
@@ -112,7 +112,7 @@ class PickPlanProbe(Pick):
                     def _begin_target_transit_without_world(entity_name, robot, arm):
                         record = original_begin_target_transit(entity_name, robot, arm)
                         for path in target_paths:
-                            self.controller.motion_gen.world_collision.enable_obstacle(path, False)
+                            self.controller.planner.scene_collision_checker.enable_obstacle(path, False)
                         return record
 
                     manager.begin_target_transit = _begin_target_transit_without_world
@@ -122,7 +122,7 @@ class PickPlanProbe(Pick):
                 if original_begin_target_transit is not None:
                     manager.begin_target_transit = original_begin_target_transit
                 for path in disabled_paths:
-                    self.controller.motion_gen.world_collision.enable_obstacle(path, True)
+                    self.controller.planner.scene_collision_checker.enable_obstacle(path, True)
             result = self.plan_evaluation.result.to_dict() if self.plan_evaluation is not None else {
                 "feasible": False,
                 "failure_code": "PROBE_DID_NOT_RUN",

@@ -63,6 +63,22 @@ def test_discovery_uses_enabled_collision_api_not_names_or_visual_meshes():
     assert manager.records["movable_b"].mobility == "dynamic"
 
 
+def test_affine_rotation_extraction_ignores_asset_scale():
+    manager = CollisionSceneManager.__new__(CollisionSceneManager)
+    angle = np.deg2rad(35.0)
+    rotation = np.array(
+        [
+            [np.cos(angle), -np.sin(angle), 0.0],
+            [np.sin(angle), np.cos(angle), 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+    transform = np.eye(4)
+    transform[:3, :3] = np.diag([0.001, 0.002, 0.003]) @ rotation
+    extracted = manager._rotation_from_affine(transform)
+    assert np.allclose(extracted, rotation, atol=1e-6)
+
+
 def test_exact_exclusions_require_absolute_path_and_reason():
     with pytest.raises(ValueError, match="complete absolute"):
         validate_exact_exclusions([{"prim_path": "sink/collider", "reason": "known duplicate"}])
@@ -391,9 +407,13 @@ def test_world_collision_diagnostic_isolates_entity_and_restores_enabled_state()
     controller = types.SimpleNamespace(
         name=key[0],
         lr_name=key[1],
-        motion_gen=types.SimpleNamespace(
-            world_model=types.SimpleNamespace(get_obstacle=lambda _path: object()),
-            world_collision=types.SimpleNamespace(enable_obstacle=enable_obstacle),
+        world_cfg=types.SimpleNamespace(
+            get_obstacle=lambda _path: object(),
+        ),
+        planner=types.SimpleNamespace(
+            scene_collision_checker=types.SimpleNamespace(
+                enable_obstacle=enable_obstacle,
+            ),
         ),
         check_current_start_state=lambda: (
             collision_path not in enabled,
@@ -424,9 +444,11 @@ def test_physics_sync_and_export_skip_legacy_controllers(monkeypatch, tmp_path):
         lr_name="left",
         collision_world_mode="physics_schema",
         reference_prim_path="/World/task_0",
-        tensor_args=object(),
-        motion_gen=types.SimpleNamespace(
-            world_collision=types.SimpleNamespace(update_obstacle_pose=lambda *_args: None)
+        tensor_args=types.SimpleNamespace(to_device=lambda value: value),
+        planner=types.SimpleNamespace(
+            scene_collision_checker=types.SimpleNamespace(
+                update_obstacle_pose=lambda *_args: None
+            )
         ),
     )
     legacy = types.SimpleNamespace(
@@ -435,35 +457,27 @@ def test_physics_sync_and_export_skip_legacy_controllers(monkeypatch, tmp_path):
         collision_world_mode="legacy_stage_scan",
         reference_prim_path="/World/task_0",
         tensor_args=object(),
-        motion_gen=types.SimpleNamespace(
-            world_collision=types.SimpleNamespace(
-                update_obstacle_pose=lambda *_args: pytest.fail(
-                    "legacy controller must not receive Physics pose sync"
-                )
-            )
-        ),
     )
     manager.controllers[("robot", "left")] = physics
     manager.controllers[("robot", "right")] = legacy
 
     class Helper:
         @staticmethod
-        def get_collision_prim_pose(_path, reference_prim_path=None):
-            del reference_prim_path
-            return [1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0]
+        def get_pose(path, inverse=False):
+            if inverse:
+                return np.eye(4)
+            assert path.endswith("/collider")
+            return np.eye(4)
 
-    manager._usd_helper = Helper()  # pylint: disable=protected-access
+    manager._usd_parser = Helper()  # pylint: disable=protected-access
     fake_curobo = types.ModuleType("curobo")
     fake_types = types.ModuleType("curobo.types")
-    fake_math = types.ModuleType("curobo.types.math")
-    fake_math.Pose = types.SimpleNamespace(
-        from_list=lambda value, _tensor_args: tuple(value)
+    fake_types.Pose = types.SimpleNamespace(
+        from_matrix=lambda value: np.asarray(value)
     )
-    fake_types.math = fake_math
     fake_curobo.types = fake_types
     monkeypatch.setitem(sys.modules, "curobo", fake_curobo)
     monkeypatch.setitem(sys.modules, "curobo.types", fake_types)
-    monkeypatch.setitem(sys.modules, "curobo.types.math", fake_math)
 
     root = stage.GetPrimAtPath("/World/task_0/movable_b")
     UsdGeom.Xformable(root).AddTranslateOp().Set((0.1, 0.0, 0.0))
@@ -493,7 +507,50 @@ def test_contact_force_reduction_preserves_filter_identity_across_sensors():
     np.testing.assert_allclose(maxima, [5.0, 10.0])
 
 
-def test_old_usd_helper_api_builds_exact_name_bbox_world(monkeypatch):
+def test_robot_contact_can_exclude_only_the_expected_active_object():
+    class View:
+        def get_contact_force_matrix(self):
+            return np.asarray([[[3.0, 4.0, 0.0], [0.0, 0.0, 12.0]]])
+
+    manager = CollisionSceneManager.__new__(CollisionSceneManager)
+    manager.records = {
+        "apple": types.SimpleNamespace(collision_prim_paths=["/World/apple/collider"]),
+        "table": types.SimpleNamespace(collision_prim_paths=["/World/table/collider"]),
+    }
+    manager._robot_environment_contact_views = {("robot", "left"): [View()]}
+    manager._robot_contact_debug_reported = set()
+
+    assert manager.get_unexpected_robot_contact_force("robot", "left") == 12.0
+    assert (
+        manager.get_unexpected_robot_contact_force(
+            "robot", "left", allowed_entity="apple"
+        )
+        == 12.0
+    )
+
+    class TargetOnlyView:
+        def get_contact_force_matrix(self):
+            return np.asarray([[[3.0, 4.0, 0.0], [0.0, 0.0, 0.0]]])
+
+    manager._robot_environment_contact_views = {("robot", "left"): [TargetOnlyView()]}
+    assert (
+        manager.get_unexpected_robot_contact_force(
+            "robot", "left", allowed_entity="apple"
+        )
+        == 0.0
+    )
+
+
+def test_pending_detach_window_is_explicit():
+    manager = CollisionSceneManager.__new__(CollisionSceneManager)
+    manager._pending_detach = {"apple"}
+
+    assert manager.is_pending_detach("apple")
+    assert not manager.is_pending_detach("table")
+    assert not manager.is_pending_detach(None)
+
+
+def test_native_usd_parser_builds_exact_name_bbox_world(monkeypatch):
     stage = Usd.Stage.CreateInMemory()
     manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
 
@@ -511,17 +568,17 @@ def test_old_usd_helper_api_builds_exact_name_bbox_world(monkeypatch):
             return self
 
     fake_curobo = types.ModuleType("curobo")
-    fake_geom = types.ModuleType("curobo.geom")
-    fake_geom_types = types.ModuleType("curobo.geom.types")
+    fake_src = types.ModuleType("curobo._src")
+    fake_geom = types.ModuleType("curobo._src.geom")
+    fake_geom_types = types.ModuleType("curobo._src.geom.types")
     fake_geom_types.Cuboid = FakeCuboid
-    fake_geom_types.WorldConfig = FakeWorldConfig
-    fake_geom.types = fake_geom_types
-    fake_curobo.geom = fake_geom
+    fake_geom_types.SceneCfg = FakeWorldConfig
     monkeypatch.setitem(sys.modules, "curobo", fake_curobo)
-    monkeypatch.setitem(sys.modules, "curobo.geom", fake_geom)
-    monkeypatch.setitem(sys.modules, "curobo.geom.types", fake_geom_types)
+    monkeypatch.setitem(sys.modules, "curobo._src", fake_src)
+    monkeypatch.setitem(sys.modules, "curobo._src.geom", fake_geom)
+    monkeypatch.setitem(sys.modules, "curobo._src.geom.types", fake_geom_types)
 
-    manager._usd_helper = types.SimpleNamespace()  # pylint: disable=protected-access
+    manager._usd_parser = types.SimpleNamespace()  # pylint: disable=protected-access
     result = manager.build_world_config("/World/task_0")
 
     assert [obstacle.name for obstacle in result.cuboid] == manager.collision_prim_paths
@@ -529,7 +586,7 @@ def test_old_usd_helper_api_builds_exact_name_bbox_world(monkeypatch):
     assert all(min(obstacle.dims) > 0.0 for obstacle in result.cuboid)
 
 
-def test_bbox_proxy_uses_sibling_reference_and_applies_scale_once(monkeypatch):
+def test_native_bbox_proxy_uses_sibling_reference_and_applies_scale_once(monkeypatch):
     stage = Usd.Stage.CreateInMemory()
     reference = UsdGeom.Xform.Define(stage, "/World/robot_base")
     reference.AddTranslateOp().Set((2.5, 1.0, 0.7))
@@ -549,14 +606,14 @@ def test_bbox_proxy_uses_sibling_reference_and_applies_scale_once(monkeypatch):
             self.dims = kwargs["dims"]
 
     fake_curobo = types.ModuleType("curobo")
-    fake_geom = types.ModuleType("curobo.geom")
-    fake_geom_types = types.ModuleType("curobo.geom.types")
+    fake_src = types.ModuleType("curobo._src")
+    fake_geom = types.ModuleType("curobo._src.geom")
+    fake_geom_types = types.ModuleType("curobo._src.geom.types")
     fake_geom_types.Cuboid = FakeCuboid
-    fake_geom.types = fake_geom_types
-    fake_curobo.geom = fake_geom
     monkeypatch.setitem(sys.modules, "curobo", fake_curobo)
-    monkeypatch.setitem(sys.modules, "curobo.geom", fake_geom)
-    monkeypatch.setitem(sys.modules, "curobo.geom.types", fake_geom_types)
+    monkeypatch.setitem(sys.modules, "curobo._src", fake_src)
+    monkeypatch.setitem(sys.modules, "curobo._src.geom", fake_geom)
+    monkeypatch.setitem(sys.modules, "curobo._src.geom.types", fake_geom_types)
 
     manager = CollisionSceneManager.__new__(CollisionSceneManager)
     manager.stage = stage
@@ -568,7 +625,7 @@ def test_bbox_proxy_uses_sibling_reference_and_applies_scale_once(monkeypatch):
     np.testing.assert_allclose(proxy.dims, [4.0, 2.8, 0.02], atol=1e-6)
 
 
-def test_old_usd_helper_api_computes_relative_dynamic_pose(monkeypatch):
+def test_native_usd_parser_computes_relative_dynamic_pose(monkeypatch):
     stage = Usd.Stage.CreateInMemory()
     manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
     reference_from_world = np.eye(4)
@@ -595,15 +652,12 @@ def test_old_usd_helper_api_computes_relative_dynamic_pose(monkeypatch):
 
     fake_curobo = types.ModuleType("curobo")
     fake_types = types.ModuleType("curobo.types")
-    fake_math = types.ModuleType("curobo.types.math")
-    fake_math.Pose = FakePose
-    fake_types.math = fake_math
+    fake_types.Pose = FakePose
     fake_curobo.types = fake_types
     monkeypatch.setitem(sys.modules, "curobo", fake_curobo)
     monkeypatch.setitem(sys.modules, "curobo.types", fake_types)
-    monkeypatch.setitem(sys.modules, "curobo.types.math", fake_math)
 
-    manager._usd_helper = Helper()  # pylint: disable=protected-access
+    manager._usd_parser = Helper()  # pylint: disable=protected-access
     controller = types.SimpleNamespace(
         reference_prim_path="/World/robot_base",
         tensor_args=types.SimpleNamespace(to_device=lambda value: value),
@@ -624,40 +678,40 @@ def test_dynamic_pose_sync_does_not_rebuild_collision_geometry(monkeypatch):
     pose_calls = []
 
     class Helper:
-        def get_collision_prim_pose(self, path, reference_prim_path=None):
-            pose_calls.append((path, reference_prim_path))
-            return [1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0]
+        def get_pose(self, path, inverse=False):
+            pose_calls.append((path, inverse))
+            if inverse:
+                return np.eye(4)
+            pose = np.eye(4)
+            pose[:3, 3] = [1.0, 2.0, 3.0]
+            return pose
 
-        def get_obstacles_from_collision_prims(self, *_args, **_kwargs):
+        def get_obstacles_from_stage(self, *_args, **_kwargs):
             raise AssertionError("dynamic pose sync must not rebuild geometry")
 
     updates = []
-    world_collision = types.SimpleNamespace(
+    scene_collision_checker = types.SimpleNamespace(
         update_obstacle_pose=lambda path, pose: updates.append((path, pose))
     )
     controller = types.SimpleNamespace(
         reference_prim_path="/World/task_0",
-        tensor_args=object(),
-        motion_gen=types.SimpleNamespace(world_collision=world_collision),
+        tensor_args=types.SimpleNamespace(to_device=lambda value: value),
+        planner=types.SimpleNamespace(scene_collision_checker=scene_collision_checker),
     )
     manager.controllers[("robot", "right")] = controller
-    manager._usd_helper = Helper()  # pylint: disable=protected-access
+    manager._usd_parser = Helper()  # pylint: disable=protected-access
 
     fake_curobo = types.ModuleType("curobo")
     fake_types = types.ModuleType("curobo.types")
-    fake_math = types.ModuleType("curobo.types.math")
-
     class FakePose:
         @staticmethod
-        def from_list(value, _tensor_args):
-            return tuple(value)
+        def from_matrix(value):
+            return np.asarray(value)
 
-    fake_math.Pose = FakePose
-    fake_types.math = fake_math
+    fake_types.Pose = FakePose
     fake_curobo.types = fake_types
     monkeypatch.setitem(sys.modules, "curobo", fake_curobo)
     monkeypatch.setitem(sys.modules, "curobo.types", fake_types)
-    monkeypatch.setitem(sys.modules, "curobo.types.math", fake_math)
 
     root = stage.GetPrimAtPath("/World/task_0/movable_b")
     UsdGeom.Xformable(root).AddTranslateOp().Set((0.1, 0.0, 0.0))
@@ -665,11 +719,22 @@ def test_dynamic_pose_sync_does_not_rebuild_collision_geometry(monkeypatch):
 
     assert changed == ["movable_b"]
     assert pose_calls == [
-        ("/World/task_0/movable_b/collider", "/World/task_0")
+        ("/World/task_0", True),
+        ("/World/task_0/movable_b/collider", False),
     ]
-    assert updates == [
-        (
-            "/World/task_0/movable_b/collider",
-            (1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0),
-        )
-    ]
+    assert len(updates) == 1
+    assert updates[0][0] == "/World/task_0/movable_b/collider"
+    np.testing.assert_allclose(updates[0][1], np.array([[1.0, 0.0, 0.0, 1.0],
+                                                         [0.0, 1.0, 0.0, 2.0],
+                                                         [0.0, 0.0, 1.0, 3.0],
+                                                         [0.0, 0.0, 0.0, 1.0]]))
+
+
+def test_dynamic_pose_sync_skips_placement_contact_objects():
+    stage = Usd.Stage.CreateInMemory()
+    manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
+    manager.records["movable_b"].state = CollisionObjectState.PLACEMENT_CONTACT
+    root = stage.GetPrimAtPath("/World/task_0/movable_b")
+    UsdGeom.Xformable(root).AddTranslateOp().Set((0.25, 0.0, 0.0))
+
+    assert manager.sync_dynamic_poses(step_id=1, interval_steps=1) == []

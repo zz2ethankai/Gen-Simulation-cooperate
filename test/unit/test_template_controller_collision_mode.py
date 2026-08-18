@@ -159,13 +159,13 @@ def test_passthrough_does_not_change_the_active_collision_world():
     assert controller.calls == []
 
 
-def test_same_physics_mode_refreshes_a_moved_mobile_reference():
+def test_same_physics_mode_does_not_refresh_on_every_control_step():
     manager = _Manager()
     controller = _Controller("physics_schema", manager=manager)
 
     controller.activate_collision_world_mode("physics_schema")
 
-    assert manager.calls == [("refresh_physics", "physics_schema")]
+    assert manager.calls == []
     assert controller.calls == []
 
 
@@ -174,7 +174,7 @@ def test_joint_goal_planning_preserves_measured_start_and_exact_arm_goal():
         def __init__(self, **kwargs):
             self.__dict__.update(kwargs)
 
-        def get_ordered_joint_state(self, names):
+        def reorder(self, names):
             self.ordered_names = list(names)
             return self
 
@@ -183,15 +183,17 @@ def test_joint_goal_planning_preserves_measured_start_and_exact_arm_goal():
 
     captured = {}
 
-    class MotionGen:
+    class NativePlanner:
+        joint_names = ["joint_1", "joint_2"]
+
         @staticmethod
-        def plan_single_js(start, goal, config):
-            captured.update(start=start, goal=goal, config=config)
+        def plan_cspace(goal, start, **kwargs):
+            captured.update(start=start, goal=goal, kwargs=kwargs)
             return "result"
 
     controller = SimpleNamespace(
         arm_indices=np.array([1, 2]),
-        cmd_js_names=["joint_1", "joint_2"],
+        raw_js_names=["joint_1", "joint_2"],
         robot=SimpleNamespace(
             dof_names=["base", "joint_1", "joint_2", "gripper"],
             get_joints_state=lambda: SimpleNamespace(
@@ -205,8 +207,18 @@ def test_joint_goal_planning_preserves_measured_start_and_exact_arm_goal():
             np.zeros(4),
             np.zeros(4),
         ),
-        motion_gen=MotionGen(),
-        plan_config=SimpleNamespace(clone=lambda: "plan-config"),
+        planner=NativePlanner(),
+        _max_plan_attempts=4,
+        _single_graph_attempt=1,
+        _refresh_reference_world_for_planning=lambda: None,
+        _arm_joint_state=lambda _state: JointState(
+            position=np.array([1.0, 2.0]),
+            velocity=np.array([0.1, 0.2]),
+            acceleration=np.zeros(2),
+            jerk=np.zeros(2),
+            joint_names=["joint_1", "joint_2"],
+        ),
+        _run_timed_curobo_call=lambda _operation, call: call(),
         _log_plan_result=lambda context, result, target=None: captured.update(
             log=(context, result, target)
         ),
@@ -216,11 +228,11 @@ def test_joint_goal_planning_preserves_measured_start_and_exact_arm_goal():
     result = method(controller, np.array([3.0, 4.0]))
 
     assert result == "result"
-    np.testing.assert_allclose(captured["start"].position, [9.0, 1.0, 2.0, 0.03])
-    np.testing.assert_allclose(captured["goal"].position, [9.0, 3.0, 4.0, 0.03])
-    np.testing.assert_allclose(captured["goal"].velocity, np.zeros(4))
-    assert captured["start"].ordered_names == ["joint_1", "joint_2"]
+    np.testing.assert_allclose(captured["start"].position, [1.0, 2.0])
+    np.testing.assert_allclose(captured["goal"].position, [3.0, 4.0])
+    np.testing.assert_allclose(captured["goal"].velocity, np.zeros(2))
+    assert captured["start"].joint_names == ["joint_1", "joint_2"]
     assert captured["goal"].ordered_names == ["joint_1", "joint_2"]
-    assert captured["config"] == "plan-config"
+    assert captured["kwargs"] == {"max_attempts": 4, "enable_graph_attempt": 1}
     assert captured["log"][0:2] == ("plan_joint_positions", "result")
     np.testing.assert_allclose(captured["log"][2], [3.0, 4.0])

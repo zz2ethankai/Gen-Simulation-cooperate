@@ -48,6 +48,11 @@ class MotionPhaseCommand:
     active_object: str | None = None
     support_object: str | None = None
     allow_target_finger_contact: bool = False
+    # An attached or just-detached target may retain a short-lived contact
+    # with a non-finger robot link while it is being lifted or settled.  This
+    # flag is kept separate from finger contact so other environment
+    # collisions remain safety violations.
+    allow_target_robot_contact: bool = False
     allow_object_support_contact: bool = False
     replan_allowed: bool = True
     completion_tolerance: dict[str, float] = field(default_factory=dict)

@@ -133,7 +133,23 @@ class CollisionSceneManager:
         self.mode = str(_cfg_get(self.config, "mode", "physics_schema"))
         if self.mode != "physics_schema":
             raise ValueError(f"CollisionSceneManager only supports physics_schema, got {self.mode!r}")
+        self.geometry_mode = str(
+            _cfg_get(self.config, "geometry_mode", "bbox")
+        ).strip().lower()
+        if self.geometry_mode in {"mesh", "usd", "native_usd"}:
+            self.geometry_mode = "native"
+        if self.geometry_mode not in {"bbox", "native"}:
+            raise ValueError(
+                "collision_world.geometry_mode must be 'bbox' or 'native', "
+                f"got {self.geometry_mode!r}"
+            )
         self.exclusions = validate_exact_exclusions(_cfg_get(self.config, "exact_exclusions", []))
+        task_cfg = getattr(task, "cfg", {}) or {}
+        self._planning_neglect_names = tuple(
+            str(value).strip().lower()
+            for value in (task_cfg.get("neglect_collision_names", []) or [])
+            if str(value).strip()
+        )
         self.dynamic_translation_replan_m = float(
             _cfg_get(execution_safety_config, "dynamic_translation_replan_m", 0.01)
         )
@@ -156,22 +172,26 @@ class CollisionSceneManager:
         self.world_revision = 0
         self._step_id = 0
         self._pose_matrices: dict[str, np.ndarray] = {}
+        self._tracking_pose_matrices: dict[str, np.ndarray] = {}
         self._robot_environment_contact_views: dict[tuple[str, str], list[Any]] = {}
+        self._robot_contact_debug_reported: set[tuple[str, str]] = set()
         self._finger_environment_contact_views: dict[tuple[str, str], list[Any]] = {}
         self._object_environment_contact_views: dict[str, list[Any]] = {}
         self._object_environment_filter_paths: dict[str, list[str]] = {}
-        self._usd_helper = None
+        self._object_contact_debug_reported: set[tuple[str, str | None]] = set()
+        self._usd_parser = None
         self._discover()
 
     def _helper(self):
-        if self._usd_helper is None:
+        if self._usd_parser is None:
             # Lazy import keeps Physics-schema discovery unit-testable outside
-            # the Isaac/CuRobo Python environment.
-            from curobo.util.usd_helper import UsdHelper
+            # the Isaac/CuRobo Python environment while using the native v2
+            # USD parser directly.
+            from curobo._src.util.usd_scene_parser import UsdSceneParser
 
-            self._usd_helper = UsdHelper()
-            self._usd_helper.load_stage(self.stage)
-        return self._usd_helper
+            self._usd_parser = UsdSceneParser()
+            self._usd_parser.load_stage(self.stage)
+        return self._usd_parser
 
     @staticmethod
     def _entity_root(entity: Any) -> str | None:
@@ -272,6 +292,62 @@ class CollisionSceneManager:
 
         visit(getattr(self.task, "cfg", {}).get("skills", []))
         return result
+
+    def _configured_entity(self, entity_name: str) -> Any | None:
+        for name, entity in self._iter_entities():
+            if name == str(entity_name):
+                return entity
+        return None
+
+    def _configured_entity_cfg(self, entity_name: str) -> Any:
+        """Look up raw task metadata when an Isaac wrapper drops it."""
+
+        task_cfg = getattr(self.task, "cfg", {}) or {}
+        candidates = list(task_cfg.get("objects", []) or [])
+        arena_cfg = task_cfg.get("arena", {}) or {}
+        candidates.extend(list(arena_cfg.get("fixtures", []) or []))
+        for candidate in candidates:
+            if str(_cfg_get(candidate, "name", "")) == str(entity_name):
+                return candidate
+        entity = self._configured_entity(entity_name)
+        return getattr(entity, "cfg", {}) or {}
+
+    def get_source_support_entity(self, entity_name: str) -> str | None:
+        """Return the configured source fixture for a movable object.
+
+        Pick's post-grasp lift starts while many tabletop assets are still in
+        contact with their source support.  The support is configuration
+        metadata, not a manipulation target, so expose it explicitly to the
+        phase-level safety monitor instead of treating every environment
+        contact as unexpected.
+        """
+
+        cfg = self._configured_entity_cfg(entity_name)
+        parent_fixture = str(_cfg_get(cfg, "parent_fixture", "") or "").strip()
+        if parent_fixture and parent_fixture in self.records:
+            return parent_fixture
+        return None
+
+    def _support_collision_paths(self, support_entity: str | None) -> set[str]:
+        """Resolve a fixture and its explicit support-plane descendants."""
+
+        if not support_entity:
+            return set()
+        support_names = {str(support_entity)}
+        for name, entity in self._iter_entities():
+            cfg = self._configured_entity_cfg(name)
+            parent_fixture = str(_cfg_get(cfg, "parent_fixture", "") or "").strip()
+            role = str(_cfg_get(cfg, "role", "") or "").lower()
+            if parent_fixture == str(support_entity) and (
+                role == "support_collision_plane" or "support_plane" in name
+            ):
+                support_names.add(name)
+        paths: set[str] = set()
+        for name in support_names:
+            record = self.records.get(name)
+            if record is not None:
+                paths.update(record.collision_prim_paths)
+        return paths
 
     def _rigid_body_paths(self, record: CollisionObjectRecord) -> list[str]:
         paths: set[str] = set()
@@ -449,6 +525,9 @@ class CollisionSceneManager:
                 tracking_prim_path=tracking_prim_path,
             )
             self.records[entity_name] = record
+            self._tracking_pose_matrices[entity_name] = self._world_matrix(
+                tracking_prim_path
+            )
             for path in paths:
                 self.path_to_entity[path] = entity_name
                 self._pose_matrices[path] = self._world_matrix(path)
@@ -481,6 +560,27 @@ class CollisionSceneManager:
         matrix = cache.GetLocalToWorldTransform(self.stage.GetPrimAtPath(prim_path))
         return np.asarray(matrix, dtype=float).reshape(4, 4)
 
+    @staticmethod
+    def _rotation_from_affine(matrix: np.ndarray) -> np.ndarray:
+        """Extract the closest proper rotation from an affine transform.
+
+        USD collision assets can carry non-unit or non-uniform scale in the
+        same 3x3 block as their orientation.  Computing an angle directly
+        from that affine block turns ordinary scale into large false rotation
+        drift.  The polar factor is the nearest orthonormal rotation and is
+        stable for the rigid transforms used by the scene manager.
+        """
+
+        linear = np.asarray(matrix, dtype=float).reshape(4, 4)[:3, :3]
+        if not np.all(np.isfinite(linear)):
+            raise CollisionSceneError("non-finite affine transform rotation block")
+        left, _, right_transpose = np.linalg.svd(linear)
+        rotation = left @ right_transpose
+        if np.linalg.det(rotation) < 0.0:
+            left[:, -1] *= -1.0
+            rotation = left @ right_transpose
+        return rotation
+
     @property
     def collision_prim_paths(self) -> list[str]:
         return [path for record in self.records.values() for path in record.collision_prim_paths]
@@ -488,29 +588,76 @@ class CollisionSceneManager:
     def build_world_config(self, reference_prim_path: str):
         helper = self._helper()
         exact_loader = getattr(helper, "get_obstacles_from_collision_prims", None)
-        if callable(exact_loader):
+        # The pre-native-v2 implementation deliberately used one oriented
+        # cuboid per exact CollisionAPI path.  Feeding a high-poly USD Mesh
+        # (for example, the ball asset has roughly 44k triangles) into every
+        # rollout is much slower.  Keep that fast conservative representation
+        # as the default and require an explicit ``geometry_mode: native`` for
+        # full mesh collision fidelity.
+        if self.geometry_mode == "native" and callable(exact_loader):
             world = exact_loader(
                 self.collision_prim_paths,
                 reference_prim_path=reference_prim_path,
             )
         else:
-            from curobo.geom.types import WorldConfig
+            stage_loader = getattr(helper, "get_obstacles_from_stage", None)
+            if self.geometry_mode == "native" and callable(stage_loader):
+                world = stage_loader(
+                    only_paths=self.collision_prim_paths,
+                    reference_prim_path=reference_prim_path,
+                )
+                allowed = set(self.collision_prim_paths)
+                for field in ("cuboid", "sphere", "mesh", "cylinder", "capsule"):
+                    obstacles = getattr(world, field, None)
+                    if obstacles is not None:
+                        setattr(
+                            world,
+                            field,
+                            [obstacle for obstacle in obstacles if obstacle.name in allowed],
+                        )
+                parsed_names = {
+                    obstacle.name
+                    for obstacle in getattr(world, "objects", [])
+                    if obstacle.name in allowed
+                }
+                missing = sorted(allowed - parsed_names)
+                if missing:
+                    raise CollisionSceneError(
+                        "native v2 USD parser did not produce exact collision geometry: "
+                        f"{missing}"
+                    )
+                world.objects = [
+                    obstacle
+                    for field in ("sphere", "cuboid", "capsule", "mesh", "cylinder", "voxel")
+                    for obstacle in (getattr(world, field, None) or [])
+                ]
+                LOGGER.info(
+                    "[CollisionWorld] native USD parser loaded %d exact-path geometries",
+                    len(parsed_names),
+                )
+            else:
+                # Fast/default mode, and unit-test doubles or non-Isaac
+                # environments without a native loader, all use the same
+                # exact-path proxy representation.
+                from curobo._src.geom.types import SceneCfg
 
-            proxies = [
-                self._bbox_collision_proxy(path, reference_prim_path)
-                for path in self.collision_prim_paths
-            ]
-            world = WorldConfig(cuboid=proxies)
-            LOGGER.warning(
-                "[CollisionWorld] old UsdHelper using %d exact-path oriented bbox proxies",
-                len(proxies),
-            )
+                proxies = [
+                    self._bbox_collision_proxy(path, reference_prim_path)
+                    for path in self.collision_prim_paths
+                ]
+                world = SceneCfg(cuboid=proxies)
+                LOGGER.info(
+                    "[CollisionWorld] using %d exact-path oriented bbox proxies "
+                    "(geometry_mode=%s)",
+                    len(proxies),
+                    self.geometry_mode,
+                )
         return world.get_collision_check_world()
 
     def _bbox_collision_proxy(self, prim_path: str, reference_prim_path: str):
-        """Create a conservative exact-name proxy for an old UsdHelper."""
+        """Create a conservative exact-name proxy for a native USD scene."""
 
-        from curobo.geom.types import Cuboid
+        from curobo._src.geom.types import Cuboid
 
         prim = self.stage.GetPrimAtPath(prim_path)
         reference = self.stage.GetPrimAtPath(reference_prim_path)
@@ -564,17 +711,11 @@ class CollisionSceneManager:
         )
 
     def _controller_obstacle_pose(self, controller: Any, prim_path: str):
-        """Return a CuRobo Pose across old and new UsdHelper APIs."""
+        """Return a native CuRobo Pose in the controller reference frame."""
 
-        from curobo.types.math import Pose
+        from curobo.types import Pose
 
         helper = self._helper()
-        exact_pose = getattr(helper, "get_collision_prim_pose", None)
-        if callable(exact_pose):
-            value = exact_pose(
-                prim_path, reference_prim_path=controller.reference_prim_path
-            )
-            return Pose.from_list(value, controller.tensor_args)
         reference_from_world = np.asarray(
             helper.get_pose(controller.reference_prim_path, inverse=True), dtype=float
         )
@@ -595,7 +736,7 @@ class CollisionSceneManager:
         )
         self._temporary_disabled[key] = set()
         capacity = int(
-            controller.motion_gen.robot_cfg.kinematics.kinematics_config.get_number_of_spheres(
+            controller.planner.kinematics.config.kinematics_config.get_number_of_spheres(
                 "attached_object"
             )
         )
@@ -705,9 +846,9 @@ class CollisionSceneManager:
         ):
             return False
         for path in self.collision_prim_paths:
-            controller.motion_gen.world_collision.update_obstacle_pose(
-                path, self._controller_obstacle_pose(controller, path)
-            )
+            obstacle_pose = self._controller_obstacle_pose(controller, path)
+            for planner in self._native_planners(controller):
+                planner.scene_collision_checker.update_obstacle_pose(path, obstacle_pose)
         self._controller_reference_matrices[key] = current
         self.world_revision += 1
         LOGGER.info(
@@ -763,10 +904,25 @@ class CollisionSceneManager:
             "colliding_entities": colliding_entities,
         }
 
-    def initialize_contact_views(self) -> None:
+    def initialize_contact_views(self, physics_sim_view=None) -> None:
         """Create PhysX views for non-finger robot links against all world colliders."""
 
-        from omni.isaac.core.prims import RigidContactView
+        from isaacsim.core.api.sensors import RigidContactView
+        from isaacsim.core.api.simulation_context import SimulationContext
+
+        # Isaac Sim 6 does not reliably attach a newly-created tensor view to
+        # the current USD stage.  All contact sensors must share the view
+        # finalized by World.reset()/Scene._finalize().
+        if physics_sim_view is None:
+            simulation_context = SimulationContext.instance()
+            if simulation_context is not None:
+                # This is the deprecated tensor view consumed by
+                # isaacsim.core.api.sensors.RigidContactView.  Do not use
+                # SimulationManager.get_physics_simulation_view(), which is
+                # Isaac Sim 6's separate Warp view.
+                physics_sim_view = simulation_context.physics_sim_view
+        if physics_sim_view is None:
+            raise CollisionSceneError("PhysX simulation view is not initialized")
 
         self._robot_environment_contact_views.clear()
         self._finger_environment_contact_views.clear()
@@ -786,7 +942,7 @@ class CollisionSceneManager:
                     prim_paths_expr=path,
                     filter_paths_expr=self.collision_prim_paths,
                 )
-                view.initialize()
+                view.initialize(physics_sim_view=physics_sim_view)
                 views.append(view)
             if not views and self.strict:
                 raise CollisionSceneError(f"no forbidden-link contact views configured for {key}")
@@ -805,7 +961,7 @@ class CollisionSceneManager:
                     prim_paths_expr=path,
                     filter_paths_expr=self.collision_prim_paths,
                 )
-                view.initialize()
+                view.initialize(physics_sim_view=physics_sim_view)
                 finger_views.append(view)
             if not finger_views and self.strict:
                 raise CollisionSceneError(f"no finger contact views configured for {key}")
@@ -837,7 +993,7 @@ class CollisionSceneManager:
                     prim_paths_expr=sensor_path,
                     filter_paths_expr=filters,
                 )
-                view.initialize()
+                view.initialize(physics_sim_view=physics_sim_view)
                 views.append(view)
             self._object_environment_contact_views[entity_name] = views
             self._object_environment_filter_paths[entity_name] = filters
@@ -855,19 +1011,60 @@ class CollisionSceneManager:
             maxima = np.maximum(maxima, np.max(magnitudes, axis=0))
         return maxima
 
-    def get_unexpected_robot_contact_force(self, robot: str, arm: str) -> float:
+    def get_unexpected_robot_contact_force(
+        self,
+        robot: str,
+        arm: str,
+        allowed_entity: str | None = None,
+    ) -> float:
+        """Return robot/environment contact excluding one expected entity."""
+
+        key = (str(robot), str(arm))
+        filters = self.collision_prim_paths
+        allowed_paths = (
+            set(self.records[allowed_entity].collision_prim_paths)
+            if allowed_entity in self.records
+            else set()
+        )
+        allowed_indices = {
+            index for index, path in enumerate(filters) if path in allowed_paths
+        }
+        other_indices = [
+            index for index in range(len(filters)) if index not in allowed_indices
+        ]
         maximum = 0.0
-        for view in self._robot_environment_contact_views.get((str(robot), str(arm)), []):
+        top_contacts: list[tuple[float, str]] = []
+        for view in self._robot_environment_contact_views.get(key, []):
             try:
                 values = np.asarray(view.get_contact_force_matrix(), dtype=float)
                 if values.size:
-                    maximum = max(maximum, float(np.max(np.linalg.norm(values, axis=-1))))
+                    magnitudes = np.linalg.norm(values, axis=-1).reshape(-1, len(filters))
+                    all_maxima = np.max(magnitudes, axis=0)
+                    maxima = all_maxima[other_indices] if other_indices else np.zeros(0)
+                    maximum = max(maximum, float(np.max(maxima)) if maxima.size else 0.0)
+                    top_contacts.extend(
+                        (float(force), str(path))
+                        for index, (force, path) in enumerate(zip(all_maxima, filters))
+                        if index in other_indices
+                        if float(force) > 0.0
+                    )
             except Exception as exc:  # pragma: no cover - Isaac runtime failure path
                 if self.strict:
                     raise CollisionSceneError(
                         f"failed to read robot/environment contact view for {robot}/{arm}: {exc}"
                     ) from exc
                 LOGGER.exception("[CollisionWorld] contact view read failed for %s/%s", robot, arm)
+        if maximum > 0.0 and key not in self._robot_contact_debug_reported:
+            self._robot_contact_debug_reported.add(key)
+            LOGGER.warning(
+                "[CollisionWorld] robot contact detail robot=%s arm=%s allowed=%s "
+                "maximum=%s top=%s",
+                robot,
+                arm,
+                allowed_entity,
+                maximum,
+                sorted(top_contacts, reverse=True)[:8],
+            )
         return maximum
 
     def get_object_environment_contact_forces(
@@ -888,11 +1085,7 @@ class CollisionSceneManager:
                 ) from exc
             LOGGER.exception("[CollisionWorld] object contact view failed for %s", entity_name)
             return 0.0, 0.0
-        support_paths = (
-            set(self.records[support_entity].collision_prim_paths)
-            if support_entity in self.records
-            else set()
-        )
+        support_paths = self._support_collision_paths(support_entity)
         allowed_indices = [index for index, path in enumerate(filters) if path in support_paths]
         other_indices = [index for index, path in enumerate(filters) if path not in support_paths]
         allowed = (
@@ -901,6 +1094,26 @@ class CollisionSceneManager:
         unexpected = (
             float(np.max(maxima[other_indices])) if other_indices else 0.0
         )
+        debug_key = (str(entity_name), str(support_entity) if support_entity else None)
+        if unexpected > 0.0 and debug_key not in self._object_contact_debug_reported:
+            ranked = sorted(
+                (
+                    (float(force), str(path))
+                    for index, (force, path) in enumerate(zip(maxima, filters))
+                    if index in other_indices and float(force) > 0.0
+                ),
+                reverse=True,
+            )[:8]
+            self._object_contact_debug_reported.add(debug_key)
+            LOGGER.warning(
+                "[CollisionWorld] object contact detail entity=%s support=%s "
+                "allowed=%s unexpected=%s top=%s",
+                entity_name,
+                support_entity,
+                allowed,
+                unexpected,
+                ranked,
+            )
         return allowed, unexpected
 
     def get_finger_environment_contact_forces(
@@ -950,7 +1163,7 @@ class CollisionSceneManager:
         )
         current = object_world @ np.linalg.inv(ee_world)
         translation = float(np.linalg.norm(current[3, :3] - initial[3, :3]))
-        relative_rotation = current[:3, :3] @ initial[:3, :3].T
+        relative_rotation = self._rotation_from_affine(current) @ self._rotation_from_affine(initial).T
         cosine = float(np.clip((np.trace(relative_rotation) - 1.0) * 0.5, -1.0, 1.0))
         return translation, float(np.degrees(np.arccos(cosine)))
 
@@ -960,13 +1173,65 @@ class CollisionSceneManager:
             raise CollisionSceneError(f"unknown collision-world controller: {key}")
         return key
 
+    @staticmethod
+    def _native_planners(controller: Any) -> tuple[Any, ...]:
+        """Return the single and optional candidate native-v2 planners once each."""
+
+        planners = []
+        for attribute in ("planner", "batch_planner"):
+            planner = getattr(controller, attribute, None)
+            if planner is not None and not any(planner is item for item in planners):
+                planners.append(planner)
+        return tuple(planners)
+
     def _set_enabled(self, key: tuple[str, str], paths: Iterable[str], enabled: bool) -> None:
         controller = self.controllers[key]
         for path in paths:
-            if controller.motion_gen.world_model.get_obstacle(path) is None:
+            if controller.world_cfg.get_obstacle(path) is None:
                 raise CollisionSceneError(f"CuRobo obstacle missing before enable change: {key} {path}")
-            controller.motion_gen.world_collision.enable_obstacle(path, bool(enabled))
+            for planner in self._native_planners(controller):
+                planner.scene_collision_checker.enable_obstacle(path, bool(enabled))
             self.controller_enabled[key][path] = bool(enabled)
+
+    def apply_controller_planning_exclusions(self, controller: Any) -> None:
+        """Apply task-declared planning exclusions to one native-v2 world.
+
+        ``neglect_collision_names`` is an existing task contract used by the
+        legacy stage parser (for example, tabletop tasks neglect ``table``
+        while still retaining its physical support collision).  Physics-schema
+        mode must preserve that distinction: disable only the owner's CuRobo
+        obstacle, never the Stage CollisionAPI or contact views.  The disabled
+        paths are temporary and are restored by ``restore_world`` or the next
+        episode reset.
+        """
+
+        if not self._planning_neglect_names:
+            return
+        key = self._controller_key(controller.name, controller.lr_name)
+        ignored: list[str] = []
+        for record in self.records.values():
+            if record.state in {
+                CollisionObjectState.ATTACHED,
+                CollisionObjectState.PLACEMENT_CONTACT,
+            }:
+                continue
+            entity_name = record.entity_name.lower()
+            if not any(token in entity_name for token in self._planning_neglect_names):
+                continue
+            for path in record.collision_prim_paths:
+                if self.controller_enabled[key].get(path, True):
+                    self._set_enabled(key, [path], False)
+                self._temporary_disabled[key].add(path)
+                ignored.append(path)
+        if ignored:
+            LOGGER.info(
+                "[CollisionWorld] applied native-v2 planning exclusions "
+                "controller=%s/%s names=%s paths=%s",
+                controller.name,
+                controller.lr_name,
+                list(self._planning_neglect_names),
+                ignored,
+            )
 
     def _transition(
         self,
@@ -1068,7 +1333,7 @@ class CollisionSceneManager:
             for key in self._physics_controller_keys():
                 self._set_enabled(key, record.collision_prim_paths, key != owner)
             raise CollisionSceneError(f"CuRobo attach failed: {entity_name}")
-        # attach_objects_to_robot disables the selected consolidated attach
+        # The native attachment manager disables the selected consolidated
         # proxy. Explicitly disable every other exact world collider of the
         # same entity as part of the identity switch.
         self._set_enabled(owner, record.collision_prim_paths, False)
@@ -1137,6 +1402,11 @@ class CollisionSceneManager:
         # allowed in that bookkeeping phase.
         self._set_enabled(owner, record.collision_prim_paths, False)
 
+    def is_pending_detach(self, entity_name: str | None) -> bool:
+        """Return whether an object is inside its post-detach settle window."""
+
+        return entity_name is not None and str(entity_name) in self._pending_detach
+
     def finalize_detach_target(self, entity_name: str, robot: str, arm: str) -> None:
         """Read the settled Stage pose, then restore the object to every world."""
 
@@ -1170,31 +1440,66 @@ class CollisionSceneManager:
 
     def _sync_record_poses(self, record: CollisionObjectRecord, force: bool = False) -> bool:
         changed = False
-        significant = False
+        tracking_path = record.tracking_prim_path or record.root_prim_path
+        tracking_matrix = self._world_matrix(tracking_path)
+        previous_tracking = self._tracking_pose_matrices.get(record.entity_name)
+        tracking_translation_delta = 0.0
+        tracking_rotation_delta_deg = 0.0
+        if previous_tracking is not None:
+            tracking_translation_delta = float(
+                np.linalg.norm(tracking_matrix[3, :3] - previous_tracking[3, :3])
+            )
+            relative_rotation = self._rotation_from_affine(tracking_matrix) @ self._rotation_from_affine(previous_tracking).T
+            cosine = float(
+                np.clip((np.trace(relative_rotation) - 1.0) * 0.5, -1.0, 1.0)
+            )
+            tracking_rotation_delta_deg = float(np.degrees(np.arccos(cosine)))
+        self._tracking_pose_matrices[record.entity_name] = tracking_matrix
+
         for path in record.collision_prim_paths:
             matrix = self._world_matrix(path)
             previous = self._pose_matrices.get(path)
             if not force and previous is not None and np.allclose(matrix, previous, atol=1e-6, rtol=0.0):
                 continue
-            if previous is not None:
-                translation_delta = float(np.linalg.norm(matrix[3, :3] - previous[3, :3]))
-                relative_rotation = matrix[:3, :3] @ previous[:3, :3].T
-                cosine = float(np.clip((np.trace(relative_rotation) - 1.0) * 0.5, -1.0, 1.0))
-                rotation_delta_deg = float(np.degrees(np.arccos(cosine)))
-                significant = significant or (
-                    translation_delta > self.dynamic_translation_replan_m
-                    or rotation_delta_deg > self.dynamic_rotation_replan_deg
-                )
             self._pose_matrices[path] = matrix
             changed = True
             for key in self._physics_controller_keys():
                 controller = self.controllers[key]
-                controller.motion_gen.world_collision.update_obstacle_pose(
-                    path, self._controller_obstacle_pose(controller, path)
-                )
+                obstacle_pose = self._controller_obstacle_pose(controller, path)
+                for planner in self._native_planners(controller):
+                    planner.scene_collision_checker.update_obstacle_pose(path, obstacle_pose)
         if changed:
             record.pose_revision += 1
             self.world_revision += 1
+        significant = (
+            previous_tracking is not None
+            and not force
+            and (
+                tracking_translation_delta > self.dynamic_translation_replan_m
+                or tracking_rotation_delta_deg > self.dynamic_rotation_replan_deg
+            )
+        )
+        if significant:
+            velocity = None
+            entity = self._configured_entity(record.entity_name)
+            get_linear_velocity = getattr(entity, "get_linear_velocity", None)
+            if callable(get_linear_velocity):
+                try:
+                    velocity = np.asarray(get_linear_velocity(), dtype=float).reshape(-1).tolist()
+                except Exception:  # pragma: no cover - simulator-only diagnostic
+                    velocity = None
+            LOGGER.warning(
+                "[CollisionWorld] significant dynamic pose entity=%s tracking_path=%s "
+                "translation_delta_m=%.6f rotation_delta_deg=%.3f "
+                "world_position=%s linear_velocity=%s updated_colliders=%d",
+                record.entity_name,
+                tracking_path,
+                tracking_translation_delta,
+                tracking_rotation_delta_deg,
+                np.asarray(tracking_matrix[3, :3], dtype=float).round(6).tolist(),
+                velocity,
+                int(changed),
+            )
         return significant if not force else changed
 
     def sync_dynamic_poses(self, step_id: int, interval_steps: int = 5, force: bool = False) -> list[str]:
@@ -1203,7 +1508,15 @@ class CollisionSceneManager:
             return []
         changed = []
         for record in self.records.values():
-            if record.mobility == "static" or record.state == CollisionObjectState.ATTACHED:
+            # ATTACHED and PLACEMENT_CONTACT objects are represented by the
+            # controller's attached collision spheres, not as world obstacles.
+            # In particular, the carried object naturally moves during the
+            # terminal placement descent; syncing its disabled world collider
+            # would falsely request a dynamic-obstacle replan every few steps.
+            if record.mobility == "static" or record.state in {
+                CollisionObjectState.ATTACHED,
+                CollisionObjectState.PLACEMENT_CONTACT,
+            }:
                 continue
             if self._sync_record_poses(record, force=force):
                 changed.append(record.entity_name)
@@ -1211,7 +1524,7 @@ class CollisionSceneManager:
 
     def audit_controller(self, controller: Any) -> None:
         expected = set(self.collision_prim_paths)
-        actual = {str(obstacle.name) for obstacle in controller.motion_gen.world_model.objects}
+        actual = {str(obstacle.name) for obstacle in controller.world_cfg.objects}
         missing = sorted(expected - actual)
         unexpected = sorted(actual - expected)
         key = f"{controller.name}/{controller.lr_name}"
@@ -1320,6 +1633,7 @@ class CollisionSceneManager:
         self.attach_prim_paths.clear()
         self.path_to_entity.clear()
         self._pose_matrices.clear()
+        self._tracking_pose_matrices.clear()
         self.controller_enabled.clear()
         self._controller_reference_matrices.clear()
         self.controller_audits.clear()
@@ -1351,22 +1665,18 @@ class CollisionSceneManager:
             )
 
             world = self.build_world_config(controller.reference_prim_path)
-            motion_gen = getattr(controller, "motion_gen", None)
-            if motion_gen is None:
+            planner = getattr(controller, "planner", None)
+            if planner is None:
                 raise CollisionSceneError(
-                    f"controller has no CuRobo motion generator during task reset: {key}"
+                    f"controller has no native CuRobo planner during task reset: {key}"
                 )
-            clear_cache = getattr(motion_gen, "clear_world_cache", None)
-            if callable(clear_cache):
-                clear_cache()
-            update_world = getattr(motion_gen, "update_world", None)
-            if not callable(update_world):
-                raise CollisionSceneError(
-                    f"controller cannot rebuild CuRobo world during task reset: {key}"
-                )
-            update_world(world)
+            # Native v2 reloads SceneData without clearing captured CUDA
+            # graphs.  Update the optional candidate planner as well.
+            planner.update_world(world)
+            batch_planner = getattr(controller, "batch_planner", None)
+            if batch_planner is not None:
+                batch_planner.update_world(world)
             controller.world_cfg = world
-            controller.world_model = motion_gen.world_collision
             signature_fn = getattr(controller, "_make_world_update_signature", None)
             if callable(signature_fn):
                 controller._world_update_signature = signature_fn(world)

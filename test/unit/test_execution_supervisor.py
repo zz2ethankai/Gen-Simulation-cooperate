@@ -93,3 +93,31 @@ def test_third_trigger_after_two_replans_aborts_and_clears_old_plan():
     assert controller.clear_count == 3
     assert supervisor.failure_reason == "dynamic_obstacle_changed"
     assert supervisor.monitor.events[-1].replan_index == 2
+
+
+def test_phase_skill_restores_cached_path_before_carry_home_forward():
+    supervisor, controller, _, command = _fixture(hold_steps=1)
+    command.phase = SimpleNamespace(value="carry_home")
+    restored = object()
+
+    def replan_after_safety(current_command):
+        current_command.params["preplanned_joint_path"] = restored
+        return True
+
+    skill = SimpleNamespace(
+        controller=controller,
+        replan_after_safety=replan_after_safety,
+    )
+    decision = supervisor.evaluate(
+        SafetyMeasurements(dynamic_obstacle_changed=True),
+        step_id=1,
+        robot="split_aloha",
+        skill=skill,
+        command=command,
+        world_revision=3,
+    )
+
+    assert decision == SafetyDecision.HOLD_AND_REPLAN
+    assert command.params["preplanned_joint_path"] is restored
+    assert supervisor.forward_or_hold(controller, lambda: "motion") == "hold"
+    assert supervisor.forward_or_hold(controller, lambda: "motion") == "motion"

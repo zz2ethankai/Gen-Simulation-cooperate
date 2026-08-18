@@ -108,6 +108,30 @@ scripts/docker/up_simbox_isaac.sh --stack-id worker0 --gpu 0
 scripts/docker/up_simbox_isaac.sh --stack-id worker1 --gpu 1
 ```
 
+### Isaac Bash 开发环境
+
+如果只需要进入 Isaac Sim 容器开发代码，不希望容器自动运行
+`launcher.py`，使用独立的开发入口：
+
+```bash
+# 构建镜像并进入 /workspace 的 Bash
+scripts/docker/isaac_dev.sh shell --gpu 0 --build
+
+# 后台启动，之后再进入
+scripts/docker/isaac_dev.sh start --gpu 0
+scripts/docker/isaac_dev.sh shell
+
+# 让脚本化工具在容器内执行命令
+scripts/docker/isaac_dev.sh exec -- python -c 'import torch; print(torch.__version__)'
+
+# 停止开发容器
+scripts/docker/isaac_dev.sh stop
+```
+
+该入口复用现有 Isaac 镜像、GPU、代码和 CuRobo 挂载，但使用独立的
+`isaac-dev-*` 容器名和 `output/isaac-dev/` cache，不会启动任务生成器，
+也不会影响普通的 `isaac` 任务容器。
+
 ## 查看日志
 
 默认容器：

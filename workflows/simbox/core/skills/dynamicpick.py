@@ -13,15 +13,15 @@ from core.utils.plan_utils import (
 )
 from core.utils.transformation_utils import poses_from_tf_matrices
 from omegaconf import DictConfig
-from omni.isaac.core.controllers import BaseController
-from omni.isaac.core.robots.robot import Robot
-from omni.isaac.core.tasks import BaseTask
-from omni.isaac.core.utils.prims import get_prim_at_path
-from omni.isaac.core.utils.transformations import (
+from isaacsim.core.api.controllers import BaseController
+from isaacsim.core.api.robots.robot import Robot
+from isaacsim.core.api.tasks import BaseTask
+from isaacsim.core.utils.prims import get_prim_at_path
+from isaacsim.core.utils.transformations import (
     get_relative_transform,
     tf_matrix_from_pose,
 )
-from omni.isaac.core.utils.xforms import get_world_pose
+from isaacsim.core.utils.xforms import get_world_pose
 from omni.timeline import get_timeline_interface
 from scipy.spatial.transform import Rotation as R
 

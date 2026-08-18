@@ -1,6 +1,6 @@
 from core.objects.base_object import register_object
-from omni.isaac.core.prims import XFormPrim
-from omni.isaac.core.utils.stage import get_current_stage
+from isaacsim.core.prims import SingleXFormPrim as XFormPrim
+from isaacsim.core.utils.stage import get_current_stage
 from pxr import Gf, UsdGeom, UsdPhysics
 
 

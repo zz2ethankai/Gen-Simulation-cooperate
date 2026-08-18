@@ -22,6 +22,8 @@ def filter_collisions(
 
     """
 
+    global_paths = list(global_paths or [])
+
     physx_scene = PhysxSchema.PhysxSceneAPI(stage.GetPrimAtPath(physicsscene_path))
 
     # We invert the collision group filters for more efficient collision filtering across environments
@@ -58,9 +60,9 @@ def filter_collisions(
 
             # filteredGroups rel
             global_filtered_groups = Sdf.RelationshipSpec(global_collision_group, "physics:filteredGroups", False)
-            # We are using inverted collision group filtering, which means objects by default don't collide across
-            # groups. We need to add this group as a filtered group, so that objects within this group collide with
-            # each other.
+            # Keep the same-group relation used by Isaac Sim's native Cloner
+            # implementation.  Under inverted filtering this preserves
+            # collisions among colliders collected by global_group.
             global_filtered_groups.targetPathList.Append(global_collision_group_path)
 
         # set collision groups and filters
@@ -91,9 +93,8 @@ def filter_collisions(
 
             # filteredGroups rel
             filtered_groups = Sdf.RelationshipSpec(collision_group, "physics:filteredGroups", False)
-            # We are using inverted collision group filtering, which means objects by default don't collide across
-            # groups. We need to add this group as a filtered group, so that objects within this group collide with
-            # each other.
+            # Match Isaac Sim's native Cloner: preserve same-group collisions
+            # explicitly when the scene uses inverted collision filtering.
             filtered_groups.targetPathList.Append(collision_group_path)
             if len(global_paths) > 0:
                 filtered_groups.targetPathList.Append(global_collision_group_path)

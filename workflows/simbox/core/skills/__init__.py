@@ -15,6 +15,7 @@ from .gripper_action import Gripper_Action
 from .heuristic_skill import Heuristic_Skill
 from .home import Home
 from .joint_ctrl import Joint_Ctrl
+from .legacy_pick import LegacyPick
 from .manualpick import Manualpick
 from .move import Move
 from .navigate import Navigate
@@ -45,6 +46,7 @@ __all__ = [
     "Heuristic_Skill",
     "Home",
     "Joint_Ctrl",
+    "LegacyPick",
     "Move",
     "Navigate",
     "Open",

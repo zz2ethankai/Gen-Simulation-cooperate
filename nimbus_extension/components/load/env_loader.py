@@ -22,15 +22,26 @@ def _resolve_headless_experience() -> str:
             root = Path(value)
             candidate_paths.extend(
                 [
-                    root / "apps/omni.isaac.sim.python.gym.headless.kit",
+                    # Keep the same priority as Isaac Sim 6's
+                    # SimulationApp.  The old gym headless experience is
+                    # retained only as a legacy fallback below.
+                    root / "apps/omni.isaac.sim.python.kit",
+                    root / "apps/isaacsim.exp.base.python.kit",
+                    root / "apps/isaacsim.exp.base.kit",
                     root / "apps/omni.isaac.sim.headless.native.kit",
+                    root / "apps/omni.isaac.sim.python.gym.headless.kit",
+                    root / "apps/isaacsim.exp.full.kit",
                 ]
             )
     for root in (Path("/isaac-sim"), Path("/workspace/isaac-sim")):
         candidate_paths.extend(
             [
-                root / "apps/omni.isaac.sim.python.gym.headless.kit",
+                root / "apps/omni.isaac.sim.python.kit",
+                root / "apps/isaacsim.exp.base.python.kit",
+                root / "apps/isaacsim.exp.base.kit",
                 root / "apps/omni.isaac.sim.headless.native.kit",
+                root / "apps/omni.isaac.sim.python.gym.headless.kit",
+                root / "apps/isaacsim.exp.full.kit",
             ]
         )
 
@@ -38,7 +49,11 @@ def _resolve_headless_experience() -> str:
         if experience.is_file():
             return str(experience)
 
-    return "/isaac-sim/apps/omni.isaac.sim.python.gym.headless.kit"
+    # An empty experience lets Isaac Sim 6's SimulationApp resolve the
+    # installation-specific default through EXP_PATH.  Passing the removed
+    # Isaac Sim 4/5 gym path here makes startup fail before any workflow code
+    # is imported when the new image omits that legacy file.
+    return ""
 
 
 def _resolve_experience(configured_path: str, *, headless: bool) -> str:
@@ -47,7 +62,11 @@ def _resolve_experience(configured_path: str, *, headless: bool) -> str:
         candidate = Path(configured_path)
         if not candidate.is_absolute():
             candidate = Path.cwd() / candidate
-        return str(candidate.resolve())
+        if candidate.is_file():
+            return str(candidate.resolve())
+        # Isaac Sim 6 renamed the bundled experiences.  Keep old task
+        # templates usable while preferring the new Python base experience.
+        return _resolve_headless_experience() if headless else ""
     if headless:
         return _resolve_headless_experience()
     return ""
@@ -134,9 +153,9 @@ def _patch_curobo_quad_triangulation_launch_device(logger) -> None:
 def _ensure_simbox_sensor_extension_ready(simulation_app, *, max_wait_sec: float = 30.0) -> None:
     """Enable SimBox's camera dependency before importing its workflow module."""
 
-    from omni.isaac.core.utils.extensions import enable_extension
+    from isaacsim.core.utils.extensions import enable_extension
 
-    extension_name = "omni.isaac.sensor"
+    extension_name = "isaacsim.sensors.camera"
     enable_extension(extension_name)
     deadline = time.monotonic() + max(float(max_wait_sec), 1.0)
     last_error = None
@@ -149,7 +168,7 @@ def _ensure_simbox_sensor_extension_ready(simulation_app, *, max_wait_sec: float
             last_error = exc
 
     raise RuntimeError(
-        "SimBox camera dependency 'omni.isaac.sensor' was not ready after enabling its Isaac extension"
+        "SimBox camera dependency 'isaacsim.sensors.camera' was not ready after enabling its Isaac extension"
     ) from last_error
 
 
@@ -222,6 +241,9 @@ class EnvLoader(SceneLoader):
             "anti_aliasing": simulator.get("anti_aliasing", 3),
             "multi_gpu": simulator.get("multi_gpu", True),
             "renderer": simulator.get("renderer", "RayTracedLighting"),
+            # Isaac Sim 6 defaults to synchronous asset loading; preserve the
+            # configured choice explicitly so stage readiness is deterministic.
+            "sync_loads": _cast_setting_value(simulator.get("sync_loads", True), bool),
         }
         for key in ("active_gpu", "physics_gpu", "width", "height"):
             if key in simulator:
@@ -341,7 +363,7 @@ class EnvLoader(SceneLoader):
             self.logger.info(f"Applied renderer settings: {applied_renderer_settings}")
 
         self.logger.info(f"simulator params: physics dt={physics_dt}, rendering dt={rendering_dt}")
-        from omni.isaac.core import World
+        from isaacsim.core.api import World
 
         world = World(
             physics_dt=physics_dt,

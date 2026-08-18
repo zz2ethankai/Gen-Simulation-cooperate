@@ -6,9 +6,9 @@ import os
 import numpy as np
 from core.robots.base_robot import register_robot
 from core.robots.template_robot import TemplateRobot
-from omni.isaac.core.utils.prims import get_prim_at_path
-from omni.isaac.core.utils.transformations import tf_matrix_from_pose
-from omni.isaac.core.utils.xforms import get_world_pose as get_prim_world_pose
+from isaacsim.core.utils.prims import get_prim_at_path
+from isaacsim.core.utils.transformations import tf_matrix_from_pose
+from isaacsim.core.utils.xforms import get_world_pose as get_prim_world_pose
 from pxr import PhysxSchema, UsdPhysics
 
 

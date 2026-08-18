@@ -9,54 +9,110 @@ import json
 import logging
 import numbers
 import os
-import random
 import time
 import warnings
 from copy import deepcopy
+from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
 import numpy as np
 import torch
 from core.utils.constants import CUROBO_BATCH_SIZE
 from core.utils.plan_utils import (
-    filter_paths_by_position_error,
-    filter_paths_by_rotation_error,
-    sort_by_difference_js,
+    extract_result_paths,
 )
-from core.planning.curobo_v2_compat import (
-    CudaRobotModel,
-    CollisionCheckerType,
-    IKSolver,
-    IKSolverConfig,
-    JointState,
-    MotionGen,
-    MotionGenConfig,
-    MotionGenPlanConfig,
-    Pose,
-    PoseCostMetric,
-    RobotConfig,
-    SphereFitType,
-    TensorDeviceType,
-    UsdHelper,
-    WorldConfig,
-    get_world_configs_path,
-    join_path,
-    load_yaml,
-)
-from omni.isaac.core import World
-from omni.isaac.core.controllers import BaseController
-from omni.isaac.core.tasks import BaseTask
-from omni.isaac.core.utils.prims import get_prim_at_path
-from omni.isaac.core.utils.transformations import (
+from curobo.batch_motion_planner import BatchMotionPlanner
+from curobo.config_io import join_path, load_yaml
+from curobo.content import get_scene_configs_path
+from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
+from curobo.sphere_fit import SphereFitType
+from curobo.types import DeviceCfg, GoalToolPose, JointState, Pose
+from curobo._src.cost.tool_pose_criteria import ToolPoseCriteria
+from curobo._src.geom.types import SceneCfg
+from curobo._src.robot.kinematics.kinematics import Kinematics
+from curobo._src.types.robot import RobotCfg
+from curobo._src.util.usd_scene_parser import UsdSceneParser
+from isaacsim.core.api import World
+from isaacsim.core.api.controllers import BaseController
+from isaacsim.core.api.tasks import BaseTask
+from isaacsim.core.utils.prims import get_prim_at_path
+from isaacsim.core.utils.transformations import (
     get_relative_transform,
     pose_from_tf_matrix,
+    tf_matrix_from_pose,
 )
-from omni.isaac.core.utils.types import ArticulationAction
+from isaacsim.core.utils.types import ArticulationAction
+from isaacsim.core.utils.xforms import get_world_pose
 
 from core.utils.joint_index_resolver import JointIndexResolutionError, resolve_joint_names
+from core.utils.json_utils import json_ready, joint_state_json_ready
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand
 
 LOGGER = logging.getLogger("de_logger")
+
+
+def _resolve_native_robot_config(robot_file: str):
+    """Normalize the SimBox robot YAML into the native v2 ``RobotCfg`` input."""
+
+    robot_path = Path(robot_file).expanduser().resolve()
+    raw = load_yaml(str(robot_path))
+    if not isinstance(raw, dict):
+        raise TypeError(f"robot config must be a mapping, got {type(raw)!r}")
+    raw = deepcopy(raw.get("robot_cfg", raw))
+    kinematics = deepcopy(raw.get("kinematics", raw))
+    if not isinstance(kinematics, dict):
+        raise TypeError("robot_cfg.kinematics must be a mapping")
+
+    config_dir = robot_path.parent
+    asset_root = config_dir.parents[1] / "assets" if len(config_dir.parents) > 1 else config_dir
+    ee_link = kinematics.get("ee_link")
+    if "tool_frames" not in kinematics and ee_link:
+        kinematics["tool_frames"] = [ee_link]
+    for legacy_key in (
+        "use_usd_kinematics",
+        "isaac_usd_path",
+        "usd_path",
+        "usd_robot_root",
+        "usd_flip_joints",
+        "usd_flip_joint_limits",
+        "ee_link",
+    ):
+        kinematics.pop(legacy_key, None)
+
+    def resolve_path(value):
+        path = Path(value)
+        if path.is_absolute():
+            return str(path)
+        candidate = asset_root / path
+        if candidate.exists():
+            return str(candidate)
+        candidate = config_dir / path
+        return str(candidate if candidate.exists() else asset_root / path)
+
+    if "urdf_path" in kinematics:
+        kinematics["urdf_path"] = resolve_path(kinematics["urdf_path"])
+    if "asset_root_path" in kinematics:
+        path = Path(kinematics["asset_root_path"])
+        if not path.is_absolute():
+            kinematics["asset_root_path"] = str(asset_root / path)
+    spheres = kinematics.get("collision_spheres")
+    if isinstance(spheres, str):
+        sphere_path = Path(spheres)
+        if not sphere_path.is_absolute():
+            local_path = config_dir / sphere_path
+            sphere_path = local_path if local_path.exists() else asset_root / sphere_path
+        if sphere_path.exists():
+            sphere_data = load_yaml(str(sphere_path)) or {}
+            kinematics["collision_spheres"] = sphere_data.get(
+                "collision_spheres", sphere_data
+            )
+    cspace = kinematics.get("cspace")
+    if isinstance(cspace, dict):
+        if "default_joint_position" not in cspace and "retract_config" in cspace:
+            cspace["default_joint_position"] = cspace.pop("retract_config")
+        else:
+            cspace.pop("retract_config", None)
+    return {"kinematics": kinematics}
 
 
 def _record_attachment_rollback_failure(
@@ -97,6 +153,9 @@ class TemplateController(BaseController):
         constrain_grasp_approach: bool = False,
         collision_activation_distance: float = 0.03,
         ignore_substring: Optional[List[str]] = None,
+        # Candidate grasp planning is batched by default.  Individual tasks
+        # can still pass ``use_batch=False`` when they explicitly need the
+        # serial fallback path.
         use_batch: bool = True,
         trajectory_visualizer=None,
         skill_target_visualizer=None,
@@ -136,8 +195,13 @@ class TemplateController(BaseController):
         self.use_batch = use_batch
         self.constrain_grasp_approach = constrain_grasp_approach
         self.collision_activation_distance = collision_activation_distance
-        self.usd_help = UsdHelper()
-        self.tensor_args = TensorDeviceType()
+        self.usd_parser = UsdSceneParser()
+        self.tensor_args = DeviceCfg(
+            device=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
+            dtype=torch.float32,
+        )
+        self.planner = None
+        self.batch_planner = None
         self.init_curobo = False
         self.robot_file = robot_file
         self.num_plan_failed = 0
@@ -152,6 +216,12 @@ class TemplateController(BaseController):
         self._gripper_state = 1.0
         self._gripper_joint_position = np.array([1.0])
         self._legacy_disabled_attach_names = []
+        self._native_attached_obstacle_names = []
+        # Candidate batching is a Place-time concern.  Keep its attachment
+        # bookkeeping separate from the execution planner so Pick can attach
+        # and execute with the single native planner without a second
+        # AttachmentManager mutating the live planning state.
+        self._native_batch_attached_obstacle_names = []
         # A native CuRobo reset clears SceneData, while the high-level world
         # and its signature remain valid.  Keep this separate from the
         # signature so physics-schema updates can reload once before pose
@@ -173,15 +243,32 @@ class TemplateController(BaseController):
         self._phase_plan_failed = False
         self._phase_completion_logged = False
         self._last_commanded_arm_position = None
+        # Pick planning/execution state belongs to the controller because it
+        # tracks the world-frame target and arm-base frame used by CuRobo.
+        # Keep it per object so a controller can safely service successive
+        # pick skills without leaking a previous target's reference.
+        self._pick_plan_references = {}
+        self._pick_mobile_base_prim_path = getattr(self.robot, "mobile_base_prim_path", None)
+        self._pick_cached_mobile_to_armbase_tf = None
+        mount_prefix = "fr" if self.robot_file and "right" in self.robot_file else "fl"
+        self._pick_configured_mobile_to_armbase_translation = np.array(
+            self.robot.cfg.get(f"{mount_prefix}_base_mount_translation", []), dtype=np.float32
+        )
+        self._pick_configured_mobile_to_armbase_orientation = np.array(
+            self.robot.cfg.get(
+                f"{mount_prefix}_base_mount_orientation", [1.0, 0.0, 0.0, 0.0]
+            ),
+            dtype=np.float32,
+        )
 
         self._configure_joint_indices(robot_file)
         self._resolve_runtime_control_indices()
         self._load_robot(robot_file)
         self._load_kin_model()
         self._load_world()
-        self._init_motion_gen()
+        self._init_native_planners()
 
-        self.usd_help.load_stage(self.world.stage)
+        self.usd_parser.load_stage(self.world.stage)
         if self.collision_scene_manager is not None:
             self.collision_scene_manager.bind_controller(self)
         self.cmd_plan = None
@@ -200,7 +287,7 @@ class TemplateController(BaseController):
             self.name,
             self.lr_name,
             float(self.world.get_physics_dt()),
-            float(self.motion_gen.interpolation_dt),
+            float(self.interpolation_dt),
             self.ds_ratio,
         )
 
@@ -268,7 +355,7 @@ class TemplateController(BaseController):
             torch.cuda.synchronize(device)
 
     def _run_timed_curobo_call(self, operation: str, call):
-        """Run one real MotionGen/IK query with complete CUDA-synchronized timing."""
+        """Run one native CuRobo query with complete CUDA-synchronized timing."""
 
         scope = getattr(self, "_timing_scope", None)
         # Do not add synchronization fences when the workflow has not bound a
@@ -307,7 +394,7 @@ class TemplateController(BaseController):
     def _configure_execution_stride(self) -> None:
         if self.collision_world_mode == "physics_schema":
             physics_dt = float(self.world.get_physics_dt())
-            interpolation_dt = float(self.motion_gen.interpolation_dt)
+            interpolation_dt = float(self.interpolation_dt)
             requested_stride = max(1, int(round(physics_dt / interpolation_dt)))
             safety_cfg = self.task.cfg.get("planning", {}).get("execution_safety", {})
             max_stride = max(1, int(safety_cfg.get("max_waypoint_stride", 2)))
@@ -367,15 +454,16 @@ class TemplateController(BaseController):
         )
 
     def _load_robot(self, robot_file: str) -> None:
-        loaded = load_yaml(robot_file)
-        self.robot_cfg = loaded.get("robot_cfg", loaded)
+        self.robot_cfg = RobotCfg.create(
+            _resolve_native_robot_config(robot_file),
+            device_cfg=self.tensor_args,
+            num_envs=1,
+        )
 
     def _load_kin_model(self) -> None:
-        # Use the same normalized YAML and v0.8 RobotCfg as MotionGen.  The
-        # old from_basic path loses tool_frames/cspace and resolves assets from
-        # a different config root.
-        robot_cfg = RobotConfig.from_config(self.robot_file, self.tensor_args)
-        self.kin_model = CudaRobotModel(robot_cfg.kinematics)
+        # Use the same native RobotCfg as the planner; do not create a second
+        # legacy/compatibility kinematics model.
+        self.kin_model = Kinematics(self.robot_cfg.kinematics)
 
     def _load_world(self, use_default: bool = True) -> None:
         if self.collision_world_mode == "physics_schema":
@@ -392,23 +480,23 @@ class TemplateController(BaseController):
             )
             return
         if use_default:
-            self.world_cfg = WorldConfig()
+            self.world_cfg = SceneCfg()
         else:
-            world_cfg_table = WorldConfig.from_dict(
-                load_yaml(join_path(get_world_configs_path(), "collision_table.yml"))
+            world_cfg_table = SceneCfg.create(
+                load_yaml(join_path(get_scene_configs_path(), "collision_table.yml"))
             )
             self._world_cfg_table = world_cfg_table
             self._world_cfg_table.cuboid[0].pose[2] -= 10.5
-            world_cfg1 = WorldConfig.from_dict(
-                load_yaml(join_path(get_world_configs_path(), "collision_table.yml"))
+            world_cfg1 = SceneCfg.create(
+                load_yaml(join_path(get_scene_configs_path(), "collision_table.yml"))
             ).get_mesh_world()
             world_cfg1.mesh[0].name += "_mesh"
             world_cfg1.mesh[0].pose[2] = -10.5
-            self.world_cfg = WorldConfig(cuboid=world_cfg_table.cuboid, mesh=world_cfg1.mesh)
+            self.world_cfg = SceneCfg(cuboid=world_cfg_table.cuboid, mesh=world_cfg1.mesh)
 
-    def _get_motion_gen_collision_cache(self):
+    def _get_native_collision_cache(self):
         """Override in subclasses to use different cache size (e.g. FR3 uses 1000)."""
-        return {"obb": 700, "mesh": 700}
+        return {"cuboid": 700, "mesh": 700}
 
     def _get_grasp_approach_linear_axis(self) -> int:
         """Axis for grasp approach constraint (0=x, 1=y, 2=z). Override in subclasses (e.g. Lift2 uses 0)."""
@@ -450,11 +538,14 @@ class TemplateController(BaseController):
         status = getattr(result, "status", None)
         status = getattr(status, "value", status)
         valid_query = getattr(result, "valid_query", None)
+        debug_info = getattr(result, "debug_info", None)
         msg = (
             f"[PlanDebug] {context} robot={self.name} arm={self.lr_name} command={self._last_command_name} "
             f"use_batch={self.use_batch} success_count={success_count} "
             f"status={status} valid_query={valid_query}"
         )
+        if debug_info is not None:
+            msg += f" debug_info={debug_info}"
         if target is not None:
             msg += f" target={np.array2string(np.asarray(target), precision=4, suppress_small=True)}"
         if pos_range is not None:
@@ -477,20 +568,26 @@ class TemplateController(BaseController):
                 self._last_command_name,
             )
 
-    def _init_motion_gen(self) -> None:
-        # Pick/Place phases are often planned back-to-back.  A modest slowdown
-        # gives the position-controlled articulation more time to track each
-        # waypoint, reducing acceleration spikes at phase boundaries without
-        # changing the geometric path.  In cuRobo, values below 1.0 increase
-        # execution time (the task can override this explicitly).
+    def _init_native_planners(self) -> None:
+        # Keep the native-v2 execution defaults aligned with the v1 baseline.
+        # Values below 1.0 are a deliberate task-level slowdown: they increase
+        # execution time and must not be introduced implicitly by the
+        # controller migration.
         pick_place_cfg = self.task.cfg.get("planning", {}).get("pick_place", {})
-        configured_time_dilation = pick_place_cfg.get("time_dilation_factor", 0.8)
+        configured_time_dilation = pick_place_cfg.get("time_dilation_factor", 1.0)
         try:
             manipulation_time_dilation = float(configured_time_dilation)
             if not np.isfinite(manipulation_time_dilation) or manipulation_time_dilation <= 0.0:
                 raise ValueError
         except (TypeError, ValueError):
-            manipulation_time_dilation = 0.8
+            manipulation_time_dilation = 1.0
+        configured_interpolation_dt = pick_place_cfg.get("interpolation_dt", 0.01)
+        try:
+            native_interpolation_dt = float(configured_interpolation_dt)
+            if not np.isfinite(native_interpolation_dt) or native_interpolation_dt <= 0.0:
+                raise ValueError
+        except (TypeError, ValueError):
+            native_interpolation_dt = 0.01
         configured_plan_attempts = pick_place_cfg.get(
             "max_plan_attempts",
             4 if self.collision_world_mode == "physics_schema" else 10,
@@ -499,93 +596,135 @@ class TemplateController(BaseController):
             max_plan_attempts = max(1, int(configured_plan_attempts))
         except (TypeError, ValueError):
             max_plan_attempts = 4 if self.collision_world_mode == "physics_schema" else 10
-        pose_metric = None
-        if self.constrain_grasp_approach:
-            pose_metric = PoseCostMetric.create_grasp_approach_metric(
-                offset_position=0.1,
-                linear_axis=self._get_grasp_approach_linear_axis(),
-                device_cfg=self.tensor_args.device_cfg,
-            )
-        if self.use_batch:
-            self.plan_config = MotionGenPlanConfig(
-                enable_graph=True,
-                enable_opt=True,
-                need_graph_success=True,
-                enable_graph_attempt=4,
-                max_attempts=4,
-                enable_finetune_trajopt=True,
-                parallel_finetune=True,
-                time_dilation_factor=manipulation_time_dilation,
-                pose_cost_metric=pose_metric,
-            )
-        else:
-            self.plan_config = MotionGenPlanConfig(
-                enable_graph=False,
-                enable_graph_attempt=7,
-                max_attempts=max_plan_attempts,
-                pose_cost_metric=pose_metric,
-                enable_finetune_trajopt=True,
-                time_dilation_factor=manipulation_time_dilation,
-            )
-        motion_gen_config = MotionGenConfig.load_from_robot_config(
-            self.robot_cfg,
-            self.world_cfg,
-            self.tensor_args,
-            robot_file=self.robot_file,
-            max_goalset=CUROBO_BATCH_SIZE if self.use_batch else 1,
-            interpolation_dt=0.01,
-            collision_activation_distance=self.collision_activation_distance,
-            trajopt_tsteps=32,
-            collision_checker_type=CollisionCheckerType.MESH,
-            # Isaac Sim 6 provides CUDA 12, so CuRobo v0.8 can reset captured
-            # graphs when the physics-schema world or attachment shape changes.
-            use_cuda_graph=True,
-            self_collision_check=True,
-            collision_cache=self._get_motion_gen_collision_cache(),
-            max_batch_size=CUROBO_BATCH_SIZE if self.use_batch else 1,
-            num_trajopt_seeds=12,
-            num_graph_seeds=12,
-            optimize_dt=True,
-            trajopt_dt=None,
-            trim_steps=None,
-            project_pose_to_goal_frame=False,
+        self._time_dilation_factor = manipulation_time_dilation
+        self._max_plan_attempts = max_plan_attempts
+        # Graph planning is an opt-in escape hatch.  The old MotionGen
+        # defaults did not enter the 20k-node PRM for the normal four-attempt
+        # pick/place query (the configured graph attempt was equal to the
+        # attempt limit).  The first native-v2 port accidentally changed this
+        # to attempts 2/4, making otherwise successful candidates pay for a
+        # graph search and causing the 20--26 second spikes seen in logs.
+        graph_enabled = bool(pick_place_cfg.get("enable_graph", False))
+        self._graph_enabled = graph_enabled
+        self._single_graph_attempt = (
+            max(0, min(1, max_plan_attempts - 1))
+            if graph_enabled
+            else max_plan_attempts
         )
-        ik_config = IKSolverConfig.load_from_robot_config(
-            self.robot_cfg,
-            self.world_cfg,
-            robot_file=self.robot_file,
-            max_goalset=CUROBO_BATCH_SIZE if self.use_batch else 1,
-            rotation_threshold=0.05,
-            position_threshold=0.005,
-            num_seeds=20,
-            self_collision_check=True,
-            self_collision_opt=True,
-            tensor_args=self.tensor_args,
-            use_cuda_graph=True,
-            collision_checker_type=CollisionCheckerType.MESH,
-            collision_cache={"obb": 700, "mesh": 700},
-            max_batch_size=CUROBO_BATCH_SIZE if self.use_batch else 1,
+        configured_batch_attempts = pick_place_cfg.get(
+            "batch_max_plan_attempts", min(max_plan_attempts, 4)
         )
-        self.ik_solver = IKSolver(ik_config)
-        self.motion_gen = MotionGen(motion_gen_config)
-        print("warming up..")
+        try:
+            self._batch_max_attempts = max(1, int(configured_batch_attempts))
+        except (TypeError, ValueError):
+            self._batch_max_attempts = min(max_plan_attempts, 4)
+        self._batch_graph_attempt = (
+            max(0, min(3, self._batch_max_attempts - 1))
+            if graph_enabled
+            else self._batch_max_attempts
+        )
+        configured_warmup_iterations = pick_place_cfg.get("warmup_iterations", 1)
+        try:
+            native_warmup_iterations = max(1, int(configured_warmup_iterations))
+        except (TypeError, ValueError):
+            native_warmup_iterations = 1
+
+        def make_config(robot_cfg, *, batch_size, trajopt_seeds):
+            config = MotionPlannerCfg.create(
+                robot=robot_cfg,
+                device_cfg=self.tensor_args,
+                collision_cache=self._get_native_collision_cache(),
+                max_goalset=1,
+                max_batch_size=batch_size,
+                num_ik_seeds=20,
+                num_trajopt_seeds=trajopt_seeds,
+                position_tolerance=0.005,
+                orientation_tolerance=0.05,
+                optimizer_collision_activation_distance=self.collision_activation_distance,
+                self_collision_check=True,
+                use_cuda_graph=True,
+            )
+            # MotionPlannerCfg v2 exposes interpolation_dt on the solver
+            # config rather than on the factory.  Set it before constructing
+            # the planner so both native planners use the same 100 Hz output
+            # contract as v1 (and physics-schema stride calculation sees it).
+            config.trajopt_solver_config.interpolation_dt = native_interpolation_dt
+            return config
+
+        # Ordinary transit/place/home and single-goal pick execution always
+        # use one native planning problem, even when candidate batching is
+        # enabled for the grasp evaluator.
+        self.planner = MotionPlanner(
+            make_config(self.robot_cfg, batch_size=1, trajopt_seeds=12)
+        )
+        self.planner.update_world(self.world_cfg)
+        self._set_native_pose_criteria()
+        # CuRobo v2's warmup is a complete pose solve (and, for the batch
+        # planner, includes the batched IK path).  Five iterations therefore
+        # repeat expensive optimization work during every controller init;
+        # v1 performed one warmup on its single MotionGen.  Keep one as the
+        # native default and expose extra iterations only as an explicit task
+        # setting for a deployment that has measured a benefit.
+        self.planner.warmup(
+            enable_graph=graph_enabled,
+            num_warmup_iterations=native_warmup_iterations,
+        )
+
+        self.batch_planner = None
         if self.use_batch:
-            self.motion_gen.warmup(parallel_finetune=True, batch=CUROBO_BATCH_SIZE)
-        else:
-            self.motion_gen.warmup(enable_graph=True, warmup_js_trajopt=False)
-        self.world_model = self.motion_gen.world_collision
-        self.motion_gen.clear_world_cache()
-        self.motion_gen.reset(reset_seed=False)
-        self.motion_gen.update_world(self.world_cfg)
+            batch_robot_cfg = RobotCfg.create(
+                _resolve_native_robot_config(self.robot_file),
+                device_cfg=self.tensor_args,
+                num_envs=1,
+            )
+            self.batch_planner = BatchMotionPlanner(
+                make_config(
+                    batch_robot_cfg,
+                    batch_size=CUROBO_BATCH_SIZE,
+                    trajopt_seeds=1,
+                )
+            )
+            self.batch_planner.update_world(self.world_cfg)
+            self._set_native_pose_criteria(self.batch_planner)
+            self.batch_planner.warmup(
+                enable_graph=graph_enabled,
+                num_warmup_iterations=native_warmup_iterations,
+            )
+
+        self.ik_solver = self.planner.ik_solver
+        self.interpolation_dt = float(self.planner.trajopt_solver.config.interpolation_dt)
         self._world_update_signature = self._make_world_update_signature(self.world_cfg)
         LOGGER.info(
-            "[PlanDebug] motion_gen initialized robot=%s arm=%s use_batch=%s constrain_grasp_approach=%s "
+            "[PlanDebug] native v2 planner initialized robot=%s arm=%s use_batch=%s "
+            "single_trajopt_seeds=%s batch_trajopt_seeds=%s graph_enabled=%s "
             "collision_activation_distance=%s",
             self.name,
             self.lr_name,
             self.use_batch,
-            self.constrain_grasp_approach,
+            self.planner.trajopt_solver.config.num_seeds,
+            self.batch_planner.trajopt_solver.config.num_seeds if self.batch_planner else None,
+            graph_enabled,
             self.collision_activation_distance,
+        )
+
+    def _set_native_pose_criteria(self, planner=None, criteria=None) -> None:
+        planner = planner or self.planner
+        if planner is None:
+            return
+        if criteria is None:
+            non_terminal = [0.0] * 6
+            if self.constrain_grasp_approach:
+                # Native axes are [x, y, z, roll, pitch, yaw].  The old
+                # approach metric held every axis except the approach axis.
+                non_terminal = [1.0] * 6
+                non_terminal[self._get_grasp_approach_linear_axis()] = 0.0
+            criteria = ToolPoseCriteria(
+                terminal_pose_axes_weight_factor=[1.0] * 6,
+                non_terminal_pose_axes_weight_factor=non_terminal,
+                device_cfg=self.tensor_args,
+            )
+        planner.update_tool_pose_criteria(
+            {frame: criteria.clone() for frame in planner.tool_frames}
         )
 
     def update_pose_cost_metric(self, hold_vec_weight: Optional[List[float]] = None) -> None:
@@ -596,44 +735,22 @@ class TemplateController(BaseController):
         # there is no cost added in any directions.
         # When hold_vec_weight = [1, 1, 1, 0, 0, 0], the tool orientation is holed.
         # assert hold_vec_weight is None or len(hold_vec_weight) == 6
-        if hold_vec_weight:
-            pose_cost_metric = PoseCostMetric(
-                hold_partial_pose=True,
-                hold_vec_weight=self.motion_gen.tensor_args.to_device(hold_vec_weight),
-            )
+        if hold_vec_weight is None:
+            criteria = ToolPoseCriteria(device_cfg=self.tensor_args)
         else:
-            pose_cost_metric = None
-        self.plan_config.pose_cost_metric = pose_cost_metric
-
-    @staticmethod
-    def _debug_json_ready(value: Any):
-        if value is None or isinstance(value, (str, bool, int)):
-            return value
-        if isinstance(value, numbers.Real):
-            return float(value)
-        if isinstance(value, np.ndarray):
-            return TemplateController._debug_json_ready(value.tolist())
-        if isinstance(value, torch.Tensor):
-            return TemplateController._debug_json_ready(value.detach().cpu().numpy())
-        if isinstance(value, (list, tuple)):
-            return [TemplateController._debug_json_ready(v) for v in value]
-        if isinstance(value, dict):
-            return {str(k): TemplateController._debug_json_ready(v) for k, v in value.items()}
-        return str(value)
-
-    @staticmethod
-    def _debug_joint_state_to_dict(joint_state):
-        if joint_state is None:
-            return None
-        payload = {}
-        for field in ("position", "velocity", "acceleration", "jerk"):
-            if hasattr(joint_state, field):
-                payload[field] = TemplateController._debug_json_ready(getattr(joint_state, field))
-        if hasattr(joint_state, "joint_names"):
-            payload["joint_names"] = TemplateController._debug_json_ready(getattr(joint_state, "joint_names"))
-        if hasattr(joint_state, "shape"):
-            payload["shape"] = TemplateController._debug_json_ready(getattr(joint_state, "shape"))
-        return payload
+            if len(hold_vec_weight) != 6:
+                raise ValueError("hold_vec_weight must contain six legacy [r, r, r, p, p, p] weights")
+            # The controller's public contract is legacy [rx, ry, rz, px,
+            # py, pz]; native ToolPoseCriteria uses [px, py, pz, rx, ry, rz].
+            native_weights = [hold_vec_weight[index] for index in (3, 4, 5, 0, 1, 2)]
+            criteria = ToolPoseCriteria(
+                terminal_pose_axes_weight_factor=[1.0] * 6,
+                non_terminal_pose_axes_weight_factor=native_weights,
+                device_cfg=self.tensor_args,
+            )
+        self._set_native_pose_criteria(self.planner, criteria)
+        if self.batch_planner is not None:
+            self._set_native_pose_criteria(self.batch_planner, criteria)
 
     @staticmethod
     def _debug_norm_delta(a, b):
@@ -678,7 +795,7 @@ class TemplateController(BaseController):
                 jerk=self.tensor_args.to_device(jerks),
                 joint_names=js_names,
             )
-            cu_js_ordered = cu_js.get_ordered_joint_state(self.cmd_js_names)
+            cu_js_ordered = cu_js.reorder(self.cmd_js_names)
 
             timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
             filename = (
@@ -695,53 +812,53 @@ class TemplateController(BaseController):
                     "robot_file": self.robot_file,
                     "use_batch": bool(self.use_batch),
                     "branch": branch,
-                    "selected_path_index": self._debug_json_ready(selected_path_index),
+                    "selected_path_index": json_ready(selected_path_index),
                     "selected_path_source": selected_path_source,
                 },
                 "joint_mapping": {
-                    "robot_dof_names": self._debug_json_ready(js_names),
-                    "cmd_js_names": self._debug_json_ready(self.cmd_js_names),
-                    "raw_js_names": self._debug_json_ready(self.raw_js_names),
-                    "arm_indices": self._debug_json_ready(self.arm_indices),
-                    "gripper_indices": self._debug_json_ready(self.gripper_indices),
-                    "idx_list": self._debug_json_ready(self.idx_list),
+                    "robot_dof_names": json_ready(js_names),
+                    "cmd_js_names": json_ready(self.cmd_js_names),
+                    "raw_js_names": json_ready(self.raw_js_names),
+                    "arm_indices": json_ready(self.arm_indices),
+                    "gripper_indices": json_ready(self.gripper_indices),
+                    "idx_list": json_ready(self.idx_list),
                 },
                 "goal": {
-                    "ee_translation": self._debug_json_ready(ee_trans),
-                    "ee_orientation": self._debug_json_ready(ee_ori),
+                    "ee_translation": json_ready(ee_trans),
+                    "ee_orientation": json_ready(ee_ori),
                 },
                 "input_current_state": {
-                    "sim_js": self._debug_joint_state_to_dict(sim_js),
-                    "current_arm_sim_order": self._debug_json_ready(current_arm),
-                    "curobo_input_ordered_cmd_js_names": self._debug_joint_state_to_dict(cu_js_ordered),
+                    "sim_js": joint_state_json_ready(sim_js),
+                    "current_arm_sim_order": json_ready(current_arm),
+                    "curobo_input_ordered_cmd_js_names": joint_state_json_ready(cu_js_ordered),
                 },
                 "result_summary": {
-                    "success": self._debug_json_ready(getattr(result, "success", None)),
-                    "status": self._debug_json_ready(getattr(result, "status", None)),
-                    "valid_query": self._debug_json_ready(getattr(result, "valid_query", None)),
-                    "position_error": self._debug_json_ready(getattr(result, "position_error", None)),
-                    "rotation_error": self._debug_json_ready(getattr(result, "rotation_error", None)),
-                    "cspace_error": self._debug_json_ready(getattr(result, "cspace_error", None)),
-                    "optimized_dt": self._debug_json_ready(getattr(result, "optimized_dt", None)),
-                    "interpolation_dt": self._debug_json_ready(getattr(result, "interpolation_dt", None)),
-                    "path_buffer_last_tstep": self._debug_json_ready(
+                    "success": json_ready(getattr(result, "success", None)),
+                    "status": json_ready(getattr(result, "status", None)),
+                    "valid_query": json_ready(getattr(result, "valid_query", None)),
+                    "position_error": json_ready(getattr(result, "position_error", None)),
+                    "rotation_error": json_ready(getattr(result, "rotation_error", None)),
+                    "cspace_error": json_ready(getattr(result, "cspace_error", None)),
+                    "optimized_dt": json_ready(getattr(result, "optimized_dt", None)),
+                    "interpolation_dt": json_ready(getattr(result, "interpolation_dt", None)),
+                    "path_buffer_last_tstep": json_ready(
                         getattr(result, "path_buffer_last_tstep", None)
                     ),
-                    "used_graph": self._debug_json_ready(getattr(result, "used_graph", None)),
-                    "attempts": self._debug_json_ready(getattr(result, "attempts", None)),
-                    "trajopt_attempts": self._debug_json_ready(getattr(result, "trajopt_attempts", None)),
+                    "used_graph": json_ready(getattr(result, "used_graph", None)),
+                    "attempts": json_ready(getattr(result, "attempts", None)),
+                    "trajopt_attempts": json_ready(getattr(result, "trajopt_attempts", None)),
                 },
                 "continuity": {
                     "first_ordered_minus_current_arm_norm": self._debug_norm_delta(first_ordered, current_arm),
                     "last_ordered_minus_current_arm_norm": self._debug_norm_delta(last_ordered, current_arm),
-                    "first_ordered_position": self._debug_json_ready(first_ordered),
-                    "last_ordered_position": self._debug_json_ready(last_ordered),
+                    "first_ordered_position": json_ready(first_ordered),
+                    "last_ordered_position": json_ready(last_ordered),
                 },
-                "raw_plan": self._debug_joint_state_to_dict(raw_plan),
-                "ordered_cmd_plan": self._debug_joint_state_to_dict(ordered_cmd_plan),
+                "raw_plan": joint_state_json_ready(raw_plan),
+                "ordered_cmd_plan": joint_state_json_ready(ordered_cmd_plan),
             }
             with open(output_path, "w", encoding="utf-8") as handle:
-                json.dump(self._debug_json_ready(payload), handle, indent=2, ensure_ascii=False)
+                json.dump(json_ready(payload), handle, indent=2, ensure_ascii=False)
             print(
                 "[curobo-plan-debug] Wrote plan debug: "
                 f"{output_path}; first_delta={payload['continuity']['first_ordered_minus_current_arm_norm']}"
@@ -764,7 +881,7 @@ class TemplateController(BaseController):
         return str(value)
 
     @classmethod
-    def _make_world_update_signature(cls, world_cfg: WorldConfig):
+    def _make_world_update_signature(cls, world_cfg: SceneCfg):
         objects = getattr(world_cfg, "objects", None) or []
         signature = []
         for obj in objects:
@@ -782,14 +899,18 @@ class TemplateController(BaseController):
             )
         return tuple(signature)
 
-    def _update_world_if_changed(self, obstacles: WorldConfig) -> None:
+    def _update_world_if_changed(self, obstacles: SceneCfg) -> None:
         signature = self._make_world_update_signature(obstacles)
         needs_update = (
             signature != getattr(self, "_world_update_signature", None)
             or getattr(self, "_world_cache_invalidated", False)
         )
-        if self.motion_gen is not None and needs_update:
-            self.motion_gen.update_world(obstacles)
+        if self.planner is not None and needs_update:
+            # Native v2 updates SceneData in place and preserves captured CUDA
+            # graph objects.  Do not call a legacy clear/reset sequence here.
+            self.planner.update_world(obstacles)
+            if self.batch_planner is not None:
+                self.batch_planner.update_world(obstacles)
             self._world_cache_invalidated = False
         self.world_cfg = obstacles
         self._world_update_signature = signature
@@ -805,12 +926,6 @@ class TemplateController(BaseController):
                 raise RuntimeError(message)
             raise RuntimeError(message) from error
         if self.collision_world_mode == "physics_schema":
-            # CollisionSceneManager refreshes the high-level world before a
-            # controller reset, but reset-time clear_world_cache() empties
-            # native SceneData after that signature is recorded.  Reload that
-            # unchanged world exactly once, before any dynamic-pose sync.
-            if getattr(self, "_world_cache_invalidated", False):
-                self._update_world_if_changed(self.world_cfg)
             self.collision_scene_manager.sync_dynamic_poses(
                 self._step_idx, interval_steps=1, force=False
             )
@@ -865,7 +980,7 @@ class TemplateController(BaseController):
         """LEGACY_STAGE_SCAN: retained for explicit legacy_stage_scan mode."""
 
         # LEGACY_BEGIN: keyword-based collision world, retained for comparison
-        obstacles = self.usd_help.get_obstacles_from_stage(
+        obstacles = self.usd_parser.get_obstacles_from_stage(
             ignore_substring=self.ignore_substring, reference_prim_path=self.reference_prim_path
         ).get_collision_check_world()
         self._update_world_if_changed(obstacles)
@@ -878,12 +993,22 @@ class TemplateController(BaseController):
         manager = self.collision_scene_manager
         if manager is not None:
             manager.refresh_controller_reference_world(self)
+            apply_exclusions = getattr(manager, "apply_controller_planning_exclusions", None)
+            if callable(apply_exclusions):
+                apply_exclusions(self)
 
-    def _compat_managed_attached_obstacle_names(self) -> tuple[str, ...]:
-        names = getattr(self.motion_gen, "attached_obstacle_names", None)
-        if names is None:
-            names = getattr(self.motion_gen, "_compat_attached_obstacle_names", ())
-        return tuple(names or ())
+    def _attached_obstacle_names(self) -> tuple[str, ...]:
+        return tuple(self._native_attached_obstacle_names)
+
+    def _native_planners(self) -> tuple[Any, ...]:
+        """Return the single and optional native-v2 candidate planners once each."""
+
+        planners = []
+        for attribute in ("planner", "batch_planner"):
+            planner = getattr(self, attribute, None)
+            if planner is not None and not any(planner is item for item in planners):
+                planners.append(planner)
+        return tuple(planners)
 
     def _reenable_legacy_disabled_attach_objects(
         self, already_enabled_names=()
@@ -896,9 +1021,7 @@ class TemplateController(BaseController):
         ]
         for index, object_name in enumerate(pending):
             try:
-                self.motion_gen.world_coll_checker.enable_obstacle(
-                    enable=True, name=object_name
-                )
+                self.planner.scene_collision_checker.enable_obstacle(object_name, True)
             except Exception:
                 # Successfully restored names do not need another attempt;
                 # retain the failed name and remaining descendants for a
@@ -908,23 +1031,20 @@ class TemplateController(BaseController):
         self._legacy_disabled_attach_names = []
 
     def _clear_attached_object_state(self) -> None:
-        if self.motion_gen is None:
+        if self.planner is None:
             return
         self._world_cleanup_failed = True
         try:
-            compat_names = self._compat_managed_attached_obstacle_names()
-            # Compat detach restores its exact attached obstacles.  Restore
-            # only the controller-owned legacy descendants next, while
-            # SceneData is still populated, then clear the native cache.
-            self.motion_gen.detach_object_from_robot()
-            self._reenable_legacy_disabled_attach_objects(compat_names)
-
-            # A native clear can fail after partially mutating SceneData.  Mark
-            # it invalid before the call so no later update can sync against an
-            # empty or partial cache.
-            self._world_cache_invalidated = True
-            self._world_update_signature = None
-            self.motion_gen.clear_world_cache()
+            attached_names = self._attached_obstacle_names()
+            for planner in self._native_planners():
+                planner.attachment_manager.detach()
+            self._native_attached_obstacle_names = []
+            self._native_batch_attached_obstacle_names = []
+            self._reenable_legacy_disabled_attach_objects(attached_names)
+            # Native v2 detach only changes the robot attachment spheres and
+            # obstacle enable masks.  It does not require a graph reset or a
+            # full world reload.
+            self._world_cache_invalidated = False
         except Exception as exc:
             self._world_cleanup_error = exc
             raise
@@ -995,68 +1115,216 @@ class TemplateController(BaseController):
 
         return _field("velocities"), _field("accelerations"), _field("jerks")
 
+    def _planner_joint_names(self) -> list[str]:
+        return list(self.planner.joint_names)
+
+    def _arm_joint_state(self, sim_js, *, repeat=1):
+        """Build a native-v2 named state in the planner's active-joint order."""
+
+        positions = np.asarray(sim_js.positions, dtype=float).reshape(-1)
+        velocities, accelerations, jerks = self._joint_state_derivatives(sim_js)
+        arm_names = list(self.raw_js_names)
+        if len(arm_names) != len(self.arm_indices):
+            raise ValueError("raw arm joint names and runtime arm indices have different lengths")
+        state = JointState(
+            position=self.tensor_args.to_device(positions[self.arm_indices]),
+            velocity=self.tensor_args.to_device(velocities[self.arm_indices]),
+            acceleration=self.tensor_args.to_device(accelerations[self.arm_indices]),
+            jerk=self.tensor_args.to_device(jerks[self.arm_indices]),
+            joint_names=arm_names,
+        ).reorder(self._planner_joint_names())
+        if repeat > 1:
+            state = JointState(
+                position=state.position.unsqueeze(0).expand(repeat, -1).clone(),
+                velocity=state.velocity.unsqueeze(0).expand(repeat, -1).clone(),
+                acceleration=state.acceleration.unsqueeze(0).expand(repeat, -1).clone(),
+                jerk=state.jerk.unsqueeze(0).expand(repeat, -1).clone(),
+                joint_names=state.joint_names,
+            )
+        return state
+
+    def _planner_state(self, state):
+        names = getattr(state, "joint_names", None)
+        if names is None:
+            raise ValueError("native CuRobo planning states require explicit joint_names")
+        names = list(names)
+        if set(self._planner_joint_names()) - set(names):
+            raise ValueError(
+                "planning state does not contain all native planner joints: "
+                f"required={self._planner_joint_names()}, got={names}"
+            )
+        return state.reorder(self._planner_joint_names())
+
+    def _goal_tool_pose(self, ee_translation, ee_orientation, batch_size=1):
+        position = self.tensor_args.to_device(ee_translation)
+        quaternion = self.tensor_args.to_device(ee_orientation)
+        if batch_size == 1:
+            position = position.reshape(1, 1, 1, 1, 3)
+            quaternion = quaternion.reshape(1, 1, 1, 1, 4)
+        else:
+            position = position.reshape(batch_size, 1, 1, 1, 3)
+            quaternion = quaternion.reshape(batch_size, 1, 1, 1, 4)
+        return GoalToolPose(
+            tool_frames=[self.planner.tool_frames[0]],
+            position=position,
+            quaternion=quaternion,
+        )
+
+    @staticmethod
+    def _result_success(result) -> bool:
+        success = getattr(result, "success", None)
+        return success is not None and bool(torch.any(success).item())
+
+    def _result_path(self, result, batch_index=0):
+        paths = extract_result_paths(result)
+        if batch_index >= len(paths) or paths[batch_index] is None:
+            return None
+        return paths[batch_index]
+
+    def _command_path(self, path):
+        """Convert a native result path to the controller's seven arm joints."""
+
+        if path is None:
+            return None
+        names = list(getattr(path, "joint_names", ()) or ())
+        if set(self.raw_js_names).issubset(names):
+            return path.reorder(self.raw_js_names)
+        active = self._planner_state(path)
+        full = self.planner.kinematics.get_full_js(active)
+        if not set(self.raw_js_names).issubset(full.joint_names):
+            raise ValueError(
+                "native planner result cannot be mapped to controller arm names: "
+                f"result={full.joint_names}, arm={self.raw_js_names}"
+            )
+        return full.reorder(self.raw_js_names)
+
+    def _install_command_plan(
+        self,
+        cmd_plan,
+        *,
+        target_position=None,
+        target_orientation=None,
+        phase_name: str = "unknown",
+        cached: bool,
+    ):
+        """Install one normalized trajectory for either planning or replay."""
+
+        if cmd_plan is None or len(cmd_plan) == 0:
+            raise ValueError(f"{phase_name} received an empty native-v2 path")
+        self.idx_list = list(range(len(self.raw_js_names)))
+        self.cmd_plan = cmd_plan
+        self.cmd_idx = 0
+        self._phase_plan_started = True
+        if target_position is not None:
+            self._ee_trans = self.tensor_args.to_device(target_position)
+        if target_orientation is not None:
+            self._ee_ori = self.tensor_args.to_device(target_orientation)
+        self._visualize_selected_plan()
+        LOGGER.info(
+            "[PhaseDebug] selected-plan robot=%s arm=%s phase=%s waypoints=%d stride=%d cached=%s",
+            self.name,
+            self.lr_name,
+            phase_name,
+            len(self.cmd_plan),
+            self.ds_ratio,
+            cached,
+        )
+        return cmd_plan
+
+    def _plan_pose_from_state(
+        self,
+        ee_translation,
+        ee_orientation,
+        start_state,
+        *,
+        context: Optional[str] = None,
+    ):
+        goal = self._goal_tool_pose(ee_translation, ee_orientation)
+        result = self._run_timed_curobo_call(
+            "plan_pose",
+            lambda: self.planner.plan_pose(
+                goal,
+                start_state.unsqueeze(0),
+                use_implicit_goal=True,
+                max_attempts=self._max_plan_attempts,
+                enable_graph_attempt=self._single_graph_attempt,
+            ),
+        )
+        if context:
+            self._log_plan_result(context, result, target=ee_translation)
+        return result
+
+    def _plan_batch_from_state(
+        self,
+        ee_translation,
+        ee_orientation,
+        start_state,
+        *,
+        batch_size: Optional[int] = None,
+        context: Optional[str] = None,
+    ):
+        if self.batch_planner is None:
+            raise RuntimeError("batch planning was not enabled for this controller")
+        if batch_size is None:
+            batch_size = (
+                1
+                if getattr(start_state.position, "ndim", 1) == 1
+                else int(start_state.position.shape[0])
+            )
+        goal = self._goal_tool_pose(
+            ee_translation, ee_orientation, batch_size=batch_size
+        )
+        result = self._run_timed_curobo_call(
+            "plan_batch",
+            lambda: self.batch_planner.plan_pose(
+                goal,
+                start_state,
+                use_implicit_goal=True,
+                max_attempts=self._batch_max_attempts,
+                enable_graph_attempt=self._batch_graph_attempt,
+            ),
+        )
+        if context:
+            self._log_plan_result(context, result)
+        return result
+
     def plan_batch(self, ee_translation_goal_batch, ee_orientation_goal_batch, sim_js, js_names):
         # Batch planning is also a real CuRobo query.  Keep it consistent with
         # plan(): a mobile-base reference must be synchronized after
         # navigation and immediately before the captured-graph query.
         self._refresh_reference_world_for_planning()
-        sim_js_positions = (sim_js.positions)[np.newaxis, :]
-        ik_goal = Pose(
-            position=self.tensor_args.to_device(ee_translation_goal_batch),
-            quaternion=self.tensor_args.to_device(ee_orientation_goal_batch),
-            batch_size=CUROBO_BATCH_SIZE,
+        if self.batch_planner is None:
+            raise RuntimeError("batch planning was not enabled for this controller")
+        batch_size = int(self.batch_planner.batch_size)
+        # Native v2 keeps goal tensors on the planner device.  Normalize only
+        # this host-side validation boundary before checking batch length;
+        # ``np.asarray(cuda_tensor)`` cannot perform the device transfer.
+        if isinstance(ee_translation_goal_batch, torch.Tensor):
+            ee_translation_goal_batch = ee_translation_goal_batch.detach().cpu().numpy()
+        else:
+            ee_translation_goal_batch = np.asarray(ee_translation_goal_batch)
+        if isinstance(ee_orientation_goal_batch, torch.Tensor):
+            ee_orientation_goal_batch = ee_orientation_goal_batch.detach().cpu().numpy()
+        else:
+            ee_orientation_goal_batch = np.asarray(ee_orientation_goal_batch)
+        actual_batch_size = len(ee_translation_goal_batch)
+        if actual_batch_size < 1 or actual_batch_size > batch_size or len(ee_orientation_goal_batch) != actual_batch_size:
+            raise ValueError(
+                f"native batch planner accepts 1..{batch_size} candidate goals"
+            )
+        cu_js = self._arm_joint_state(sim_js, repeat=actual_batch_size)
+        return self._plan_batch_from_state(
+            ee_translation_goal_batch,
+            ee_orientation_goal_batch,
+            cu_js,
+            batch_size=actual_batch_size,
         )
-        velocities, accelerations, jerks = self._joint_state_derivatives(sim_js)
-        cu_js = JointState(
-            position=self.tensor_args.to_device(np.tile(sim_js_positions, (CUROBO_BATCH_SIZE, 1))),
-            velocity=self.tensor_args.to_device(np.tile(velocities, (CUROBO_BATCH_SIZE, 1))),
-            acceleration=self.tensor_args.to_device(np.tile(accelerations, (CUROBO_BATCH_SIZE, 1))),
-            jerk=self.tensor_args.to_device(np.tile(jerks, (CUROBO_BATCH_SIZE, 1))),
-            joint_names=js_names,
-        )
-        cu_js = cu_js.get_ordered_joint_state(self.cmd_js_names)
-        result = self._run_timed_curobo_call(
-            "plan_batch",
-            lambda: self.motion_gen.plan_batch(cu_js, ik_goal, self.plan_config.clone()),
-        )
-        return result
 
     def plan(self, ee_translation_goal, ee_orientation_goal, sim_js: JointState, js_names: list):
         self._refresh_reference_world_for_planning()
-        velocities, accelerations, jerks = self._joint_state_derivatives(sim_js)
-        if self.use_batch:
-            ik_goal = Pose(
-                position=self.tensor_args.to_device(ee_translation_goal.unsqueeze(0).expand(CUROBO_BATCH_SIZE, -1)),
-                quaternion=self.tensor_args.to_device(ee_orientation_goal.unsqueeze(0).expand(CUROBO_BATCH_SIZE, -1)),
-                batch_size=CUROBO_BATCH_SIZE,
-            )
-            cu_js = JointState(
-                position=self.tensor_args.to_device(np.tile((sim_js.positions)[np.newaxis, :], (CUROBO_BATCH_SIZE, 1))),
-                velocity=self.tensor_args.to_device(np.tile(velocities, (CUROBO_BATCH_SIZE, 1))),
-                acceleration=self.tensor_args.to_device(np.tile(accelerations, (CUROBO_BATCH_SIZE, 1))),
-                jerk=self.tensor_args.to_device(np.tile(jerks, (CUROBO_BATCH_SIZE, 1))),
-                joint_names=js_names,
-            )
-            cu_js = cu_js.get_ordered_joint_state(self.cmd_js_names)
-            return self._run_timed_curobo_call(
-                "plan_batch",
-                lambda: self.motion_gen.plan_batch(cu_js, ik_goal, self.plan_config.clone()),
-            )
-        ik_goal = Pose(
-            position=self.tensor_args.to_device(ee_translation_goal),
-            quaternion=self.tensor_args.to_device(ee_orientation_goal),
-        )
-        cu_js = JointState(
-            position=self.tensor_args.to_device(sim_js.positions),
-            velocity=self.tensor_args.to_device(velocities),
-            acceleration=self.tensor_args.to_device(accelerations),
-            jerk=self.tensor_args.to_device(jerks),
-            joint_names=js_names,
-        )
-        cu_js = cu_js.get_ordered_joint_state(self.cmd_js_names)
-        return self._run_timed_curobo_call(
-            "plan_single",
-            lambda: self.motion_gen.plan_single(cu_js.unsqueeze(0), ik_goal, self.plan_config.clone()),
+        cu_js = self._arm_joint_state(sim_js)
+        return self._plan_pose_from_state(
+            ee_translation_goal, ee_orientation_goal, cu_js
         )
 
     def plan_joint_positions(self, goal_arm_positions: np.ndarray):
@@ -1072,31 +1340,30 @@ class TemplateController(BaseController):
                 f"got {len(goal_arm_positions)}, expected {len(self.arm_indices)}"
             )
         sim_js = self.robot.get_joints_state()
-        positions = np.asarray(sim_js.positions, dtype=float).copy()
-        velocities, accelerations, jerks = self._joint_state_derivatives(sim_js)
-        start_state = JointState(
-            position=self.tensor_args.to_device(positions),
-            velocity=self.tensor_args.to_device(velocities),
-            acceleration=self.tensor_args.to_device(accelerations),
-            jerk=self.tensor_args.to_device(jerks),
-            joint_names=self.robot.dof_names,
-        ).get_ordered_joint_state(self.cmd_js_names)
-        goal_positions = positions.copy()
-        goal_positions[self.arm_indices] = goal_arm_positions
+        start_state = self._arm_joint_state(sim_js)
+        goal_positions = goal_arm_positions
         zeros = np.zeros_like(goal_positions)
         goal_state = JointState(
             position=self.tensor_args.to_device(goal_positions),
             velocity=self.tensor_args.to_device(zeros),
             acceleration=self.tensor_args.to_device(zeros),
             jerk=self.tensor_args.to_device(zeros),
-            joint_names=self.robot.dof_names,
-        ).get_ordered_joint_state(self.cmd_js_names)
+            joint_names=self.raw_js_names,
+        )
+        planner_names_fn = getattr(self, "_planner_joint_names", None)
+        planner_names = (
+            list(planner_names_fn())
+            if callable(planner_names_fn)
+            else list(getattr(self.planner, "joint_names", self.raw_js_names))
+        )
+        goal_state = goal_state.reorder(planner_names)
         result = self._run_timed_curobo_call(
-            "plan_single_js",
-            lambda: self.motion_gen.plan_single_js(
-                start_state.unsqueeze(0),
+            "plan_cspace",
+            lambda: self.planner.plan_cspace(
                 goal_state.unsqueeze(0),
-                self.plan_config.clone(),
+                start_state.unsqueeze(0),
+                max_attempts=self._max_plan_attempts,
+                enable_graph_attempt=self._single_graph_attempt,
             ),
         )
         self._log_plan_result("plan_joint_positions", result, goal_arm_positions)
@@ -1107,16 +1374,121 @@ class TemplateController(BaseController):
 
         sim_js = self.robot.get_joints_state()
         velocities, accelerations, jerks = self._joint_state_derivatives(sim_js)
-        start_state = JointState(
-            position=self.tensor_args.to_device(sim_js.positions),
-            velocity=self.tensor_args.to_device(velocities),
-            acceleration=self.tensor_args.to_device(accelerations),
-            jerk=self.tensor_args.to_device(jerks),
-            joint_names=self.robot.dof_names,
-        ).get_ordered_joint_state(self.cmd_js_names)
-        valid, status = self.motion_gen.check_start_state(start_state.unsqueeze(0))
-        status = getattr(status, "value", status)
-        return bool(valid), status
+        start_state = self._arm_joint_state(sim_js)
+        limits = self.planner.kinematics.get_joint_limits()
+        position = start_state.position
+        valid = bool(
+            torch.isfinite(position).all().item()
+            and (position >= limits.position_lower_limits).all().item()
+            and (position <= limits.position_upper_limits).all().item()
+        )
+        return valid, "valid" if valid else "joint_limit_or_non_finite"
+
+    def diagnose_native_start_collision(self) -> dict:
+        """Report native-v2 scene collision at the live arm state.
+
+        This is a failure-path diagnostic only.  It deliberately runs after a
+        caller has exhausted its planning candidates, so the temporary
+        one-step FK query cannot invalidate a subsequent CUDA-graph query.
+        The query uses the same attached-object spheres and scene checker as
+        the native planner; it never disables or changes a world obstacle.
+        """
+
+        try:
+            from curobo._src.geom.collision import CollisionBuffer
+
+            sim_js = self.robot.get_joints_state()
+            active_state = self._arm_joint_state(sim_js)
+            fk_state = self.planner.compute_kinematics(
+                JointState.from_position(
+                    active_state.position.unsqueeze(0).unsqueeze(0),
+                    joint_names=self._planner_joint_names(),
+                )
+            )
+            if fk_state.robot_spheres is None:
+                return {"available": False, "reason": "native_fk_has_no_robot_spheres"}
+
+            scene = self.planner.scene_collision_checker
+            buffer = CollisionBuffer.from_shape(
+                fk_state.robot_spheres.shape,
+                self.tensor_args,
+            )
+            weight = self.tensor_args.to_device([1.0])
+            activation_distance = self.tensor_args.to_device([0.0])
+            distances = scene.get_sphere_distance(
+                fk_state,
+                buffer,
+                weight,
+                activation_distance,
+            )
+            distance_cpu = distances.detach().float().cpu().numpy()[0, 0]
+            spheres_cpu = fk_state.robot_spheres.detach().float().cpu().numpy()[0, 0]
+            collision_mask = distance_cpu > 1e-8
+
+            kinematics_cfg = self.planner.kinematics.config.kinematics_config
+            attached_indices = np.asarray([], dtype=int)
+            if "attached_object" in (kinematics_cfg.link_name_to_idx_map or {}):
+                attached_indices = (
+                    kinematics_cfg.get_sphere_index_from_link_name("attached_object")
+                    .detach()
+                    .cpu()
+                    .numpy()
+                    .astype(int)
+                )
+            attached_mask = np.zeros(len(distance_cpu), dtype=bool)
+            attached_mask[attached_indices] = True
+
+            def _sphere_rows(mask):
+                indices = np.flatnonzero(mask)
+                order = indices[np.argsort(distance_cpu[indices])[::-1]]
+                return [
+                    {
+                        "sphere_index": int(index),
+                        "collision_cost": float(distance_cpu[index]),
+                        "center": spheres_cpu[index, :3].tolist(),
+                        "radius": float(spheres_cpu[index, 3]),
+                    }
+                    for index in order[:8]
+                ]
+
+            summary = {
+                "available": True,
+                "attached_obstacle_names": list(self._native_attached_obstacle_names),
+                "num_spheres": int(len(distance_cpu)),
+                "collision_cost_sum": float(np.sum(distance_cpu)),
+                "collision_cost_max": float(np.max(distance_cpu)) if len(distance_cpu) else 0.0,
+                "collision_sphere_count": int(np.count_nonzero(collision_mask)),
+                "attached_sphere_indices": attached_indices.tolist(),
+                "attached_collision_cost_sum": float(np.sum(distance_cpu[attached_mask])),
+                "attached_collision_cost_max": (
+                    float(np.max(distance_cpu[attached_mask]))
+                    if np.any(attached_mask)
+                    else 0.0
+                ),
+                "colliding_spheres": _sphere_rows(collision_mask),
+                "colliding_attached_spheres": _sphere_rows(collision_mask & attached_mask),
+            }
+            LOGGER.warning(
+                "[NativeCollisionDebug] robot=%s arm=%s attached=%s "
+                "collision_cost_sum=%.6f collision_cost_max=%.6f "
+                "collision_spheres=%d attached_cost_max=%.6f",
+                self.name,
+                self.lr_name,
+                summary["attached_obstacle_names"],
+                summary["collision_cost_sum"],
+                summary["collision_cost_max"],
+                summary["collision_sphere_count"],
+                summary["attached_collision_cost_max"],
+            )
+            return summary
+        except Exception as exc:  # pragma: no cover - diagnostic must not mask planning failure
+            LOGGER.warning(
+                "[NativeCollisionDebug] unavailable robot=%s arm=%s error=%r",
+                self.name,
+                self.lr_name,
+                exc,
+            )
+            return {"available": False, "reason": repr(exc)}
 
     def forward(self, manip_cmd, eps=5e-3):
         if isinstance(manip_cmd, MotionPhaseCommand):
@@ -1166,6 +1538,419 @@ class TemplateController(BaseController):
         )
         return True
 
+    def _install_preplanned_phase_path(self, command: MotionPhaseCommand):
+        """Install a named native-v2 path for a phase without replanning it.
+
+        Pick and Place candidate validation may run against a planner that has
+        already solved the exact attached-object world.  Re-running the
+        single planner at execution time can therefore reject a path that was
+        just validated (and can also choose a different collision branch).
+        Keep the same explicit named-joint normalization as the ordinary
+        planning path, then let ``ee_forward`` consume the installed path by
+        setting its phase target to the command target.
+        """
+
+        preplanned_path = command.params.get("preplanned_joint_path")
+        if preplanned_path is None:
+            return False
+        cmd_plan = self._command_path(preplanned_path)
+        self._install_command_plan(
+            cmd_plan,
+            target_position=command.target_position,
+            target_orientation=command.target_orientation,
+            phase_name=command.phase.value,
+            cached=True,
+        )
+        return True
+
+    @staticmethod
+    def _pick_terminal_samples(start, goal, step_m: float) -> list[np.ndarray]:
+        """Discretize a terminal grasp approach for controllers without a cached path."""
+
+        start = np.asarray(start, dtype=float)
+        goal = np.asarray(goal, dtype=float)
+        distance = float(np.linalg.norm(goal - start))
+        count = max(1, int(np.ceil(distance / float(step_m))))
+        return [start + (goal - start) * (index / count) for index in range(1, count + 1)]
+
+    def build_pick_phase_commands(
+        self,
+        *,
+        object_name: str,
+        pregrasp_position,
+        pregrasp_orientation,
+        grasp_position,
+        grasp_orientation,
+        gripper_action: str,
+        post_grasp_offset: float = 0.0,
+        source_support=None,
+        terminal_path=None,
+        terminal_path_length_ratio=None,
+        terminal_path_max_deviation_m=None,
+        return_to_pregrasp: bool = False,
+        completion_tolerance: Optional[dict] = None,
+        terminal_step_m: Optional[float] = None,
+        gripper_change_steps: int = 40,
+        contact_threshold_n: float = 0.0,
+        verify_grasp_contact=None,
+    ) -> list[MotionPhaseCommand]:
+        """Build the executable Physics-schema Pick sequence.
+
+        Pick owns grasp annotation sampling and candidate selection.  Once a
+        candidate is selected, the controller owns the execution protocol:
+        world synchronization, pre-grasp motion, terminal approach, gripper
+        close, attachment, and post-grasp lift.  Keeping this policy here
+        makes the skill independent of the low-level Physics phase details
+        while retaining the structured command interface used by the
+        workflow.
+        """
+
+        if verify_grasp_contact is None or not callable(verify_grasp_contact):
+            raise ValueError("Physics Pick execution requires verify_grasp_contact callback")
+        if terminal_step_m is None:
+            terminal_step_m = float(
+                self.task.cfg.get("planning", {})
+                .get("pick_place", {})
+                .get("terminal_step_m", 0.005)
+            )
+        terminal_step_m = max(float(terminal_step_m), 1e-6)
+        tolerance = dict(
+            completion_tolerance
+            or {
+                "position_m": 0.005,
+                "orientation_rad": 0.05,
+            }
+        )
+        if source_support is None and self.collision_scene_manager is not None:
+            source_support = self.get_pick_source_support(object_name)
+
+        pregrasp_position = np.asarray(pregrasp_position, dtype=float)
+        pregrasp_orientation = np.asarray(pregrasp_orientation, dtype=float)
+        grasp_position = np.asarray(grasp_position, dtype=float)
+        grasp_orientation = np.asarray(grasp_orientation, dtype=float)
+        commands = [
+            MotionPhaseCommand(
+                MotionPhase.SYNC_WORLD,
+                active_object=object_name,
+                replan_allowed=False,
+            ),
+            MotionPhaseCommand(
+                MotionPhase.TRANSIT_PREGRASP,
+                pregrasp_position,
+                pregrasp_orientation,
+                gripper_action="open_gripper",
+                active_object=object_name,
+                completion_tolerance=tolerance,
+            ),
+        ]
+
+        if terminal_path is not None:
+            commands.append(
+                MotionPhaseCommand(
+                    MotionPhase.TERMINAL_GRASP_APPROACH,
+                    grasp_position,
+                    grasp_orientation,
+                    gripper_action="open_gripper",
+                    active_object=object_name,
+                    allow_target_finger_contact=True,
+                    completion_tolerance={
+                        "position_m": terminal_step_m,
+                        "orientation_rad": tolerance["orientation_rad"],
+                    },
+                    params={
+                        "preplanned_joint_path": terminal_path,
+                        "cartesian_step_m": terminal_step_m,
+                        "path_length_ratio": terminal_path_length_ratio,
+                        "path_max_deviation_m": terminal_path_max_deviation_m,
+                    },
+                )
+            )
+        else:
+            # Lightweight controllers may not return a chained pre-grasp ->
+            # grasp path.  Keep their fallback behavior in the controller so
+            # the skill does not need to know how terminal motion is sampled.
+            terminal_points = self._pick_terminal_samples(
+                pregrasp_position, grasp_position, terminal_step_m
+            )
+            for point_index, point in enumerate(terminal_points):
+                ratio = (point_index + 1) / len(terminal_points)
+                quat = (1.0 - ratio) * pregrasp_orientation + ratio * grasp_orientation
+                quat = quat / np.linalg.norm(quat)
+                commands.append(
+                    MotionPhaseCommand(
+                        MotionPhase.TERMINAL_GRASP_APPROACH,
+                        point,
+                        quat,
+                        gripper_action="open_gripper",
+                        active_object=object_name,
+                        allow_target_finger_contact=True,
+                        completion_tolerance={
+                            "position_m": terminal_step_m,
+                            "orientation_rad": tolerance["orientation_rad"],
+                        },
+                    )
+                )
+
+        commands.extend(
+            [
+                MotionPhaseCommand(
+                    MotionPhase.GRIPPER_CLOSE,
+                    grasp_position,
+                    grasp_orientation,
+                    gripper_action=gripper_action,
+                    active_object=object_name,
+                    allow_target_finger_contact=True,
+                    replan_allowed=False,
+                    dwell_steps=int(gripper_change_steps),
+                    params={"contact_threshold_n": float(contact_threshold_n)},
+                ),
+                MotionPhaseCommand(
+                    MotionPhase.ATTACH,
+                    active_object=object_name,
+                    allow_target_finger_contact=True,
+                    replan_allowed=False,
+                    params={"verify_grasp_contact": verify_grasp_contact},
+                ),
+            ]
+        )
+
+        def append_lift(target_position, target_orientation):
+            commands.append(
+                MotionPhaseCommand(
+                    MotionPhase.POST_GRASP_LIFT,
+                    target_position,
+                    target_orientation,
+                    gripper_action=gripper_action,
+                    active_object=object_name,
+                    support_object=source_support,
+                    allow_target_finger_contact=True,
+                    # Native attachment leaves the physical target in the
+                    # gripper; permit the attached target to touch robot links
+                    # while the explicit target collision gate remains active.
+                    allow_target_robot_contact=True,
+                    allow_object_support_contact=source_support is not None,
+                    completion_tolerance=tolerance,
+                )
+            )
+
+        if post_grasp_offset:
+            post_position = grasp_position.copy()
+            post_position[2] += float(post_grasp_offset)
+            append_lift(post_position, grasp_orientation)
+        if return_to_pregrasp:
+            append_lift(pregrasp_position, pregrasp_orientation)
+        return commands
+
+    def _require_pick_collision_manager(self):
+        if self.collision_scene_manager is None:
+            raise RuntimeError("Physics-schema Pick requires CollisionSceneManager")
+        return self.collision_scene_manager
+
+    def prepare_pick_planning_world(self, object_name: str):
+        """Prepare the exact Physics world used by Pick candidate evaluation."""
+
+        manager = self._require_pick_collision_manager()
+        self.update_pose_cost_metric(None)
+        manager.sync_dynamic_poses(0, interval_steps=1, force=True)
+        manager.begin_target_transit(object_name, self.name, self.lr_name)
+
+    def prepare_pick_pregrasp_world(self, object_name: str):
+        """Restore the collision state used while validating pre-grasp paths."""
+
+        self._require_pick_collision_manager().begin_target_transit(
+            object_name, self.name, self.lr_name
+        )
+
+    def prepare_pick_grasp_world(self, object_name: str):
+        """Switch the exact target collision state used for terminal approach."""
+
+        self._require_pick_collision_manager().begin_target_approach(
+            object_name, self.name, self.lr_name
+        )
+
+    def restore_pick_world(self, object_name: str):
+        """Restore the complete world after Pick planning or a failed contact check."""
+
+        self._require_pick_collision_manager().restore_world(object_name)
+
+    def diagnose_pick_start_world_collision(self):
+        """Return a diagnostic for an initial Physics Pick collision, if available."""
+
+        return self._require_pick_collision_manager().diagnose_controller_world_collision(self)
+
+    def get_pick_source_support(self, object_name: str):
+        """Resolve the support entity that may remain in contact during a lift."""
+
+        return self._require_pick_collision_manager().get_source_support_entity(object_name)
+
+    def get_pick_armbase_transform(self):
+        """Return the current world transform of this controller's arm base."""
+
+        armbase_tf_getter = getattr(self.robot, "get_armbase_world_transform", None)
+        if callable(armbase_tf_getter):
+            return armbase_tf_getter()
+
+        reference_prim_path = str(getattr(self, "reference_prim_path", "")).strip()
+        if reference_prim_path:
+            reference_prim = get_prim_at_path(reference_prim_path)
+            if reference_prim.IsValid():
+                try:
+                    reference_t, reference_q = get_world_pose(reference_prim_path)
+                    world_armbase = tf_matrix_from_pose(reference_t, reference_q)
+                    if hasattr(self.robot, "get_mobile_base_pose"):
+                        try:
+                            mobile_base_t, mobile_base_q = self.robot.get_mobile_base_pose()
+                            world_mobile = tf_matrix_from_pose(mobile_base_t, mobile_base_q)
+                            self._pick_cached_mobile_to_armbase_tf = (
+                                np.linalg.inv(world_mobile) @ world_armbase
+                            )
+                        except Exception:
+                            pass
+                    return world_armbase
+                except Exception:
+                    pass
+
+        if self._pick_configured_mobile_to_armbase_translation.shape == (3,):
+            if hasattr(self.robot, "get_mobile_base_pose"):
+                mobile_base_t, mobile_base_q = self.robot.get_mobile_base_pose()
+            else:
+                mobile_base_t, mobile_base_q = self.robot.get_world_pose()
+            world_mobile = tf_matrix_from_pose(mobile_base_t, mobile_base_q)
+            mobile_to_armbase = tf_matrix_from_pose(
+                self._pick_configured_mobile_to_armbase_translation,
+                self._pick_configured_mobile_to_armbase_orientation,
+            )
+            self._pick_cached_mobile_to_armbase_tf = mobile_to_armbase
+            return world_mobile @ mobile_to_armbase
+
+        reference_prim = get_prim_at_path(self.reference_prim_path)
+        task_prim = get_prim_at_path(self.task.root_prim_path)
+        raw_task_armbase = get_relative_transform(reference_prim, task_prim)
+        mobile_base_prim_path = str(self._pick_mobile_base_prim_path or "").strip()
+        if not mobile_base_prim_path:
+            return raw_task_armbase
+
+        mobile_base_prim = get_prim_at_path(mobile_base_prim_path)
+        if not mobile_base_prim.IsValid():
+            return raw_task_armbase
+        task_mobile = get_relative_transform(mobile_base_prim, task_prim)
+        if self._pick_cached_mobile_to_armbase_tf is None:
+            self._pick_cached_mobile_to_armbase_tf = (
+                np.linalg.inv(task_mobile) @ raw_task_armbase
+            )
+        return task_mobile @ self._pick_cached_mobile_to_armbase_tf
+
+    def get_pick_frame_debug(self):
+        """Expose frame-resolution details for Pick's non-critical diagnostics."""
+
+        return {
+            "mobile_base_prim_path": self._pick_mobile_base_prim_path,
+            "cached_mobile_to_armbase_tf": self._pick_cached_mobile_to_armbase_tf,
+            "configured_mobile_to_armbase_translation": self._pick_configured_mobile_to_armbase_translation,
+            "configured_mobile_to_armbase_orientation": self._pick_configured_mobile_to_armbase_orientation,
+        }
+
+    def _get_pick_object_world_pose(self, object_name: str):
+        pick_object = self.task.objects[object_name]
+        get_world_pose_fn = getattr(pick_object, "get_world_pose", None)
+        if callable(get_world_pose_fn):
+            return get_world_pose_fn()
+        return pick_object.get_local_pose()
+
+    def capture_pick_plan_reference(self, object_name: str):
+        """Capture the object and arm-base frames used by a Physics Pick plan."""
+
+        object_translation, object_orientation = self._get_pick_object_world_pose(object_name)
+        self._pick_plan_references[object_name] = {
+            "object_pose": (
+                np.asarray(object_translation, dtype=float).reshape(3).copy(),
+                np.asarray(object_orientation, dtype=float).reshape(4).copy(),
+            ),
+            "world_armbase_tf": np.asarray(self.get_pick_armbase_transform(), dtype=float).copy(),
+        }
+
+    def retarget_pick_phase_commands(self, object_name: str, commands):
+        """Retarget pending Physics Pick phases after rigid target motion."""
+
+        reference = self._pick_plan_references.get(object_name)
+        if reference is None:
+            self.capture_pick_plan_reference(object_name)
+            return 0.0, 0.0
+
+        current_translation, current_orientation = self._get_pick_object_world_pose(object_name)
+        current_object_pose = (
+            np.asarray(current_translation, dtype=float).reshape(3).copy(),
+            np.asarray(current_orientation, dtype=float).reshape(4).copy(),
+        )
+        current_world_armbase_tf = np.asarray(self.get_pick_armbase_transform(), dtype=float)
+        old_object_tf = tf_matrix_from_pose(*reference["object_pose"])
+        current_object_tf = tf_matrix_from_pose(*current_object_pose)
+        object_delta = current_object_tf @ np.linalg.inv(old_object_tf)
+        relative_rotation = object_delta[:3, :3]
+        cosine = float(
+            np.clip((np.trace(relative_rotation) - 1.0) * 0.5, -1.0, 1.0)
+        )
+        rotation_delta_deg = float(np.degrees(np.arccos(cosine)))
+        translation_delta = float(np.linalg.norm(object_delta[:3, 3]))
+
+        current_base_inverse = np.linalg.inv(current_world_armbase_tf)
+        for pending in commands:
+            if not isinstance(pending, MotionPhaseCommand) or pending.target_position is None:
+                continue
+            old_base_ee_tf = tf_matrix_from_pose(
+                pending.target_position, pending.target_orientation
+            )
+            old_world_ee_tf = reference["world_armbase_tf"] @ old_base_ee_tf
+            current_world_ee_tf = object_delta @ old_world_ee_tf
+            current_base_ee_tf = current_base_inverse @ current_world_ee_tf
+            target_position, target_orientation = pose_from_tf_matrix(current_base_ee_tf)
+            pending.target_position = np.asarray(target_position, dtype=float).reshape(3)
+            pending.target_orientation = np.asarray(target_orientation, dtype=float).reshape(4)
+            if pending.phase == MotionPhase.TERMINAL_GRASP_APPROACH:
+                pending.params.pop("preplanned_joint_path", None)
+                pending.params.pop("path_length_ratio", None)
+                pending.params.pop("path_max_deviation_m", None)
+
+        self._pick_plan_references[object_name] = {
+            "object_pose": current_object_pose,
+            "world_armbase_tf": current_world_armbase_tf.copy(),
+        }
+        return translation_delta, rotation_delta_deg
+
+    def replan_pick_after_safety(self, object_name: str, command, commands):
+        """Retarget remaining Pick phases when the active object moved."""
+
+        if not isinstance(command, MotionPhaseCommand):
+            return True
+        if command.active_object != object_name:
+            return True
+        if command.phase not in {
+            MotionPhase.TRANSIT_PREGRASP,
+            MotionPhase.TERMINAL_GRASP_APPROACH,
+        }:
+            return True
+        try:
+            translation_delta, rotation_delta_deg = self.retarget_pick_phase_commands(
+                object_name, commands
+            )
+        except Exception:
+            LOGGER.exception(
+                "[PickSafety] failed to retarget moving object=%s phase=%s",
+                object_name,
+                command.phase.value,
+            )
+            return False
+        LOGGER.warning(
+            "[PickSafety] retargeted active object=%s phase=%s "
+            "translation_delta_m=%.6f rotation_delta_deg=%.3f "
+            "terminal_path_invalidated=true",
+            object_name,
+            command.phase.value,
+            translation_delta,
+            rotation_delta_deg,
+        )
+        return True
+
     def forward_phase_command(self, command: MotionPhaseCommand):
         """Execute a structured Pick/Place phase while preserving tuple compatibility."""
 
@@ -1186,22 +1971,10 @@ class TemplateController(BaseController):
                 manager.begin_target_approach(command.active_object, robot, arm)
                 preplanned_path = command.params.get("preplanned_joint_path")
                 if preplanned_path is not None:
-                    cmd_plan = self.motion_gen.get_full_js(preplanned_path)
-                    self.idx_list = list(range(len(self.raw_js_names)))
-                    self.cmd_plan = cmd_plan.get_ordered_joint_state(self.raw_js_names)
-                    self.cmd_idx = 0
-                    self._phase_plan_started = True
-                    self._ee_trans = self.tensor_args.to_device(command.target_position)
-                    self._ee_ori = self.tensor_args.to_device(command.target_orientation)
-                    self._visualize_selected_plan()
-                    LOGGER.info(
-                        "[PhaseDebug] selected-plan robot=%s arm=%s phase=%s waypoints=%d stride=%d cached=true",
-                        self.name,
-                        self.lr_name,
-                        command.phase.value,
-                        len(self.cmd_plan),
-                        self.ds_ratio,
-                    )
+                    self._install_preplanned_phase_path(command)
+            elif command.phase == MotionPhase.TRANSIT_PREPLACE:
+                manager.assert_attached_owner(command.active_object, robot, arm)
+                self._install_preplanned_phase_path(command)
             elif command.phase == MotionPhase.ATTACH:
                 verify_contact = command.params.get("verify_grasp_contact")
                 if not callable(verify_contact) or not bool(verify_contact()):
@@ -1215,26 +1988,36 @@ class TemplateController(BaseController):
                 preplanned_path = command.params.get("preplanned_joint_path")
                 if preplanned_path is None:
                     raise RuntimeError("CARRY_HOME requires a preplanned joint path")
-                cmd_plan = self.motion_gen.get_full_js(preplanned_path)
-                self.idx_list = list(range(len(self.raw_js_names)))
-                self.cmd_plan = cmd_plan.get_ordered_joint_state(self.raw_js_names)
-                self.cmd_idx = 0
-                self._phase_plan_started = True
-                self._ee_trans = self.tensor_args.to_device(command.target_position)
-                self._ee_ori = self.tensor_args.to_device(command.target_orientation)
-                self._visualize_selected_plan()
-                LOGGER.info(
-                    "[PhaseDebug] selected-plan robot=%s arm=%s phase=%s waypoints=%d stride=%d cached=true",
-                    self.name,
-                    self.lr_name,
-                    command.phase.value,
-                    len(self.cmd_plan),
-                    self.ds_ratio,
-                )
+                self._install_preplanned_phase_path(command)
             elif command.phase == MotionPhase.TERMINAL_PLACE_DESCENT:
                 manager.begin_placement_descent(
                     command.active_object, command.support_object, robot, arm
                 )
+                if command.params.get("preplanned_joint_path") is not None:
+                    cached_plan = self._command_path(
+                        command.params["preplanned_joint_path"]
+                    )
+                    if command.params.get("continuous_descent", False):
+                        cached_valid = self._validate_continuous_place_plan(
+                            command, cached_plan
+                        )
+                    else:
+                        cached_valid = True
+                    if cached_valid:
+                        self._install_preplanned_phase_path(command)
+                    else:
+                        # A cached path can be invalidated by a safety hold or
+                        # a small attached-object slip between evaluation and
+                        # execution.  Fall back to a fresh single-plan query
+                        # from the measured state instead of failing the phase
+                        # on stale candidate data.
+                        command.params.pop("preplanned_joint_path", None)
+                        LOGGER.warning(
+                            "[PhaseDebug] cached-place-plan rejected robot=%s arm=%s; "
+                            "falling back to native-v2 replanning",
+                            self.name,
+                            self.lr_name,
+                        )
             elif command.phase == MotionPhase.DETACH_AND_SETTLE:
                 manager.detach_target(command.active_object, robot, arm)
                 self._phase_bookkeeping_done = True
@@ -1286,13 +2069,35 @@ class TemplateController(BaseController):
         """Reject a fast descent that is indirect or advances too far per frame."""
 
         start_position, _ = self.get_ee_pose()
-        positions = []
-        for joint_position in plan.position:
-            point, _ = self.forward_kinematic(
-                joint_position.detach().cpu().numpy()
-            )
-            positions.append(point)
-        positions = np.asarray(positions, dtype=float)
+        plan_position = plan.position
+        if len(plan_position):
+            batch_forward_kinematic = getattr(self, "_forward_kinematic_batch", None)
+            if callable(batch_forward_kinematic):
+                plan_joint_names = getattr(plan, "joint_names", None)
+                if plan_joint_names is None:
+                    positions_from_batch = batch_forward_kinematic(plan_position)
+                else:
+                    positions_from_batch = batch_forward_kinematic(
+                        plan_position, joint_names=list(plan_joint_names)
+                    )
+                positions = np.asarray(
+                    positions_from_batch, dtype=float
+                )
+            else:
+                # Keep lightweight host-side controller stubs usable without
+                # importing torch/CuRobo.  The real controller always has the
+                # batch helper above, so this is not the runtime path.
+                positions = np.asarray(
+                    [
+                        self.forward_kinematic(
+                            joint_position.detach().cpu().numpy()
+                        )[0]
+                        for joint_position in plan_position
+                    ],
+                    dtype=float,
+                )
+        else:
+            positions = np.asarray([], dtype=float)
         if not len(positions) or not np.all(np.isfinite(positions)):
             LOGGER.warning(
                 "[PhaseDebug] continuous-place-plan-invalid robot=%s arm=%s reason=non_finite_path",
@@ -1455,19 +2260,26 @@ class TemplateController(BaseController):
         self._ee_trans = self.tensor_args.to_device(position)
         self._ee_ori = self.tensor_args.to_device(orientation)
 
+    def _make_action(self, arm_action, gripper_action):
+        """Build the common simulator action payload for every hold path."""
+
+        arm_action = np.asarray(arm_action, dtype=float).copy()
+        gripper_action = np.asarray(gripper_action, dtype=float).copy()
+        joint_indices = np.concatenate([self.arm_indices, self.gripper_indices])
+        return {
+            "joint_positions": np.concatenate([arm_action, gripper_action]),
+            "joint_indices": joint_indices,
+            "lr_name": self.lr_name,
+            "arm_action": arm_action,
+            "gripper_action": gripper_action,
+        }
+
     def hold_action(self):
         """Return an articulation target equal to the measured current joints."""
 
         sim_js = self.robot.get_joints_state()
         arm_action = np.asarray(sim_js.positions[self.arm_indices], dtype=float)
-        gripper_action = self.get_gripper_action()
-        return {
-            "joint_positions": np.concatenate([arm_action, gripper_action]),
-            "joint_indices": np.concatenate([self.arm_indices, self.gripper_indices]),
-            "lr_name": self.lr_name,
-            "arm_action": arm_action,
-            "gripper_action": gripper_action,
-        }
+        return self._make_action(arm_action, self.get_gripper_action())
 
     def observe_hold(self):
         """Hold measured arm and gripper joints without changing controller state."""
@@ -1480,13 +2292,9 @@ class TemplateController(BaseController):
         joint_indices = np.concatenate([self.arm_indices, self.gripper_indices])
         joint_positions = positions[joint_indices].copy()
         arm_count = len(self.arm_indices)
-        return {
-            "joint_positions": joint_positions,
-            "joint_indices": joint_indices,
-            "lr_name": self.lr_name,
-            "arm_action": joint_positions[:arm_count],
-            "gripper_action": joint_positions[arm_count:],
-        }
+        return self._make_action(
+            joint_positions[:arm_count], joint_positions[arm_count:]
+        )
 
     def ee_forward(
         self,
@@ -1513,107 +2321,45 @@ class TemplateController(BaseController):
                 self._step_idx = 0
                 self.num_last_cmd = 0
                 self._last_arm_action = None
-                result = self.plan(ee_trans, ee_ori, sim_js, js_names)
                 self._phase_plan_started = True
+                result = self.plan(ee_trans, ee_ori, sim_js, js_names)
                 self._log_plan_result("ee_forward", result, target=ee_trans.detach().cpu().numpy())
-                if self.use_batch:
-                    if result.success.any():
-                        self._ee_trans = ee_trans
-                        self._ee_ori = ee_ori
-                        paths = result.get_successful_paths()
-                        position_filter_res = filter_paths_by_position_error(
-                            paths, result.position_error[result.success]
+                if self._result_success(result):
+                    raw_plan = self._result_path(result)
+                    cmd_plan = self._command_path(raw_plan)
+                    if cmd_plan is not None:
+                        self._install_command_plan(
+                            cmd_plan,
+                            target_position=ee_trans,
+                            target_orientation=ee_ori,
+                            phase_name=self._last_command_name,
+                            cached=False,
                         )
-                        rotation_filter_res = filter_paths_by_rotation_error(
-                            paths, result.rotation_error[result.success]
-                        )
-                        filtered_paths = [
-                            p for i, p in enumerate(paths) if position_filter_res[i] and rotation_filter_res[i]
-                        ]
-                        if len(filtered_paths) == 0:
-                            filtered_paths = paths
-                        sort_weights = self._get_sort_path_weights()  # pylint: disable=assignment-from-none
-                        weights_arg = self.tensor_args.to_device(sort_weights) if sort_weights is not None else None
-                        sorted_indices = sort_by_difference_js(filtered_paths, weights=weights_arg)
-                        cmd_plan = self.motion_gen.get_full_js(paths[sorted_indices[0]])
-                        self.idx_list = list(range(len(self.raw_js_names)))
-                        self.cmd_plan = cmd_plan.get_ordered_joint_state(self.raw_js_names)
                         self._write_curobo_plan_debug(
                             result=result,
                             sim_js=sim_js,
                             js_names=js_names,
                             ee_trans=ee_trans,
                             ee_ori=ee_ori,
-                            raw_plan=cmd_plan,
-                            ordered_cmd_plan=self.cmd_plan,
-                            branch="batch",
-                            selected_path_index=sorted_indices[0],
-                            selected_path_source="paths[sorted_indices[0]]",
-                        )
-                        self._visualize_selected_plan()
-                        LOGGER.info(
-                            "[PhaseDebug] selected-plan robot=%s arm=%s phase=%s waypoints=%d stride=%d cached=false",
-                            self.name,
-                            self.lr_name,
-                            self._last_command_name,
-                            len(self.cmd_plan),
-                            self.ds_ratio,
-                        )
-                        self.num_plan_failed = 0
-                        new_plan_created = True
-                    else:
-                        print("Plan did not converge to a solution.")
-                        self._phase_plan_failed = True
-                        self.num_plan_failed += 1
-                        LOGGER.warning(
-                            "[PlanDebug] plan failed robot=%s arm=%s command=%s num_plan_failed=%d",
-                            self.name,
-                            self.lr_name,
-                            self._last_command_name,
-                            self.num_plan_failed,
-                        )
-                else:
-                    succ = result.success.item()
-                    if succ:
-                        self._ee_trans = ee_trans
-                        self._ee_ori = ee_ori
-                        cmd_plan = result.get_interpolated_plan()
-                        self.idx_list = list(range(len(self.raw_js_names)))
-                        self.cmd_plan = cmd_plan.get_ordered_joint_state(self.raw_js_names)
-                        self._write_curobo_plan_debug(
-                            result=result,
-                            sim_js=sim_js,
-                            js_names=js_names,
-                            ee_trans=ee_trans,
-                            ee_ori=ee_ori,
-                            raw_plan=cmd_plan,
+                            raw_plan=raw_plan,
                             ordered_cmd_plan=self.cmd_plan,
                             branch="single",
                             selected_path_index=0,
-                            selected_path_source="result.get_interpolated_plan()",
-                        )
-                        self._visualize_selected_plan()
-                        LOGGER.info(
-                            "[PhaseDebug] selected-plan robot=%s arm=%s phase=%s waypoints=%d stride=%d cached=false",
-                            self.name,
-                            self.lr_name,
-                            self._last_command_name,
-                            len(self.cmd_plan),
-                            self.ds_ratio,
+                            selected_path_source="native result interpolated_trajectory",
                         )
                         self.num_plan_failed = 0
                         new_plan_created = True
-                    else:
-                        print("Plan did not converge to a solution.")
-                        self._phase_plan_failed = True
-                        self.num_plan_failed += 1
-                        LOGGER.warning(
-                            "[PlanDebug] plan failed robot=%s arm=%s command=%s num_plan_failed=%d",
-                            self.name,
-                            self.lr_name,
-                            self._last_command_name,
-                            self.num_plan_failed,
-                        )
+                if not new_plan_created:
+                    print("Plan did not converge to a solution.")
+                    self._phase_plan_failed = True
+                    self.num_plan_failed += 1
+                    LOGGER.warning(
+                        "[PlanDebug] plan failed robot=%s arm=%s command=%s num_plan_failed=%d",
+                        self.name,
+                        self.lr_name,
+                        self._last_command_name,
+                        self.num_plan_failed,
+                    )
             if (
                 new_plan_created
                 and self.cmd_plan is not None
@@ -1668,14 +2414,7 @@ class TemplateController(BaseController):
             gripper_action = self.get_gripper_action()
         else:
             gripper_action = np.asarray(gripper_action, dtype=float)
-        joint_positions = np.concatenate([arm_action, gripper_action])
-        self._action = {
-            "joint_positions": joint_positions,
-            "joint_indices": np.concatenate([self.arm_indices, self.gripper_indices]),
-            "lr_name": self.lr_name,
-            "arm_action": arm_action,
-            "gripper_action": gripper_action,
-        }
+        self._action = self._make_action(arm_action, gripper_action)
         return self._action
 
     def get_gripper_action(self):
@@ -1683,9 +2422,10 @@ class TemplateController(BaseController):
 
     def get_ee_pose(self):
         sim_js = self.robot.get_joints_state()
-        q_state = torch.tensor(sim_js.positions[self.arm_indices], **self.tensor_args.as_torch_dict()).reshape(1, -1)
-        ee_pose = self.kin_model.get_state(q_state)
-        return ee_pose.ee_position[0].cpu().numpy(), ee_pose.ee_quaternion[0].cpu().numpy()
+        q_state = self._arm_joint_state(sim_js)
+        state = self.kin_model.compute_kinematics(q_state.unsqueeze(1))
+        ee_pose = state.tool_poses.get_link_pose(self.kin_model.tool_frames[0])
+        return ee_pose.position[0].cpu().numpy(), ee_pose.quaternion[0].cpu().numpy()
 
     def get_armbase_pose(self):
         armbase_pose = get_relative_transform(
@@ -1694,10 +2434,56 @@ class TemplateController(BaseController):
         return pose_from_tf_matrix(armbase_pose)
 
     def forward_kinematic(self, q_state: np.ndarray):
-        q_state = q_state.reshape(1, -1)
-        q_state = self.tensor_args.to_device(q_state)
-        out = self.kin_model.get_state(q_state)
-        return out.ee_position[0].cpu().numpy(), out.ee_quaternion[0].cpu().numpy()
+        q_state = self.tensor_args.to_device(q_state.reshape(1, -1))
+        state = JointState.from_position(q_state, joint_names=self._planner_joint_names())
+        out = self.kin_model.compute_kinematics(state.unsqueeze(1))
+        ee_pose = out.tool_poses.get_link_pose(self.kin_model.tool_frames[0])
+        return ee_pose.position[0].cpu().numpy(), ee_pose.quaternion[0].cpu().numpy()
+
+    def _forward_kinematic_batch(self, joint_positions, joint_names=None):
+        """Compute tool positions for a trajectory in one native v2 FK call."""
+
+        joint_positions = self.tensor_args.to_device(joint_positions)
+        if joint_positions.ndim != 2:
+            raise ValueError(
+                "batched Cartesian FK requires a [time, dof] position tensor, "
+                f"got shape {tuple(joint_positions.shape)}"
+            )
+        planner_names = self._planner_joint_names()
+        source_names = planner_names if joint_names is None else list(joint_names)
+        if len(source_names) != joint_positions.shape[-1]:
+            raise ValueError(
+                "batched Cartesian FK joint_names do not match position DOF: "
+                f"position_shape={tuple(joint_positions.shape)}, "
+                f"joint_names={source_names!r}"
+            )
+        if len(set(source_names)) != len(source_names):
+            raise ValueError(
+                f"batched Cartesian FK joint_names must be unique: {source_names!r}"
+            )
+        if set(source_names) != set(planner_names):
+            raise ValueError(
+                "batched Cartesian FK joint contract does not match the native "
+                f"planner: source={source_names!r}, planner={planner_names!r}"
+            )
+        if source_names != planner_names:
+            reorder = [source_names.index(name) for name in planner_names]
+            joint_positions = joint_positions[..., reorder].contiguous()
+        state = JointState.from_position(
+            joint_positions.contiguous(),
+            joint_names=planner_names,
+        )
+        # Cartesian validation is read-only.  Avoid retaining an autograd graph
+        # for every candidate path while keeping the native v2 FK kernel and
+        # its single device-to-host transfer intact.
+        with torch.inference_mode():
+            out = self.kin_model.compute_kinematics(state)
+        ee_pose = out.tool_poses.get_link_pose(self.kin_model.tool_frames[0])
+        # Transfer the complete batch only after FK has finished.  The
+        # Cartesian checks use position only, matching forward_kinematic's
+        # existing callers while avoiding one device synchronization per
+        # waypoint.
+        return ee_pose.position.detach().cpu().numpy()
 
     def close_gripper(self):
         self._gripper_state = -1.0
@@ -1706,12 +2492,6 @@ class TemplateController(BaseController):
         self._gripper_state = 1.0
 
     def _get_curobo_world_object_names(self) -> List[str]:
-        if self.motion_gen is not None:
-            world_model = getattr(self.motion_gen, "world_model", None)
-            objects = getattr(world_model, "objects", None)
-            if objects is not None:
-                return [obj.name for obj in objects]
-
         objects = getattr(self.world_cfg, "objects", None)
         if objects is not None:
             return [obj.name for obj in objects]
@@ -1770,37 +2550,226 @@ class TemplateController(BaseController):
 
         return resolved_names, disabled_names
 
+    def _native_attachment_geometry(self, object_names: List[str]):
+        """Build a native-v2 local mesh and current reference-frame offset.
+
+        Native ``AttachmentManager.attach`` expects fitted sphere centers in an
+        object-local frame and receives that object's current reference-frame
+        pose separately.  Scene obstacles are stored in the planner reference
+        frame, so passing them directly would make the attached spheres appear
+        at the wrong pose (and is especially wrong after a dynamic-object
+        update).  Consolidate all requested collider meshes in the first
+        collider's current frame, then let native v2 compute the link-local
+        transform from the explicit ``world_objects_pose_offset``.
+        """
+
+        from curobo._src.geom.types import Mesh
+
+        scene_collision = self.planner.scene_collision_checker
+        scene_model = scene_collision.scene_model
+        if isinstance(scene_model, list):
+            scene_model = scene_model[0]
+        if scene_model is None:
+            scene_model = self.world_cfg
+
+        obstacles = []
+        current_poses = []
+        for object_name in object_names:
+            obstacle = scene_model.get_obstacle(object_name)
+            if obstacle is None:
+                raise ValueError(
+                    f"attach collision prim is not in native v2 scene model: {object_name}"
+                )
+            obstacles.append(obstacle)
+            if self.collision_scene_manager is not None and self.collision_world_mode == "physics_schema":
+                current_poses.append(
+                    self.collision_scene_manager._controller_obstacle_pose(  # pylint: disable=protected-access
+                        self, object_name
+                    )
+                )
+            else:
+                pose = getattr(obstacle, "pose", None)
+                if pose is None:
+                    raise ValueError(f"native v2 obstacle has no pose: {object_name}")
+                current_poses.append(Pose.from_list(list(pose), device_cfg=self.tensor_args))
+
+        anchor_pose = current_poses[0]
+        anchor_inverse = np.linalg.inv(anchor_pose.get_numpy_matrix()[0])
+        vertices = []
+        faces = []
+        vertex_offset = 0
+        for obstacle, current_pose in zip(obstacles, current_poses):
+            mesh = obstacle.get_trimesh_mesh(transform_with_pose=False)
+            local_vertices = np.asarray(mesh.vertices, dtype=np.float32)
+            if local_vertices.ndim != 2 or local_vertices.shape[1] != 3:
+                raise ValueError(
+                    f"native v2 attachment mesh has invalid vertices: {obstacle.name}"
+                )
+            object_matrix = current_pose.get_numpy_matrix()[0]
+            world_vertices = (object_matrix[:3, :3] @ local_vertices.T).T + object_matrix[:3, 3]
+            anchor_vertices = (
+                (anchor_inverse[:3, :3] @ world_vertices.T).T + anchor_inverse[:3, 3]
+            )
+            obstacle_faces = np.asarray(mesh.faces, dtype=np.int64)
+            if obstacle_faces.ndim != 2 or obstacle_faces.shape[1] != 3:
+                raise ValueError(
+                    f"native v2 attachment mesh has invalid faces: {obstacle.name}"
+                )
+            vertices.append(anchor_vertices)
+            faces.append(obstacle_faces + vertex_offset)
+            vertex_offset += anchor_vertices.shape[0]
+
+        if not vertices:
+            raise ValueError("native v2 attachment requires at least one mesh")
+        combined = Mesh(
+            name="__native_attached_object__",
+            pose=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            vertices=np.concatenate(vertices, axis=0),
+            faces=np.concatenate(faces, axis=0),
+        )
+        return [combined], anchor_pose
+
+    def _attach_native_planner(
+        self,
+        planner,
+        object_names: List[str],
+        *,
+        link_name="attached_object",
+        joint_state=None,
+        world_objects_pose_offset=None,
+    ):
+        """Attach one resolved object set to a native planner.
+
+        Pick execution, Place candidate evaluation, and transient post-grasp
+        validation all use the same CuRobo attachment contract.  Keeping the
+        validation, mesh fitting, sphere count, and named-joint conversion in
+        one helper prevents those paths from drifting apart.
+        """
+
+        if not object_names or any(
+            not isinstance(path, str) or not path.strip() for path in object_names
+        ):
+            raise ValueError("native attachment requires non-empty obstacle path strings")
+        paths = [path.strip() for path in object_names]
+        if planner is None:
+            raise RuntimeError("native attachment requires an initialized planner")
+        missing = [path for path in paths if self.world_cfg.get_obstacle(path) is None]
+        if missing:
+            raise ValueError(f"attach collision prims are not in CuRobo world: {missing}")
+        if joint_state is None:
+            joint_state = self._arm_joint_state(self.robot.get_joints_state())
+        attachment_meshes, attachment_offset = self._native_attachment_geometry(paths)
+        if world_objects_pose_offset is not None:
+            attachment_offset = world_objects_pose_offset
+        planner.attachment_manager.attach(
+            joint_state,
+            attachment_meshes,
+            link_name=link_name,
+            num_spheres=max(
+                1,
+                self._attached_sphere_count(link_name, 1, planner=planner),
+            ),
+            surface_radius=0.001,
+            sphere_fit_type=SphereFitType.VOXEL,
+            world_objects_pose_offset=attachment_offset,
+            disable_obstacle_names=paths,
+        )
+        return paths
+
     def attach_objects(
         self,
         obj_prim_paths: List[str],
         link_name="attached_object",
         world_objects_pose_offset=None,
     ):
-        if not obj_prim_paths or any(not isinstance(path, str) or not path.strip() for path in obj_prim_paths):
-            raise ValueError("attach_objects requires non-empty CuRobo obstacle path strings")
-        paths = [path.strip() for path in obj_prim_paths]
-        sim_js = self.robot.get_joints_state()
-        js_names = self.robot.dof_names
-        cu_js = JointState(
-            position=self.tensor_args.to_device(sim_js.positions),
-            velocity=self.tensor_args.to_device(sim_js.velocities) * 0.0,
-            acceleration=self.tensor_args.to_device(sim_js.velocities) * 0.0,
-            jerk=self.tensor_args.to_device(sim_js.velocities) * 0.0,
-            joint_names=js_names,
-        ).get_ordered_joint_state(self.cmd_js_names)
-        missing = [path for path in paths if self.motion_gen.world_model.get_obstacle(path) is None]
-        if missing:
-            raise ValueError(f"attach collision prims are not in CuRobo world: {missing}")
-        LOGGER.warning("[AttachDebug] attaching robot=%s arm=%s paths=%s", self.name, self.lr_name, paths)
-        attached = self.motion_gen.attach_objects_to_robot(
-            cu_js,
+        try:
+            # Pick execution is owned by the single native planner.  The
+            # batch planner is synchronized lazily by Place immediately
+            # before candidate evaluation; attaching both here makes a
+            # candidate-only planner participate in the Pick attach
+            # transition and can invalidate the execution planner's next
+            # start-state query on Warp/graph-backed scenes.
+            paths = self._attach_native_planner(
+                self.planner,
+                obj_prim_paths,
+                link_name=link_name,
+                world_objects_pose_offset=world_objects_pose_offset,
+            )
+        except Exception as primary_error:
+            # The single planner is the only manager mutated by this method.
+            # Keep the failure atomic for callers that retry the attach.
+            try:
+                self.planner.attachment_manager.detach()
+            except Exception as rollback_error:
+                _record_attachment_rollback_failure(
+                    primary_error,
+                    "detach partially attached native-v2 planner",
+                    rollback_error,
+                )
+            raise
+        self._native_attached_obstacle_names = list(paths)
+        self._native_batch_attached_obstacle_names = []
+        LOGGER.warning("[AttachDebug] attached=native disabled_world_obstacles=%s", paths)
+        # Native v2 mutates the attachment manager in-place and intentionally
+        # returns None. Keep this controller API boolean for its callers.
+        return True
+
+    def sync_native_batch_attachment(
+        self,
+        link_name="attached_object",
+        world_objects_pose_offset=None,
+    ):
+        """Attach the currently held object to the native batch planner.
+
+        The batch planner is used only to rank Place candidates.  It must see
+        the same attached geometry as the execution planner, but it must not
+        be attached during Pick: two CUDA-backed AttachmentManagers share no
+        solver state contract and the second attach can invalidate the live
+        single-planner start-state query.  This method is therefore an
+        explicit Place-side synchronization point.
+        """
+
+        if self.batch_planner is None:
+            return False
+        paths = list(self._native_attached_obstacle_names)
+        if not paths:
+            raise RuntimeError(
+                "cannot synchronize native batch attachment without an attached object"
+            )
+        if self._native_batch_attached_obstacle_names == paths:
+            return True
+
+        # A failed Place retry must not retain a stale candidate-world
+        # attachment.  Detach only the candidate planner; the execution
+        # planner remains authoritative for the held object.
+        try:
+            self.batch_planner.attachment_manager.detach()
+            self._attach_native_planner(
+                self.batch_planner,
+                paths,
+                link_name=link_name,
+                world_objects_pose_offset=world_objects_pose_offset,
+            )
+        except Exception as primary_error:
+            try:
+                self.batch_planner.attachment_manager.detach()
+            except Exception as rollback_error:
+                _record_attachment_rollback_failure(
+                    primary_error,
+                    "detach failed native-v2 batch attachment",
+                    rollback_error,
+                )
+            self._native_batch_attached_obstacle_names = []
+            raise
+
+        self._native_batch_attached_obstacle_names = paths
+        LOGGER.info(
+            "[AttachDebug] synchronized=native_batch robot=%s arm=%s paths=%s",
+            self.name,
+            self.lr_name,
             paths,
-            link_name=link_name,
-            sphere_fit_type=SphereFitType.VOXEL,
-            world_objects_pose_offset=world_objects_pose_offset,
         )
-        LOGGER.warning("[AttachDebug] attached=%s disabled_world_obstacles=%s", attached, paths)
-        return attached
+        return True
 
     def test_attached_forward_from_joint_positions(
         self,
@@ -1827,68 +2796,44 @@ class TemplateController(BaseController):
         sim_js = self.robot.get_joints_state()
         sim_js.positions = np.asarray(sim_js.positions, dtype=float).copy()
         sim_js.positions[self.arm_indices] = start_arm_positions
-        js_names = self.robot.dof_names
-        cu_js = JointState(
-            position=self.tensor_args.to_device(sim_js.positions),
-            velocity=self.tensor_args.to_device(sim_js.velocities) * 0.0,
-            acceleration=self.tensor_args.to_device(sim_js.velocities) * 0.0,
-            jerk=self.tensor_args.to_device(sim_js.velocities) * 0.0,
-            joint_names=js_names,
-        ).get_ordered_joint_state(self.cmd_js_names)
-        paths = [path.strip() for path in obj_prim_paths]
-        missing = [path for path in paths if self.motion_gen.world_model.get_obstacle(path) is None]
-        if missing:
-            raise ValueError(f"attach collision prims are not in CuRobo world: {missing}")
+        cu_js = self._arm_joint_state(sim_js)
 
-        attached = False
         try:
-            attached = self.motion_gen.attach_objects_to_robot(
-                cu_js,
-                paths,
+            paths = self._attach_native_planner(
+                self.planner,
+                obj_prim_paths,
                 link_name="attached_object",
-                sphere_fit_type=SphereFitType.VOXEL,
+                joint_state=cu_js,
             )
-            if attached is False:
-                return False, None, None
-            return self.test_forward_from_joint_positions(
+            self._native_attached_obstacle_names = list(paths)
+            success, end_positions, result = self.test_forward_from_joint_positions(
                 ee_trans,
                 ee_ori,
                 start_arm_positions=start_arm_positions,
             )
+            self._log_plan_result("test_attached_forward", result, target=ee_trans)
+            return success, end_positions, result
         finally:
-            if attached is not False:
-                self.motion_gen.detach_object_from_robot()
+            self.planner.attachment_manager.detach()
+            self._native_attached_obstacle_names = []
 
     def attach_obj(self, obj_prim_path: str, link_name="attached_object"):
         """Attach a legacy object path while preserving descendant selection."""
 
         sim_js = self.robot.get_joints_state()
-        js_names = self.robot.dof_names
-        cu_js = JointState(
-            position=self.tensor_args.to_device(sim_js.positions),
-            velocity=self.tensor_args.to_device(sim_js.velocities) * 0.0,
-            acceleration=self.tensor_args.to_device(sim_js.velocities) * 0.0,
-            jerk=self.tensor_args.to_device(sim_js.velocities) * 0.0,
-            joint_names=js_names,
-        ).get_ordered_joint_state(self.cmd_js_names)
+        cu_js = self._arm_joint_state(sim_js)
         object_names, disabled_names = self._resolve_attach_object_names(obj_prim_path)
-        legacy_offset = Pose.from_list(
-            [0, 0, 0.01, 1, 0, 0, 0],
-            device_cfg=self.tensor_args.device_cfg,
-        )
-        attached = self.motion_gen.attach_objects_to_robot(
-            cu_js,
+        self._attach_native_planner(
+            self.planner,
             object_names,
             link_name=link_name,
-            sphere_fit_type=SphereFitType.VOXEL,
-            world_objects_pose_offset=legacy_offset,
+            joint_state=cu_js,
         )
+        self._native_attached_obstacle_names = list(object_names)
         disabled_now = []
         try:
             for object_name in disabled_names:
-                self.motion_gen.world_coll_checker.enable_obstacle(
-                    enable=False, name=object_name
-                )
+                self.planner.scene_collision_checker.enable_obstacle(object_name, False)
                 # Record each completed mutation before attempting the next
                 # descendant so a mid-loop failure is recoverable.
                 disabled_now.append(object_name)
@@ -1900,9 +2845,7 @@ class TemplateController(BaseController):
             # detach; failed names stay tracked for reset-time cleanup.
             for object_name in reversed(disabled_now):
                 try:
-                    self.motion_gen.world_coll_checker.enable_obstacle(
-                        enable=True, name=object_name
-                    )
+                    self.planner.scene_collision_checker.enable_obstacle(object_name, True)
                 except Exception as rollback_error:
                     _record_attachment_rollback_failure(
                         primary_error,
@@ -1916,26 +2859,37 @@ class TemplateController(BaseController):
                         if name != object_name
                     ]
             try:
-                self.motion_gen.detach_object_from_robot()
+                self.planner.attachment_manager.detach()
+                self._native_attached_obstacle_names = []
             except Exception as rollback_error:
                 _record_attachment_rollback_failure(
-                    primary_error, "detach compat attachment", rollback_error
+                    primary_error, "detach native attachment", rollback_error
                 )
             raise
-        return attached
+        return True
 
     def detach_obj(self):
-        compat_names = self._compat_managed_attached_obstacle_names()
-        self.motion_gen.detach_object_from_robot()
-        self._reenable_legacy_disabled_attach_objects(compat_names)
+        attached_names = self._attached_obstacle_names()
+        for planner in self._native_planners():
+            planner.attachment_manager.detach()
+        self._native_attached_obstacle_names = []
+        self._native_batch_attached_obstacle_names = []
+        self._reenable_legacy_disabled_attach_objects(attached_names)
 
     def has_attached_collision_spheres(self, link_name="attached_object") -> bool:
         spheres = (
-            self.motion_gen.robot_cfg.kinematics.kinematics_config.get_link_spheres(
-                link_name
-            )
+            self.planner.kinematics.config.kinematics_config.get_link_spheres(link_name)
         )
         return bool(torch.any(spheres[:, 3] > 0.0).item())
+
+    def _attached_sphere_count(
+        self, link_name: str, object_count: int, *, planner=None
+    ) -> int:
+        planner = planner or self.planner
+        total = planner.kinematics.config.kinematics_config.get_number_of_spheres(
+            link_name
+        )
+        return max(1, int(total) // max(1, int(object_count)))
 
     def update_specific(self, ignore_substring, reference_prim_path):
         if self.collision_world_mode == "physics_schema":
@@ -1955,26 +2909,27 @@ class TemplateController(BaseController):
         """LEGACY_STAGE_SCAN: old substring-based per-command world rebuild."""
 
         # LEGACY_BEGIN: keyword-based collision world, retained for comparison
-        obstacles = self.usd_help.get_obstacles_from_stage(
+        obstacles = self.usd_parser.get_obstacles_from_stage(
             ignore_substring=ignore_substring, reference_prim_path=reference_prim_path
         ).get_collision_check_world()
         self._update_world_if_changed(obstacles)
         # LEGACY_END
 
     def test_single_ik(self, ee_trans, ee_ori):
-        assert not self.use_batch
         refresh = getattr(self, "_refresh_reference_world_for_planning", None)
         if callable(refresh):
             refresh()
-        ik_goal = Pose(position=self.tensor_args.to_device(ee_trans), quaternion=self.tensor_args.to_device(ee_ori))
+        sim_js = self.robot.get_joints_state()
+        ik_goal = self._goal_tool_pose(ee_trans, ee_ori)
         result = self._run_timed_curobo_call(
-            "ik.solve_single", lambda: self.ik_solver.solve_single(ik_goal)
+            "ik.solve_pose",
+            lambda: self.ik_solver.solve_pose(
+                ik_goal,
+                current_state=self._arm_joint_state(sim_js).unsqueeze(0),
+                return_seeds=1,
+            ),
         )
-        succ = result.success.item()
-        if succ:  # pylint: disable=simplifiable-if-statement
-            return True
-        else:
-            return False
+        return self._result_success(result)
 
     def test_batch_forward(self, ee_trans_batch_np, ee_ori_batch_np):
         ee_trans_batch = self.tensor_args.to_device(ee_trans_batch_np)
@@ -1998,14 +2953,24 @@ class TemplateController(BaseController):
             raise ValueError(
                 "batch terminal planning requires at least one named pre-grasp path"
             )
+        if len(ee_trans_batch_np) != len(ee_ori_batch_np) or len(ee_trans_batch_np) != len(start_paths):
+            raise ValueError(
+                "batch terminal planning requires equal goal-position, goal-orientation, "
+                f"and pre-grasp-path counts: positions={len(ee_trans_batch_np)}, "
+                f"orientations={len(ee_ori_batch_np)}, paths={len(start_paths)}"
+            )
 
-        # A CuRobo path may contain the full robot state (7 arm + 2 locked
-        # finger joints), while ``cmd_js_names`` contains only active aliases.
-        # Preserve and normalize the path's explicit names; never relabel a
-        # wider endpoint position tensor with the active-joint list.
-        reference_names = None
         terminal_positions = []
+        expected_joint_name_set = None
         for path_index, path in enumerate(start_paths):
+            if path is None:
+                # Native batch results intentionally keep failed items as
+                # ``None``.  The batch solver still needs a complete start
+                # tensor; these fallback rows are masked by the pre-grasp
+                # success mask in the evaluator and cannot become valid joint
+                # candidates on their own.
+                terminal_positions.append(self._arm_joint_state(self.robot.get_joints_state()))
+                continue
             names = getattr(path, "joint_names", None)
             if names is None or isinstance(names, (str, bytes)):
                 raise ValueError(
@@ -2017,6 +2982,15 @@ class TemplateController(BaseController):
                 raise ValueError(
                     "batch pre-grasp endpoint joint_names must be non-empty and "
                     f"unique: path_index={path_index}, joint_names={names!r}"
+                )
+            name_set = set(names)
+            if expected_joint_name_set is None:
+                expected_joint_name_set = name_set
+            elif name_set != expected_joint_name_set:
+                raise ValueError(
+                    "batch pre-grasp endpoints must use the same named joint contract: "
+                    f"path_index={path_index}, expected={sorted(expected_joint_name_set)!r}, "
+                    f"got={sorted(name_set)!r}"
                 )
 
             position = getattr(path, "position", None)
@@ -2040,55 +3014,33 @@ class TemplateController(BaseController):
                     f"position_shape={tuple(position.shape)}, joint_names={names!r}"
                 )
 
-            if reference_names is None:
-                reference_names = names
-            elif set(names) != set(reference_names):
-                raise ValueError(
-                    "batch pre-grasp endpoints must expose the same named joint "
-                    f"contract: path_index={path_index}, expected={reference_names!r}, "
-                    f"got={names!r}"
-                )
+            endpoint = JointState.from_position(
+                position[-1], joint_names=names
+            )
+            terminal_positions.append(self._planner_state(endpoint))
 
-            normalized_path = path
-            if names != reference_names:
-                reorder = getattr(path, "get_ordered_joint_state", None)
-                if not callable(reorder):
-                    raise ValueError(
-                        "batch pre-grasp endpoint joint order differs but the "
-                        "path cannot reorder by explicit names: "
-                        f"path_index={path_index}"
-                    )
-                normalized_path = reorder(reference_names)
-                position = getattr(normalized_path, "position", None)
-                if position is None or position.ndim < 2:
-                    raise ValueError(
-                        "reordered batch pre-grasp endpoint has invalid position: "
-                        f"path_index={path_index}"
-                    )
-                if position.shape[-1] != len(reference_names):
-                    raise ValueError(
-                        "reordered batch pre-grasp endpoint position DOF count "
-                        "does not match its joint_names: "
-                        f"path_index={path_index}, position_shape={tuple(position.shape)}"
-                    )
-            terminal_positions.append(position[-1])
-
-        starts = torch.stack(terminal_positions)
+        starts = torch.stack([state.position for state in terminal_positions])
         zeros = torch.zeros_like(starts)
         start_state = JointState(
             position=starts,
             velocity=zeros,
             acceleration=zeros,
             jerk=zeros,
-            joint_names=reference_names,
+            joint_names=self._planner_joint_names(),
         )
-        goal = Pose(position=ee_trans_batch, quaternion=ee_ori_batch, batch_size=len(start_paths))
-        result = self._run_timed_curobo_call(
-            "plan_batch",
-            lambda: self.motion_gen.plan_batch(start_state, goal, self.plan_config.clone()),
+        if self.batch_planner is None:
+            raise RuntimeError("batch planning was not enabled for this controller")
+        if len(start_paths) < 1 or len(start_paths) > self.batch_planner.batch_size:
+            raise ValueError(
+                f"native batch planner accepts 1..{self.batch_planner.batch_size} paths"
+            )
+        return self._plan_batch_from_state(
+            ee_trans_batch,
+            ee_ori_batch,
+            start_state,
+            batch_size=len(start_paths),
+            context="test_batch_forward_from_pregrasp",
         )
-        self._log_plan_result("test_batch_forward_from_pregrasp", result)
-        return result
 
     def measure_cartesian_path(self, path, start_position, goal_position):
         """Return path/direct length ratio and maximum straight-line deviation."""
@@ -2103,10 +3055,10 @@ class TemplateController(BaseController):
         path_position = getattr(path, "position", None)
         if path_position is None or path_position.ndim < 2:
             raise ValueError(
-                "Cartesian path measurement requires a non-empty [time, dof] "
+                "Cartesian path measurement requires a [time, dof] "
                 f"position tensor, got {getattr(path_position, 'shape', None)}"
             )
-        if path_position.shape[0] < 1 or path_position.shape[-1] != len(path_names):
+        if path_position.shape[-1] != len(path_names):
             raise ValueError(
                 "Cartesian path position DOF count does not match its joint_names: "
                 f"position_shape={tuple(path_position.shape)}, joint_names={path_names!r}"
@@ -2123,7 +3075,7 @@ class TemplateController(BaseController):
         # nine-dimensional tensor positionally.
         active_names = list(self.raw_js_names)
         if set(path_names) != set(active_names) or path_names != active_names:
-            reorder = getattr(path, "get_ordered_joint_state", None)
+            reorder = getattr(path, "reorder", None)
             if not callable(reorder):
                 raise ValueError(
                     "Cartesian path joint order/contract differs from active arm "
@@ -2143,11 +3095,39 @@ class TemplateController(BaseController):
                     f"active_names={active_names!r}"
                 )
 
-        positions = []
-        for joint_position in path_position:
-            point, _ = self.forward_kinematic(joint_position.detach().cpu().numpy())
-            positions.append(point)
-        positions = np.asarray(positions, dtype=float)
+        if path_position.shape[0] == 0:
+            return float("inf"), float("inf")
+
+        batch_forward_kinematic = getattr(self, "_forward_kinematic_batch", None)
+        if callable(batch_forward_kinematic):
+            positions = np.asarray(
+                batch_forward_kinematic(path_position, joint_names=active_names),
+                dtype=float,
+            )
+        else:
+            # Keep AST-loaded/unit-test controller stubs compatible when they
+            # intentionally omit the torch/CuRobo batch implementation.
+            planner_names_fn = getattr(self, "_planner_joint_names", None)
+            planner_names = (
+                list(planner_names_fn())
+                if callable(planner_names_fn)
+                else list(active_names)
+            )
+            if set(active_names) != set(planner_names):
+                raise ValueError(
+                    "Cartesian path active joints do not match the native planner: "
+                    f"active={active_names!r}, planner={planner_names!r}"
+                )
+            reorder = [active_names.index(name) for name in planner_names]
+            positions = np.asarray(
+                [
+                    self.forward_kinematic(
+                        joint_position[..., reorder].detach().cpu().numpy()
+                    )[0]
+                    for joint_position in path_position
+                ],
+                dtype=float,
+            )
         if not len(positions):
             return float("inf"), float("inf")
         direct_vector = np.asarray(goal_position, dtype=float) - np.asarray(start_position, dtype=float)
@@ -2164,7 +3144,7 @@ class TemplateController(BaseController):
 
     def test_single_forward(self, ee_trans: np.ndarray, ee_ori: np.ndarray):
         result = self.test_single_forward_result(ee_trans, ee_ori)
-        succ = result.success.item()
+        succ = self._result_success(result)
         if succ:
             print("Success")
             return 1
@@ -2191,30 +3171,12 @@ class TemplateController(BaseController):
             sim_js.positions[self.arm_indices] = start_arm_positions
 
         result = self.plan(ee_trans, ee_ori, sim_js, self.robot.dof_names)
-        success_values = result.success.detach().cpu().numpy()
-        if not bool(np.asarray(success_values).any()):
+        if not self._result_success(result):
             return False, None, result
 
-        if self.use_batch:
-            paths = result.get_successful_paths()
-            if not paths:
-                return False, None, result
-            position_filter_res = filter_paths_by_position_error(paths, result.position_error[result.success])
-            rotation_filter_res = filter_paths_by_rotation_error(paths, result.rotation_error[result.success])
-            filtered_paths = [
-                path
-                for path_index, path in enumerate(paths)
-                if position_filter_res[path_index] and rotation_filter_res[path_index]
-            ]
-            if not filtered_paths:
-                filtered_paths = paths
-            sort_weights = self._get_sort_path_weights()  # pylint: disable=assignment-from-none
-            weights_arg = self.tensor_args.to_device(sort_weights) if sort_weights is not None else None
-            sorted_indices = sort_by_difference_js(filtered_paths, weights=weights_arg)
-            cmd_plan = self.motion_gen.get_full_js(filtered_paths[sorted_indices[0]])
-        else:
-            cmd_plan = result.get_interpolated_plan()
-        cmd_plan = cmd_plan.get_ordered_joint_state(self.raw_js_names)
+        cmd_plan = self._command_path(self._result_path(result))
+        if cmd_plan is None:
+            return False, None, result
         end_arm_positions = np.asarray(cmd_plan[-1].position.detach().cpu(), dtype=float)
         return True, end_arm_positions, result
 
@@ -2259,28 +3221,15 @@ class TemplateController(BaseController):
                 f"joint_names: position_shape={tuple(start_position.shape)}, "
                 f"joint_names={start_joint_names!r}"
             )
-        zeros = torch.zeros_like(start_position)
-        start_state = JointState(
-            position=start_position,
-            velocity=zeros,
-            acceleration=zeros,
-            jerk=zeros,
-            joint_names=start_joint_names,
+        start_state = self._planner_state(
+            JointState.from_position(start_position, joint_names=start_joint_names)
         )
-        goal = Pose(
-            position=self.tensor_args.to_device(ee_trans),
-            quaternion=self.tensor_args.to_device(ee_ori),
+        return self._plan_pose_from_state(
+            ee_trans,
+            ee_ori,
+            start_state,
+            context="test_single_forward_from_pregrasp",
         )
-        result = self._run_timed_curobo_call(
-            "plan_single",
-            lambda: self.motion_gen.plan_single(
-                start_state.unsqueeze(0), goal, self.plan_config.clone()
-            ),
-        )
-        self._log_plan_result(
-            "test_single_forward_from_pregrasp", result, target=ee_trans
-        )
-        return result
 
     def pre_forward(self, ee_trans: np.ndarray, ee_ori: np.ndarray, expected_js=None, ds_ratio=1):
         assert ee_trans is not None and ee_ori is not None
@@ -2291,29 +3240,13 @@ class TemplateController(BaseController):
         if expected_js is not None:
             sim_js.positions[self.arm_indices] = expected_js
         result = self.plan(ee_trans, ee_ori, sim_js, js_names)
-        if self.use_batch:
-            if result.success.any():
-                print("Success")
-                cmd_plans = result.get_successful_paths()
-                cmd_plan = random.choice(cmd_plans)
-                cmd_plan = self.motion_gen.get_full_js(cmd_plan)
-                cmd_plan = cmd_plan.get_ordered_joint_state(self.raw_js_names)
-                N = cmd_plan.shape[0]
-                dt = self.motion_gen.interpolation_dt
-                self.ds_ratio = ds_ratio
-                cmd_time = N * dt / self.plan_config.time_dilation_factor / self.ds_ratio
-                return cmd_time, np.array(cmd_plan[-1].position.cpu())
-            print("Plan did not converge to a solution.")
-            self.num_plan_failed = 1000
-            return 0, expected_js
-        succ = result.success.item()
-        if succ:
+        if self._result_success(result):
             print("Success")
-            cmd_plan = result.get_interpolated_plan()
+            cmd_plan = self._command_path(self._result_path(result))
             N = cmd_plan.shape[0]
-            dt = self.motion_gen.interpolation_dt
+            dt = self.interpolation_dt
             self.ds_ratio = ds_ratio
-            cmd_time = N * dt / self.plan_config.time_dilation_factor / self.ds_ratio
+            cmd_time = N * dt / self._time_dilation_factor / self.ds_ratio
             return cmd_time, np.array(cmd_plan[-1].position.cpu())
         print("Plan did not converge to a solution.")
         self.num_plan_failed = 1000
@@ -2345,10 +3278,4 @@ class TemplateController(BaseController):
         else:
             raise NotImplementedError
         gripper_action = self.get_gripper_action()
-        return {
-            "joint_positions": np.concatenate([arm_action, gripper_action]),
-            "joint_indices": np.concatenate([self.arm_indices, self.gripper_indices]),
-            "lr_name": self.lr_name,
-            "arm_action": arm_action,
-            "gripper_action": gripper_action,
-        }
+        return self._make_action(arm_action, gripper_action)

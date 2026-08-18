@@ -11,6 +11,8 @@ from core.utils.box import Box, get_bbox_center_and_corners
 from core.utils.constants import CUROBO_BATCH_SIZE
 from core.utils.iou import IoU
 from core.utils.plan_utils import (
+    extract_result_paths,
+    result_success_mask,
     select_index_by_priority_dual,
     select_index_by_priority_single,
 )
@@ -18,16 +20,16 @@ from core.utils.transformation_utils import create_pose_matrices, poses_from_tf_
 from core.utils.usd_geom_utils import compute_bbox
 from core.visualization.skill_target_math import ratio_box_corners
 from omegaconf import DictConfig, ListConfig, OmegaConf
-from omni.isaac.core.controllers import BaseController
-from omni.isaac.core.robots.robot import Robot
-from omni.isaac.core.tasks import BaseTask
-from omni.isaac.core.utils.prims import get_prim_at_path
-from omni.isaac.core.utils.transformations import (
+from isaacsim.core.api.controllers import BaseController
+from isaacsim.core.api.robots.robot import Robot
+from isaacsim.core.api.tasks import BaseTask
+from isaacsim.core.utils.prims import get_prim_at_path
+from isaacsim.core.utils.transformations import (
     get_relative_transform,
     pose_from_tf_matrix,
     tf_matrix_from_pose,
 )
-from omni.isaac.core.utils.xforms import get_world_pose
+from isaacsim.core.utils.xforms import get_world_pose
 from scipy.spatial.transform import Rotation as R
 
 
@@ -79,7 +81,19 @@ class Place(BaseSkill):
         self._last_success_check_debug = {}
         self._runtime_failure_debug_path = None
         self._runtime_failure_snapshot_written = False
+        self._plan_failure_debug_path = None
+        self._plan_failure_snapshot_written = False
         self._pending_target_intent = None
+        # Native-v2 candidate evaluation returns paths separately from the
+        # selected Cartesian poses.  Keep the selected paths alongside the
+        # pose result so the physics-schema command builder can reuse the
+        # exact batch plan instead of planning the same phase again.
+        self._native_selected_plan = {
+            "candidate_index": None,
+            "preplace_path": None,
+            "terminal_path": None,
+            "source": None,
+        }
         self.failure_reason = ""
         self.error_message = ""
 
@@ -199,6 +213,95 @@ class Place(BaseSkill):
         finally:
             self._runtime_failure_snapshot_written = True
 
+    def _write_plan_failure_snapshot(
+        self,
+        *,
+        candidate_diagnostics: list[dict],
+        native_start_collision: dict | None,
+        single_fallback: dict | None = None,
+        failure_reason: str = "NO_COLLISION_FREE_PREPLACE_PLAN",
+        bbox_min: np.ndarray,
+        bbox_max: np.ndarray,
+        ratio_ranges: tuple[tuple[float, ...], ...],
+        pre_place_pos_w: np.ndarray,
+        place_pos_w: np.ndarray,
+        pre_place_pos_b: np.ndarray,
+        place_pos_b: np.ndarray,
+        pre_orientations: np.ndarray,
+        place_orientations: np.ndarray,
+    ):
+        """Persist native-v2 Place candidate evidence without masking failure."""
+
+        payload = {
+            "robot": self.robot.name,
+            "skill": self.name,
+            "pick_object": self.pick_obj.name,
+            "place_object": self.place_obj.name,
+            "failure_reason": failure_reason,
+            "collision_world_mode": getattr(self.controller, "collision_world_mode", None),
+            "constraints": {
+                key: self.skill_cfg[key]
+                for key in (
+                    "position_constraint",
+                    "place_direction",
+                    "filter_x_dir",
+                    "filter_y_dir",
+                    "filter_z_dir",
+                    "x_ratio_range",
+                    "y_ratio_range",
+                    "z_ratio_range",
+                    "pre_place_z_offset",
+                    "place_z_offset",
+                    "pre_place_align",
+                    "place_align",
+                    "pre_place_offset",
+                    "place_offset",
+                    "preserve_attached_orientation",
+                )
+                if key in self.skill_cfg
+            },
+            "bbox_world": {"min": bbox_min, "max": bbox_max},
+            "ratio_ranges": ratio_ranges,
+            "candidate_diagnostics": candidate_diagnostics,
+            "native_single_fallback": single_fallback,
+            "pre_place_position_world": pre_place_pos_w,
+            "place_position_world": place_pos_w,
+            "pre_place_position_base": pre_place_pos_b,
+            "place_position_base": place_pos_b,
+            "pre_place_orientations_base": pre_orientations,
+            "place_orientations_base": place_orientations,
+            "native_start_collision": native_start_collision,
+        }
+        try:
+            payload["armbase_world_pose"] = self._get_world_pose_from_path(self.robot_base_path)
+            payload["ee_world_pose"] = self._get_world_pose_from_path(self.robot_ee_path)
+            payload["pick_object_world_pose"] = self.pick_obj.get_world_pose()
+            payload["place_object_world_pose"] = self.place_obj.get_world_pose()
+            payload["T_world_obj"] = getattr(self, "T_world_obj", None)
+            payload["T_world_ee"] = getattr(self, "T_world_ee", None)
+            payload["T_obj_ee"] = getattr(self, "T_obj_ee", None)
+            payload["T_base_world"] = getattr(self, "T_base_world", None)
+            payload["T_world_container"] = getattr(self, "T_world_container", None)
+            manager = getattr(self.controller, "collision_scene_manager", None)
+            record = getattr(manager, "records", {}).get(self.pick_obj.name) if manager else None
+            payload["pick_collision_record"] = record.to_dict() if record else None
+            if manager is not None and record is not None:
+                slip_getter = getattr(manager, "get_attached_object_slip", None)
+                if callable(slip_getter):
+                    payload["attached_object_slip"] = slip_getter(self.pick_obj.name)
+        except Exception as exc:  # Debug capture must not change episode outcome.
+            payload["runtime_state_capture_error"] = repr(exc)
+
+        try:
+            self._plan_failure_debug_path = self._write_debug_artifact(
+                "place_plan_failure_snapshot.json", payload
+            )
+            print(f"[place-debug] Wrote place plan failure snapshot: {self._plan_failure_debug_path}")
+        except Exception as exc:  # Debug capture must not change episode outcome.
+            print(f"[place-debug] Failed to write place plan failure snapshot: {exc!r}")
+        finally:
+            self._plan_failure_snapshot_written = True
+
     def _record_success_check_debug(self, *, success: bool, failure_reasons: list[str], details: dict):
         self._last_success_check_debug = {
             "robot": self.robot.name,
@@ -274,12 +377,97 @@ class Place(BaseSkill):
             raise ValueError("place_continuous_descent must be a boolean")
         return value
 
+    @staticmethod
+    def _native_candidate_mask(result, expected_count: int) -> list[bool]:
+        """Normalize one native-v2 success flag per requested candidate."""
+
+        try:
+            mask = result_success_mask(result)
+            if hasattr(mask, "detach"):
+                mask = mask.detach().cpu().numpy()
+            mask = np.asarray(mask, dtype=bool).reshape(-1)
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            return [False] * int(expected_count)
+        if len(mask) != int(expected_count):
+            return [False] * int(expected_count)
+        return mask.tolist()
+
+    def _native_path_endpoint_position(self, path, fallback_position):
+        """Get the FK position at a native path endpoint when available."""
+
+        fallback = np.asarray(fallback_position, dtype=float).reshape(3)
+        joint_position = getattr(path, "position", None)
+        if joint_position is None:
+            return fallback
+        try:
+            # Native CuRobo result trajectories may retain locked finger
+            # joints (9 values) even though the kinematics model accepts only
+            # the seven active arm joints.  Reduce by the named contract
+            # before the FK probe; positional slicing would be unsafe because
+            # result ordering is not part of the native v2 API.
+            path_names = getattr(path, "joint_names", None)
+            active_names = list(getattr(self.controller, "raw_js_names", ()) or ())
+            reorder = getattr(path, "reorder", None)
+            if (
+                path_names is not None
+                and active_names
+                and set(active_names).issubset(set(path_names))
+                and callable(reorder)
+            ):
+                path = reorder(active_names)
+                joint_position = getattr(path, "position", None)
+                if joint_position is None:
+                    return fallback
+            if hasattr(joint_position, "detach"):
+                joint_position = joint_position.detach().cpu().numpy()
+            values = np.asarray(joint_position, dtype=float)
+            if values.size == 0:
+                return fallback
+            if values.ndim == 1:
+                endpoint = values
+            else:
+                endpoint = values.reshape(-1, values.shape[-1])[-1]
+            fk = getattr(self.controller, "forward_kinematic", None)
+            if not callable(fk):
+                return fallback
+            position, _ = fk(endpoint)
+            position = np.asarray(position, dtype=float).reshape(-1)
+            if position.shape == (3,) and np.all(np.isfinite(position)):
+                return position
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            pass
+        return fallback
+
+    def _set_native_selected_plan(
+        self,
+        candidate_index: int,
+        *,
+        preplace_path=None,
+        terminal_path=None,
+        source: str,
+    ):
+        """Retain the native paths belonging to one accepted candidate.
+
+        ``sample_gripper_place_traj`` intentionally keeps its historical
+        ``[pre_pose, place_pose, ...]`` return shape for legacy callers.  The
+        native paths therefore live in this side-channel and are consumed
+        only by the physics-schema command builder.
+        """
+
+        self._native_selected_plan = {
+            "candidate_index": int(candidate_index),
+            "preplace_path": preplace_path,
+            "terminal_path": terminal_path,
+            "source": str(source),
+        }
+
     def _physics_schema_generate_manip_cmds(self):
         """Generate no-contact transit plus bounded placement-contact phases."""
 
         manager = self.controller.collision_scene_manager
         object_name = self.pick_obj.name
         support_name = self.place_obj.name
+        pick_place_cfg = self.task.cfg.get("planning", {}).get("pick_place", {})
         record = manager.records.get(object_name)
         if record is None or record.state.value != "attached":
             raise RuntimeError(
@@ -312,7 +500,6 @@ class Place(BaseSkill):
 
         pre_position, pre_orientation = np.asarray(result[0][0]), np.asarray(result[0][1])
         place_position, place_orientation = np.asarray(result[1][0]), np.asarray(result[1][1])
-        pick_place_cfg = self.task.cfg.get("planning", {}).get("pick_place", {})
         terminal_step = self._resolve_terminal_step(pick_place_cfg)
         terminal_tolerance = self._resolve_terminal_tolerance(
             pick_place_cfg, terminal_step
@@ -329,6 +516,13 @@ class Place(BaseSkill):
             "position_m": float(self.skill_cfg.get("t_eps", 0.005)),
             "orientation_rad": float(self.skill_cfg.get("o_eps", 0.05)),
         }
+        selected_plan = self._native_selected_plan
+        transit_params = {}
+        if selected_plan.get("preplace_path") is not None:
+            transit_params = {
+                "preplanned_joint_path": selected_plan["preplace_path"],
+                "native_plan_source": selected_plan.get("source"),
+            }
         commands = [
             MotionPhaseCommand(
                 MotionPhase.TRANSIT_PREPLACE,
@@ -339,9 +533,10 @@ class Place(BaseSkill):
                 support_object=support_name,
                 allow_target_finger_contact=True,
                 completion_tolerance=tolerance,
+                params=transit_params,
             )
         ]
-        # A continuous MotionGen trajectory avoids paying its minimum trajectory
+        # A continuous native trajectory avoids paying its minimum trajectory
         # duration once per centimeter. Contact is still checked every physics
         # frame, and terminal_step remains the maximum accepted Cartesian
         # advance between two executed actions.
@@ -354,6 +549,31 @@ class Place(BaseSkill):
             ratio = (point_index + 1) / len(terminal_points)
             quat = (1.0 - ratio) * pre_orientation + ratio * place_orientation
             quat = quat / np.linalg.norm(quat)
+            terminal_params = (
+                {
+                    "continuous_descent": True,
+                    "max_cartesian_step_m": terminal_step,
+                    "max_path_length_ratio": float(
+                        pick_place_cfg.get(
+                            "place_terminal_max_path_length_ratio", 1.5
+                        )
+                    ),
+                    "max_path_deviation_m": float(
+                        pick_place_cfg.get(
+                            "place_terminal_max_path_deviation_m",
+                            terminal_step,
+                        )
+                    ),
+                }
+                if continuous_descent
+                else {}
+            )
+            # The terminal path is meaningful only for the single continuous
+            # descent target it was validated against.  Discrete descent
+            # keeps its historical per-point command sequence.
+            if continuous_descent and selected_plan.get("terminal_path") is not None:
+                terminal_params["preplanned_joint_path"] = selected_plan["terminal_path"]
+                terminal_params["native_plan_source"] = selected_plan.get("source")
             commands.append(
                 MotionPhaseCommand(
                     MotionPhase.TERMINAL_PLACE_DESCENT,
@@ -368,25 +588,7 @@ class Place(BaseSkill):
                         "position_m": terminal_tolerance,
                         "orientation_rad": tolerance["orientation_rad"],
                     },
-                    params=(
-                        {
-                            "continuous_descent": True,
-                            "max_cartesian_step_m": terminal_step,
-                            "max_path_length_ratio": float(
-                                pick_place_cfg.get(
-                                    "place_terminal_max_path_length_ratio", 1.5
-                                )
-                            ),
-                            "max_path_deviation_m": float(
-                                pick_place_cfg.get(
-                                    "place_terminal_max_path_deviation_m",
-                                    terminal_step,
-                                )
-                            ),
-                        }
-                        if continuous_descent
-                        else {}
-                    ),
+                    params=terminal_params,
                 )
             )
         commands.extend(
@@ -407,6 +609,7 @@ class Place(BaseSkill):
                     MotionPhase.DETACH_AND_SETTLE,
                     active_object=object_name,
                     support_object=support_name,
+                    allow_target_robot_contact=True,
                     allow_object_support_contact=True,
                     replan_allowed=False,
                     dwell_steps=settle_steps,
@@ -519,7 +722,64 @@ class Place(BaseSkill):
         self.place_ee_trans = p_base_ee_place
         # LEGACY_END
 
+    def _native_terminal_geometry(self, path, start_position, goal_position):
+        """Check a native terminal path against the continuous-place contract."""
+
+        pick_place_cfg = self.task.cfg.get("planning", {}).get("pick_place", {})
+        terminal_step = self._resolve_terminal_step(pick_place_cfg)
+        max_ratio = float(
+            pick_place_cfg.get("place_terminal_max_path_length_ratio", 1.5)
+        )
+        max_deviation = float(
+            pick_place_cfg.get("place_terminal_max_path_deviation_m", terminal_step)
+        )
+        if path is None:
+            return {
+                "valid": False,
+                "path_ratio": None,
+                "max_deviation_m": None,
+                "reason": "missing_native_terminal_path",
+            }
+        try:
+            path_ratio, path_deviation = self.controller.measure_cartesian_path(
+                path,
+                start_position,
+                goal_position,
+            )
+            path_ratio = float(path_ratio)
+            path_deviation = float(path_deviation)
+            valid = bool(
+                np.isfinite(path_ratio)
+                and np.isfinite(path_deviation)
+                and path_ratio <= max_ratio + 1e-6
+                and path_deviation <= max_deviation + 1e-6
+            )
+            return {
+                "valid": valid,
+                "path_ratio": path_ratio,
+                "max_deviation_m": path_deviation,
+                "max_path_length_ratio": max_ratio,
+                "max_path_deviation_m": max_deviation,
+            }
+        except Exception as exc:  # Evidence only; caller keeps the safe failure.
+            return {
+                "valid": False,
+                "path_ratio": None,
+                "max_deviation_m": None,
+                "reason": f"native_terminal_geometry_error:{exc}",
+            }
+
     def sample_gripper_place_traj(self):
+        pick_place_cfg = self.task.cfg.get("planning", {}).get("pick_place", {})
+        # Reset the side-channel on every sampling attempt.  In particular,
+        # never let a path from a previous retry escape when this attempt
+        # falls back to legacy/IK selection or fails native planning.
+        self._native_selected_plan = {
+            "candidate_index": None,
+            "preplace_path": None,
+            "terminal_path": None,
+            "source": None,
+        }
         self.T_world_obj = self._get_object_world_tf(self.pick_obj)
         self.T_world_ee = self._get_ee_world_tf()
         self.T_base_world = np.linalg.inv(self._get_armbase_world_tf())
@@ -631,67 +891,472 @@ class Place(BaseSkill):
         p_base_ee_preplaces, q_base_ee_preplaces = poses_from_tf_matrices(T_base_ee_preplaces)
         p_base_ee_places, q_base_ee_places = poses_from_tf_matrices(T_base_ee_places)
 
-        if self.controller.use_batch:
-            # Check if the input arrays are exactly the same
+        # Native v2 Place selection validates the complete preplace -> terminal
+        # chain before execution.  A preplace-only success is insufficient:
+        # the terminal planner can legally route around the support and the
+        # continuous-descent safety validator must reject that path later.
+        selected_index = None
+        candidate_diagnostics = []
+        single_fallback_debug = {
+            "used": False,
+            "query_budget": int(2 * CUROBO_BATCH_SIZE),
+            "queries": 0,
+            "pre_queries": 0,
+            "terminal_queries": 0,
+            "candidates_considered": 0,
+            "truncated": False,
+        }
+        test_mode = resolve_skill_test_mode(
+            self.skill_cfg,
+            getattr(self.controller, "collision_world_mode", "legacy_stage_scan"),
+        )
+        continuous_descent = self._use_continuous_terminal_descent(
+            self.task.cfg.get("planning", {}).get("pick_place", {})
+        )
+
+        # Keep the explicit legacy-stage batch selector intact.  Native v2
+        # path caching is only meaningful in physics-schema mode; changing
+        # this branch would alter the old candidate-priority behavior for
+        # callers that intentionally select legacy_stage_scan.
+        legacy_batch = bool(not physics_schema and self.controller.use_batch)
+        if legacy_batch:
             if np.array_equal(p_base_ee_preplaces, p_base_ee_places) and np.array_equal(
                 q_base_ee_preplaces, q_base_ee_places
             ):
-                # Inputs are identical, compute only once to avoid redundant computation
-                result = self.controller.test_batch_forward(p_base_ee_places, q_base_ee_places)
-                if physics_schema and not bool(result.success.any().item()):
-                    raise PlacePlanningError("NO_COLLISION_FREE_PREPLACE_PLAN")
-                index = select_index_by_priority_single(result)
-            else:
-                # Inputs are different, compute separately
-                pre_result = self.controller.test_batch_forward(p_base_ee_preplaces, q_base_ee_preplaces)
-                if physics_schema:
-                    if not bool(pre_result.success.any().item()):
-                        raise PlacePlanningError("NO_COLLISION_FREE_PREPLACE_PLAN")
-                    index = select_index_by_priority_single(pre_result)
-                else:
-                    result = self.controller.test_batch_forward(p_base_ee_places, q_base_ee_places)
-                    index = select_index_by_priority_dual(pre_result, result)
-        else:
-            selected_index = None
-            for index in range(T_base_ee_places.shape[0]):
-                p_base_ee_pregrasp, q_base_ee_pregrasp = p_base_ee_preplaces[index], q_base_ee_preplaces[index]
-                p_base_ee_grasp, q_base_ee_grasp = p_base_ee_places[index], q_base_ee_places[index]
-                test_mode = resolve_skill_test_mode(
-                    self.skill_cfg,
-                    getattr(self.controller, "collision_world_mode", "legacy_stage_scan"),
+                result = self.controller.test_batch_forward(
+                    p_base_ee_places, q_base_ee_places
                 )
+                selected_index = select_index_by_priority_single(result)
+            else:
+                pre_result = self.controller.test_batch_forward(
+                    p_base_ee_preplaces, q_base_ee_preplaces
+                )
+                result = self.controller.test_batch_forward(
+                    p_base_ee_places, q_base_ee_places
+                )
+                selected_index = select_index_by_priority_dual(pre_result, result)
+
+        batch_pre_forward = (
+            not legacy_batch
+            and physics_schema
+            and test_mode == "forward"
+            and callable(getattr(self.controller, "test_batch_forward", None))
+            and callable(getattr(self.controller, "test_batch_forward_from_paths", None))
+            and getattr(self.controller, "batch_planner", None) is not None
+        )
+        if legacy_batch:
+            pass
+        elif batch_pre_forward:
+            # One native batch query finds all collision-free preplace paths;
+            # a second native batch query starts each terminal plan from its
+            # corresponding preplace endpoint.
+            batch_attachment_error = None
+            sync_batch_attachment = getattr(
+                self.controller, "sync_native_batch_attachment", None
+            )
+            if callable(sync_batch_attachment):
+                try:
+                    sync_batch_attachment()
+                except Exception as exc:  # Evidence only; single fallback may still work.
+                    batch_attachment_error = repr(exc)
+            try:
+                if batch_attachment_error is not None:
+                    raise RuntimeError(batch_attachment_error)
+                pre_result = self.controller.test_batch_forward(
+                    p_base_ee_preplaces,
+                    q_base_ee_preplaces,
+                )
+                pre_success = self._native_candidate_mask(
+                    pre_result, T_base_ee_places.shape[0]
+                )
+                pre_paths = extract_result_paths(pre_result)
+            except Exception as exc:
+                pre_result = None
+                pre_success = [False] * int(T_base_ee_places.shape[0])
+                pre_paths = []
+                batch_pre_error = repr(exc)
+            else:
+                batch_pre_error = None
+
+            for index in range(T_base_ee_places.shape[0]):
+                candidate_diagnostics.append(
+                    {
+                        "index": int(index),
+                        "pre_position_base": np.asarray(p_base_ee_preplaces[index]),
+                        "pre_orientation_base": np.asarray(q_base_ee_preplaces[index]),
+                        "place_position_base": np.asarray(p_base_ee_places[index]),
+                        "place_orientation_base": np.asarray(q_base_ee_places[index]),
+                        "pre_result": int(bool(pre_success[index])) if index < len(pre_success) else 0,
+                    }
+                )
+            if batch_pre_error is not None and candidate_diagnostics:
+                candidate_diagnostics[0]["native_batch_preplace_error"] = batch_pre_error
+
+            successful_indices = [
+                index
+                for index, success in enumerate(pre_success)
+                if success and index < len(pre_paths) and pre_paths[index] is not None
+            ]
+            if successful_indices and not continuous_descent:
+                selected_index = successful_indices[0]
+                self._set_native_selected_plan(
+                    selected_index,
+                    preplace_path=pre_paths[selected_index],
+                    source="native_batch_preplace",
+                )
+            elif successful_indices:
+                terminal_indices = []
+                terminal_paths = []
+                for index in successful_indices:
+                    terminal_indices.append(index)
+                    terminal_paths.append(pre_paths[index])
+                try:
+                    terminal_result = self.controller.test_batch_forward_from_paths(
+                        p_base_ee_places[terminal_indices],
+                        q_base_ee_places[terminal_indices],
+                        terminal_paths,
+                    )
+                    terminal_success = self._native_candidate_mask(
+                        terminal_result, len(terminal_indices)
+                    )
+                    terminal_result_paths = extract_result_paths(terminal_result)
+                except Exception as exc:
+                    terminal_success = [False] * len(terminal_indices)
+                    terminal_result_paths = []
+                    for index in terminal_indices:
+                        candidate_diagnostics[index]["terminal_error"] = repr(exc)
+
+                for local_index, index in enumerate(terminal_indices):
+                    diagnostic = candidate_diagnostics[index]
+                    success = bool(
+                        local_index < len(terminal_success)
+                        and terminal_success[local_index]
+                    )
+                    diagnostic["terminal_result"] = int(success)
+                    if not success:
+                        continue
+                    terminal_path = (
+                        terminal_result_paths[local_index]
+                        if local_index < len(terminal_result_paths)
+                        else None
+                    )
+                    diagnostic["terminal_start_position_base"] = (
+                        self._native_path_endpoint_position(
+                            terminal_paths[local_index],
+                            p_base_ee_preplaces[index],
+                        )
+                    )
+                    geometry = self._native_terminal_geometry(
+                        terminal_path,
+                        diagnostic["terminal_start_position_base"],
+                        p_base_ee_places[index],
+                    )
+                    diagnostic["terminal_geometry"] = geometry
+                    if selected_index is None and geometry["valid"]:
+                        selected_index = index
+                        self._set_native_selected_plan(
+                            index,
+                            preplace_path=terminal_paths[local_index],
+                            terminal_path=terminal_path,
+                            source="native_batch_preplace_terminal",
+                        )
+
+            if selected_index is not None:
+                print(
+                    "native-v2 pre-place and continuous terminal plan success "
+                    f"candidate={selected_index}"
+                )
+
+            # The batch planner is deliberately configured with one
+            # trajopt seed so that the normal 20-candidate query stays
+            # bounded.  A complete batch IK/TrajOpt miss is not evidence
+            # that every target is unreachable: the single native planner
+            # has the full seed budget and graph retry policy used by
+            # execution.  Retry only the candidates that still need a
+            # decision, preserving the native-v2 path and the strict
+            # terminal geometry check.
+            if selected_index is None and callable(
+                getattr(self.controller, "test_single_forward_result", None)
+            ):
+                single_fallback_debug["used"] = True
+                try:
+                    configured_budget = int(
+                        pick_place_cfg.get(
+                            "place_native_single_fallback_query_budget",
+                            2 * CUROBO_BATCH_SIZE,
+                        )
+                    )
+                except (TypeError, ValueError):
+                    configured_budget = 2 * CUROBO_BATCH_SIZE
+                single_fallback_debug["query_budget"] = max(1, configured_budget)
+                if successful_indices:
+                    fallback_indices = list(successful_indices)
+                else:
+                    fallback_indices = list(range(T_base_ee_places.shape[0]))
+                    print(
+                        "native-v2 batch pre-place produced no candidates; "
+                        "falling back to single native planner"
+                    )
+
+                for index in fallback_indices:
+                    if single_fallback_debug["queries"] >= single_fallback_debug["query_budget"]:
+                        single_fallback_debug["truncated"] = True
+                        break
+                    single_fallback_debug["candidates_considered"] += 1
+                    diagnostic = candidate_diagnostics[index]
+                    single_fallback_debug["pre_queries"] += 1
+                    single_fallback_debug["queries"] += 1
+                    try:
+                        single_pre_result = self.controller.test_single_forward_result(
+                            p_base_ee_preplaces[index], q_base_ee_preplaces[index]
+                        )
+                        single_pre_success = bool(
+                            self._native_candidate_mask(single_pre_result, 1)[0]
+                        )
+                    except Exception as exc:  # Evidence only; keep trying candidates.
+                        diagnostic["single_pre_result"] = 0
+                        diagnostic["single_pre_error"] = repr(exc)
+                        continue
+
+                    diagnostic["single_pre_result"] = int(single_pre_success)
+                    if not single_pre_success:
+                        continue
+                    single_pre_paths = extract_result_paths(single_pre_result)
+                    single_pre_path = (
+                        single_pre_paths[0] if single_pre_paths else None
+                    )
+                    if not continuous_descent:
+                        selected_index = index
+                        self._set_native_selected_plan(
+                            index,
+                            preplace_path=single_pre_path,
+                            source="native_single_preplace_fallback",
+                        )
+                        break
+                    if single_pre_path is None or not callable(
+                        getattr(self.controller, "test_single_forward_from_path", None)
+                    ):
+                        diagnostic["single_terminal_result"] = 0
+                        diagnostic["single_terminal_geometry"] = {
+                            "valid": False,
+                            "reason": "missing_native_single_preplace_path_or_planner",
+                        }
+                        continue
+
+                    if single_fallback_debug["queries"] >= single_fallback_debug["query_budget"]:
+                        single_fallback_debug["truncated"] = True
+                        diagnostic["single_terminal_result"] = 0
+                        diagnostic["single_terminal_geometry"] = {
+                            "valid": False,
+                            "reason": "native_single_fallback_query_budget_exhausted",
+                        }
+                        break
+                    single_fallback_debug["terminal_queries"] += 1
+                    single_fallback_debug["queries"] += 1
+                    try:
+                        single_terminal_result = self.controller.test_single_forward_from_path(
+                            p_base_ee_places[index],
+                            q_base_ee_places[index],
+                            single_pre_path,
+                        )
+                        single_terminal_success = bool(
+                            self._native_candidate_mask(single_terminal_result, 1)[0]
+                        )
+                    except Exception as exc:  # Evidence only; keep trying candidates.
+                        diagnostic["single_terminal_result"] = 0
+                        diagnostic["single_terminal_error"] = repr(exc)
+                        continue
+
+                    diagnostic["single_terminal_result"] = int(single_terminal_success)
+                    single_terminal_paths = (
+                        extract_result_paths(single_terminal_result)
+                        if single_terminal_success
+                        else []
+                    )
+                    geometry = self._native_terminal_geometry(
+                        single_terminal_paths[0] if single_terminal_paths else None,
+                        self._native_path_endpoint_position(
+                            single_pre_path,
+                            p_base_ee_preplaces[index],
+                        ),
+                        p_base_ee_places[index],
+                    )
+                    diagnostic["terminal_start_position_base"] = (
+                        self._native_path_endpoint_position(
+                            single_pre_path,
+                            p_base_ee_preplaces[index],
+                        )
+                    )
+                    diagnostic["single_terminal_geometry"] = geometry
+                    if geometry["valid"]:
+                        selected_index = index
+                        self._set_native_selected_plan(
+                            index,
+                            preplace_path=single_pre_path,
+                            terminal_path=(
+                                single_terminal_paths[0]
+                                if single_terminal_paths
+                                else None
+                            ),
+                            source="native_single_preplace_terminal_fallback",
+                        )
+                        break
+
+            if selected_index is not None and not successful_indices:
+                print(
+                    "native-v2 single fallback pre-place and continuous terminal "
+                    f"plan success candidate={selected_index}"
+                )
+        else:
+            # Keep the explicit legacy/IK path unchanged.  Native physics
+            # controllers without a batch planner still validate a terminal
+            # plan from the successful preplace path before selecting it.
+            for index in range(T_base_ee_places.shape[0]):
+                p_base_ee_pregrasp = p_base_ee_preplaces[index]
+                q_base_ee_pregrasp = q_base_ee_preplaces[index]
+                p_base_ee_grasp = p_base_ee_places[index]
+                q_base_ee_grasp = q_base_ee_places[index]
+                native_pre_result = None
                 if test_mode == "forward":
-                    result_pre = self.controller.test_single_forward(p_base_ee_pregrasp, q_base_ee_pregrasp)
+                    if physics_schema and callable(
+                        getattr(self.controller, "test_single_forward_result", None)
+                    ):
+                        native_pre_result = self.controller.test_single_forward_result(
+                            p_base_ee_pregrasp, q_base_ee_pregrasp
+                        )
+                        result_pre = int(
+                            bool(result_success_mask(native_pre_result).any().item())
+                        )
+                    else:
+                        result_pre = self.controller.test_single_forward(
+                            p_base_ee_pregrasp, q_base_ee_pregrasp
+                        )
                 elif test_mode == "ik":
-                    result_pre = self.controller.test_single_ik(p_base_ee_pregrasp, q_base_ee_pregrasp)
+                    result_pre = self.controller.test_single_ik(
+                        p_base_ee_pregrasp, q_base_ee_pregrasp
+                    )
                 else:
                     raise NotImplementedError
 
+                candidate_debug = {
+                    "index": int(index),
+                    "pre_position_base": np.asarray(p_base_ee_pregrasp),
+                    "pre_orientation_base": np.asarray(q_base_ee_pregrasp),
+                    "place_position_base": np.asarray(p_base_ee_grasp),
+                    "place_orientation_base": np.asarray(q_base_ee_grasp),
+                    "pre_result": int(result_pre),
+                }
+
                 if physics_schema and result_pre == 1:
-                    print("pre-place transit plan success")
-                    selected_index = index
-                    break
+                    if continuous_descent and native_pre_result is not None:
+                        pre_paths = extract_result_paths(native_pre_result)
+                        pre_path = pre_paths[0] if pre_paths else None
+                        terminal_result = self.controller.test_single_forward_from_path(
+                            p_base_ee_grasp,
+                            q_base_ee_grasp,
+                            pre_path,
+                        ) if pre_path is not None else None
+                        terminal_success = bool(
+                            terminal_result is not None
+                            and result_success_mask(terminal_result).any().item()
+                        )
+                        candidate_debug["terminal_result"] = int(terminal_success)
+                        terminal_paths = (
+                            extract_result_paths(terminal_result)
+                            if terminal_success
+                            else []
+                        )
+                        geometry = self._native_terminal_geometry(
+                            terminal_paths[0] if terminal_paths else None,
+                            p_base_ee_pregrasp,
+                            p_base_ee_grasp,
+                        )
+                        candidate_debug["terminal_geometry"] = geometry
+                        if geometry["valid"]:
+                            selected_index = index
+                            self._set_native_selected_plan(
+                                index,
+                                preplace_path=pre_path,
+                                terminal_path=(
+                                    terminal_paths[0] if terminal_paths else None
+                                ),
+                                source="native_single_preplace_terminal",
+                            )
+                    else:
+                        selected_index = index
+                        pre_paths = (
+                            extract_result_paths(native_pre_result)
+                            if native_pre_result is not None
+                            else []
+                        )
+                        self._set_native_selected_plan(
+                            index,
+                            preplace_path=pre_paths[0] if pre_paths else None,
+                            source="native_single_preplace",
+                        )
+                    candidate_diagnostics.append(candidate_debug)
+                    if selected_index is not None:
+                        print("pre-place and terminal plan success")
+                        break
+                    continue
+
                 if self.skill_cfg.get("pre_grasp_offset", 0.1) > 0:
                     if test_mode == "forward":
-                        result = self.controller.test_single_forward(p_base_ee_grasp, q_base_ee_grasp)
+                        result = self.controller.test_single_forward(
+                            p_base_ee_grasp, q_base_ee_grasp
+                        )
                     elif test_mode == "ik":
-                        result = self.controller.test_single_ik(p_base_ee_grasp, q_base_ee_grasp)
+                        result = self.controller.test_single_ik(
+                            p_base_ee_grasp, q_base_ee_grasp
+                        )
                     else:
                         raise NotImplementedError
+                    candidate_debug["place_result"] = int(result)
                     if result == 1 and result_pre == 1:
-                        print("place plan success")
                         selected_index = index
-                        break
-                else:
-                    if result_pre == 1:
-                        print("place plan success")
-                        selected_index = index
-                        break
-            if selected_index is None:
-                if physics_schema:
-                    raise PlacePlanningError("NO_COLLISION_FREE_PREPLACE_PLAN")
-            else:
-                index = selected_index
+                elif result_pre == 1:
+                    selected_index = index
+                candidate_diagnostics.append(candidate_debug)
+                if selected_index is not None:
+                    print("place plan success")
+                    break
+        plan_failure_reason = "NO_COLLISION_FREE_PREPLACE_PLAN"
+        if physics_schema and continuous_descent and any(
+            diagnostic.get("pre_result") == 1
+            or diagnostic.get("single_pre_result") == 1
+            for diagnostic in candidate_diagnostics
+            if isinstance(diagnostic, dict)
+        ):
+            plan_failure_reason = "NO_COLLISION_SAFE_CONTINUOUS_PLACE_PLAN"
+        if selected_index is None:
+            if physics_schema:
+                native_start_collision = None
+                diagnose_start = getattr(
+                    self.controller, "diagnose_native_start_collision", None
+                )
+                if callable(diagnose_start):
+                    native_start_collision = diagnose_start()
+                if not self._plan_failure_snapshot_written:
+                    self._write_plan_failure_snapshot(
+                        candidate_diagnostics=candidate_diagnostics,
+                        native_start_collision=native_start_collision,
+                        single_fallback=single_fallback_debug,
+                        failure_reason=plan_failure_reason,
+                        bbox_min=b_min,
+                        bbox_max=b_max,
+                        ratio_ranges=ratio_ranges,
+                        pre_place_pos_w=pre_place_pos_w,
+                        place_pos_w=place_pos_w,
+                        pre_place_pos_b=pre_place_pos_b,
+                        place_pos_b=place_pos_b,
+                        pre_orientations=q_base_ee_preplaces,
+                        place_orientations=q_base_ee_places,
+                    )
+                raise PlacePlanningError(plan_failure_reason)
+            # Preserve legacy-stage behavior: execution will report the final
+            # failed candidate through its normal controller path.
+            selected_index = max(0, T_base_ee_places.shape[0] - 1)
+        index = selected_index
 
         res_pre = list(pose_from_tf_matrix(T_base_ee_preplaces[index]))
         res_plt = list(pose_from_tf_matrix(T_base_ee_places[index]))
@@ -925,7 +1590,12 @@ class Place(BaseSkill):
             return success
         elif success_mode == "xybbox":
             bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
-            pick_x, pick_y = [float(value) for value in self.pick_obj.get_local_pose()[0][:2]]
+            # ``compute_bbox`` is a world-space USD query.  Compare it with
+            # the native v2 world pose as well; the old local-pose comparison
+            # only worked while every rigid-body parent happened to be at the
+            # world origin.
+            pick_world_pose = self.pick_obj.get_world_pose()[0]
+            pick_x, pick_y = [float(value) for value in pick_world_pose[:2]]
             place_xy_min = np.asarray(bbox_place_obj.min[:2], dtype=float)
             place_xy_max = np.asarray(bbox_place_obj.max[:2], dtype=float)
             margin = float(self.skill_cfg.get("success_xy_margin", 0.015))
@@ -953,7 +1623,7 @@ class Place(BaseSkill):
                     "y_valid": y_valid,
                     "distance_to_valid_min": [float(pick_x - valid_min[0]), float(pick_y - valid_min[1])],
                     "distance_to_valid_max": [float(valid_max[0] - pick_x), float(valid_max[1] - pick_y)],
-                    "pick_local_pose": self.pick_obj.get_local_pose()[0],
+                    "pick_world_pose": pick_world_pose,
                     "place_bbox_min": bbox_place_obj.min,
                     "place_bbox_max": bbox_place_obj.max,
                 },
@@ -961,7 +1631,7 @@ class Place(BaseSkill):
             return success
         elif success_mode == "left":
             bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
-            pick_x, pick_y = self.pick_obj.get_local_pose()[0][:2]
+            pick_x, pick_y = self.pick_obj.get_world_pose()[0][:2]
             place_xy_min = bbox_place_obj.min[:2]
             place_xy_max = bbox_place_obj.max[:2]
             threshold = float(self.skill_cfg.get("threshold", 0.03))
@@ -981,7 +1651,7 @@ class Place(BaseSkill):
             return success
         elif success_mode == "right":
             bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
-            pick_x, pick_y = self.pick_obj.get_local_pose()[0][:2]
+            pick_x, pick_y = self.pick_obj.get_world_pose()[0][:2]
             place_xy_min = bbox_place_obj.min[:2]
             place_xy_max = bbox_place_obj.max[:2]
             threshold = float(self.skill_cfg.get("threshold", 0.03))
@@ -1007,7 +1677,7 @@ class Place(BaseSkill):
             ).iou()
             print("iou", iou)
             th = self.skill_cfg.get("success_th", 0.0)
-            middle = self.pick_obj.get_local_pose()[0]
+            middle = self.pick_obj.get_world_pose()[0]
             x_min, y_min, _ = bbox_place_obj.min
             x_max, y_max, _ = bbox_place_obj.max
             x_middle, y_middle, _ = middle[0], middle[1], middle[2]

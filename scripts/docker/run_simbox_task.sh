@@ -18,6 +18,7 @@ if [[ "${metadata_path}" != /* ]]; then
     metadata_path="${REPO_ROOT}/${metadata_path}"
 fi
 mkdir -p "$(dirname "${metadata_path}")"
+container_log_path="${metadata_path%.json}.isaac.log"
 DEBUG_OUTPUT_DIR="${SIMBOX_DEBUG_OUTPUT_DIR:-$(dirname "${metadata_path}")/simbox_debug}"
 COMPOSE_FILE="${INTERNDATA_COMPOSE_FILE:-${REPO_ROOT}/docker/docker-compose.yml}"
 if [[ "${COMPOSE_FILE}" != /* ]]; then
@@ -72,7 +73,8 @@ write_metadata() {
         "${compose_project}" \
         "${isaac_container}" \
         "${GPU_ID}" \
-        "${task_container}" <<'PY'
+        "${task_container}" \
+        "${container_log_path}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -86,6 +88,7 @@ payload = {
     "isaac_container": sys.argv[6],
     "host_gpu_id": int(sys.argv[7]),
     "task_container": sys.argv[8],
+    "isaac_log_path": sys.argv[9],
 }
 path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
@@ -177,7 +180,7 @@ started=1
 }
 write_metadata running
 
-docker logs -f "${isaac_container}" &
+docker logs -f "${isaac_container}" 2>&1 | tee "${container_log_path}" &
 log_pid=$!
 set +e
 wait_output="$(docker wait "${isaac_container}")"
@@ -195,5 +198,24 @@ fi
 if [[ "${exit_code}" -ne 0 ]]; then
     printf 'ISAAC_CONTAINER_FAILED: %s exited with status %s.\n' "${isaac_container}" "${exit_code}" >&2
 fi
-write_metadata finished "${exit_code}"
+application_status="finished"
+if [[ "${exit_code}" -eq 0 ]]; then
+    validation_error=""
+    if [[ ! -s "${container_log_path}" ]]; then
+        validation_error="Isaac container produced no captured logs"
+    elif ! grep -Fq "Task is successful, mode=plan_with_render" "${container_log_path}"; then
+        validation_error="missing Task is successful, mode=plan_with_render marker"
+    elif grep -Fq "[LmdbLogger] Episode failed" "${container_log_path}"; then
+        validation_error="found [LmdbLogger] Episode failed in Isaac logs"
+    elif grep -Fq "Traceback (most recent call last):" "${container_log_path}"; then
+        validation_error="found a traceback in Isaac logs"
+    fi
+    if [[ -n "${validation_error}" ]]; then
+        printf 'ISAAC_APPLICATION_FAILED: %s. Log: %s\n' \
+            "${validation_error}" "${container_log_path}" >&2
+        application_status="application_failed"
+        exit_code=20
+    fi
+fi
+write_metadata "${application_status}" "${exit_code}"
 exit "${exit_code}"

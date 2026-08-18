@@ -236,6 +236,22 @@ def test_explicit_legacy_mode_is_preserved():
     assert reason == "explicit configuration"
 
 
+def test_legacy_pick_is_explicit_and_normal_pick_cannot_use_legacy_world():
+    legacy_task = _task({"name": "legacy_pick", "objects": ["a"]})
+    mode, _ = resolve_collision_world_mode(legacy_task, "auto")
+    assert mode == LEGACY_STAGE_SCAN_MODE
+    assert (
+        resolve_skill_collision_world_mode("legacy_pick", LEGACY_STAGE_SCAN_MODE)
+        == LEGACY_STAGE_SCAN_MODE
+    )
+
+    with pytest.raises(ValueError, match="legacy_pick"):
+        validate_planning_contract(
+            _task({"name": "pick", "objects": ["a"]}),
+            LEGACY_STAGE_SCAN_MODE,
+        )
+
+
 @pytest.mark.parametrize("name", ["DynamicPick", "ManualPick", "DexPick", "DexPlace", "Open", "Close"])
 def test_unmigrated_skills_require_explicit_legacy_mode(name):
     task = _task({"name": name, "objects": ["a"]})

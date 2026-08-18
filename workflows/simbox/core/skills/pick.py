@@ -7,7 +7,6 @@ from copy import deepcopy
 
 import numpy as np
 from core.planning.grasp_plan_evaluator import GraspPlanEvaluator
-from core.planning.config_contract import resolve_skill_test_mode
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand
 from core.skills.base_skill import BaseSkill, register_skill
 from core.utils.constants import CUROBO_BATCH_SIZE
@@ -16,16 +15,15 @@ from core.utils.plan_utils import select_index_by_priority_dual
 from core.utils.transformation_utils import poses_from_tf_matrices
 from core.utils.asset_path_utils import resolve_asset_path
 from omegaconf import DictConfig
-from omni.isaac.core.controllers import BaseController
-from omni.isaac.core.robots.robot import Robot
-from omni.isaac.core.tasks import BaseTask
-from omni.isaac.core.utils.prims import get_prim_at_path
-from omni.isaac.core.utils.transformations import (
-    get_relative_transform,
+from isaacsim.core.api.controllers import BaseController
+from isaacsim.core.api.robots.robot import Robot
+from isaacsim.core.api.tasks import BaseTask
+from isaacsim.core.utils.prims import get_prim_at_path
+from isaacsim.core.utils.transformations import (
     pose_from_tf_matrix,
     tf_matrix_from_pose,
 )
-from omni.isaac.core.utils.xforms import get_world_pose
+from isaacsim.core.utils.xforms import get_world_pose
 
 LOGGER = logging.getLogger("de_logger")
 
@@ -61,16 +59,6 @@ class Pick(BaseSkill):
         self._last_stall_command_started_at = 0
         self._stalled_failure_written = False
         self._selected_candidate_debug = {}
-        self._mobile_base_prim_path = getattr(self.robot, "mobile_base_prim_path", None)
-        self._cached_mobile_to_armbase_tf = None
-        mount_prefix = "fr" if self.controller.robot_file and "right" in self.controller.robot_file else "fl"
-        self._configured_mobile_to_armbase_translation = np.array(
-            self.robot.cfg.get(f"{mount_prefix}_base_mount_translation", []), dtype=np.float32
-        )
-        self._configured_mobile_to_armbase_orientation = np.array(
-            self.robot.cfg.get(f"{mount_prefix}_base_mount_orientation", [1.0, 0.0, 0.0, 0.0]), dtype=np.float32
-        )
-
         # Get grasp annotation
         object_cfg = next(obj for obj in task.cfg["objects"] if obj["name"] == object_name)
         usd_path = resolve_asset_path(self.task.asset_root, object_cfg)
@@ -108,6 +96,10 @@ class Pick(BaseSkill):
         self.sampled_scores = np.empty((0,), dtype=float)
         self.failure_reason = ""
         self._grasp_contact_verified = False
+        # Physics-schema execution can spend several planner calls between
+        # sampling a grasp and reaching the object.  Keep the object/base pose
+        # used for those targets so a moving active target can be retargeted
+        # without rebuilding the complete grasp candidate set.
 
     def _debug_log(self, message: str):
         if self.debug:
@@ -123,70 +115,46 @@ class Pick(BaseSkill):
             "filter_z_dir",
             "fixed_orientation",
             "pre_grasp_offset",
-            "test_mode",
         )
         return {key: self.skill_cfg[key] for key in keys if key in self.skill_cfg}
 
     def _get_armbase_transform_in_task(self):
-        armbase_tf_getter = getattr(self.robot, "get_armbase_world_transform", None)
-        if callable(armbase_tf_getter):
-            return armbase_tf_getter()
-
-        reference_prim_path = str(getattr(self.controller, "reference_prim_path", "")).strip()
-        if reference_prim_path:
-            reference_prim = get_prim_at_path(reference_prim_path)
-            if reference_prim.IsValid():
-                try:
-                    reference_t, reference_q = get_world_pose(reference_prim_path)
-                    world_armbase = tf_matrix_from_pose(reference_t, reference_q)
-                    if hasattr(self.robot, "get_mobile_base_pose"):
-                        try:
-                            mobile_base_t, mobile_base_q = self.robot.get_mobile_base_pose()
-                            world_mobile = tf_matrix_from_pose(mobile_base_t, mobile_base_q)
-                            self._cached_mobile_to_armbase_tf = np.linalg.inv(world_mobile) @ world_armbase
-                        except Exception:
-                            pass
-                    return world_armbase
-                except Exception:
-                    pass
-
-        if self._configured_mobile_to_armbase_translation.shape == (3,):
-            if hasattr(self.robot, "get_mobile_base_pose"):
-                mobile_base_t, mobile_base_q = self.robot.get_mobile_base_pose()
-            else:
-                mobile_base_t, mobile_base_q = self.robot.get_world_pose()
-            world_mobile = tf_matrix_from_pose(mobile_base_t, mobile_base_q)
-            mobile_to_armbase = tf_matrix_from_pose(
-                self._configured_mobile_to_armbase_translation,
-                self._configured_mobile_to_armbase_orientation,
-            )
-            self._cached_mobile_to_armbase_tf = mobile_to_armbase
-            return world_mobile @ mobile_to_armbase
-
-        reference_prim = get_prim_at_path(self.controller.reference_prim_path)
-        task_prim = get_prim_at_path(self.task.root_prim_path)
-        raw_task_armbase = get_relative_transform(reference_prim, task_prim)
-
-        mobile_base_prim_path = str(self._mobile_base_prim_path or "").strip()
-        if not mobile_base_prim_path:
-            return raw_task_armbase
-
-        mobile_base_prim = get_prim_at_path(mobile_base_prim_path)
-        if not mobile_base_prim.IsValid():
-            return raw_task_armbase
-
-        task_mobile = get_relative_transform(mobile_base_prim, task_prim)
-
-        if self._cached_mobile_to_armbase_tf is None:
-            self._cached_mobile_to_armbase_tf = np.linalg.inv(task_mobile) @ raw_task_armbase
-
-        return task_mobile @ self._cached_mobile_to_armbase_tf
+        return self.controller.get_pick_armbase_transform()
 
     def _get_object_world_pose(self):
         get_world_pose = getattr(self.pick_obj, "get_world_pose", None)
         if callable(get_world_pose):
             return get_world_pose()
         return self.pick_obj.get_local_pose()
+
+    def _capture_pick_plan_reference(self):
+        self.controller.capture_pick_plan_reference(self.pick_obj.name)
+
+    def _retarget_pick_commands_to_current_object(self, commands):
+        """Shift pending Pick targets by the active object's latest rigid motion.
+
+        Pick targets are stored in the arm-base frame, while grasp
+        annotations are object-relative.  When a dynamic tabletop target
+        rolls or slides during a native-v2 planning/recovery call, preserving
+        the old arm-base target makes recovery chase a stale pose.  Transform
+        every pending target through the object's world-frame delta and drop
+        any cached terminal joint path, whose start and goal were generated
+        for the old pose.
+
+        Returns the translation and rotation magnitude of the applied object
+        delta.  The method is deliberately independent of the safety monitor
+        so the initial post-planning retarget and a later safety recovery use
+        exactly the same geometry.
+        """
+
+        return self.controller.retarget_pick_phase_commands(self.pick_obj.name, commands)
+
+    def replan_after_safety(self, command):
+        """Retarget the remaining Pick phases after an active-object change."""
+
+        return self.controller.replan_pick_after_safety(
+            self.pick_obj.name, command, self.manip_list
+        )
 
     def _json_ready(self, value):
         return json_ready(value)
@@ -210,7 +178,8 @@ class Pick(BaseSkill):
         return output_path
 
     def _collect_geometry_debug(self):
-        mobile_base_prim_path = str(self._mobile_base_prim_path or "").strip()
+        frame_debug = self.controller.get_pick_frame_debug()
+        mobile_base_prim_path = str(frame_debug.get("mobile_base_prim_path") or "").strip()
         obj_world_t, obj_world_q = self._get_object_world_pose()
         ee_base_t, ee_base_q = self.controller.get_ee_pose()
         robot_world_t, robot_world_q = self.robot.get_world_pose()
@@ -244,96 +213,26 @@ class Pick(BaseSkill):
             "reference_prim_path": self.controller.reference_prim_path,
             "reference_world_pose": reference_world_pose,
             "mobile_base_prim_path": mobile_base_prim_path if mobile_base_prim_path else None,
-            "cached_mobile_to_armbase_tf": self._cached_mobile_to_armbase_tf,
-            "configured_mobile_to_armbase_translation": self._configured_mobile_to_armbase_translation,
-            "configured_mobile_to_armbase_orientation": self._configured_mobile_to_armbase_orientation,
+            "cached_mobile_to_armbase_tf": frame_debug.get("cached_mobile_to_armbase_tf"),
+            "configured_mobile_to_armbase_translation": frame_debug.get(
+                "configured_mobile_to_armbase_translation"
+            ),
+            "configured_mobile_to_armbase_orientation": frame_debug.get(
+                "configured_mobile_to_armbase_orientation"
+            ),
             "controller_lr_name": getattr(self.controller, "lr_name", None),
             "controller_robot_file": self.controller.robot_file,
         }
 
-    def _candidate_source_debug(self, candidate_index: int):
-        sampled_indices = self._sample_debug.get("sampled_indices", [])
-        sampled_scores = self._sample_debug.get("sampled_scores", [])
-        source_index = sampled_indices[candidate_index] if candidate_index < len(sampled_indices) else None
-        source_score = sampled_scores[candidate_index] if candidate_index < len(sampled_scores) else None
-        return {
-            "candidate_index": candidate_index,
-            "source_index": source_index,
-            "source_score": source_score,
-        }
-
     def _manip_cmd_to_debug(self, manip_cmd):
-        if isinstance(manip_cmd, MotionPhaseCommand):
-            return {
-                "phase": manip_cmd.phase.value,
-                "ee_translation": manip_cmd.target_position,
-                "ee_orientation": manip_cmd.target_orientation,
-                "gripper_action": manip_cmd.gripper_action,
-                "active_object": manip_cmd.active_object,
-                "params": manip_cmd.params,
-            }
-        ee_trans, ee_ori, cmd_name, params = manip_cmd
         return {
-            "command": cmd_name,
-            "ee_translation": ee_trans,
-            "ee_orientation": ee_ori,
-            "params": params,
+            "phase": manip_cmd.phase.value,
+            "ee_translation": manip_cmd.target_position,
+            "ee_orientation": manip_cmd.target_orientation,
+            "gripper_action": manip_cmd.gripper_action,
+            "active_object": manip_cmd.active_object,
+            "params": manip_cmd.params,
         }
-
-    def _gripper_action_for_state(self, gripper_cmd: str) -> np.ndarray:
-        sign = -1.0 if gripper_cmd == "close_gripper" else 1.0
-        old_state = getattr(self.controller, "_gripper_state", 1.0)
-        self.controller._gripper_state = sign
-        try:
-            return np.asarray(self.controller.get_gripper_action(), dtype=float)
-        finally:
-            self.controller._gripper_state = old_state
-
-    def _append_gripper_transition(self, manip_list, ee_trans, ee_ori, gripper_cmd: str):
-        steps = max(int(self.skill_cfg.get("gripper_change_steps", 40)), 1)
-        start_cmd = "open_gripper" if gripper_cmd == "close_gripper" else "close_gripper"
-        start = self._gripper_action_for_state(start_cmd)
-        target = self._gripper_action_for_state(gripper_cmd)
-        for step in range(steps):
-            ratio = float(step + 1) / float(steps)
-            gripper_action = start + (target - start) * ratio
-            manip_list.append(
-                (
-                    ee_trans,
-                    ee_ori,
-                    gripper_cmd,
-                    {"skip_plan": True, "gripper_action": gripper_action},
-                )
-            )
-
-    def _append_gripper_hold(self, manip_list, ee_trans, ee_ori, gripper_cmd: str, steps=None):
-        if steps is None:
-            steps = self.skill_cfg.get("grasp_open_hold_steps", 8)
-        steps = max(int(steps), 0)
-        gripper_action = self._gripper_action_for_state(gripper_cmd)
-        for _ in range(steps):
-            manip_list.append(
-                (
-                    ee_trans,
-                    ee_ori,
-                    gripper_cmd,
-                    {"skip_plan": True, "gripper_action": gripper_action},
-                )
-            )
-
-    def _grasp_arrival_params(self):
-        t_eps = min(float(self.skill_cfg.get("t_eps", 1e-3)), float(self.skill_cfg.get("grasp_t_eps", 0.008)))
-        o_eps = min(float(self.skill_cfg.get("o_eps", 5e-3)), float(self.skill_cfg.get("grasp_o_eps", 0.2)))
-        return {"t_eps": t_eps, "o_eps": o_eps}
-
-    def _offset_from_grasp(self, grasp_translation, T_base_ee_grasp, offset):
-        if offset <= 0.0:
-            return grasp_translation
-        if "r5a" in self.controller.robot_file:
-            approach_axis = T_base_ee_grasp[:3, 0]
-        else:
-            approach_axis = T_base_ee_grasp[:3, 2]
-        return grasp_translation - approach_axis * offset
 
     def _get_object_pose_in_armbase(self):
         T_world_obj = tf_matrix_from_pose(*self._get_object_world_pose())
@@ -349,12 +248,23 @@ class Pick(BaseSkill):
         rel_xy = np.asarray(grasp_translation[:2], dtype=float) - obj_xy
         return float(np.dot(rel_xy, obj_xy / obj_norm))
 
-    def _select_grasp_index(self, pre_result, result, p_base_ee_grasps, q_base_ee_grasps, T_base_ee_grasps):
+    def _select_grasp_index(
+        self,
+        pre_result,
+        result,
+        p_base_ee_grasps,
+        q_base_ee_grasps,
+        T_base_ee_grasps,
+        candidate_indices=None,
+    ):
         priority_index = select_index_by_priority_dual(pre_result, result)
-        pre_success_mask = np.asarray(pre_result.success.detach().cpu().numpy()).reshape(-1).astype(bool)
-        grasp_success_mask = np.asarray(result.success.detach().cpu().numpy()).reshape(-1).astype(bool)
-        both_success = np.logical_and(pre_success_mask, grasp_success_mask)
-        candidate_indices = np.where(both_success)[0]
+        if candidate_indices is None:
+            pre_success_mask = GraspPlanEvaluator._success_mask(pre_result)
+            grasp_success_mask = GraspPlanEvaluator._success_mask(result)
+            both_success = np.logical_and(pre_success_mask, grasp_success_mask)
+            candidate_indices = np.where(both_success)[0]
+        else:
+            candidate_indices = np.asarray(candidate_indices, dtype=int).reshape(-1)
         if len(candidate_indices) == 0:
             return priority_index
 
@@ -447,151 +357,107 @@ class Pick(BaseSkill):
         )
         return selected[2]
 
-    def _validate_complete_candidate_path(
-        self,
-        pregrasp_translation,
-        pregrasp_orientation,
-        grasp_translation,
-        grasp_orientation,
-        postgrasp_translation,
-        base_ignore_substring,
-        grasp_ignore_substring,
-        validate_postgrasp,
-    ):
-        """Validate current -> pregrasp -> grasp -> postgrasp as one continuous path."""
-        self.controller.update_specific(
-            ignore_substring=base_ignore_substring,
-            reference_prim_path=self.controller.reference_prim_path,
-        )
-        pregrasp_success, pregrasp_end_js, _ = self.controller.test_forward_from_joint_positions(
-            pregrasp_translation,
-            pregrasp_orientation,
-        )
-        grasp_success = False
-        grasp_end_js = None
-        postgrasp_success = False
-        if pregrasp_success:
-            self.controller.update_specific(
-                ignore_substring=grasp_ignore_substring,
-                reference_prim_path=self.controller.reference_prim_path,
-            )
-            grasp_success, grasp_end_js, _ = self.controller.test_forward_from_joint_positions(
-                grasp_translation,
-                grasp_orientation,
-                start_arm_positions=pregrasp_end_js,
-            )
-        if grasp_success:
-            if validate_postgrasp:
-                # The grasp pass intentionally ignores the target so fingers
-                # can close around it.  Restore it before validating lift,
-                # then attach it at the grasp endpoint so this candidate sees
-                # the same collision geometry as runtime execution.
-                self.controller.update_specific(
-                    ignore_substring=base_ignore_substring,
-                    reference_prim_path=self.controller.reference_prim_path,
-                )
-                postgrasp_success, _, _ = self.controller.test_attached_forward_from_joint_positions(
-                    postgrasp_translation,
-                    grasp_orientation,
-                    start_arm_positions=grasp_end_js,
-                    obj_prim_paths=list(self.pick_obj.attach_collision_prim_paths),
-                )
-            else:
-                postgrasp_success = True
-
-        return {
-            "pregrasp_success": bool(pregrasp_success),
-            "grasp_success": bool(grasp_success),
-            "postgrasp_success": bool(postgrasp_success),
-        }
-
-    def _find_complete_candidate_path(
-        self,
-        candidate_order,
-        p_base_ee_pregrasps,
-        q_base_ee_pregrasps,
-        p_base_ee_grasps,
-        q_base_ee_grasps,
-        p_base_ee_postgrasps,
-        base_ignore_substring,
-        grasp_ignore_substring,
-        validate_postgrasp,
-        candidate_debug_by_index,
-    ):
-        for candidate_index in candidate_order:
-            validation = self._validate_complete_candidate_path(
-                p_base_ee_pregrasps[candidate_index],
-                q_base_ee_pregrasps[candidate_index],
-                p_base_ee_grasps[candidate_index],
-                q_base_ee_grasps[candidate_index],
-                p_base_ee_postgrasps[candidate_index],
-                base_ignore_substring,
-                grasp_ignore_substring,
-                validate_postgrasp=validate_postgrasp,
-            )
-            candidate_debug_by_index[candidate_index].update(validation)
-            if all(validation.values()):
-                print(f"[pick-debug] Complete pick path succeeded for candidate {candidate_index}.")
-                return candidate_index
-        return None
-
     def simple_generate_manip_cmds(self):
-        if getattr(self.controller, "collision_world_mode", "legacy_stage_scan") == "physics_schema":
-            return self._physics_schema_generate_manip_cmds()
-        return self._legacy_simple_generate_manip_cmds()
+        return self._physics_schema_generate_manip_cmds()
 
-    @staticmethod
-    def _terminal_samples(start, goal, step_m: float) -> list[np.ndarray]:
-        start = np.asarray(start, dtype=float)
-        goal = np.asarray(goal, dtype=float)
-        distance = float(np.linalg.norm(goal - start))
-        count = max(1, int(np.ceil(distance / float(step_m))))
-        return [start + (goal - start) * (index / count) for index in range(1, count + 1)]
+    def _validate_native_post_grasp_candidates(self, post_grasp_offset):
+        """Record that post-grasp validation is deferred until the real attach.
+
+        The native v2 planner must receive the object pose and joint state after
+        the gripper has actually closed.  A synthetic attach here runs before
+        that state transition, so it can reject every candidate because the
+        object is still resting on its source support (or because the
+        pre-attach pose differs by a small physics step).  The authoritative
+        check is the ``POST_GRASP_LIFT`` query in ``forward_phase_command``;
+        it runs immediately after ``CollisionSceneManager.attach_target`` and
+        therefore uses the same native attachment geometry as execution.
+
+        Keeping this method as an explicit bookkeeping hook preserves the
+        diagnostic field without doing one expensive native planner query per
+        candidate.  Pre-grasp and terminal-grasp candidates have already been
+        checked by ``GraspPlanEvaluator``.
+        """
+
+        evaluation = self.plan_evaluation
+        result = evaluation.result
+        terminal_paths = list(evaluation.terminal_paths or [])
+        if not result.feasible or not terminal_paths or post_grasp_offset <= 0.0:
+            return
+        selected_index = result.selected_grasp_index
+        evaluation.post_grasp_validation = [
+            {
+                "mode": "deferred_runtime_attach",
+                "candidate_index": (
+                    None if selected_index is None else int(selected_index)
+                ),
+                "success": None,
+                "reason": "native_v2_uses_post_attach_pose_and_joint_state",
+            }
+        ]
+        LOGGER.info(
+            "[PickSafety] post-grasp validation deferred until runtime attach "
+            "object=%s candidate=%s offset=%.4f",
+            self.pick_obj.name,
+            selected_index,
+            float(post_grasp_offset),
+        )
 
     def _physics_schema_generate_manip_cmds(self):
         """Generate stateful Pick phases against the exact Physics world."""
 
         self.failure_reason = ""
         self._grasp_contact_verified = False
-        manager = self.controller.collision_scene_manager
         object_name = self.pick_obj.name
-        robot, arm = self.controller.name, self.controller.lr_name
         pick_place_cfg = self.task.cfg.get("planning", {}).get("pick_place", {})
-        terminal_step = float(pick_place_cfg.get("terminal_step_m", 0.005))
         max_terminal = float(pick_place_cfg.get("max_terminal_distance_m", 0.10))
-        self.controller.update_pose_cost_metric(None)
-        manager.sync_dynamic_poses(0, interval_steps=1, force=True)
-        manager.begin_target_transit(object_name, robot, arm)
+        self.controller.prepare_pick_planning_world(object_name)
 
+        self._capture_pick_plan_reference()
         transforms = self.sample_ee_pose()
         evaluator = GraspPlanEvaluator(self.controller, self._debug_log)
         missing = evaluator.missing_attach_prims(self.pick_obj.attach_collision_prim_paths)
-        test_mode = resolve_skill_test_mode(
-            self.skill_cfg, getattr(self.controller, "collision_world_mode", "legacy_stage_scan")
-        )
         self.plan_evaluation = evaluator.evaluate(
             transforms,
             self.sampled_scores,
             pregrasp_offset_m=float(self.skill_cfg.get("pre_grasp_offset", 0.1)),
             attach_prim_paths=self.pick_obj.attach_collision_prim_paths,
             fixed_orientation=self.fixed_orientation,
-            test_mode=test_mode,
+            test_mode="forward",
             attach_config_failure_code=self.pick_obj.attach_collision_failure_code,
             attach_candidate_paths=self.pick_obj.attach_collision_candidates,
             attach_missing_paths=missing,
-            prepare_pregrasp_world=lambda: manager.begin_target_transit(object_name, robot, arm),
-            prepare_grasp_world=lambda: manager.begin_target_approach(object_name, robot, arm),
+            prepare_pregrasp_world=lambda: self.controller.prepare_pick_pregrasp_world(object_name),
+            prepare_grasp_world=lambda: self.controller.prepare_pick_grasp_world(object_name),
+            candidate_selector=(
+                lambda pre_result, result, candidate_indices, positions, orientations, grasp_transforms: self._select_grasp_index(
+                    pre_result,
+                    result,
+                    positions,
+                    orientations,
+                    grasp_transforms,
+                    candidate_indices=candidate_indices,
+                )
+            ),
         )
         result = self.plan_evaluation.result
         # Candidate testing leaves the owner in the terminal world.  Execution
         # always starts again from the complete transit world.
-        manager.restore_world(object_name)
+        self.controller.restore_pick_world(object_name)
+        post_grasp_offset = (
+            float(
+                np.random.uniform(
+                    self.skill_cfg.get("post_grasp_offset_min", 0.05),
+                    self.skill_cfg.get("post_grasp_offset_max", 0.05),
+                )
+            )
+            if result.feasible
+            else 0.0
+        )
+        self._validate_native_post_grasp_candidates(post_grasp_offset)
         world_collision_diagnostic = None
         if not result.feasible and result.pregrasp_success_count == 0:
             try:
-                world_collision_diagnostic = manager.diagnose_controller_world_collision(
-                    self.controller
-                )
+                world_collision_diagnostic = self.controller.diagnose_pick_start_world_collision()
                 LOGGER.warning(
                     "[PickSafety] start-state world collision diagnostic object=%s result=%s",
                     object_name,
@@ -620,6 +486,8 @@ class Pick(BaseSkill):
                 "pregrasp_orientations": self.plan_evaluation.pregrasp_orientations,
                 "grasp_positions": self.plan_evaluation.grasp_positions,
                 "grasp_orientations": self.plan_evaluation.grasp_orientations,
+                "terminal_plan_diagnostics": self.plan_evaluation.terminal_plan_diagnostics,
+                "post_grasp_validation": self.plan_evaluation.post_grasp_validation,
                 "world_collision_diagnostic": world_collision_diagnostic,
             },
         )
@@ -668,486 +536,58 @@ class Pick(BaseSkill):
                 "grasp_orientation": orientations[index],
             }
         )
-        tolerance = {
-            "position_m": float(self.skill_cfg.get("t_eps", 0.005)),
-            "orientation_rad": float(self.skill_cfg.get("o_eps", 0.05)),
-        }
-        commands = [
-            MotionPhaseCommand(
-                MotionPhase.SYNC_WORLD,
-                active_object=object_name,
-                replan_allowed=False,
+        self.manip_list = self.controller.build_pick_phase_commands(
+            object_name=object_name,
+            pregrasp_position=pre_positions[index],
+            pregrasp_orientation=pre_orientations[index],
+            grasp_position=positions[index],
+            grasp_orientation=orientations[index],
+            gripper_action=self.gripper_cmd,
+            post_grasp_offset=post_grasp_offset,
+            terminal_path=self.plan_evaluation.terminal_path,
+            terminal_path_length_ratio=self.plan_evaluation.terminal_path_length_ratio,
+            terminal_path_max_deviation_m=self.plan_evaluation.terminal_path_max_deviation_m,
+            return_to_pregrasp=bool(self.skill_cfg.get("return_to_pregrasp", False)),
+            completion_tolerance={
+                "position_m": float(self.skill_cfg.get("t_eps", 0.005)),
+                "orientation_rad": float(self.skill_cfg.get("o_eps", 0.05)),
+            },
+            gripper_change_steps=int(self.skill_cfg.get("gripper_change_steps", 40)),
+            contact_threshold_n=float(
+                self.skill_cfg.get("grasp_contact_threshold_n", 0.0)
             ),
-            MotionPhaseCommand(
-                MotionPhase.TRANSIT_PREGRASP,
-                pre_positions[index],
-                pre_orientations[index],
-                gripper_action="open_gripper",
-                active_object=object_name,
-                completion_tolerance=tolerance,
-            ),
-        ]
-        if self.plan_evaluation.terminal_path is not None:
-            commands.append(
-                MotionPhaseCommand(
-                    MotionPhase.TERMINAL_GRASP_APPROACH,
-                    positions[index],
-                    orientations[index],
-                    gripper_action="open_gripper",
-                    active_object=object_name,
-                    allow_target_finger_contact=True,
-                    completion_tolerance={"position_m": terminal_step, "orientation_rad": tolerance["orientation_rad"]},
-                    params={
-                        "preplanned_joint_path": self.plan_evaluation.terminal_path,
-                        "cartesian_step_m": terminal_step,
-                        "path_length_ratio": self.plan_evaluation.terminal_path_length_ratio,
-                        "path_max_deviation_m": self.plan_evaluation.terminal_path_max_deviation_m,
-                    },
-                )
-            )
-        else:
-            # Compatibility with legacy/mock controllers that cannot return a
-            # chained pre-grasp -> grasp path.  Runtime physics controllers do.
-            terminal_points = self._terminal_samples(
-                pre_positions[index], positions[index], terminal_step
-            )
-            for point_index, point in enumerate(terminal_points):
-                ratio = (point_index + 1) / len(terminal_points)
-                quat = (1.0 - ratio) * pre_orientations[index] + ratio * orientations[index]
-                quat = quat / np.linalg.norm(quat)
-                commands.append(
-                    MotionPhaseCommand(
-                        MotionPhase.TERMINAL_GRASP_APPROACH,
-                        point,
-                        quat,
-                        gripper_action="open_gripper",
-                        active_object=object_name,
-                        allow_target_finger_contact=True,
-                        completion_tolerance={"position_m": terminal_step, "orientation_rad": tolerance["orientation_rad"]},
-                    )
-                )
-        commands.append(
-            MotionPhaseCommand(
-                MotionPhase.GRIPPER_CLOSE,
-                positions[index],
-                orientations[index],
-                gripper_action=self.gripper_cmd,
-                active_object=object_name,
-                allow_target_finger_contact=True,
-                replan_allowed=False,
-                dwell_steps=int(self.skill_cfg.get("gripper_change_steps", 40)),
-                params={
-                    "contact_threshold_n": float(
-                        self.skill_cfg.get("grasp_contact_threshold_n", 0.0)
-                    )
-                },
-            )
+            verify_grasp_contact=lambda: self._grasp_contact_verified,
         )
-        commands.append(
-            MotionPhaseCommand(
-                MotionPhase.ATTACH,
-                active_object=object_name,
-                allow_target_finger_contact=True,
-                replan_allowed=False,
-                params={"verify_grasp_contact": lambda: self._grasp_contact_verified},
-            )
-        )
-        post_offset = np.random.uniform(
-            self.skill_cfg.get("post_grasp_offset_min", 0.05),
-            self.skill_cfg.get("post_grasp_offset_max", 0.05),
-        )
-        if post_offset:
-            post_position = np.asarray(positions[index], dtype=float).copy()
-            post_position[2] += float(post_offset)
-            commands.append(
-                MotionPhaseCommand(
-                    MotionPhase.POST_GRASP_LIFT,
-                    post_position,
-                    orientations[index],
-                    gripper_action=self.gripper_cmd,
-                    active_object=object_name,
-                    allow_target_finger_contact=True,
-                    completion_tolerance=tolerance,
-                )
-            )
-        if self.skill_cfg.get("return_to_pregrasp", False):
-            commands.append(
-                MotionPhaseCommand(
-                    MotionPhase.POST_GRASP_LIFT,
-                    pre_positions[index],
-                    pre_orientations[index],
-                    gripper_action=self.gripper_cmd,
-                    active_object=object_name,
-                    allow_target_finger_contact=True,
-                    completion_tolerance=tolerance,
-                )
-            )
-        self.manip_list = commands
-
-    def _legacy_simple_generate_manip_cmds(self):
-        """LEGACY_STAGE_SCAN: original tuple/substring Pick implementation."""
-
-        # LEGACY_BEGIN: keyword-based collision world, retained for comparison
-        manip_list = []
-        self.process_valid = True
-        self.failure_reason = ""
-        self.error_message = ""
-        self._runtime_failure_snapshot_written = False
-        self._runtime_failure_debug_path = None
-        self._selected_candidate_debug = {}
-        self._candidate_rank_debug = []
-        self._execution_trace = []
-        self._execution_trace_path = None
-        self._execution_trace_total_steps = 0
-        self._last_stall_command_signature = None
-        self._last_stall_command_started_at = 0
-        self._stalled_failure_written = False
-        object_name = self.skill_cfg["objects"][0]
-        self._debug_log(
-            "start object=%s arm=%s use_batch=%s test_mode=%s pre_grasp_offset=%s"
-            % (
+        # Native-v2 candidate evaluation can take long enough for a dynamic
+        # tabletop object to finish settling or slide to a new contact pose.
+        # Retarget the freshly generated command sequence once before the
+        # first execution step; later safety recoveries use the same helper.
+        try:
+            self._retarget_pick_commands_to_current_object(self.manip_list)
+        except Exception as exc:  # pragma: no cover - simulator-only guard
+            LOGGER.exception(
+                "[PickSafety] failed to retarget initial object pose=%s: %s",
                 object_name,
-                getattr(self.controller, "lr_name", "unknown"),
-                self.controller.use_batch,
-                self.skill_cfg.get("test_mode", "forward"),
-                self.skill_cfg.get("pre_grasp_offset", 0.1),
+                exc,
             )
-        )
-
-        # Update
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        open_gripper_action = self._gripper_action_for_state("open_gripper")
-        cmd = (
-            p_base_ee_cur,
-            q_base_ee_cur,
-            "update_pose_cost_metric",
-            {"hold_vec_weight": None, "gripper_action": open_gripper_action},
-        )
-        manip_list.append(cmd)
-
-        base_ignore_substring = deepcopy(self.controller.ignore_substring + self.skill_cfg.get("ignore_substring", []))
-        grasp_ignore_substring = deepcopy(base_ignore_substring)
-        grasp_ignore_substring.append(self.pick_obj.name)
-
-        # Pre grasp
-        T_base_ee_grasps = self.sample_ee_pose()  # (N, 4, 4)
-        T_base_ee_pregrasps = deepcopy(T_base_ee_grasps)
-        self.controller.update_specific(
-            ignore_substring=base_ignore_substring, reference_prim_path=self.controller.reference_prim_path
-        )
-
-        if "r5a" in self.controller.robot_file:
-            T_base_ee_pregrasps[:, :3, 3] -= T_base_ee_pregrasps[:, :3, 0] * self.skill_cfg.get("pre_grasp_offset", 0.1)
-        else:
-            T_base_ee_pregrasps[:, :3, 3] -= T_base_ee_pregrasps[:, :3, 2] * self.skill_cfg.get("pre_grasp_offset", 0.1)
-
-        if T_base_ee_grasps.shape[0] == 0:
+            self.failure_reason = "INITIAL_OBJECT_RETARGET_FAILED"
             self.manip_list = []
-            self.process_valid = False
-            self.failure_reason = "no_grasp_candidates_after_sampling"
-            self.error_message = "Pick sampling produced no grasp candidates."
-            self._plan_debug_path = self._write_debug_artifact(
-                "pick_plan_snapshot.json",
-                {
-                    "robot": self.robot.name,
-                    "object": self.pick_obj.name,
-                    "lr_arm": self.lr_arm,
-                    "reason": "no_grasp_candidates_after_sampling",
-                    "sample_debug": self._sample_debug,
-                    "geometry_debug": self._collect_geometry_debug(),
-                },
-            )
-            self.publish_target_intent(
-                {
-                    "kind": "pick",
-                    "objects": [object_name],
-                    "has_target": False,
-                    "failure_reason": self.failure_reason,
-                    "candidate_count": 0,
-                    "constraints": self._target_constraints(),
-                }
-            )
-            print(f"[pick-debug] No grasp candidates after sampling. Snapshot: {self._plan_debug_path}")
-            return
 
-        p_base_ee_pregrasps, q_base_ee_pregrasps = poses_from_tf_matrices(T_base_ee_pregrasps)
-        p_base_ee_grasps, q_base_ee_grasps = poses_from_tf_matrices(T_base_ee_grasps)
-        if self.fixed_orientation is not None:
-            q_base_ee_pregrasps[:] = self.fixed_orientation
-            q_base_ee_grasps[:] = self.fixed_orientation
 
-        post_grasp_offset = float(
-            np.random.uniform(
-                self.skill_cfg.get("post_grasp_offset_min", 0.05),
-                self.skill_cfg.get("post_grasp_offset_max", 0.05),
-            )
+    def _execution_command_state(self, command, fallback_translation, fallback_orientation):
+        if not isinstance(command, MotionPhaseCommand):
+            raise TypeError("Pick execution requires MotionPhaseCommand instances")
+        target_translation = (
+            command.target_position
+            if command.target_position is not None
+            else fallback_translation
         )
-        p_base_ee_postgrasps = deepcopy(p_base_ee_grasps)
-        p_base_ee_postgrasps[:, 2] += post_grasp_offset
-        candidate_results = []
-        success_found = False
-        index = min(T_base_ee_grasps.shape[0] - 1, 0)
-        candidate_order = list(range(T_base_ee_grasps.shape[0]))
-
-        if self.controller.use_batch:
-            pre_result = self.controller.test_batch_forward(p_base_ee_pregrasps, q_base_ee_pregrasps)
-            self.controller.update_specific(
-                ignore_substring=grasp_ignore_substring, reference_prim_path=self.controller.reference_prim_path
-            )
-            result = self.controller.test_batch_forward(p_base_ee_grasps, q_base_ee_grasps)
-            pre_success_mask = np.asarray(pre_result.success.detach().cpu().numpy()).reshape(-1).astype(bool)
-            grasp_success_mask = np.asarray(result.success.detach().cpu().numpy()).reshape(-1).astype(bool)
-            coarse_success_mask = np.logical_and(pre_success_mask, grasp_success_mask)
-            candidate_order = np.where(coarse_success_mask)[0].tolist()
-            if candidate_order:
-                preferred_index = self._select_grasp_index(
-                    pre_result,
-                    result,
-                    p_base_ee_grasps,
-                    q_base_ee_grasps,
-                    T_base_ee_grasps,
-                )
-                candidate_order.remove(preferred_index)
-                candidate_order.insert(0, preferred_index)
-            candidate_results = [
-                {
-                    **self._candidate_source_debug(i),
-                    "batch_pregrasp_success": bool(pre_success_mask[i]),
-                    "batch_grasp_success": bool(grasp_success_mask[i]),
-                    "pregrasp_translation": p_base_ee_pregrasps[i],
-                    "pregrasp_orientation": q_base_ee_pregrasps[i],
-                    "grasp_translation": p_base_ee_grasps[i],
-                    "grasp_orientation": q_base_ee_grasps[i],
-                    "postgrasp_translation": p_base_ee_postgrasps[i],
-                    "postgrasp_orientation": q_base_ee_grasps[i],
-                }
-                for i in range(len(pre_success_mask))
-            ]
-        else:
-            candidate_results = [
-                {
-                    **self._candidate_source_debug(i),
-                    "pregrasp_translation": p_base_ee_pregrasps[i],
-                    "pregrasp_orientation": q_base_ee_pregrasps[i],
-                    "grasp_translation": p_base_ee_grasps[i],
-                    "grasp_orientation": q_base_ee_grasps[i],
-                    "postgrasp_translation": p_base_ee_postgrasps[i],
-                    "postgrasp_orientation": q_base_ee_grasps[i],
-                }
-                for i in candidate_order
-            ]
-
-        candidate_debug_by_index = {
-            int(candidate_debug["candidate_index"]): candidate_debug for candidate_debug in candidate_results
-        }
-        complete_candidate_index = self._find_complete_candidate_path(
-            candidate_order,
-            p_base_ee_pregrasps,
-            q_base_ee_pregrasps,
-            p_base_ee_grasps,
-            q_base_ee_grasps,
-            p_base_ee_postgrasps,
-            base_ignore_substring,
-            grasp_ignore_substring,
-            validate_postgrasp=bool(post_grasp_offset),
-            candidate_debug_by_index=candidate_debug_by_index,
+        target_orientation = (
+            command.target_orientation
+            if command.target_orientation is not None
+            else fallback_orientation
         )
-        if complete_candidate_index is not None:
-            index = complete_candidate_index
-            success_found = True
-
-        if not success_found:
-            self._selected_candidate_debug = {
-                "success_found": False,
-                "attempted_candidate_indices": candidate_order,
-                "post_grasp_offset": post_grasp_offset,
-            }
-            self.manip_list = []
-            self.process_valid = False
-            self.failure_reason = "no_complete_pick_path"
-            self.error_message = (
-                "No grasp candidate has a continuous current-to-pregrasp-to-grasp-to-postgrasp path."
-            )
-            self._plan_debug_path = self._write_debug_artifact(
-                "pick_plan_snapshot.json",
-                {
-                    "robot": self.robot.name,
-                    "object": self.pick_obj.name,
-                    "lr_arm": self.lr_arm,
-                    "reason": self.failure_reason,
-                    "success_found": False,
-                    "selected_candidate": self._selected_candidate_debug,
-                    "sample_debug": self._sample_debug,
-                    "geometry_debug": self._collect_geometry_debug(),
-                    "candidate_results": candidate_results,
-                    "candidate_rank_debug": self._candidate_rank_debug,
-                    "manip_command_sequence": [],
-                },
-            )
-            self.publish_target_intent(
-                {
-                    "kind": "pick",
-                    "objects": [object_name],
-                    "has_target": False,
-                    "failure_reason": self.failure_reason,
-                    "candidate_count": len(T_base_ee_grasps),
-                    "constraints": self._target_constraints(),
-                }
-            )
-            print(f"[pick-debug] No complete pick path found. Snapshot: {self._plan_debug_path}")
-            return
-
-        self._selected_candidate_debug = {
-            **self._candidate_source_debug(index),
-            "success_found": True,
-            "selected_pregrasp_translation": p_base_ee_pregrasps[index],
-            "selected_pregrasp_orientation": q_base_ee_pregrasps[index],
-            "selected_grasp_translation": p_base_ee_grasps[index],
-            "selected_grasp_orientation": q_base_ee_grasps[index],
-            "selected_postgrasp_translation": p_base_ee_postgrasps[index],
-            "selected_postgrasp_orientation": q_base_ee_grasps[index],
-            "post_grasp_offset": post_grasp_offset,
-        }
-        self.publish_target_intent(
-            {
-                "kind": "pick",
-                "objects": [object_name],
-                "selected_index": index,
-                "selected_score": self._candidate_source_debug(index).get("source_score"),
-                "constraints": self._target_constraints(),
-                "pregrasp_position": p_base_ee_pregrasps[index],
-                "pregrasp_orientation": q_base_ee_pregrasps[index],
-                "grasp_position": p_base_ee_grasps[index],
-                "grasp_orientation": q_base_ee_grasps[index],
-            }
-        )
-
-        # Pre-grasp
-        cmd = (
-            p_base_ee_cur,
-            q_base_ee_cur,
-            "update_specific",
-            {
-                "ignore_substring": base_ignore_substring,
-                "reference_prim_path": self.controller.reference_prim_path,
-                "gripper_action": open_gripper_action,
-            },
-        )
-        manip_list.append(cmd)
-        cmd = (p_base_ee_pregrasps[index], q_base_ee_pregrasps[index], "open_gripper", {})
-        manip_list.append(cmd)
-        if self.skill_cfg.get("pre_grasp_hold_vec_weight", None) is not None:
-            cmd = (
-                p_base_ee_pregrasps[index],
-                q_base_ee_pregrasps[index],
-                "update_pose_cost_metric",
-                {"hold_vec_weight": self.skill_cfg.get("pre_grasp_hold_vec_weight", None)},
-            )
-            manip_list.append(cmd)
-
-        # Switch to grasp collision mode before guard so guard and grasp are planned
-        # with pick_obj ignored, matching the candidate validation.
-        cmd = (
-            p_base_ee_pregrasps[index],
-            q_base_ee_pregrasps[index],
-            "update_specific",
-            {
-                "ignore_substring": grasp_ignore_substring,
-                "reference_prim_path": self.controller.reference_prim_path,
-                "gripper_action": open_gripper_action,
-            },
-        )
-        manip_list.append(cmd)
-
-        guard_offset = float(
-            self.skill_cfg.get(
-                "grasp_guard_offset",
-                min(float(self.skill_cfg.get("pre_grasp_offset", 0.1)), 0.04),
-            )
-        )
-        if guard_offset > 0.0:
-            p_base_ee_grasp_guard = self._offset_from_grasp(
-                p_base_ee_grasps[index],
-                T_base_ee_grasps[index],
-                guard_offset,
-            )
-            cmd = (
-                p_base_ee_grasp_guard,
-                q_base_ee_grasps[index],
-                "open_gripper",
-                {"gripper_action": open_gripper_action},
-            )
-            manip_list.append(cmd)
-
-        # Grasp
-        cmd = (p_base_ee_grasps[index], q_base_ee_grasps[index], "open_gripper", self._grasp_arrival_params())
-        manip_list.append(cmd)
-        self._append_gripper_hold(
-            manip_list,
-            p_base_ee_grasps[index],
-            q_base_ee_grasps[index],
-            "open_gripper",
-        )
-        self._append_gripper_transition(
-            manip_list,
-            p_base_ee_grasps[index],
-            q_base_ee_grasps[index],
-            self.gripper_cmd,
-        )
-        self._append_gripper_hold(
-            manip_list,
-            p_base_ee_grasps[index],
-            q_base_ee_grasps[index],
-            self.gripper_cmd,
-            steps=self.skill_cfg.get("post_close_hold_steps", 12),
-        )
-        cmd = (
-            p_base_ee_grasps[index],
-            q_base_ee_grasps[index],
-            "update_specific",
-            {"ignore_substring": base_ignore_substring, "reference_prim_path": self.controller.reference_prim_path},
-        )
-        manip_list.append(cmd)
-        cmd = (
-            p_base_ee_grasps[index],
-            q_base_ee_grasps[index],
-            "attach_objects",
-            {"obj_prim_paths": list(self.pick_obj.attach_collision_prim_paths), "skip_plan": True},
-        )
-        manip_list.append(cmd)
-
-        # Post-grasp
-        if post_grasp_offset:
-            cmd = (
-                p_base_ee_postgrasps[index],
-                q_base_ee_grasps[index],
-                self.gripper_cmd,
-                {"gripper_action": self._gripper_action_for_state(self.gripper_cmd)},
-            )
-            manip_list.append(cmd)
-
-        # Whether return to pre-grasp
-        if self.skill_cfg.get("return_to_pregrasp", False):
-            cmd = (p_base_ee_pregrasps[index], q_base_ee_pregrasps[index], self.gripper_cmd, {})
-            manip_list.append(cmd)
-
-        self.manip_list = manip_list
-        self._plan_debug_path = self._write_debug_artifact(
-            "pick_plan_snapshot.json",
-            {
-                "robot": self.robot.name,
-                "object": self.pick_obj.name,
-                "lr_arm": self.lr_arm,
-                "success_found": success_found,
-                "selected_candidate": self._selected_candidate_debug,
-                "sample_debug": self._sample_debug,
-                "geometry_debug": self._collect_geometry_debug(),
-                "candidate_results": candidate_results,
-                "candidate_rank_debug": self._candidate_rank_debug,
-                "manip_command_sequence": [self._manip_cmd_to_debug(cmd) for cmd in self.manip_list],
-            },
-        )
-        print(f"[pick-debug] Wrote pick planning snapshot: {self._plan_debug_path}")
+        return target_translation, target_orientation, command.phase.value
 
     def _record_execution_step(self):
         if not self.manip_list:
@@ -1173,14 +613,9 @@ class Pick(BaseSkill):
 
         obj_t, obj_q = self._get_object_world_pose()
         ee_t, ee_q = self.controller.get_ee_pose()
-        if isinstance(current_cmd, MotionPhaseCommand):
-            target_t = current_cmd.target_position if current_cmd.target_position is not None else ee_t
-            target_q = current_cmd.target_orientation if current_cmd.target_orientation is not None else ee_q
-            command_name = current_cmd.phase.value
-        else:
-            target_t = current_cmd[0]
-            target_q = current_cmd[1]
-            command_name = str(current_cmd[2])
+        target_t, target_q, command_name = self._execution_command_state(
+            current_cmd, ee_t, ee_q
+        )
         diff_trans = float(np.linalg.norm(np.asarray(ee_t) - np.asarray(target_t)))
         diff_ori = float(2 * np.arccos(min(abs(float(np.dot(ee_q, target_q))), 1.0)))
         self._execution_trace_total_steps += 1
@@ -1515,49 +950,26 @@ class Pick(BaseSkill):
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        if isinstance(self.manip_list[0], MotionPhaseCommand):
-            command = self.manip_list[0]
-            done = self.controller.is_phase_command_complete(command)
-            if done and command.phase == MotionPhase.GRIPPER_CLOSE:
-                threshold = float(command.params.get("contact_threshold_n", 0.0))
-                _, indices = self.get_contact(contact_threshold=threshold)
-                self._grasp_contact_verified = len(indices) >= 1
-                command.params["contact_verified"] = self._grasp_contact_verified
-                if not self._grasp_contact_verified:
-                    self.failure_reason = "GRASP_CONTACT_MISSING"
-                    # Do not permit the next ATTACH phase. Restore the target
-                    # to the complete world before ending this failed Pick.
-                    self.controller.collision_scene_manager.restore_world(
-                        self.pick_obj.name
-                    )
-                    self.manip_list[:] = [command]
-            return done
-        return self._legacy_is_subtask_done(t_eps=t_eps, o_eps=o_eps)
-
-    def _legacy_is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
-        """LEGACY completion fallback retained only for tuple commands."""
-
-        # LEGACY_BEGIN: pose OR wait-count completion, retained for comparison
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        p_base_ee, q_base_ee, gripper_fn, params = self.manip_list[0]
-        diff_trans = np.linalg.norm(p_base_ee_cur - p_base_ee)
-        diff_ori = 2 * np.arccos(min(abs(np.dot(q_base_ee_cur, q_base_ee)), 1.0))
-        pose_flag = np.logical_and(
-            diff_trans < t_eps,
-            diff_ori < o_eps,
-        )
-        if bool(params.get("skip_plan", False)) or gripper_fn in {"update_pose_cost_metric", "update_specific"}:
-            self.plan_flag = True
-            return True
-        self.plan_flag = False
-        return pose_flag
-        # LEGACY_END
+        command = self.manip_list[0]
+        done = self.controller.is_phase_command_complete(command)
+        if done and command.phase == MotionPhase.GRIPPER_CLOSE:
+            threshold = float(command.params.get("contact_threshold_n", 0.0))
+            _, indices = self.get_contact(contact_threshold=threshold)
+            self._grasp_contact_verified = len(indices) >= 1
+            command.params["contact_verified"] = self._grasp_contact_verified
+            if not self._grasp_contact_verified:
+                self.failure_reason = "GRASP_CONTACT_MISSING"
+                # Do not permit the next ATTACH phase. Restore the target
+                # to the complete world before ending this failed Pick.
+                self.controller.restore_pick_world(self.pick_obj.name)
+                self.manip_list[:] = [command]
+        return done
 
     def is_done(self):
         if len(self.manip_list) == 0:
             return True
         current_cmd = self.manip_list[0]
-        params = current_cmd.params if isinstance(current_cmd, MotionPhaseCommand) else current_cmd[3]
+        params = current_cmd.params
         if self.is_subtask_done(
             t_eps=params.get("t_eps", self.skill_cfg.get("t_eps", 1e-3)),
             o_eps=params.get("o_eps", self.skill_cfg.get("o_eps", 5e-3)),
@@ -1595,10 +1007,7 @@ class Pick(BaseSkill):
             failure_reasons.append("process_velocity_invalid")
         if not lift_valid:
             failure_reasons.append("lift_below_threshold")
-        if (
-            getattr(self.controller, "collision_world_mode", "legacy_stage_scan") == "physics_schema"
-            and self.failure_reason
-        ):
+        if self.failure_reason:
             flag = False
             failure_reasons.append(self.failure_reason)
 

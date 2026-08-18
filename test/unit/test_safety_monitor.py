@@ -63,6 +63,10 @@ def test_object_collision_and_attached_slip_are_hard_failures():
         monitor, SafetyMeasurements(attached_slip_translation_m=0.021), 1
     ) == SafetyDecision.ABORT
     assert monitor.events[-1].trigger == "attached_object_translation_slip"
+    assert _evaluate(
+        monitor, SafetyMeasurements(attached_slip_rotation_deg=10.1), 2
+    ) == SafetyDecision.ABORT
+    assert monitor.events[-1].trigger == "attached_object_rotation_slip"
 
 
 def test_arm_velocity_spike_is_debounced_but_sustained_or_hard_aborts():

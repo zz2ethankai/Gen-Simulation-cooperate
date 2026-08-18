@@ -7,9 +7,9 @@ from core.utils.transformation_utils import (
     perturb_position,
 )
 from omegaconf import DictConfig
-from omni.isaac.core.controllers import BaseController
-from omni.isaac.core.robots.robot import Robot
-from omni.isaac.core.tasks import BaseTask
+from isaacsim.core.api.controllers import BaseController
+from isaacsim.core.api.robots.robot import Robot
+from isaacsim.core.api.tasks import BaseTask
 from scipy.spatial.transform import Rotation as R
 
 

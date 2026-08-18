@@ -11,8 +11,8 @@ import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
 
 try:
-    from omni.isaac.core.utils.prims import get_prim_at_path
-    from omni.isaac.core.utils.transformations import get_relative_transform
+    from isaacsim.core.utils.prims import get_prim_at_path
+    from isaacsim.core.utils.transformations import get_relative_transform
 except ImportError:  # Allows offline USD tests outside Isaac Sim.
     get_prim_at_path = None
     get_relative_transform = None

@@ -161,7 +161,7 @@ failure_code: null
 `joint_success_count` 只统计同一个抓取标注在 pre-grasp 和 grasp 两段都成功的轨迹。
 数量为零时直接失败，不允许回退到最后一个或第一个抓取标注继续执行。
 
-Probe 同时检查 `pick_obj.mesh_prim_path` 是否存在于 CuRobo `motion_gen.world_model`。
+Probe 同时检查 `pick_obj.attach_collision_prim_paths` 中的每个路径是否存在于 controller 的 native v2 `world_cfg`（通过 `world_cfg.get_obstacle(path)` 精确查询）。
 这是候选无关错误；一旦发现便终止后续点位，避免同一资产错误被重复执行。
 
 每个底盘候选使用独立 Isaac 进程，左右臂在同一进程中分别输出 JSON。Probe 只执行一个

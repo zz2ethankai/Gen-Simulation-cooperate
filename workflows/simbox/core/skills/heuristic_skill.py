@@ -1,14 +1,20 @@
+import logging
+
 import numpy as np
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand
+from core.utils.plan_utils import extract_result_paths, result_success_mask
 from core.skills.base_skill import BaseSkill, register_skill
 from omegaconf import DictConfig
-from omni.isaac.core.controllers import BaseController
-from omni.isaac.core.robots.robot import Robot
-from omni.isaac.core.tasks import BaseTask
-from omni.isaac.core.utils.transformations import (
+from isaacsim.core.api.controllers import BaseController
+from isaacsim.core.api.robots.robot import Robot
+from isaacsim.core.api.tasks import BaseTask
+from isaacsim.core.utils.transformations import (
     pose_from_tf_matrix,
     tf_matrix_from_pose,
 )
+
+
+LOGGER = logging.getLogger("de_logger")
 
 
 # pylint: disable=unused-argument
@@ -57,6 +63,68 @@ class Heuristic_Skill(BaseSkill):
         self.failure_reason = ""
         self.error_message = ""
 
+    def replan_after_safety(self, command):
+        """Rebuild a cached structured phase path after a safety hold.
+
+        ``ExecutionSupervisor`` clears the controller's active plan so the
+        next plan starts at the measured hold state.  Most structured phases
+        can then plan lazily in ``ee_forward``; Physics-schema CARRY_HOME is
+        deliberately different because it executes a preplanned joint path
+        and must preserve the attached-object carry target.
+        """
+
+        if command.phase != MotionPhase.CARRY_HOME:
+            return True
+        if self._goal_joints is None:
+            self.failure_reason = "CARRY_HOME_REPLAN_NO_GOAL"
+            self.error_message = "Carry-home recovery has no retained goal joints."
+            return False
+
+        object_name = getattr(self, "_physics_schema_active_object", None)
+        try:
+            self.controller.collision_scene_manager.assert_attached_owner(
+                object_name,
+                self.controller.name,
+                self.controller.lr_name,
+            )
+            result = self.controller.plan_joint_positions(self._goal_joints)
+            success = bool(result_success_mask(result).any().item())
+            if not success:
+                self.controller.num_plan_failed += 1
+                self.failure_reason = "CARRY_HOME_REPLAN_FAILED"
+                self.error_message = (
+                    "CuRobo could not rebuild the carry-home path from the "
+                    "measured safety-hold state."
+                )
+                return False
+            paths = extract_result_paths(result)
+            path = paths[0] if paths else None
+            if path is None:
+                self.failure_reason = "CARRY_HOME_REPLAN_EMPTY"
+                self.error_message = "CuRobo returned no interpolated carry-home path."
+                return False
+        except Exception as exc:
+            self.failure_reason = "CARRY_HOME_REPLAN_ERROR"
+            self.error_message = str(exc)
+            LOGGER.exception(
+                "[PhaseDebug] carry-home recovery failed robot=%s arm=%s object=%s",
+                self.controller.name,
+                self.controller.lr_name,
+                object_name,
+            )
+            return False
+
+        command.params["preplanned_joint_path"] = path
+        self.controller.num_plan_failed = 0
+        LOGGER.info(
+            "[PhaseDebug] replanned robot=%s arm=%s phase=%s object=%s cached=true",
+            self.controller.name,
+            self.controller.lr_name,
+            command.phase.value,
+            object_name,
+        )
+        return True
+
     def _compute_ee_goal(self, p_base_ee_cur, q_base_ee_cur, rel_ee):
         """
         rel_ee: (4,4) transformation matrix
@@ -73,19 +141,17 @@ class Heuristic_Skill(BaseSkill):
         Use controller.plan to get a collision-free joint path,
         and take the last waypoint as goal arm joints.
         """
-        if self.controller.use_batch:
-            raise NotImplementedError
-
         sim_js = self.robot.get_joints_state()
         js_names = self.robot.dof_names
         result = self.controller.plan(ee_trans_goal, ee_ori_goal, sim_js, js_names)
-        succ = result.success.item()
-        if succ:
-            cmd_plan = result.get_interpolated_plan()
-            goal_arm_joints = cmd_plan[-1].position.cpu().numpy()  # replace by ik
-            return goal_arm_joints
-        else:
+        if not bool(result_success_mask(result).any().item()):
             return None
+        paths = extract_result_paths(result)
+        cmd_plan = paths[0] if paths else None
+        if cmd_plan is None:
+            return None
+        goal_arm_joints = cmd_plan[-1].position.cpu().numpy()  # replace by ik
+        return goal_arm_joints
 
     def _build_joint_traj(self, curr_joints, goal_joints, p_base_ee_cur, q_base_ee_cur):
         """Build a list of dummy_forward commands interpolating in joint space."""
@@ -199,9 +265,7 @@ class Heuristic_Skill(BaseSkill):
                 self._joint_home - current_joints
             )
             candidate_result = self.controller.plan_joint_positions(candidate)
-            success = bool(
-                np.asarray(candidate_result.success.detach().cpu()).any()
-            )
+            success = bool(result_success_mask(candidate_result).any().item())
             if success:
                 self._goal_joints = candidate
                 result = candidate_result
@@ -216,6 +280,12 @@ class Heuristic_Skill(BaseSkill):
             )
             return
         self.controller.num_plan_failed = 0
+        paths = extract_result_paths(result)
+        carry_path = paths[0] if paths else None
+        if carry_path is None:
+            self.failure_reason = "CARRY_HOME_EMPTY_PATH"
+            self.error_message = "CuRobo reported a carry-home success without a trajectory."
+            return
         target_position, target_orientation = self.controller.forward_kinematic(
             self._goal_joints
         )
@@ -234,7 +304,7 @@ class Heuristic_Skill(BaseSkill):
                     ),
                 },
                 params={
-                    "preplanned_joint_path": result.get_interpolated_plan(),
+                    "preplanned_joint_path": carry_path,
                     "home_progress": selected_progress,
                 },
             )

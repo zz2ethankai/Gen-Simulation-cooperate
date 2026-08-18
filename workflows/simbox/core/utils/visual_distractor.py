@@ -56,7 +56,11 @@ def rotate_object(obj, category):
     dr = R.from_euler("xyz", [0.0, 0.0, yaw], degrees=True)
     r = R.from_euler("xyz", euler, degrees=True)
     orientation = (dr * r).as_quat(scalar_first=True)
-    obj.set_local_pose(orientation=orientation)
+    # Distractor geometry and placement polygons are world-space.  Preserve
+    # the current world position while changing only world orientation;
+    # local pose writes are incorrect for scaled referenced assets.
+    translation = obj.get_world_pose()[0]
+    obj.set_world_pose(position=translation, orientation=orientation)
     # from pdb import set_trace
     # set_trace()
 
@@ -86,6 +90,29 @@ def transform_pointcloud(
     pcd_transformed.transform(T)
 
     return pcd_transformed
+
+
+def transform_pointcloud_between_poses(
+    pcd,
+    source_translation,
+    source_orientation,
+    target_translation,
+    target_orientation,
+) -> o3d.geometry.PointCloud:
+    """Move an already world-space point cloud between two rigid poses."""
+
+    source_rotation = R.from_quat(source_orientation, scalar_first=True).as_matrix()
+    target_rotation = R.from_quat(target_orientation, scalar_first=True).as_matrix()
+    points = np.asarray(pcd.points)
+    local_points = (points - np.asarray(source_translation)) @ source_rotation
+    target_points = local_points @ target_rotation.T + np.asarray(target_translation)
+    transformed = o3d.geometry.PointCloud()
+    transformed.points = o3d.utility.Vector3dVector(target_points)
+    if pcd.has_colors():
+        transformed.colors = o3d.utility.Vector3dVector(np.asarray(pcd.colors).copy())
+    if pcd.has_normals():
+        transformed.normals = o3d.utility.Vector3dVector(np.asarray(pcd.normals).copy())
+    return transformed
 
 
 def get_platform_available_polygon(platform_pc, pc_list, visualize=False, buffer_size=0.0):
@@ -163,7 +190,7 @@ def randomly_place_object_on_object(
         return 0
     else:
         rel_translation, _ = valid_placements[-1]
-        translation, _ = object1.get_local_pose()
+        translation, _ = object1.get_world_pose()
 
         translation[:2] += rel_translation
 
@@ -173,7 +200,7 @@ def randomly_place_object_on_object(
         tgt_z_max = bbox_tgt.max[2]
 
         translation[2] = tgt_z_max + (translation[2] - obj_z_min) + 0.001  # add a small value to avoid penetration
-        object1.set_local_pose(translation=translation)
+        object1.set_world_pose(position=translation)
 
         return 1
 
@@ -212,6 +239,7 @@ def set_distractors(
     num_points = 10000
     objects_pcds = [get_pcd_from_mesh(mesh, num_points) for mesh in objects_meshes]
     distractors_pcds = [get_pcd_from_mesh(mesh, num_points) for mesh in distractors_meshes]
+    distractor_initial_poses = [distractor.get_world_pose() for distractor in distractors.values()]
     new_distractors_pcds = []
     target_pcd = get_pcd_from_mesh(target_mesh, num_points)
 
@@ -228,7 +256,15 @@ def set_distractors(
         for _ in range(max_attempts):
             rotate_object(distractor, cfgs[idx].category)
             tmp_distractor_pcd = deepcopy(distractors_pcds[idx])
-            tmp_distractor_pcd = transform_pointcloud(tmp_distractor_pcd, *distractor.get_local_pose())
+            source_translation, source_orientation = distractor_initial_poses[idx]
+            target_translation, target_orientation = distractor.get_world_pose()
+            tmp_distractor_pcd = transform_pointcloud_between_poses(
+                tmp_distractor_pcd,
+                source_translation,
+                source_orientation,
+                target_translation,
+                target_orientation,
+            )
 
             # First compute available region based on already placed distractors
             available_polygon = get_platform_available_polygon(
@@ -248,7 +284,7 @@ def set_distractors(
             if pos_range is not None:
                 x_min, y_min = pos_range[0]
                 x_max, y_max = pos_range[1]
-                center_x, center_y = target.get_local_pose()[0][:2]
+                center_x, center_y = target.get_world_pose()[0][:2]
                 x_min += center_x
                 x_max += center_x
                 y_min += center_y
@@ -268,7 +304,14 @@ def set_distractors(
 
             if res == 1:
                 tmp_distractor_pcd = deepcopy(distractors_pcds[idx])
-                tmp_distractor_pcd = transform_pointcloud(tmp_distractor_pcd, *distractor.get_local_pose())
+                target_translation, target_orientation = distractor.get_world_pose()
+                tmp_distractor_pcd = transform_pointcloud_between_poses(
+                    tmp_distractor_pcd,
+                    source_translation,
+                    source_orientation,
+                    target_translation,
+                    target_orientation,
+                )
                 new_distractors_pcds.append(tmp_distractor_pcd)
                 placed = True
                 break
@@ -277,9 +320,9 @@ def set_distractors(
         # move this distractor to a safe location (e.g. [0, 0, fallback_z])
         # and do not add it to new_distractors_pcds so it does not affect other placements.
         if not placed:
-            trans, ori = distractor.get_local_pose()
+            trans, ori = distractor.get_world_pose()
             trans = np.array(trans)
             trans[0] = 0.0
             trans[1] = 0.0
             trans[2] = fallback_z
-            distractor.set_local_pose(translation=trans, orientation=ori)
+            distractor.set_world_pose(position=trans, orientation=ori)

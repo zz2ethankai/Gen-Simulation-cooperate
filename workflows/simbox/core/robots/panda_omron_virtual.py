@@ -7,8 +7,8 @@ import math
 import numpy as np
 from core.robots.base_robot import register_robot
 from core.robots.panda_omron import PandaOmron
-from omni.isaac.core.utils.prims import get_prim_at_path
-from omni.isaac.core.utils.xforms import get_world_pose as get_prim_world_pose
+from isaacsim.core.utils.prims import get_prim_at_path
+from isaacsim.core.utils.xforms import get_world_pose as get_prim_world_pose
 from pxr import PhysxSchema, UsdPhysics
 
 

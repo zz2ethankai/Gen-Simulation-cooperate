@@ -1,7 +1,6 @@
 import numpy as np
 from core.skills.base_skill import BaseSkill, register_skill
 from core.utils.constants import CUROBO_BATCH_SIZE
-from core.utils.plan_utils import select_index_by_priority_single
 from core.utils.transformation_utils import (
     create_pose_matrices,
     get_orientation,
@@ -10,15 +9,15 @@ from core.utils.transformation_utils import (
     poses_from_tf_matrices,
 )
 from omegaconf import DictConfig
-from omni.isaac.core.controllers import BaseController
-from omni.isaac.core.robots.robot import Robot
-from omni.isaac.core.tasks import BaseTask
-from omni.isaac.core.utils.prims import get_prim_at_path
-from omni.isaac.core.utils.transformations import (
+from isaacsim.core.api.controllers import BaseController
+from isaacsim.core.api.robots.robot import Robot
+from isaacsim.core.api.tasks import BaseTask
+from isaacsim.core.utils.prims import get_prim_at_path
+from isaacsim.core.utils.transformations import (
     get_relative_transform,
     tf_matrix_from_pose,
 )
-from omni.isaac.core.utils.xforms import get_world_pose
+from isaacsim.core.utils.xforms import get_world_pose
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial.transform import Slerp
 
@@ -117,22 +116,19 @@ class Goto_Pose(BaseSkill):
                 reference_prim_path=self.controller.reference_prim_path,
             )
             p_base_ee_tgts, q_base_ee_tgts = poses_from_tf_matrices(T_base_ee_tgts)
-            if self.controller.use_batch:
-                result = self.controller.test_batch_forward(p_base_ee_tgts, q_base_ee_tgts)
-                index = select_index_by_priority_single(result)
-            else:
-                for index in range(T_base_ee_tgts.shape[0]):
-                    p_base_ee_tgt, q_base_ee_tgt = p_base_ee_tgts[index], q_base_ee_tgts[index]
-                    test_mode = self.skill_cfg.get("test_mode", "forward")
-                    if test_mode == "forward":
-                        result_pre = self.controller.test_single_forward(p_base_ee_tgt, q_base_ee_tgt)
-                    elif test_mode == "ik":
-                        result_pre = self.controller.test_single_ik(p_base_ee_tgt, q_base_ee_tgt)
-                    else:
-                        raise NotImplementedError
-                    if result_pre == 1:
-                        print("goto pose plan success")
-                        break
+            # Transit/goto selection is one native-v2 planning problem at a time.
+            for index in range(T_base_ee_tgts.shape[0]):
+                p_base_ee_tgt, q_base_ee_tgt = p_base_ee_tgts[index], q_base_ee_tgts[index]
+                test_mode = self.skill_cfg.get("test_mode", "forward")
+                if test_mode == "forward":
+                    result_pre = self.controller.test_single_forward(p_base_ee_tgt, q_base_ee_tgt)
+                elif test_mode == "ik":
+                    result_pre = self.controller.test_single_ik(p_base_ee_tgt, q_base_ee_tgt)
+                else:
+                    raise NotImplementedError
+                if result_pre == 1:
+                    print("goto pose plan success")
+                    break
             self.p_base_ee_tgt, self.q_base_ee_tgt = p_base_ee_tgts[index], q_base_ee_tgts[index]
 
         ignore_substring = self.controller.ignore_substring + self.skill_cfg.get("ignore_substring", [])

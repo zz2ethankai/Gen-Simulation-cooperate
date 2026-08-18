@@ -1,8 +1,8 @@
 import os
 
 from core.objects.base_object import register_object
-from omni.isaac.core.prims import GeometryPrim
-from omni.isaac.core.utils.prims import create_prim
+from isaacsim.core.prims import SingleGeometryPrim as GeometryPrim
+from isaacsim.core.utils.prims import create_prim
 from pxr import Gf, UsdPhysics
 
 

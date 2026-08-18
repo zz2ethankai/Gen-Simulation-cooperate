@@ -20,6 +20,7 @@ if str(SIMBOX_ROOT) not in sys.path:
 from core.utils.attach_collision_utils import resolve_attach_collision_prims  # noqa: E402
 
 
+LEGACY_PICK_PATH = SIMBOX_ROOT / "core" / "skills" / "legacy_pick.py"
 PICK_PATH = SIMBOX_ROOT / "core" / "skills" / "pick.py"
 CONTROLLER_PATH = SIMBOX_ROOT / "core" / "controllers" / "template_controller.py"
 TASK_PATH = (
@@ -55,8 +56,18 @@ def _load_method(path: Path, class_name: str, method_name: str):
 
 
 class PickAttachPathTests(unittest.TestCase):
+    def test_pick_defaults_to_physics_schema_path(self):
+        method = _class_method(PICK_PATH, "Pick", "simple_generate_manip_cmds")
+        source = ast.unparse(method)
+
+        self.assertIn("_physics_schema_generate_manip_cmds", source)
+        self.assertNotIn("_legacy_simple_generate_manip_cmds", source)
+        self.assertNotIn("collision_world_mode", source)
+
     def test_legacy_pick_uses_plural_attach_paths(self):
-        method = _class_method(PICK_PATH, "Pick", "_legacy_simple_generate_manip_cmds")
+        method = _class_method(
+            LEGACY_PICK_PATH, "LegacyPick", "_legacy_simple_generate_manip_cmds"
+        )
         constants = {node.value for node in ast.walk(method) if isinstance(node, ast.Constant)}
         attributes = {node.attr for node in ast.walk(method) if isinstance(node, ast.Attribute)}
 

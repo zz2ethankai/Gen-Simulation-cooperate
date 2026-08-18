@@ -7,11 +7,12 @@ import re
 from pathlib import Path
 
 import numpy as np
+from curobo.types import JointState
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
 
 try:
-    from omni.isaac.core.utils.prims import get_prim_at_path
-    from omni.isaac.core.utils.transformations import get_relative_transform
+    from isaacsim.core.utils.prims import get_prim_at_path
+    from isaacsim.core.utils.transformations import get_relative_transform
 except ImportError:  # Allows USD/pure-math unit tests outside the Isaac Sim runtime.
     get_prim_at_path = None
     get_relative_transform = None
@@ -219,12 +220,16 @@ class CuroboTrajectoryVisualizer:
         if not self.accumulate:
             self.clear()
 
-        kinematics = controller.motion_gen.kinematics
+        kinematics = controller.planner.kinematics
         ee_indices = np.empty((0,), dtype=np.int64)
         ee_points_base = np.empty((0, 3), dtype=np.float64)
         if self.show_ee_path:
-            all_ee_state = kinematics.get_state(positions)
-            all_ee_points_base = all_ee_state.ee_position.detach().cpu().numpy()
+            joint_state = JointState.from_position(
+                positions, joint_names=kinematics.joint_names
+            )
+            all_ee_state = kinematics.compute_kinematics(joint_state)
+            ee_pose = all_ee_state.tool_poses.get_link_pose(kinematics.tool_frames[0])
+            all_ee_points_base = ee_pose.position.detach().cpu().numpy()
             ee_indices = distance_sample_indices(
                 all_ee_points_base,
                 self.ee_min_center_spacing_m,

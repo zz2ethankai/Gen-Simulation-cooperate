@@ -18,7 +18,7 @@ Agent 运行时默认值在 [`agent/config.yaml:38`](../agent/config.yaml#L38)�
 | 编号 | 症状 | 根因 | 新入口 |
 |---|---|---|---|
 | WORLD-001 | visual mesh、相机或调试几何可能进入 CuRobo world | 旧扫描遍历全部 `UsdGeom`，没有以 Physics collider 为边界 | [`CollisionSceneManager._discover():269`](../workflows/simbox/core/planning/collision_scene_manager.py#L269) |
-| WORLD-002 | `sink/table/counter` 等关键词可能误删真实障碍，未来 Agent 生成新名称后规则失效 | `ignore_substring` 把资产名字当作物理语义 | [`get_obstacles_from_collision_prims():546`](../workflows/simbox/curobo/src/curobo/util/usd_helper.py#L546) |
+| WORLD-002 | `sink/table/counter` 等关键词可能误删真实障碍，未来 Agent 生成新名称后规则失效 | `ignore_substring` 把资产名字当作物理语义 | [`CollisionSceneManager._discover()`](../workflows/simbox/core/planning/collision_scene_manager.py#L269) |
 | STATE-001 | Pick 过程中目标可能从 pre-grasp world 提前消失 | 同一个忽略目标的 world 同时验证 transit 和 terminal | [`Pick._physics_schema_generate_manip_cmds():105`](../workflows/simbox/core/skills/pick.py#L105) |
 | STATE-002 | attach/detach 分散，可能出现 world 和 attached 双重存在或两边都不存在 | 没有统一物体状态和不变量 | [`CollisionObjectState:30`](../workflows/simbox/core/planning/collision_scene_manager.py#L30)、[`assert_invariants():887`](../workflows/simbox/core/planning/collision_scene_manager.py#L887) |
 | STATE-003 | 盐瓶路径执行到 attach 后返回 `max_spheres: 4 n_objects: 40`，或把容量粗暴增至 128 后单进程显存接近 24 GiB | 把“world 中 40 个精确 collider”误当成“40 个独立 attach 输入”，混淆了碰撞注册与挂接代理 | [`attach_target():708`](../workflows/simbox/core/planning/collision_scene_manager.py#L708)、[`attach_objects():833`](../workflows/simbox/core/controllers/template_controller.py#L833) |
@@ -47,11 +47,18 @@ Bench 资产中存在一种真实结构：父级 `Xform` 也被错误施加了 `
 
 ### 3.2 精确转换和审计
 
-[`UsdHelper.get_obstacles_from_collision_prims()`](../workflows/simbox/curobo/src/curobo/util/usd_helper.py#L546) 接受完整 Prim path 列表和 arm-base 参考系，拒绝重复路径、缺失 Prim、disabled collider、无 `CollisionAPI` 的 Prim 和不支持的类型。它不接受 `ignore_substring`。
+当前精确 world 构建入口是 [`CollisionSceneManager.build_world_config()`](../workflows/simbox/core/planning/collision_scene_manager.py#L547)。它把完整 Physics collider Prim path 交给 vendored native v2 的 [`UsdSceneParser`](../InternDataAssets/curobov2/curobo/_src/util/usd_scene_parser.py)，按 `only_paths` 和 arm-base reference frame 解析几何，再执行精确 path 审计。仓库运行路径不再依赖旧 `UsdHelper`。
 
-旧 [`get_obstacles_from_stage()`](../workflows/simbox/curobo/src/curobo/util/usd_helper.py#L478) 完整保留并标记为 `LEGACY_STAGE_SCAN`。新模式不会调用它；Controller 中旧入口保留在 [`_legacy_update():421`](../workflows/simbox/core/controllers/template_controller.py#L421) 和 [`_legacy_update_specific():906`](../workflows/simbox/core/controllers/template_controller.py#L906)。
+`legacy_stage_scan` 只表示显式选择的旧碰撞世界扫描模式：[`TemplateController._legacy_update()`](../workflows/simbox/core/controllers/template_controller.py#L935) 会让 native v2 parser 按旧 substring 过滤构建 world。它不是 CuRobo v1 planner 兼容层；核心旧兼容层已经删除，标准运行路径使用 `physics_schema`。
 
-初始化和 episode 导出都会比较 Physics collider path 与每个 Controller 的 CuRobo `world_model.objects`。缺失或多余任一方都属于硬错误。
+初始化和 episode 导出都会比较 Physics collider path 与每个 Controller 的 native v2 `SceneCfg.objects`。缺失或多余任一方都属于硬错误；动态位姿直接更新 native collision checker，不重建整个 world。
+
+### 3.3 Native v2 planner 与 attachment contract
+
+- 普通 transit、place、home 和单目标抓取使用 `TemplateController.planner` 持有的 native `MotionPlanner`，调用 `plan_pose()` 或 `plan_cspace()`。
+- 抓取候选批量评估只使用 `TemplateController.batch_planner` 持有的 native `BatchMotionPlanner`；普通单目标不会为了凑满容量而复制目标。
+- 所有位姿目标都是 native `GoalToolPose` 的 5D 张量 `[B, H, L, G, 3/4]`。
+- Pick attach 由 [`TemplateController.attach_objects()`](../workflows/simbox/core/controllers/template_controller.py#L1911) 调用 native `planner.attachment_manager.attach()`，使用显式碰撞 Prim 和 native mesh；不再调用旧 `attach_objects_to_robot`。
 
 ## 4. STATE-001 / STATE-002：统一物体身份状态机
 

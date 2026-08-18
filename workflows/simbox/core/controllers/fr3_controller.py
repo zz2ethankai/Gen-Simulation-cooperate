@@ -32,6 +32,6 @@ class FR3Controller(TemplateController):
             raise NotImplementedError
         self._gripper_joint_position = np.array([1.0])
 
-    def _get_motion_gen_collision_cache(self):
-        """FR3 uses larger collision cache (1000) for MotionGenConfig than template default (700)."""
-        return {"obb": 1000, "mesh": 1000}
+    def _get_native_collision_cache(self):
+        """FR3 uses a larger native collision cache than the template default."""
+        return {"cuboid": 1000, "mesh": 1000}

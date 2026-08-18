@@ -7,6 +7,7 @@ from typing import Any
 
 PHYSICS_SCHEMA_SKILLS = {"pick", "place"}
 VALIDATION_ONLY_SKILLS = {"pick_plan_probe"}
+PHYSICS_SCHEMA_ONLY_SKILLS = {"pick", "pick_plan_probe"}
 ATTACHED_PHYSICS_SCHEMA_SKILL_MODES = {
     ("heuristic__skill", "home"),
 }
@@ -44,6 +45,12 @@ def resolve_skill_collision_world_mode(
     if name in NON_MANIPULATION_SKILLS:
         return PASSTHROUGH_MODE
     if requested == LEGACY_STAGE_SCAN_MODE:
+        if name in PHYSICS_SCHEMA_ONLY_SKILLS:
+            replacement = "legacy_pick" if name == "pick" else "physics_schema"
+            raise ValueError(
+                f"Skill {name!r} is Physics-schema-only and cannot run in "
+                f"{LEGACY_STAGE_SCAN_MODE}; use {replacement!r}"
+            )
         return LEGACY_STAGE_SCAN_MODE
     if name in PHYSICS_SCHEMA_SKILLS | VALIDATION_ONLY_SKILLS:
         return PHYSICS_SCHEMA_MODE
@@ -130,6 +137,15 @@ def validate_planning_contract(task_cfg: dict[str, Any], collision_world_mode: s
     """Reject configs that would silently bypass the stateful collision path."""
 
     if collision_world_mode == LEGACY_STAGE_SCAN_MODE:
+        incompatible = sorted(
+            _arm_skill_names(task_cfg).intersection(PHYSICS_SCHEMA_ONLY_SKILLS)
+        )
+        if incompatible:
+            raise ValueError(
+                "Physics-schema-only Skills cannot run in "
+                f"{LEGACY_STAGE_SCAN_MODE}: {', '.join(incompatible)}; "
+                "use name='legacy_pick' for the legacy Pick implementation"
+            )
         return
     if collision_world_mode not in {PHYSICS_SCHEMA_MODE, HYBRID_MODE}:
         raise ValueError(

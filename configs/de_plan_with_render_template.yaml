@@ -4,13 +4,13 @@ load_stage:
     type: env_loader
     args:
       workflow_type: SimBoxDualWorkFlow
-      cfg_path: workflows/simbox/core/configs/tasks/basic/lift2/pour_redwine/left/pour_redwine_left.yaml
+      cfg_path: workflows/simbox/core/configs/tasks/pick_and_place/franka/single_pick/omniobject3d-ball.yaml
       simulator:
         physics_dt: 1/30                   # Physics update rate
         rendering_dt: 1/30                 # Render update rate
         stage_units_in_meters: 1.0         # Stage unit scale
         headless: True                    # Headless mode (no GUI); set false for visual debugging
-        experience: /isaac-sim/apps/omni.isaac.sim.python.gym.headless.kit
+        experience: /isaac-sim/apps/isaacsim.exp.base.python.kit
         anti_aliasing: 4                   # Anti-aliasing level
         multi_gpu: False
         max_gpu_count: 1
@@ -55,7 +55,7 @@ plan_with_render_stage:
   plan_with_render:                        # Plan and render in a single stage
     type: plan_with_render
     args:
-      emit_obs_on_failure: true           # Whether to emit observations on planning failure (for debugging); set true to collect failure cases
+      emit_obs_on_failure: true          # Video diagnostic runs retain frames when planning fails
       failure_obs_length: 1
 store_stage:
   writer:                                  # Data writer

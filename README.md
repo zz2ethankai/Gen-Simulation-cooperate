@@ -18,7 +18,7 @@
 ## 💻 About
 
 <div align="center">
-  <img src="./docs/images/intern_data_engine.jpeg" alt="InternDataEngine Overview" width="80%">
+  <img src="./docs/archive/images/intern_data_engine.jpeg" alt="InternDataEngine Overview" width="80%">
 </div>
 
 InternDataEngine is a synthetic data generation engine for embodied AI that powers large-scale model training and iteration. Built on NVIDIA Isaac Sim, it unifies high-fidelity physical interaction from InternData-A1, semantic task and scene generation from InternData-M1, and high-throughput scheduling from the Nimbus framework to deliver realistic, task-aligned, and massively scalable robotic manipulation data.
@@ -125,7 +125,9 @@ Stop the stack:
 scripts/docker/stop_all_docker.sh
 ```
 
-中文项目内文档：[数据生成 README / Quick Start](./docs/data_generation/README.md)，包含单任务启动、配置分类、Docker 并行生成、资产替换和 SimBox skill 替换。
+中文项目内文档：
+- [文档索引](./docs/README.md)（API 文档 / 开发文档 / 归档）
+- [数据生成 README / Quick Start](./docs/archive/data_generation/README.md)，包含单任务启动、配置分类、Docker 并行生成、资产替换和 SimBox skill 替换。
 
 For more details, please check [Documentation](https://internrobotics.github.io/InternDataEngine-Docs/).
 
@@ -160,6 +162,17 @@ scripts/docker/up_simbox_isaac.sh --gpu 0 --isaac-cpus 16
 `cpus` is a Docker CPU quota, not a physical-core pinning policy.
 
 Use `--launcher-config configs/de_pipe_template.yaml` for the pipeline template. Parallel workers should pass distinct `--stack-id` and `--gpu` values so their container names and Isaac cache directories remain isolated.
+
+For a persistent Isaac Bash development environment without automatically starting `launcher.py`, use the isolated developer entrypoint:
+
+```bash
+scripts/docker/isaac_dev.sh shell --gpu 0 --build
+scripts/docker/isaac_dev.sh start --gpu 0
+scripts/docker/isaac_dev.sh exec -- python -c 'import torch; print(torch.__version__)'
+scripts/docker/isaac_dev.sh stop
+```
+
+It reuses the existing Isaac image, GPU, repository, and CuRobo mounts, while keeping a separate `isaac-dev-*` container name and `output/isaac-dev/` cache.
 
 Watch logs:
 

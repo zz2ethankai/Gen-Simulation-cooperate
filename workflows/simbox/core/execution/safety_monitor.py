@@ -135,12 +135,11 @@ class SafetyMonitor:
                 "attached_object_slip_translation_m",
                 "attached_object_translation_slip",
             ),
-            # Rotation drift is still recorded in SafetyMeasurements, but it is
-            # intentionally not an abort condition for now.  The current
-            # collision-scene pose path can include USD scale in its 3x3 block;
-            # feeding that affine block to the rotation-angle formula produces
-            # a false ~120 deg drift for the 0.001-scaled wine-glass asset even
-            # when the object has not rotated.
+            (
+                m.attached_slip_rotation_deg,
+                "attached_object_slip_rotation_deg",
+                "attached_object_rotation_slip",
+            ),
         )
         for value, threshold, name in checks:
             if float(value) > float(self.thresholds[threshold]):

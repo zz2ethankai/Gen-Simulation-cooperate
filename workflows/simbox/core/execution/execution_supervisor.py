@@ -63,8 +63,37 @@ class ExecutionSupervisor:
             # Cached terminal paths start at the original pre-grasp endpoint;
             # recovery must plan from the measured hold state.
             command.params.pop("preplanned_joint_path", None)
-            self.replan_counts[phase_key] = replan_index + 1
-            self.holds[self.controller_key(controller)] = max(1, self.hold_steps)
+            # A skill may own a phase-specific cached path that cannot be
+            # lazily rebuilt by TemplateController.forward().  CARRY_HOME is
+            # one such phase: it must keep the attached object and the same
+            # goal posture while replanning from the measured hold state.
+            # Give the skill a chance to restore that path before the hold
+            # window starts.  A failed recovery becomes a clean safety abort;
+            # it must never turn into a traceback on the next forward call.
+            replan_callback = getattr(skill, "replan_after_safety", None)
+            recovered = True
+            if callable(replan_callback):
+                try:
+                    recovered = bool(replan_callback(command))
+                except Exception as exc:  # pragma: no cover - simulator-only guard
+                    recovered = False
+                    LOGGER.exception(
+                        "[SafetyDebug] phase recovery failed robot=%s arm=%s phase=%s: %s",
+                        robot,
+                        controller.lr_name,
+                        command.phase.value,
+                        exc,
+                    )
+            if not recovered:
+                decision = SafetyDecision.ABORT
+                self.holds.pop(self.controller_key(controller), None)
+                self.failure_reason = (
+                    getattr(skill, "failure_reason", "")
+                    or f"{command.phase.value}_replan_failed"
+                )
+            else:
+                self.replan_counts[phase_key] = replan_index + 1
+                self.holds[self.controller_key(controller)] = max(1, self.hold_steps)
         if decision != SafetyDecision.CONTINUE:
             LOGGER.warning(
                 "[SafetyDebug] decision=%s robot=%s arm=%s phase=%s trigger=%s replan=%d/%d measurements=%s",

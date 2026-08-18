@@ -9,12 +9,13 @@ import time
 import traceback
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 from core.robots.base_robot import register_robot
-from omni.isaac.core.robots.robot import Robot
-from omni.isaac.core.utils.prims import create_prim, get_prim_at_path
-from omni.isaac.core.utils.transformations import (
+from isaacsim.core.api.robots.robot import Robot
+from isaacsim.core.utils.prims import create_prim, get_prim_at_path
+from isaacsim.core.utils.transformations import (
     get_relative_transform,
     pose_from_tf_matrix,
     tf_matrix_from_pose,
@@ -91,6 +92,18 @@ class TemplateRobot(Robot):
             return str(rooted.resolve())
         if configured.exists():
             return str(configured.resolve())
+
+        # Scene-4 task YAMLs were generated with paths such as
+        # ``../../../../example_assets/...``.  Those paths were meaningful in
+        # the asset-generation checkout, but the checked-in robot USDs live
+        # under ``workflows/simbox/example_assets`` in the SimBox container.
+        repo_root = Path(__file__).resolve().parents[4]
+        repo_relative = str(configured)
+        while repo_relative.startswith("../"):
+            repo_relative = repo_relative[3:]
+        packaged_asset = repo_root / "workflows" / "simbox" / repo_relative
+        if packaged_asset.exists():
+            return str(packaged_asset.resolve())
         return str(rooted.resolve())
 
     @staticmethod
@@ -161,8 +174,10 @@ class TemplateRobot(Robot):
             self._gripper_ed_func = None
 
     def initialize(self, *args, **kwargs):
-        super().initialize()
-        self._articulation_view.initialize()
+        # Robot.initialize() owns articulation-view initialization in Isaac 6.
+        # Forward the active physics view instead of creating a second implicit
+        # view, and do not initialize _articulation_view a second time.
+        super().initialize(*args, **kwargs)
         self._resolve_runtime_joint_indices()
         self._setup_joint_velocities()
         self._setup_joint_homes()
@@ -368,7 +383,7 @@ class TemplateRobot(Robot):
             ),
             dtype=np.int64,
         )
-        joint_state = self.get_joints_state()
+        joint_state = self._get_joints_state_compat()
         positions = np.asarray(joint_state.positions[indices], dtype=float).copy()
 
         articulation_controller = self.get_articulation_controller()
@@ -446,7 +461,7 @@ class TemplateRobot(Robot):
         self.enable_manipulation_base_hold()
 
     def get_observations(self) -> dict:
-        joint_state = self.get_joints_state()
+        joint_state = self._get_joints_state_compat()
         qpos, qvel = joint_state.positions, joint_state.velocities
 
         T_base_ee_fl = get_relative_transform(get_prim_at_path(self.fl_ee_path), get_prim_at_path(self.fl_base_path))
@@ -464,6 +479,26 @@ class TemplateRobot(Robot):
 
         obs = self._build_observations(qpos, qvel, T_base_ee_fl, T_world_base)
         return obs
+
+    def _get_joints_state_compat(self):
+        """Read joint state across Isaac Sim 4.x and 6.x articulation wrappers."""
+        get_joints_state = getattr(self, "get_joints_state", None)
+        joint_state = get_joints_state() if callable(get_joints_state) else None
+        if joint_state is not None:
+            return joint_state
+
+        # Isaac Sim 6 can briefly return None from the aggregate
+        # ``get_joints_state`` view while the articulation is synchronizing.
+        # Its scalar position/velocity accessors remain the supported public
+        # fallback and expose the same data without relying on the old
+        # JointsState wrapper.
+        positions = self.get_joint_positions()
+        velocities = self.get_joint_velocities()
+        if positions is None or velocities is None:
+            raise RuntimeError(
+                f"robot {self.name} has no readable articulation joint state"
+            )
+        return SimpleNamespace(positions=positions, velocities=velocities)
 
     def _write_observation_failure_debug(self, exc: Exception, *, stage: str, qpos=None, qvel=None):
         payload = {

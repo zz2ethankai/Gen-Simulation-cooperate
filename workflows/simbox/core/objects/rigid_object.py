@@ -1,20 +1,22 @@
-import glob
 import os
 import random
+import logging
 
 from core.objects.base_object import register_object
+from core.utils.asset_path_utils import resolve_texture_paths
 from core.utils.attach_collision_utils import join_prim_path, resolve_attach_collision_prims
-from omni.isaac.core.prims import RigidPrim
-from omni.isaac.core.utils.prims import create_prim, get_prim_at_path
+from isaacsim.core.prims import SingleRigidPrim
+from isaacsim.core.utils.prims import create_prim, get_prim_at_path
 
-try:
-    from omni.isaac.core.materials.omni_pbr import OmniPBR  # Isaac Sim 4.1.0 / 4.2.0
-except ImportError:
-    from isaacsim.core.api.materials import OmniPBR  # Isaac Sim 4.5.0
+from isaacsim.core.api.materials.omni_pbr import OmniPBR
+from pxr import Usd, UsdGeom, UsdPhysics
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @register_object
-class RigidObject(RigidPrim):
+class RigidObject(SingleRigidPrim):
     def __init__(self, asset_root, root_prim_path, cfg, *args, **kwargs):
         """
         Args:
@@ -50,6 +52,7 @@ class RigidObject(RigidPrim):
         self.init_parent = cfg.get("init_parent", None)
         self.gap = cfg.get("gap", None)
         self.mass = cfg.get("mass", None)
+        self._physics_collision_approximation_paths = []
         kwargs["mass"] = cfg.get("mass", None)
 
         # ===== Initialize =====
@@ -58,6 +61,7 @@ class RigidObject(RigidPrim):
         self.rigid_prim_path = join_prim_path(self.base_prim_path, cfg["prim_path_child"])
         if not get_prim_at_path(self.rigid_prim_path).IsValid():
             raise ValueError(f"rigid prim does not exist for {cfg_name}: {self.rigid_prim_path}")
+        self._apply_small_scale_collision_fallback(cfg)
         resolution = resolve_attach_collision_prims(
             self.base_prim_path,
             self.rigid_prim_path,
@@ -76,6 +80,69 @@ class RigidObject(RigidPrim):
         )
         super().__init__(prim_path=self.rigid_prim_path, name=cfg["name"], *args, **kwargs)
 
+    def _apply_small_scale_collision_fallback(self, cfg):
+        """Use a native bounded collision approximation for tiny legacy assets.
+
+        Isaac Sim 4 accepted the authored ``convexDecomposition`` collision
+        on several assets whose USD geometry is stored in millimetres and is
+        subsequently scaled by ``1e-3``.  Isaac Sim 6 can keep the rigid body
+        alive while the cooked mesh produces no contacts at that scale.  The
+        official USD collision API allows overriding the approximation in the
+        active layer, so keep the source USD immutable and request a native
+        bounding box only for those tiny, legacy-scaled rigid objects.
+
+        An explicit per-object approximation remains authoritative.  The
+        fallback is intentionally limited to uniformly tiny scales so normal
+        scene assets and non-uniformly scaled containers keep their authored
+        collision geometry.
+        """
+
+        if cfg.get("collision_approximation", None) is not None:
+            return
+
+        scale = cfg.get("scale", None)
+        if scale is None:
+            return
+        try:
+            scale_values = [abs(float(value)) for value in scale]
+        except (TypeError, ValueError):
+            return
+        if len(scale_values) != 3 or not scale_values or max(scale_values) > 0.01:
+            return
+        if min(scale_values) <= 0.0:
+            return
+
+        rigid_prim = get_prim_at_path(self.rigid_prim_path)
+        stage = rigid_prim.GetStage()
+        changed_paths = []
+        for mesh_prim in Usd.PrimRange(rigid_prim):
+            if mesh_prim == rigid_prim or not mesh_prim.IsA(UsdGeom.Mesh):
+                continue
+            if not mesh_prim.HasAPI(UsdPhysics.CollisionAPI):
+                continue
+
+            approximation_attr = mesh_prim.GetAttribute("physics:approximation")
+            if approximation_attr and approximation_attr.IsValid():
+                current = approximation_attr.Get()
+                if current == "boundingCube":
+                    continue
+
+            mesh_collision_api = UsdPhysics.MeshCollisionAPI.Get(stage, mesh_prim.GetPath())
+            if not mesh_collision_api:
+                mesh_collision_api = UsdPhysics.MeshCollisionAPI.Apply(mesh_prim)
+            mesh_collision_api.CreateApproximationAttr().Set("boundingCube")
+            changed_paths.append(str(mesh_prim.GetPath()))
+
+        self._physics_collision_approximation_paths = changed_paths
+        if changed_paths:
+            LOGGER.info(
+                "[Isaac6Physics] %s tiny-scale collision fallback: "
+                "approximation=boundingCube scale=%s meshes=%s",
+                self.rigid_prim_path,
+                scale_values,
+                changed_paths,
+            )
+
     def get_observations(self):
         translation, orientation = self.get_local_pose()
         scale = self.get_local_scale()
@@ -88,8 +155,7 @@ class RigidObject(RigidPrim):
 
     def apply_texture(self, asset_root, cfg):
         texture_name = cfg["texture_lib"]
-        texture_path_list = glob.glob(os.path.join(asset_root, texture_name, "*"))
-        texture_path_list.sort()
+        texture_path_list = resolve_texture_paths(asset_root, texture_name)
         if cfg["apply_randomization"]:
             texture_id = random.randint(0, len(texture_path_list) - 1)
         else:

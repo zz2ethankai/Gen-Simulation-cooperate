@@ -1,5 +1,6 @@
 import glob
 import inspect
+import logging
 import os
 import random
 from copy import deepcopy
@@ -20,19 +21,24 @@ from core.utils.scene_utils import deactivate_selected_prims
 from core.utils.transformation_utils import get_orientation
 from core.utils.visual_distractor import set_distractors
 from omegaconf import DictConfig
-from omni.isaac.core.materials import PreviewSurface
-from omni.isaac.core.prims import RigidContactView, XFormPrim
-from omni.isaac.core.scenes.scene import Scene
-from omni.isaac.core.tasks import BaseTask
-from omni.isaac.core.utils.prims import (
+from isaacsim.core.api.materials import PreviewSurface
+from isaacsim.core.api.sensors import RigidContactView
+from isaacsim.core.api.scenes import Scene
+from isaacsim.core.api.tasks import BaseTask
+from isaacsim.core.prims import SingleRigidPrim, SingleXFormPrim
+from isaacsim.core.utils.prims import (
     delete_prim,
     get_prim_at_path,
     is_prim_path_valid,
 )
-from omni.isaac.core.utils.stage import get_current_stage
+from isaacsim.core.utils.stage import get_current_stage
+from isaacsim.core.experimental.objects import DomeLight
 from omni.physx.scripts import particleUtils
-from pxr import Gf, PhysxSchema, Sdf, Usd, UsdGeom, UsdLux, UsdShade, Vt
+from pxr import Gf, PhysxSchema, Sdf, Usd, UsdShade, Vt
 from scipy.spatial.transform import Rotation as R
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @register_task
@@ -43,6 +49,7 @@ class BananaBaseTask(BaseTask):
     ):
         super().__init__(name=cfg["name"], offset=cfg["offset"])
         self.cfg = cfg
+        self._merge_source_region_sampling_metadata(self.cfg)
         self._render = cfg.get("render", True)
         self.asset_root = os.path.abspath(self.cfg["asset_root"])
         self.root_prim_path = os.path.join("/World", f"task_{cfg['task_id']}")
@@ -55,6 +62,14 @@ class BananaBaseTask(BaseTask):
         self.visuals = {}
         self.pickcontact_views = {}
         self.artcontact_views = {}
+        self._contact_views_physics_sim_view = None
+        # Isaac Sim 6 invalidates the shared physics tensor view when a prim
+        # that is already represented by a SingleRigidPrim is deleted.  Keep
+        # the loaded USD subtrees stable across episode resets and restore
+        # their state after the current physics view has been initialized.
+        self._rigid_object_reset_states = {}
+        self._reset_reuse_warning_emitted = False
+        self._debug_reset_lifecycle = os.environ.get("INTERNDATA_DEBUG_RESET_LIFECYCLE") == "1"
         self.stage = get_current_stage()
         self.random_region_list = self.cfg.get("random_region_list", [])
         self.current_id = 0
@@ -65,6 +80,49 @@ class BananaBaseTask(BaseTask):
         self.particlesPbdMaterialPath = None
         self.particlesVisualMaterialPath = None
         self._defaultFluidPath = Sdf.Path("/World/task_0/fluid")
+
+    @staticmethod
+    def _merge_source_region_sampling_metadata(cfg):
+        """Preserve source-region sampling contracts in runtime regions.
+
+        Scene conversion keeps the executable placement entries in
+        ``regions`` and the richer authored metadata in ``source_regions``.
+        The latter carries flags such as ``sampling.keep_upright`` that affect
+        dynamic rigid-body stability, but older generated runtime regions do
+        not repeat them.  Merge only missing sampling keys by object name so
+        executable coordinates/random ranges remain authoritative.
+        """
+
+        active_regions = cfg.get("regions", []) or []
+        source_regions = cfg.get("source_regions", []) or []
+        if not active_regions or not source_regions:
+            return
+
+        source_by_object = {}
+        for source_region in source_regions:
+            if not hasattr(source_region, "get"):
+                continue
+            object_name = source_region.get("object") or source_region.get("A")
+            if object_name:
+                source_by_object[str(object_name)] = source_region
+
+        for active_region in active_regions:
+            if not hasattr(active_region, "get"):
+                continue
+            object_name = active_region.get("object") or active_region.get("A")
+            source_region = source_by_object.get(str(object_name))
+            if source_region is None:
+                continue
+            source_sampling = source_region.get("sampling", {}) or {}
+            if not hasattr(source_sampling, "items"):
+                continue
+            active_sampling = active_region.get("sampling")
+            if active_sampling is None:
+                active_sampling = {}
+                active_region["sampling"] = active_sampling
+            for key, value in source_sampling.items():
+                if key not in active_sampling:
+                    active_sampling[key] = deepcopy(value)
 
     def set_up_scene(self, scene: Scene) -> None:
         super().set_up_scene(scene)
@@ -120,29 +178,285 @@ class BananaBaseTask(BaseTask):
                 cfgs,
             )
 
+        self.capture_rigid_object_states()
+
+        # Isaac Sim 6 finalizes the physics scene immediately after this
+        # callback returns from ``set_up_scene``.  Let the workflow author
+        # collision collections and any native support proxies at this exact
+        # lifecycle boundary, while all task objects are present in USD but
+        # before PhysX has built its shape/view representation.  Authoring
+        # these schemas after the first ``World.reset`` leaves the USD prims
+        # visible while their colliders are absent from the active physics
+        # scene.
+        before_physics_scene_finalize = getattr(
+            self, "_before_physics_scene_finalize", None
+        )
+        if callable(before_physics_scene_finalize):
+            before_physics_scene_finalize()
+
         # Update language
         self.language_instruction, self.detailed_language_instruction = update_language(self.cfg)
 
-    def individual_reset(self):
-        self.current_id += 1
-        # Update table and scene pair
-        scene_update_freq = self.cfg["arena"].get("update_freq", 10)
-        if self.current_id % scene_update_freq == 0:
-            self.cfg = update_scenes(self.cfg)
-            for cfg in self.cfg["arena"]["fixtures"]:
-                if cfg.get("apply_randomization", False):
-                    delete_prim(self.fixtures[cfg["name"]].prim_path)
-                    self.fixtures[cfg["name"]] = self._load_obj(cfg)
-                    self._task_objects[cfg["name"]] = self.fixtures[cfg["name"]]
+    def _iter_rigid_objects(self):
+        """Yield each loaded rigid object exactly once.
 
-        # Update objects
-        self.cfg = update_rigid_objs(self.cfg)
-        self.cfg = update_articulated_objs(self.cfg)
-        for cfg in self.cfg["objects"]:
-            if cfg.get("apply_randomization", False):
-                delete_prim(self._object_reload_root_path(self.objects[cfg["name"]], cfg))
-                self.objects[cfg["name"]] = self._load_obj(cfg)
-                self._task_objects[cfg["name"]] = self.objects[cfg["name"]]
+        Fixtures, task objects, and distractors can share the same object
+        instance in generated scenes.  De-duplicating by identity keeps the
+        reset snapshot stable and avoids applying a reset twice.
+        """
+
+        seen = set()
+        for collection in (self.fixtures, self.objects, self.distractors):
+            for obj in collection.values():
+                if not isinstance(obj, SingleRigidPrim) or id(obj) in seen:
+                    continue
+                seen.add(id(obj))
+                yield obj
+
+    @staticmethod
+    def _rigid_object_state_key(obj):
+        return str(getattr(obj, "prim_path", getattr(obj, "base_prim_path", id(obj))))
+
+    @staticmethod
+    def _state_value_to_numpy(value):
+        """Convert Isaac v2 backend values into CPU NumPy state arrays.
+
+        Isaac Sim 6's native v2 wrappers return CUDA Torch tensors when the
+        active backend is Torch.  Calling ``np.asarray`` on such a tensor
+        raises before a reset snapshot can be recorded.  The same snapshot
+        path is also used with Warp and USD/Gf values, so normalize those
+        representations at this boundary rather than making every reset
+        caller backend-aware.
+        """
+
+        if hasattr(value, "detach"):
+            value = value.detach()
+        if hasattr(value, "cpu"):
+            value = value.cpu()
+        if hasattr(value, "numpy"):
+            value = value.numpy()
+        return np.asarray(value, dtype=float).copy()
+
+    @staticmethod
+    def _set_sampled_world_pose(obj, pose):
+        """Apply a region-sampler pose in the world frame.
+
+        ``RandomRegionSampler`` computes its translation from world-space USD
+        bounds.  Feeding that result to ``set_local_pose`` only happened to
+        work for assets whose rigid-body parent had an identity transform.  A
+        scaled referenced asset (for example google_scan-handbag) then gets
+        scaled toward the origin once more.  Isaac v2 exposes the intended
+        world-frame API directly, so keep sampling and application in the
+        same frame for every rigid/object implementation.
+        """
+
+        translation, orientation = pose
+        if hasattr(obj, "set_world_pose"):
+            obj.set_world_pose(position=translation, orientation=orientation)
+        else:
+            # Keep the fallback for non-prim task objects that implement only
+            # the legacy local-pose interface; all Isaac rigid prims take the
+            # native v2 branch above.
+            obj.set_local_pose(translation=translation, orientation=orientation)
+
+    def _remember_rigid_object_state(self, obj, translation=None, orientation=None):
+        """Remember a desired pose without touching the physics view."""
+
+        if not isinstance(obj, SingleRigidPrim):
+            return
+        try:
+            if translation is None or orientation is None:
+                translation, orientation = obj.get_local_pose()
+            world_translation, world_orientation = obj.get_world_pose()
+            state = {
+                "translation": self._state_value_to_numpy(translation),
+                "orientation": self._state_value_to_numpy(orientation),
+                # Isaac v2 rigid prim defaults and set_world_pose both use
+                # world coordinates.  Keep the local values only for
+                # diagnostics/backward compatibility with old snapshots.
+                "world_translation": self._state_value_to_numpy(world_translation),
+                "world_orientation": self._state_value_to_numpy(world_orientation),
+            }
+            if hasattr(obj, "get_local_scale"):
+                state["scale"] = self._state_value_to_numpy(obj.get_local_scale())
+            self._rigid_object_reset_states[self._rigid_object_state_key(obj)] = state
+
+            # Native v2 default state is reapplied by post_reset/world.reset.
+            # Recording it here makes every reset path start from the same
+            # world-frame pose, including before the workflow's explicit
+            # post-step restore runs.
+            if hasattr(obj, "set_default_state"):
+                obj.set_default_state(
+                    position=state["world_translation"],
+                    orientation=state["world_orientation"],
+                    linear_velocity=np.zeros(3),
+                    angular_velocity=np.zeros(3),
+                )
+        except Exception:
+            # A state snapshot is diagnostic/recovery metadata.  It must not
+            # turn a scene load into a failure when an asset is not yet bound
+            # to the physics backend.
+            LOGGER.debug("Could not snapshot rigid object %s", getattr(obj, "name", obj), exc_info=True)
+
+    def capture_rigid_object_states(self):
+        """Capture the poses that should survive the next world reset."""
+
+        states = {}
+        for obj in self._iter_rigid_objects():
+            self._remember_rigid_object_state(obj)
+            key = self._rigid_object_state_key(obj)
+            if key in self._rigid_object_reset_states:
+                states[key] = {
+                    name: value.copy() if isinstance(value, np.ndarray) else value
+                    for name, value in self._rigid_object_reset_states[key].items()
+                }
+        if self._debug_reset_lifecycle:
+            debug_entries = []
+            for key, state in states.items():
+                debug_entries.append(
+                    {
+                        "key": key,
+                        "translation": state["translation"].tolist(),
+                        "orientation": state["orientation"].tolist(),
+                        "world_translation": state.get("world_translation", state["translation"]).tolist(),
+                        "world_orientation": state.get("world_orientation", state["orientation"]).tolist(),
+                    }
+                )
+            LOGGER.warning(
+                "[ResetLifecycle] captured %d rigid states: %s",
+                len(states),
+                debug_entries,
+            )
+        return states
+
+    def restore_rigid_object_states(self, states=None):
+        """Restore rigid object state after the active physics view is ready."""
+
+        states = states or self._rigid_object_reset_states
+        if not states:
+            return
+
+        objects_by_path = {
+            self._rigid_object_state_key(obj): obj for obj in self._iter_rigid_objects()
+        }
+        for key, state in states.items():
+            obj = objects_by_path.get(key)
+            if obj is None:
+                continue
+            try:
+                if "scale" in state and hasattr(obj, "set_local_scale"):
+                    obj.set_local_scale(state["scale"])
+            except Exception:
+                LOGGER.debug("Could not restore scale for %s", key, exc_info=True)
+
+            try:
+                # A reset can change the effective parent transform of a
+                # referenced asset and it always replaces the PhysX tensor
+                # view.  Local pose values are therefore not stable across a
+                # reset: the same local numbers can map to a different world
+                # pose (the handbag reproduced this as world z ~= -0.0004).
+                # Isaac v2 defines SingleRigidPrim's default/set-world pose in
+                # world coordinates, so use the captured world pose as the
+                # sole restore authority.  A large resulting local value is
+                # expected for a child below a 1e-3-scaled asset.
+                if "world_translation" in state and "world_orientation" in state:
+                    obj.set_world_pose(
+                        position=state["world_translation"],
+                        orientation=state["world_orientation"],
+                    )
+                elif "translation" in state and "orientation" in state:
+                    # Backward-compatible fallback for snapshots created
+                    # before world coordinates were recorded.
+                    obj.set_local_pose(
+                        translation=state["translation"],
+                        orientation=state["orientation"],
+                    )
+                self._zero_object_velocity(obj)
+                if self._debug_reset_lifecycle:
+                    local_translation, _ = obj.get_local_pose()
+                    world_translation, _ = obj.get_world_pose()
+                    LOGGER.warning(
+                        "[ResetLifecycle] restored key=%s local=%s world=%s",
+                        key,
+                        self._state_value_to_numpy(local_translation).tolist(),
+                        self._state_value_to_numpy(world_translation).tolist(),
+                    )
+            except Exception:
+                LOGGER.warning("Could not restore rigid object state for %s", key, exc_info=True)
+
+    def debug_reset_dynamics(self, label):
+        """Log rigid poses/velocities and fixture collision USD state.
+
+        Isaac Sim 6 can leave a valid world pose in the tensor view while the
+        corresponding collision shape is missing or filtered. The diagnostic
+        is intentionally opt-in and read-only so normal episodes do not pay
+        for extra USD traversal or log volume.
+        """
+
+        if not self._debug_reset_lifecycle:
+            return
+
+        entries = []
+        for obj in self._iter_rigid_objects():
+            entry = {"key": self._rigid_object_state_key(obj)}
+            try:
+                world_translation, world_orientation = obj.get_world_pose()
+                entry["world"] = self._state_value_to_numpy(world_translation).tolist()
+                entry["orientation"] = self._state_value_to_numpy(world_orientation).tolist()
+            except Exception as exc:
+                entry["pose_error"] = repr(exc)
+            for method_name, key_name in (
+                ("get_linear_velocity", "linear_velocity"),
+                ("get_angular_velocity", "angular_velocity"),
+            ):
+                try:
+                    entry[key_name] = self._state_value_to_numpy(getattr(obj, method_name)()).tolist()
+                except Exception as exc:
+                    entry[f"{key_name}_error"] = repr(exc)
+            entries.append(entry)
+
+        fixture_collisions = {}
+        for name, obj in self.fixtures.items():
+            get_debug_info = getattr(obj, "get_collision_debug_info", None)
+            if callable(get_debug_info):
+                try:
+                    fixture_collisions[name] = get_debug_info()
+                except Exception as exc:
+                    fixture_collisions[name] = {"error": repr(exc)}
+
+        LOGGER.warning(
+            "[ResetLifecycle] dynamics label=%s rigid_states=%s fixture_collisions=%s",
+            label,
+            entries,
+            fixture_collisions,
+        )
+
+    def individual_reset(self):
+        """Reset episode bookkeeping without deleting live USD rigid bodies.
+
+        The old implementation changed randomized asset paths and deleted
+        their prims here.  In Isaac Sim 6 those prims are already represented
+        by tensor views, so deletion invalidates the shared simulation view
+        before the replacement object can initialize.  Asset selection is
+        intentionally performed once during set_up_scene; episode resets
+        randomize/reapply poses in-place instead.
+        """
+
+        self.current_id += 1
+        if not self._reset_reuse_warning_emitted:
+            randomized = [
+                cfg["name"]
+                for cfg in list(self.cfg.get("objects", []))
+                + list(self.cfg.get("arena", {}).get("fixtures", []))
+                if cfg.get("apply_randomization", False)
+            ]
+            if randomized or self.cfg.get("distractors"):
+                LOGGER.info(
+                    "[ResetLifecycle] reusing loaded USD prims for episode reset; "
+                    "asset reload disabled for %s",
+                    randomized or ["distractors"],
+                )
+            self._reset_reuse_warning_emitted = True
 
         optimize_2d_manip_layout(self.cfg["objects"], self.cfg["regions"], self.objects)
         self.pickcontact_views = self._set_pickcontact_view(self.cfg)
@@ -169,9 +483,10 @@ class BananaBaseTask(BaseTask):
             if region_cfg is not None:
                 pose = self._get_deterministic_region_pose(obj, region_cfg)
                 if pose is not None:
-                    obj.set_local_pose(*pose)
+                    self._set_sampled_world_pose(obj, pose)
 
             self._zero_object_velocity(obj)
+            self._remember_rigid_object_state(obj)
 
     def _get_region_cfg_for_object(self, object_name):
         for region_cfg in self.cfg.get("regions", []):
@@ -183,6 +498,9 @@ class BananaBaseTask(BaseTask):
         if region_cfg.get("random_type") != "A_on_B_region_sampler":
             return None
         random_config = deepcopy(region_cfg.get("random_config", {}))
+        sampling_cfg = region_cfg.get("sampling", {}) or {}
+        if "keep_upright" not in random_config and "keep_upright" in sampling_cfg:
+            random_config["keep_upright"] = bool(sampling_cfg["keep_upright"])
         pos_range = random_config.get("pos_range")
         yaw_rotation = random_config.get("yaw_rotation")
         if pos_range is None or yaw_rotation is None:
@@ -198,7 +516,7 @@ class BananaBaseTask(BaseTask):
             return None
         target = self._task_objects[target_name]
         if "sub_tgt_prim" in region_cfg:
-            target = XFormPrim(prim_path=target.prim_path + region_cfg["sub_tgt_prim"])
+            target = SingleXFormPrim(prim_path=target.prim_path + region_cfg["sub_tgt_prim"])
 
         sampler_fn = RandomRegionSampler.A_on_B_region_sampler
         return sampler_fn(obj, target, **self._filter_sampler_random_config(sampler_fn, random_config))
@@ -220,19 +538,6 @@ class BananaBaseTask(BaseTask):
         return obj.prim_path
 
     def individual_reset_from_mem(self):
-        for cfg in self.cfg["arena"]["fixtures"]:
-            if cfg.get("apply_randomization", False):
-                delete_prim(self.fixtures[cfg["name"]].prim_path)
-                self.fixtures[cfg["name"]] = self._load_obj(cfg)
-                self._task_objects[cfg["name"]] = self.fixtures[cfg["name"]]
-
-        # Update objects
-        for cfg in self.cfg["objects"]:
-            if cfg.get("apply_randomization", False):
-                delete_prim(self._object_reload_root_path(self.objects[cfg["name"]], cfg))
-                self.objects[cfg["name"]] = self._load_obj(cfg)
-                self._task_objects[cfg["name"]] = self.objects[cfg["name"]]
-
         optimize_2d_manip_layout(self.cfg["objects"], self.cfg["regions"], self.objects)
         self.pickcontact_views = self._set_pickcontact_view(self.cfg)
         self.artcontact_views = self._set_artcontact_view(self.cfg)
@@ -248,14 +553,23 @@ class BananaBaseTask(BaseTask):
 
         # Set up visual distractor (if exists, resample and update mem)
         if self.cfg.get("distractors", None):
-            for obj in self.distractors.values():
-                delete_prim(os.path.dirname(obj.prim_path))
+            cfgs = self.cfg.get("mem_distractors") or []
+            if not self.distractors and cfgs:
+                self._rebuild_distractors(cfgs, use_mem=False)
+            if self.distractors and cfgs:
+                # Reposition the existing distractor pool; never delete a
+                # rigid USD subtree after its tensor view has been created.
+                active_cfgs = [cfg for cfg in cfgs if cfg["name"] in self.distractors]
+                if len(active_cfgs) == len(self.distractors):
+                    set_distractors(
+                        self.objects,
+                        self.distractors,
+                        self._task_objects[self.cfg["distractors"]["target"]],
+                        self.cfg["distractors"],
+                        active_cfgs,
+                    )
 
-            self.distractors = {}
-            cfgs = self._create_distractor_cfg()
-            self.cfg["mem_distractors"] = cfgs
-            # use_mem=False → also calls set_distractors for new random placement
-            self._rebuild_distractors(cfgs, use_mem=False)
+        self.capture_rigid_object_states()
 
         # Update language
         self.language_instruction, self.detailed_language_instruction = update_language(self.cfg)
@@ -271,13 +585,21 @@ class BananaBaseTask(BaseTask):
 
         # Rebuild visual distractors from mem (no new random placement)
         if self.cfg.get("mem_distractors", None) and self.cfg.get("distractors", None):
-            for obj in self.distractors.values():
-                delete_prim(os.path.dirname(obj.prim_path))
-
-            self.distractors = {}
             cfgs = self.cfg["mem_distractors"]
-            # use_mem=True → only rebuild objects, do not call set_distractors
-            self._rebuild_distractors(cfgs, use_mem=True)
+            if not self.distractors:
+                self._rebuild_distractors(cfgs, use_mem=True)
+            if self.distractors:
+                active_cfgs = [cfg for cfg in cfgs if cfg["name"] in self.distractors]
+                if len(active_cfgs) == len(self.distractors):
+                    set_distractors(
+                        self.objects,
+                        self.distractors,
+                        self._task_objects[self.cfg["distractors"]["target"]],
+                        self.cfg["distractors"],
+                        active_cfgs,
+                    )
+
+        self.capture_rigid_object_states()
 
         # Update language
         self.language_instruction, self.detailed_language_instruction = update_language(self.cfg)
@@ -290,16 +612,76 @@ class BananaBaseTask(BaseTask):
             if cfg["target_class"] == "ArticulatedObject":
                 self.objects[cfg["name"]].initialize()
 
-        all_views = [
-            contact_view
-            for views_dict in (self.pickcontact_views, self.artcontact_views)
-            for lr_views in views_dict.values()
-            for contact_views in lr_views.values()
-            for contact_view in contact_views.values()
-        ]
+    def initialize_rigid_objects(self, physics_sim_view=None):
+        """Attach newly referenced rigid USDs to the Isaac Sim 6 tensor view.
+
+        The wrapper is constructed before reset, while the workflow attaches
+        its physics handle after one world step, when the referenced USD body
+        has been consumed by the PhysX tensor backend.
+        """
+        candidates = list(self.fixtures.values()) + list(self.objects.values()) + list(self.distractors.values())
+        for obj in candidates:
+            if not isinstance(obj, SingleRigidPrim):
+                continue
+            # ``SingleRigidPrim.initialize`` delegates to ``RigidPrim``.  In
+            # Isaac Sim 6 that method is a no-op whenever its private
+            # ``_physics_view`` is non-null, even if World.reset() has already
+            # replaced the underlying simulation view.  A reset can therefore
+            # leave the wrapper attached to an invalid backend without any
+            # public API reporting it.  Clear only the Python-side handle and
+            # ask the native v2 wrapper to bind a fresh view; the USD prim is
+            # never deleted or recreated.
+            prim_view = getattr(obj, "_prim_view", None)
+            if prim_view is not None and hasattr(prim_view, "_physics_view"):
+                prim_view._physics_view = None
+                prim_view._num_shapes = None
+            # Always pass the active World view explicitly.  Calling the
+            # private callback with ``None`` can create a wrapper whose USD
+            # local pose changes while its PhysX world pose remains attached
+            # to the default/origin view.
+            obj.initialize(physics_sim_view=physics_sim_view)
+
+    def initialize_contact_views(self, physics_sim_view=None):
+        """Initialize contact sensors after the first post-reset physics tick.
+
+        Isaac Sim 6 can invoke ``post_reset`` before PhysX has attached the
+        USD stage to the tensor backend.  Initializing ``RigidContactView``
+        from that callback invalidates the simulation view for Panda-Omron
+        Scene-8 tasks.  The workflow calls this method after one world step,
+        when the PhysX stage is live.  A view from the active World is always
+        passed through; creating an implicit tensor view here is forbidden
+        because it can invalidate the view finalized by ``World.reset``.
+        """
+        if physics_sim_view is None:
+            from isaacsim.core.api.simulation_context import SimulationContext
+
+            simulation_context = SimulationContext.instance()
+            if simulation_context is not None:
+                physics_sim_view = simulation_context.physics_sim_view
+        if physics_sim_view is None:
+            raise RuntimeError(
+                "Cannot initialize task contact views before Isaac Sim physics is ready"
+            )
+
+        all_views = []
+        for views_by_robot in (self.pickcontact_views, self.artcontact_views):
+            for views_by_arm in views_by_robot.values():
+                for views_by_object in views_by_arm.values():
+                    all_views.extend(views_by_object.values())
 
         for view in all_views:
-            view.initialize()
+            # RigidContactView does not validate that its cached handle
+            # belongs to the current World after a hard reset.  Compare the
+            # actual parent view so retries never retain a handle from the
+            # invalidated pre-reset simulation.
+            if (
+                getattr(view, "_physics_sim_view", None) is physics_sim_view
+                and view.is_physics_handle_valid()
+            ):
+                continue
+            view.initialize(physics_sim_view=physics_sim_view)
+
+        self._contact_views_physics_sim_view = physics_sim_view
 
     def apply_action(self, action: Dict[str, Dict[str, np.ndarray]]):
         for name in action.keys():
@@ -357,7 +739,7 @@ class BananaBaseTask(BaseTask):
         for path in mount_paths:
             if is_prim_path_valid(path):
                 continue
-            xform = XFormPrim(prim_path=path)
+            xform = SingleXFormPrim(prim_path=path)
             xform.set_local_pose(translation=[0.0, 0.0, 0.0], orientation=[1.0, 0.0, 0.0, 0.0])
 
         # Load camera params from external file if camera_file is specified
@@ -526,7 +908,9 @@ class BananaBaseTask(BaseTask):
                                 if lr_name not in pickcontact_views[robot_name]:
                                     pickcontact_views[robot_name][lr_name] = {}
                                 object_name = lr_skill["objects"][0]
-                                prim_paths_expr = self.objects[object_name].prim_path
+                                obj = self.objects[object_name]
+                                # RigidContactView must match the RigidBodyAPI prim, not the mesh prim.
+                                prim_paths_expr = obj.prim_path
                                 robot = self.robots[robot_name]
                                 filter_paths_expr = (
                                     robot.fl_filter_paths_expr if lr_name == "left" else robot.fr_filter_paths_expr
@@ -551,16 +935,22 @@ class BananaBaseTask(BaseTask):
                 continue
             tgt = self._task_objects[cfg["target"]]
             if "sub_tgt_prim" in cfg:
-                tgt = XFormPrim(prim_path=tgt.prim_path + cfg["sub_tgt_prim"])
+                tgt = SingleXFormPrim(prim_path=tgt.prim_path + cfg["sub_tgt_prim"])
+            random_config = deepcopy(cfg.get("random_config", {}))
+            sampling_cfg = cfg.get("sampling", {}) or {}
+            if "keep_upright" not in random_config and "keep_upright" in sampling_cfg:
+                random_config["keep_upright"] = bool(sampling_cfg["keep_upright"])
             if "priority" in cfg:
                 if cfg["priority"]:
                     idx = random.choice(cfg["priority"])
                 else:
                     idx = random.randint(0, len(random_region_list) - 1)
                 random_config = (random_region_list.pop(idx))["random_config"]
+                if "keep_upright" not in random_config and "keep_upright" in sampling_cfg:
+                    random_config["keep_upright"] = bool(sampling_cfg["keep_upright"])
                 sampler_fn = getattr(RandomRegionSampler, cfg["random_type"])
                 pose = sampler_fn(obj, tgt, **self._filter_sampler_random_config(sampler_fn, random_config))
-                obj.set_local_pose(*pose)
+                self._set_sampled_world_pose(obj, pose)
             elif "container" in cfg:
                 container = self._task_objects[cfg["container"]]
                 obj_trans = container.get_local_pose()[0]
@@ -572,12 +962,19 @@ class BananaBaseTask(BaseTask):
             elif "target2" in cfg:
                 tgt2 = self._task_objects[cfg["target2"]]
                 sampler_fn = getattr(RandomRegionSampler, cfg["random_type"])
-                pose = sampler_fn(obj, tgt, tgt2, **self._filter_sampler_random_config(sampler_fn, cfg["random_config"]))
-                obj.set_local_pose(*pose)
+                pose = sampler_fn(obj, tgt, tgt2, **self._filter_sampler_random_config(sampler_fn, random_config))
+                self._set_sampled_world_pose(obj, pose)
             else:
                 sampler_fn = getattr(RandomRegionSampler, cfg["random_type"])
-                pose = sampler_fn(obj, tgt, **self._filter_sampler_random_config(sampler_fn, cfg["random_config"]))
-                obj.set_local_pose(*pose)
+                pose = sampler_fn(obj, tgt, **self._filter_sampler_random_config(sampler_fn, random_config))
+                self._set_sampled_world_pose(obj, pose)
+
+            # A placed RigidObject starts from rest.  Without this reset, a
+            # previous failed episode can leave residual velocity on a fixed
+            # tabletop target, making the first Pick transit look like a
+            # moving obstacle and consuming the dynamic replan budget.
+            if isinstance(obj, SingleRigidPrim):
+                self._zero_object_velocity(obj)
 
     def set_fixed_robot_start_poses(self):
         for region_cfg in self.cfg.get("regions", []):
@@ -646,13 +1043,17 @@ class BananaBaseTask(BaseTask):
             dome_prim_path = f"{self.root_prim_path}/DomeLight"
             envmap_hdr_path = envmap_hdr_path_list[envmap_id]
 
-            if not is_prim_path_valid(dome_prim_path):
-                self.dome_light_prim = UsdLux.DomeLight.Define(self.stage, dome_prim_path)
-                UsdGeom.Xformable(self.dome_light_prim).AddRotateXYZOp().Set((rotation[0], rotation[1], rotation[2]))
-            else:
-                self.dome_light_prim.GetOrderedXformOps()[0].Set((rotation[0], rotation[1], rotation[2]))
-            self.dome_light_prim.GetIntensityAttr().Set(intensity)
-            self.dome_light_prim.GetTextureFileAttr().Set(envmap_hdr_path)
+            # Isaac Sim 6 lighting API: this wrapper creates a missing DomeLight
+            # or wraps the existing scene light at the same USD path. The
+            # wrapper's default transform setup creates the xformOp:orient
+            # property required by set_local_poses().
+            self.dome_light_prim = DomeLight(dome_prim_path)
+            rotation_quaternion = R.from_euler(
+                "xyz", rotation, degrees=True
+            ).as_quat(scalar_first=True)
+            self.dome_light_prim.set_local_poses(orientations=[rotation_quaternion])
+            self.dome_light_prim.set_intensities(float(intensity))
+            self.dome_light_prim.set_texture_files(envmap_hdr_path)
 
     def _set_fluid(self):
         # Particle params

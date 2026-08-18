@@ -5,16 +5,16 @@ import numpy as np
 from core.skills.base_skill import BaseSkill, register_skill
 from core.utils.asset_path_utils import resolve_asset_path
 from omegaconf import DictConfig, OmegaConf
-from omni.isaac.core.controllers import BaseController
-from omni.isaac.core.robots.robot import Robot
-from omni.isaac.core.tasks import BaseTask
-from omni.isaac.core.utils.prims import get_prim_at_path
-from omni.isaac.core.utils.transformations import (
+from isaacsim.core.api.controllers import BaseController
+from isaacsim.core.api.robots.robot import Robot
+from isaacsim.core.api.tasks import BaseTask
+from isaacsim.core.utils.prims import get_prim_at_path
+from isaacsim.core.utils.transformations import (
     get_relative_transform,
     pose_from_tf_matrix,
     tf_matrix_from_pose,
 )
-from omni.isaac.core.utils.xforms import get_world_pose
+from isaacsim.core.utils.xforms import get_world_pose
 
 
 # pylint: disable=unused-argument

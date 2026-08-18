@@ -6,8 +6,8 @@ import math
 import numpy as np
 from core.robots.base_robot import register_robot
 from core.robots.template_robot import TemplateRobot
-from omni.isaac.core.utils.prims import get_prim_at_path
-from omni.isaac.core.utils.transformations import get_relative_transform, pose_from_tf_matrix, tf_matrix_from_pose
+from isaacsim.core.utils.prims import get_prim_at_path
+from isaacsim.core.utils.transformations import get_relative_transform, pose_from_tf_matrix, tf_matrix_from_pose
 from pxr import UsdPhysics
 
 

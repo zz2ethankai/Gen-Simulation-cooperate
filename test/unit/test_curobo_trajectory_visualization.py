@@ -168,7 +168,7 @@ def test_selected_plan_records_custom_data_and_both_marker_types(monkeypatch, tm
         name="split_aloha",
         lr_name="right",
         robot_base_path="/World/task_0/robot/base",
-        motion_gen=SimpleNamespace(kinematics=Kinematics()),
+        planner=SimpleNamespace(kinematics=Kinematics()),
     )
     monkeypatch.setattr(trajectory_module, "get_prim_at_path", lambda path: path)
     monkeypatch.setattr(
@@ -229,7 +229,7 @@ def test_marker_switches_hide_robot_spheres_and_space_ee_path(monkeypatch):
         name="split_aloha",
         lr_name="right",
         robot_base_path="/World/task_0/robot/base",
-        motion_gen=SimpleNamespace(kinematics=Kinematics()),
+        planner=SimpleNamespace(kinematics=Kinematics()),
     )
     monkeypatch.setattr(trajectory_module, "get_prim_at_path", lambda path: path)
     monkeypatch.setattr(
@@ -279,7 +279,7 @@ def test_marker_switches_can_hide_ee_path_and_keep_robot_spheres(monkeypatch):
         name="split_aloha",
         lr_name="left",
         robot_base_path="/World/task_0/robot/base",
-        motion_gen=SimpleNamespace(kinematics=Kinematics()),
+        planner=SimpleNamespace(kinematics=Kinematics()),
     )
     monkeypatch.setattr(trajectory_module, "get_prim_at_path", lambda path: path)
     monkeypatch.setattr(

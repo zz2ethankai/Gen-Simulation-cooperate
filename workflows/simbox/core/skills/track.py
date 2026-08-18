@@ -3,12 +3,12 @@ from core.skills.base_skill import BaseSkill, register_skill
 from core.utils.transformation_utils import get_orientation, perturb_orientation
 from core.utils.usd_geom_utils import compute_bbox
 from omegaconf import DictConfig
-from omni.isaac.core.controllers import BaseController
-from omni.isaac.core.objects.cylinder import VisualCylinder
-from omni.isaac.core.robots.robot import Robot
-from omni.isaac.core.tasks import BaseTask
-from omni.isaac.core.utils.prims import get_prim_at_path
-from omni.isaac.core.utils.transformations import (
+from isaacsim.core.api.controllers import BaseController
+from isaacsim.core.api.objects.cylinder import VisualCylinder
+from isaacsim.core.api.robots.robot import Robot
+from isaacsim.core.api.tasks import BaseTask
+from isaacsim.core.utils.prims import get_prim_at_path
+from isaacsim.core.utils.transformations import (
     get_relative_transform,
     tf_matrix_from_pose,
 )

@@ -17,6 +17,16 @@
 - Keep `emit_obs_on_failure` disabled for strict validation. Placeholder observations can hide retry/reset behavior.
 - Stop and inspect the first failure when using `--stop-on-failure`; use `output/local_navigation/skills/*` snapshots before changing logic.
 
+## Isaac Bash Development Environment
+
+- For code development, shell access, imports, and lightweight checks, use `scripts/docker/isaac_dev.sh`; do not write an agent implementation or start an ad-hoc Isaac container.
+- The developer wrapper reuses the current Isaac 6.0.1 + CuRobo v2 image, mounts the repository at `/workspace`, forces `INTERNDATA_AUTOSTART_LAUNCHER=0`, and does not start `launcher.py`.
+- Start and enter the isolated developer container with `scripts/docker/isaac_dev.sh shell --gpu 0`; add `--build` only when the image needs rebuilding. For a background container use `scripts/docker/isaac_dev.sh start --gpu 0`.
+- Run non-interactive checks through the wrapper, for example `scripts/docker/isaac_dev.sh exec -- bash -lc 'pwd; python -V'`; use `scripts/docker/isaac_dev.sh stop` to release the GPU.
+- The default developer container is `isaac-dev-dev`; custom `--stack-id` values isolate the container name and cache. Developer caches live under `output/isaac-dev/`, not the root-owned `.docker/isaac-sim/` tree.
+- Verify the developer environment before relying on it: `scripts/docker/isaac_dev.sh status`, container state `running`, `/workspace` as the working directory, `INTERNDATA_AUTOSTART_LAUNCHER=0`, and a Bash process as the container main process. CuRobo/Isaac Torch verification from the entrypoint must pass.
+- A running Bash developer container is not task validation. For task success, stop it if it competes for GPU resources and use the normal validation wrapper or `scripts/docker/run_simbox_task.sh`; require `Task is successful, mode=plan_with_render` and no `[LmdbLogger] Episode failed`.
+
 ## Reset And Randomization
 
 - Fixed rigid objects should normally use `apply_randomization: false` unless their reload/reset path has been verified.

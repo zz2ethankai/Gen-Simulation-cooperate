@@ -24,6 +24,7 @@ except ImportError:
     from omni.physx import get_physx_interface as acquire_physx_interface
 from tqdm import tqdm
 from yaml import Loader
+from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
 from deps.world_toolkit.world_recorder import WorldRecorder
 from workflows.simbox.utils.task_config_parser import TaskConfigParser
@@ -250,6 +251,192 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             else:
                 base[key] = value
 
+    @staticmethod
+    def _create_native_support_collision_proxy(stage, collision_root_path: str, source_prim_path: str, index: int):
+        """Create a static sibling collider for a neglected referenced fixture.
+
+        Isaac Sim 6 can compose a referenced child after collision collections
+        have been expanded.  A collection target below that reference is then
+        present in USD but absent from the PhysX group.  Authoring this small
+        native collider in the non-referenced collision scope makes the group
+        membership deterministic while preserving the table's world-space
+        support footprint.
+        """
+
+        source_prim = stage.GetPrimAtPath(source_prim_path)
+        if not source_prim.IsValid():
+            return None
+
+        bbox_cache = UsdGeom.BBoxCache(
+            Usd.TimeCode.Default(),
+            [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy],
+            useExtentsHint=False,
+        )
+        try:
+            bbox = bbox_cache.ComputeWorldBound(source_prim).ComputeAlignedBox()
+            min_point = bbox.GetMin()
+            max_point = bbox.GetMax()
+            min_values = [float(value) for value in min_point]
+            max_values = [float(value) for value in max_point]
+        except Exception:
+            LOGGER.warning(
+                "[CollisionGroups] cannot compute support bbox for %s",
+                source_prim_path,
+                exc_info=True,
+            )
+            return None
+
+        size = [max_value - min_value for min_value, max_value in zip(min_values, max_values)]
+        if any(value <= 1.0e-6 for value in size):
+            LOGGER.warning(
+                "[CollisionGroups] empty support bbox for %s: min=%s max=%s",
+                source_prim_path,
+                min_values,
+                max_values,
+            )
+            return None
+
+        UsdGeom.Scope.Define(stage, collision_root_path)
+        proxy_path = f"{collision_root_path}/support_proxy_{index}"
+        proxy_geom = UsdGeom.Cube.Define(stage, proxy_path)
+        proxy_geom.CreateSizeAttr().Set(1.0)
+        proxy_xform = UsdGeom.Xformable(proxy_geom.GetPrim())
+        proxy_xform.AddTranslateOp().Set(
+            tuple((min_value + max_value) * 0.5 for min_value, max_value in zip(min_values, max_values))
+        )
+        proxy_xform.AddScaleOp().Set(tuple(size))
+        UsdPhysics.CollisionAPI.Apply(proxy_geom.GetPrim())
+        UsdGeom.Imageable(proxy_geom.GetPrim()).MakeInvisible()
+        LOGGER.info(
+            "[CollisionGroups] created native support proxy=%s source=%s min=%s max=%s",
+            proxy_path,
+            source_prim_path,
+            min_values,
+            max_values,
+        )
+        return proxy_path
+
+    def _configure_collision_groups(self):
+        """Create collision groups after Isaac 6 has built the task scene.
+
+        ``World.add_task`` only registers the task.  Isaac Sim 6 creates the
+        task objects during ``World.reset``; configuring collections before
+        that lifecycle point leaves referenced fixture children unresolved.
+        """
+
+        prim_paths = []  # do not collide with each other
+        global_collision_paths = []  # collide with everything
+        collision_root_path = "/World/collisions"
+
+        self.robots_prim_paths = []
+        for robot in self.task_cfg["robots"]:
+            robot_prim_path = self.task.root_prim_path + "/" + robot["name"]
+            prim_paths.append(robot_prim_path)
+            self.robots_prim_paths.append(robot_prim_path)
+        neglect_collision_names = self.task_cfg.get("neglect_collision_names", [])
+        candidates = self.task_cfg["objects"] + self.task_cfg["arena"]["fixtures"]
+        for candidate in candidates:
+            candidate_prim_path = self.task.root_prim_path + "/" + candidate["name"]
+            global_collision_paths.append(candidate_prim_path)
+            for neglect_collision_name in neglect_collision_names:
+                if neglect_collision_name not in candidate["name"]:
+                    continue
+                # A neglected fixture is intentionally excluded from the
+                # robot's own collision group.  For a static geometry
+                # fixture, replace its referenced collision subtree with a
+                # native proxy and keep that proxy in global_group so dynamic
+                # objects can still rest on a table.
+                if candidate.get("target_class") == "GeometryObject":
+                    support_obj = getattr(self.task, "_task_objects", {}).get(candidate["name"])
+                    support_proxy_path = None
+                    if os.environ.get("INTERNDATA_DEBUG_RESET_LIFECYCLE") == "1":
+                        LOGGER.warning(
+                            "[CollisionGroups] support candidate=%s obj=%s type=%s method=%s",
+                            candidate_prim_path,
+                            getattr(support_obj, "prim_path", None),
+                            type(support_obj).__name__ if support_obj is not None else None,
+                            hasattr(support_obj, "create_native_support_collision_proxy"),
+                        )
+                    create_support_proxy = getattr(
+                        support_obj,
+                        "create_native_support_collision_proxy",
+                        None,
+                    )
+                    if create_support_proxy is not None:
+                        try:
+                            support_proxy_path = create_support_proxy(
+                                self.stage,
+                                collision_root_path,
+                                len(global_collision_paths),
+                            )
+                        except Exception:
+                            LOGGER.warning(
+                                "[CollisionGroups] native support proxy failed for %s",
+                                candidate_prim_path,
+                                exc_info=True,
+                            )
+                    if not support_proxy_path:
+                        support_proxy_path = self._create_native_support_collision_proxy(
+                            self.stage,
+                            collision_root_path,
+                            candidate_prim_path,
+                            len(global_collision_paths),
+                        )
+                    if support_proxy_path:
+                        # Keep the native support collider in the same global
+                        # collection as dynamic objects and the floor.  The
+                        # robot group filters global as a whole, so this still
+                        # preserves the neglected-fixture behavior without
+                        # relying on a second cross-group opt-in relation.
+                        global_collision_paths.append(support_proxy_path)
+                    else:
+                        global_collision_paths.append(f"{candidate_prim_path}/collision_proxy")
+                else:
+                    prim_paths.append(candidate_prim_path)
+                global_collision_paths.remove(candidate_prim_path)
+
+        filter_collisions(
+            self.stage,
+            self.world.get_physics_context().prim_path,
+            collision_root_path,
+            prim_paths,
+            global_collision_paths,
+        )
+        if os.environ.get("INTERNDATA_DEBUG_RESET_LIFECYCLE") == "1":
+            collision_group_debug = {}
+            collision_root = self.stage.GetPrimAtPath(collision_root_path)
+            for group_prim in collision_root.GetChildren() if collision_root.IsValid() else []:
+                if str(group_prim.GetTypeName()) != "PhysicsCollisionGroup":
+                    continue
+                includes = group_prim.GetRelationship("collection:colliders:includes")
+                filtered_groups = group_prim.GetRelationship("physics:filteredGroups")
+                collision_group_debug[str(group_prim.GetPath())] = {
+                    "includes": [str(path) for path in includes.GetTargets()] if includes else [],
+                    "filtered_groups": [
+                        str(path) for path in filtered_groups.GetTargets()
+                    ]
+                    if filtered_groups
+                    else [],
+                }
+            collision_table_debug = {}
+            try:
+                collision_table = UsdPhysics.CollisionGroup.ComputeCollisionGroupTable(self.stage)
+                group_paths = sorted(collision_group_debug)
+                for index, group_a in enumerate(group_paths):
+                    for group_b in group_paths[index:]:
+                        collision_table_debug[f"{group_a}|{group_b}"] = bool(
+                            collision_table.IsCollisionEnabled(Sdf.Path(group_a), Sdf.Path(group_b))
+                        )
+            except Exception as exc:
+                collision_table_debug = {"error": repr(exc)}
+            LOGGER.warning(
+                "[CollisionGroups] prim_paths=%s global_paths=%s groups=%s table=%s",
+                prim_paths,
+                global_collision_paths,
+                collision_group_debug,
+                collision_table_debug,
+            )
+
     def _resolve_arena_file_path(self, arena_file_path: str | None) -> str | None:
         if arena_file_path and os.path.exists(arena_file_path):
             return arena_file_path
@@ -375,42 +562,14 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         collision_prim = self.stage.GetPrimAtPath("/World/collisions")
         if collision_prim.IsValid():
             self.stage.RemovePrim("/World/collisions")
+        # World.reset() invokes BananaBaseTask.set_up_scene() before it
+        # finalizes the PhysX scene.  Register the collision setup there so
+        # native support proxies and collision-group relationships are part of
+        # the first physics build, rather than being authored into an already
+        # initialized simulation view.
+        self.task._before_physics_scene_finalize = self._configure_collision_groups
         self.world.add_task(self.task)
 
-        # # Add hidden ground plane for physics simulation
-        # from omni.isaac.core.objects import GroundPlane
-        # plane = GroundPlane(
-        #     prim_path="/World/GroundPlane",
-        #     z_position=0.0,
-        #     visible=False,
-        # )
-
-        prim_paths = []  # do not collide with each other
-        global_collision_paths = []  # collide with everything
-
-        self.robots_prim_paths = []
-        for robot in self.task_cfg["robots"]:
-            robot_prim_path = self.task.root_prim_path + "/" + robot["name"]
-            prim_paths.append(robot_prim_path)
-            self.robots_prim_paths.append(robot_prim_path)
-        neglect_collision_names = self.task_cfg.get("neglect_collision_names", [])
-        candidates = self.task_cfg["objects"] + self.task_cfg["arena"]["fixtures"]
-        for candidate in candidates:
-            candidate_prim_path = self.task.root_prim_path + "/" + candidate["name"]
-            global_collision_paths.append(candidate_prim_path)
-            for neglect_collision_name in neglect_collision_names:
-                if neglect_collision_name in candidate["name"]:
-                    prim_paths.append(candidate_prim_path)
-                    global_collision_paths.remove(candidate_prim_path)
-
-        collision_root_path = "/World/collisions"
-        filter_collisions(
-            self.stage,
-            self.world.get_physics_context().prim_path,
-            collision_root_path,
-            prim_paths,
-            global_collision_paths,
-        )
         planning_cfg = self.task_cfg.get("planning", {})
         collision_cfg = planning_cfg.get("collision_world", {})
         safety_cfg = planning_cfg.get("execution_safety", {})
@@ -430,10 +589,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         # keep the local world-step and fixed-start-pose sequence authoritative.
         self._enable_manipulation_base_holds()
         self._step_world(render=True)
-        if hasattr(self.task, "initialize_rigid_objects"):
-            self.task.initialize_rigid_objects(self.world.physics_sim_view)
-        if hasattr(self.task, "initialize_contact_views"):
-            self.task.initialize_contact_views(self.world.physics_sim_view)
+        self._initialize_task_physics_views()
         self._set_fixed_robot_start_poses_after_reset()
         if task_uses_physics_schema(self.collision_world_mode):
             # The task-level mode may be ``auto``/``hybrid``, but this manager
@@ -925,6 +1081,10 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                     # In particular, fluid-capable controllers must ignore the
                     # runtime particle isosurface during legacy Stage scans.
                     ignore_substring=robot.get("ignore_substring"),
+                    # Keep candidate grasp evaluation batched unless a task
+                    # explicitly opts out.  The old MotionGen workflow used
+                    # this default; changing it to False turns 20 grasp
+                    # candidates into 20 serial IK+TrajOpt queries.
                     use_batch=robot.get("use_batch", True),
                     trajectory_visualizer=self.trajectory_visualizer,
                     skill_target_visualizer=self.skill_target_visualizer,
@@ -1071,6 +1231,45 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         )
         self.world_recorder.reset()
 
+    def _initialize_task_physics_views(self):
+        """Initialize task views, then restore dynamic prim state.
+
+        Isaac Sim 6 resets the active physics backend before the task's
+        region placement is applied.  Restoring a dynamic object's pose
+        before its current tensor/contact views exist can be overwritten by
+        the first physics tick.  Every robot/task reset path therefore uses
+        this single ordering: physics view -> contact view -> object state.
+        """
+
+        physics_sim_view = self.world.physics_sim_view
+        if hasattr(self.task, "initialize_rigid_objects"):
+            self.task.initialize_rigid_objects(physics_sim_view)
+        if hasattr(self.task, "initialize_contact_views"):
+            self.task.initialize_contact_views(physics_sim_view)
+        restore_states = getattr(self.task, "restore_rigid_object_states", None)
+        if callable(restore_states):
+            restore_states()
+        debug_reset_dynamics = getattr(self.task, "debug_reset_dynamics", None)
+        if callable(debug_reset_dynamics):
+            debug_reset_dynamics("after_initialize_and_restore")
+
+    def _refresh_task_rigid_views_after_world_reset(self):
+        """Rebind task rigid wrappers before any post-reset pose writes.
+
+        ``World.reset()`` replaces the active PhysX tensor view while keeping
+        the Python ``SingleRigidPrim`` wrappers alive.  Isaac Sim 6 therefore
+        leaves those wrappers pointing at the previous view until
+        ``initialize`` is called again.  Region sampling and fixed-object
+        restoration both write through the wrapper, so they must run only
+        after this refresh.  Contact views intentionally remain deferred
+        until the first post-reset simulation step.
+        """
+
+        physics_sim_view = self.world.physics_sim_view
+        initialize_rigid_objects = getattr(self.task, "initialize_rigid_objects", None)
+        if callable(initialize_rigid_objects):
+            initialize_rigid_objects(physics_sim_view)
+
     def _reset_controllers(self, controllers):
         """Reset all controllers."""
         # Randomized retry resets can replace an object's USD subtree and its
@@ -1120,16 +1319,30 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         self._reset_local_base_drivers(clear_debug_history=clear_debug_history)
 
     def _run_reset_warmup(self, step_count: int):
-        for _ in range(int(step_count)):
+        debug_reset_dynamics = getattr(self.task, "debug_reset_dynamics", None)
+        for step_index in range(int(step_count)):
             self._init_static_objects(self.task)
             self._step_world(render=False)
+            if callable(debug_reset_dynamics) and (
+                step_index in {0, 1, 2, 4, 9, 19, 49}
+                or step_index == int(step_count) - 1
+            ):
+                debug_reset_dynamics(f"initial_warmup_{step_index + 1}")
         self._reset_fixed_robot_start_states_after_physics(clear_debug_history=True)
+
+    def _debug_reset_warmup_step(self, debug_reset_dynamics, label, step_index, step_count):
+        if callable(debug_reset_dynamics) and (
+            step_index in {0, 1, 2, 4, 9, 19, 49}
+            or step_index == int(step_count) - 1
+        ):
+            debug_reset_dynamics(f"{label}_{step_index + 1}")
 
     def _randomization_layout_mem(self):
         self._destroy_local_base_drivers()
 
         # Reset world
         self.world.reset()
+        self._refresh_task_rigid_views_after_world_reset()
         if self.trajectory_visualizer is not None:
             self.trajectory_visualizer.clear()
         if self.skill_target_visualizer is not None:
@@ -1141,10 +1354,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
 
         self._enable_manipulation_base_holds()
         self._step_world(render=False)
-        if hasattr(self.task, "initialize_rigid_objects"):
-            self.task.initialize_rigid_objects(self.world.physics_sim_view)
-        if hasattr(self.task, "initialize_contact_views"):
-            self.task.initialize_contact_views(self.world.physics_sim_view)
+        self._initialize_task_physics_views()
         self._set_fixed_robot_start_poses_after_reset()
 
         # Reset controllers
@@ -1163,10 +1373,12 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         self._initialize_local_base_drivers()
 
         # Warmup
-        for _ in range(20):
+        debug_reset_dynamics = getattr(self.task, "debug_reset_dynamics", None)
+        for step_index in range(20):
             self._get_observations()
             self._init_static_objects(self.task)
             self._step_world(render=False)
+            self._debug_reset_warmup_step(debug_reset_dynamics, "layout_mem_warmup", step_index, 20)
         self._reset_fixed_robot_start_states_after_physics(clear_debug_history=True)
 
         self._initialize_world_recorder()
@@ -1183,6 +1395,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
 
         # Reset world
         self.world.reset()
+        self._refresh_task_rigid_views_after_world_reset()
         if self.trajectory_visualizer is not None:
             self.trajectory_visualizer.clear()
         if self.skill_target_visualizer is not None:
@@ -1194,10 +1407,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
 
         self._enable_manipulation_base_holds()
         self._step_world(render=False)
-        if hasattr(self.task, "initialize_rigid_objects"):
-            self.task.initialize_rigid_objects(self.world.physics_sim_view)
-        if hasattr(self.task, "initialize_contact_views"):
-            self.task.initialize_contact_views(self.world.physics_sim_view)
+        self._initialize_task_physics_views()
         self._set_fixed_robot_start_poses_after_reset()
 
         # Reset controllers
@@ -1227,10 +1437,12 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         self._initialize_local_base_drivers()
 
         # Warmup
-        for _ in range(20):
+        debug_reset_dynamics = getattr(self.task, "debug_reset_dynamics", None)
+        for step_index in range(20):
             self._get_observations()
             self._init_static_objects(self.task)
             self._step_world(render=False)
+            self._debug_reset_warmup_step(debug_reset_dynamics, "layout_warmup", step_index, 20)
         self._reset_fixed_robot_start_states_after_physics(clear_debug_history=True)
 
         if self.task_cfg.get("fluid", None):
@@ -1260,15 +1472,13 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
 
         self.task.individual_reset()
         self.world.reset()
+        self._refresh_task_rigid_views_after_world_reset()
         if hasattr(self.task, "reset_fixed_rigid_objects"):
             self.task.reset_fixed_rigid_objects()
         self.task.post_reset()
         self._enable_manipulation_base_holds()
         self._step_world(render=False)
-        if hasattr(self.task, "initialize_rigid_objects"):
-            self.task.initialize_rigid_objects(self.world.physics_sim_view)
-        if hasattr(self.task, "initialize_contact_views"):
-            self.task.initialize_contact_views(self.world.physics_sim_view)
+        self._initialize_task_physics_views()
         self._set_fixed_robot_start_poses_after_reset()
 
         self._reset_controllers(self.controllers)
@@ -1284,10 +1494,12 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         self.skills = self._initialize_skills(self.task, self.task_cfg, self.controllers, self.world)
         self._initialize_local_base_drivers()
 
-        for _ in range(20):
+        debug_reset_dynamics = getattr(self.task, "debug_reset_dynamics", None)
+        for step_index in range(20):
             self._get_observations()
             self._init_static_objects(self.task)
             self._step_world(render=False)
+            self._debug_reset_warmup_step(debug_reset_dynamics, "failed_generation_warmup", step_index, 20)
         self._reset_fixed_robot_start_states_after_physics(clear_debug_history=True)
 
         self._initialize_world_recorder()
@@ -1767,13 +1979,39 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             # passive rigid object settling elsewhere in the scene cannot
             # invalidate the already-reached gripper/contact state here.
             dynamic_changed = False
+        record = None
         if command.active_object:
             record = self.collision_scene_manager.records.get(command.active_object)
             if record is not None and record.state == CollisionObjectState.ATTACHED and hasattr(skill, "get_contact"):
                 _, indices = skill.get_contact()
                 dropped = len(indices) == 0
+        target_owner_matches = bool(
+            record is not None
+            and (str(record.owner_robot), str(record.owner_arm))
+            == (str(controller.name), str(controller.lr_name))
+        )
+        pending_detach = bool(
+            command.phase == MotionPhase.DETACH_AND_SETTLE
+            and self.collision_scene_manager.is_pending_detach(command.active_object)
+        )
+        allow_target_robot_contact = bool(
+            command.allow_target_robot_contact
+            and command.active_object
+            and record is not None
+            and target_owner_matches
+            and (
+                record.state
+                in {
+                    CollisionObjectState.ATTACHED,
+                    CollisionObjectState.PLACEMENT_CONTACT,
+                }
+                or pending_detach
+            )
+        )
         unexpected_contact = self.collision_scene_manager.get_unexpected_robot_contact_force(
-            controller.name, controller.lr_name
+            controller.name,
+            controller.lr_name,
+            command.active_object if allow_target_robot_contact else None,
         )
         _, unexpected_finger_contact = (
             self.collision_scene_manager.get_finger_environment_contact_forces(
@@ -1790,10 +2028,11 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         if command.active_object and record is not None and record.state in {
             CollisionObjectState.ATTACHED,
             CollisionObjectState.PLACEMENT_CONTACT,
-        } and command.phase != MotionPhase.DETACH_AND_SETTLE:
-            attached_slip_translation, attached_slip_rotation = (
-                self.collision_scene_manager.get_attached_object_slip(command.active_object)
-            )
+        }:
+            if command.phase != MotionPhase.DETACH_AND_SETTLE:
+                attached_slip_translation, attached_slip_rotation = (
+                    self.collision_scene_manager.get_attached_object_slip(command.active_object)
+                )
             allowed_support_contact, unexpected_object_contact = (
                 self.collision_scene_manager.get_object_environment_contact_forces(
                     command.active_object,

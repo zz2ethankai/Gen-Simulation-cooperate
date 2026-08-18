@@ -31,6 +31,15 @@ def test_motion_phase_command_validates_pose_and_exposes_semantics():
     assert command.planning_epsilon < command.translation_tolerance
 
 
+def test_motion_phase_command_keeps_target_robot_contact_explicit():
+    command = MotionPhaseCommand(
+        phase=MotionPhase.DETACH_AND_SETTLE,
+        active_object="apple",
+        allow_target_robot_contact=True,
+    )
+    assert command.allow_target_robot_contact is True
+
+
 def test_motion_phase_command_rejects_partial_or_invalid_pose():
     with pytest.raises(ValueError, match="provided together"):
         MotionPhaseCommand(MotionPhase.TRANSIT_PREGRASP, target_position=np.zeros(3))

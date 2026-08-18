@@ -10,8 +10,8 @@ tasks:
     envmap_lib: ../shared_assets/envmap_lib
     apply_randomization: true
     intensity_range:
-    - 5000
-    - 5000
+    - 1250
+    - 1250
     rotation_range:
     - 0
     - 0
@@ -48,7 +48,7 @@ tasks:
     # - light
     # - rug
     # - outlet
-    use_batch: false
+    use_batch: true
     collision_activation_distance: 0.05
     target_class: PandaOmronVirtual
   objects:

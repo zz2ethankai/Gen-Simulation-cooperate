@@ -11,9 +11,9 @@ import sys
 
 from core.skills.base_skill import BaseSkill, SKILL_DICT, register_skill
 from omegaconf import DictConfig, OmegaConf
-from omni.isaac.core.controllers import BaseController
-from omni.isaac.core.robots.robot import Robot
-from omni.isaac.core.tasks import BaseTask
+from isaacsim.core.api.controllers import BaseController
+from isaacsim.core.api.robots.robot import Robot
+from isaacsim.core.api.tasks import BaseTask
 
 try:
     from .local_navigation import (

@@ -13,17 +13,17 @@ import solver.kpam.SE3_utils as SE3_utils
 import solver.kpam.term_spec as term_spec
 import yaml
 from colored import fg
-from omni.isaac.core.utils.prims import (
+from isaacsim.core.utils.prims import (
     create_prim,
     get_prim_at_path,
     is_prim_path_valid,
 )
-from omni.isaac.core.utils.transformations import (
+from isaacsim.core.utils.transformations import (
     get_relative_transform,
     pose_from_tf_matrix,
     tf_matrices_from_poses,
 )
-from omni.isaac.core.utils.xforms import get_world_pose
+from isaacsim.core.utils.xforms import get_world_pose
 from pydrake.all import *
 from scipy.spatial.transform import Rotation as R
 from solver.kpam.mp_builder import OptimizationBuilderkPAM
@@ -1133,8 +1133,8 @@ if __name__ == "__main__":
 
     # from omni.isaac.franka.controllers.pick_place_controller import PickPlaceController
     from gensim_testing_v2.tasks.close_microwave import CloseMicrowave
-    from omni.isaac.core import World
-    from omni.isaac.core.utils.types import ArticulationAction
+    from isaacsim.core.api import World
+    from isaacsim.core.utils.types import ArticulationAction
 
     # from solver.planner import KPAMPlanner
 

@@ -26,7 +26,7 @@ Set joint names and indices for the planner and the simulation articulation.
 
 You must set:
 
-- **`self.raw_js_names`** – Joint names in the **planner / CuRobo** order (arm only, no gripper). Used for `get_ordered_joint_state(raw_js_names)` when building `cmd_plan`.
+- **`self.raw_js_names`** – Joint names in the **planner / CuRobo** order (arm only, no gripper). Used with native `JointState.reorder(raw_js_names)` when building `cmd_plan`.
 - **`self.cmd_js_names`** – Same as `raw_js_names` use the **scene/articulation** names in the robot usd (e.g. `fl_joint1`… or `idx21_arm_l_joint1`…).
 - **`self.arm_indices`** – Indices of arm joints in the **simulation** `dof_names` (e.g. `np.array([0,1,2,3,4,5,6])`).
 - **`self.gripper_indices`** – Indices of gripper joints in the simulation (e.g. `np.array([7])` or `np.array([7,8])`).
@@ -60,9 +60,9 @@ Map the logical gripper state to gripper joint targets.
 Override only when the default template behavior is wrong for your robot.
 
 - **`_load_world(self, use_default: bool = True)`**
-  Default uses `WorldConfig()` when `use_default=True`, and when `False` uses a table with cuboid z offset `10.5`. Override if your table height or world is different (e.g. Genie1 uses `5.02`, Lift2 uses `0.02`).
+  Default uses native `SceneCfg()` when `use_default=True`, and when `False` uses a table with cuboid z offset `10.5`. Override if your table height or world is different (e.g. Genie1 uses `5.02`, Lift2 uses `0.02`).
 
-- **`_get_motion_gen_collision_cache(self)`**
+- **`_get_native_collision_cache(self)`**
   Default: `{"obb": 700, "mesh": 700}`. Override to change cache size (e.g. FR3 uses `1000`).
 
 - **`_get_grasp_approach_linear_axis(self) -> int`**
@@ -83,9 +83,9 @@ Override only when the default template behavior is wrong for your robot.
 
 Your robot must have a CuRobo config YAML (passed as `robot_file`) with at least:
 
-- `robot_cfg` with `kinematics` (e.g. `urdf_path`, `base_link`, `ee_link`).
+- `robot_cfg` with `kinematics` (e.g. `urdf_path`, `base_link`, `tool_frames`).
 
-Template uses this for `_load_robot`, `_load_kin_model`, and `_init_motion_gen`; no code change needed if the YAML is correct.
+Template uses this for `_load_robot`, `_load_kin_model`, and `_init_native_planners`; no code change needed if the YAML is correct.
 
 ---
 
@@ -97,5 +97,5 @@ Template uses this for `_load_robot`, `_load_kin_model`, and `_init_motion_gen`;
 4. Implement **`_get_default_ignore_substring()`** (collision ignore list).
 5. Implement **`get_gripper_action(self)`** to map `self._gripper_state` (1.0 = open, -1.0 = closed) and `self._gripper_joint_position` to gripper joint targets (clip to a sensible range for your hardware).
 6. Override **`_load_world`** only if table/world differs from default.
-7. Override **`_get_motion_gen_collision_cache`** / **`_get_grasp_approach_linear_axis`** / **`_get_sort_path_weights`** only if needed.
+7. Override **`_get_native_collision_cache`** / **`_get_grasp_approach_linear_axis`** / **`_get_sort_path_weights`** only if needed.
 8. Import the new controller in `__init__.py`.

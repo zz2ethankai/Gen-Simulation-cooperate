@@ -698,7 +698,7 @@ def plan_to_grasp(
 
     Returns ``(success, result, chosen_idx, pregrasp_traj, lift_traj)``.
     """
-    from curobo.types import JointState, Pose
+    from curobo.types import GoalToolPose, JointState
 
     target_link = robot_cfg["curobo"]["tool_frame"]
     default_q = robot_cfg["curobo"]["default_joint_position"]
@@ -744,12 +744,8 @@ def plan_to_grasp(
     else:
         try_idxs_list = [int(i) for i in order[:max_attempts]]
 
-    def _grasp_pose_dict(idx_subset):
-        """Build the grasp goalset for cuRobo from a list of grasp indices.
-
-        Returns a {link: Pose} dict (lab fork) or a 5D GoalToolPose (public
-        cuRobo), whichever the installed planner wants — see curobo_compat.
-        """
+    def _grasp_goal(idx_subset):
+        """Build the native-v2 5D goalset for a list of grasp indices."""
         positions, quats = [], []
         for idx in idx_subset:
             T_target_robot = T_world_robot_inv @ grasps_world[idx] @ T_offset
@@ -758,9 +754,11 @@ def plan_to_grasp(
             quats.append(q)
         pos_t = torch.tensor(positions, device="cuda", dtype=torch.float32).unsqueeze(0)
         quat_t = torch.tensor(quats, device="cuda", dtype=torch.float32).unsqueeze(0)
-        from curobo_compat import grasp_goals
-
-        return grasp_goals(target_link, pos_t, quat_t)
+        return GoalToolPose(
+            tool_frames=[target_link],
+            position=pos_t.reshape(1, 1, 1, len(idx_subset), 3),
+            quaternion=quat_t.reshape(1, 1, 1, len(idx_subset), 4),
+        )
 
     def _try(
         grasp_poses,
@@ -804,7 +802,7 @@ def plan_to_grasp(
     kept_idxs: List[int] = []
     for batch_n, idx_subset in enumerate(outer_batches):
         kept_idxs = idx_subset
-        grasp_poses = _grasp_pose_dict(idx_subset)
+        grasp_poses = _grasp_goal(idx_subset)
         # Strategy table. For the "full" strategy (which plans the lift
         # segment too) we sweep BOTH approach offsets AND lift heights
         # because either step can be infeasible:

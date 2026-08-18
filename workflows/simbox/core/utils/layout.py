@@ -428,11 +428,14 @@ def place_object_in_polygon(
             return -1
 
     rel_translation, angle = valid_placements[-1]
-    translation, orientation = object1.get_local_pose()
+    # Meshes and placement polygons are expressed in world coordinates.  The
+    # local pose is not equivalent for scaled referenced rigid assets, so
+    # keep the optimizer in the same frame as its geometry.
+    translation, orientation = object1.get_world_pose()
     translation[:2] += rel_translation
 
     orientation = rotate_quaternion_z(orientation, angle)
-    object1.set_local_pose(translation=translation, orientation=orientation)
+    object1.set_world_pose(position=translation, orientation=orientation)
 
     # set_trace()
 
@@ -527,7 +530,7 @@ def random_place_object_on_object(
         object1_bbox.get_max_bound()[0] - object1_bbox.get_min_bound()[0],
         object1_bbox.get_max_bound()[1] - object1_bbox.get_min_bound()[1],
     ]
-    object1_center = object1.get_local_pose()[0][:2]
+    object1_center = object1.get_world_pose()[0][:2]
 
     valid_placements = find_polygon_placement_with_rotation(
         object2_polygon,
@@ -541,7 +544,7 @@ def random_place_object_on_object(
         return -1
 
     rel_translation, angle = valid_placements[-1]
-    translation, orientation = object1.get_local_pose()
+    translation, orientation = object1.get_world_pose()
 
     translation[:2] += rel_translation
 

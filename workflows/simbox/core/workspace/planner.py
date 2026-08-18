@@ -366,7 +366,10 @@ def _pick_target(task: Mapping[str, Any]) -> str | None:
                     if not isinstance(skills, Sequence):
                         continue
                     for skill in skills:
-                        if isinstance(skill, Mapping) and str(skill.get("name", "")).lower() == "pick":
+                        if isinstance(skill, Mapping) and str(skill.get("name", "")).lower() in {
+                            "pick",
+                            "legacy_pick",
+                        }:
                             objects = skill.get("objects") or []
                             if objects:
                                 return str(objects[0])
