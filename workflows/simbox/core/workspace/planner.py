@@ -12,6 +12,13 @@ from typing import Any, Mapping, MutableMapping, Sequence
 import numpy as np
 import yaml
 
+from ..robots.profile import (
+    PlacementFamily,
+    RobotModelProfile,
+    RobotProfileError,
+    load_robot_profile_for_task,
+)
+
 from .geometry import (
     colliding_fixture,
     colliding_fixture_layer,
@@ -24,7 +31,6 @@ from .geometry import (
     _edge_endpoints,
 )
 from .models import (
-    DEFAULT_ROBOT_PROFILES,
     GeometryCandidate,
     SamplingConfig,
     WorkspaceManifest,
@@ -156,7 +162,7 @@ def _metadata_size_xyz(metadata_path: Path) -> tuple[list[float], str] | None:
         if size_xyz is not None:
             return size_xyz, f"{section}.{field}"
 
-    # Legacy layout metadata is [x, up_y, z], so X/Z are horizontal.
+    # layout_pose stores [x, up_y, z], so X/Z are horizontal.
     layout = metadata.get("layout_pose")
     values = layout.get("size_xyz_m") if isinstance(layout, Mapping) else None
     if isinstance(values, Sequence) and not isinstance(values, (str, bytes)) and len(values) >= 3:
@@ -449,20 +455,32 @@ def _sampling_config(task: Mapping[str, Any], overrides: Mapping[str, Any] | Non
     return config
 
 
-def _robot_config(task: Mapping[str, Any]):
-    workspace = task.get("manipulation_workspace") or {}
-    spec = workspace.get("robot") or {}
-    profile_name = str(spec.get("profile", "split_aloha_tabletop_v1"))
-    profile = DEFAULT_ROBOT_PROFILES.get(profile_name)
-    if profile is None:
-        raise WorkspacePlanningError("ROBOT_PROFILE_NOT_FOUND", f"unknown robot profile: {profile_name}")
-    configured = tuple(float(value) for value in spec.get("footprint_m", profile.footprint_m))
-    if len(configured) != 2 or any(not math.isfinite(value) or value <= 0 for value in configured):
-        raise WorkspacePlanningError("INVALID_ROBOT_FOOTPRINT", f"invalid footprint: {configured}")
-    # Arena navigation footprints are allowed to be larger, but never shrink
-    # the measured manipulation-spawn envelope from the robot profile.
-    footprint = tuple(max(configured[index], profile.footprint_m[index]) for index in range(2))
-    return profile_name, footprint, profile
+def _robot_config(task: Mapping[str, Any], input_path: Path) -> RobotModelProfile:
+    robots = task.get("robots") or []
+    if len(robots) != 1 or not isinstance(robots[0], Mapping):
+        raise WorkspacePlanningError(
+            "ROBOT_NOT_FOUND", "workspace planner requires exactly one robot"
+        )
+    try:
+        profile = load_robot_profile_for_task(robots[0], input_path)
+    except RobotProfileError as exc:
+        raise WorkspacePlanningError("ROBOT_PROFILE_INVALID", str(exc)) from exc
+    if profile.placement.footprint_m is None:
+        raise WorkspacePlanningError(
+            "ROBOT_FOOTPRINT_MISSING",
+            f"robot profile {profile.profile_id} has no qualified placement footprint",
+        )
+    return profile
+
+
+def _apply_authored_forward_yaw(
+    candidates: Sequence[GeometryCandidate], profile: RobotModelProfile
+) -> None:
+    """Convert desired world-forward yaw into the asset's authored yaw frame."""
+
+    offset = profile.placement.authored_forward_yaw_offset_deg
+    for candidate in candidates:
+        candidate.yaw_deg = (candidate.yaw_deg - offset + 180.0) % 360.0 - 180.0
 
 
 def build_manifest(
@@ -475,6 +493,16 @@ def build_manifest(
     if required_arm not in {None, "left", "right"}:
         raise WorkspacePlanningError("INVALID_ARM", f"unsupported workspace arm: {required_arm}")
     task = _one_task(document)
+    robot_profile = _robot_config(task, input_path)
+    if robot_profile.placement.family is not PlacementFamily.FLOOR_STANDING:
+        return build_support_mounted_manifest(
+            document,
+            input_path,
+            target_name,
+            sampling_overrides,
+            required_arm=required_arm,
+            robot_profile=robot_profile,
+        )
     task_name = str(task.get("name", input_path.parent.name))
     target = _resolve_target(task, target_name)
     asset_rows = audit_assets(task)
@@ -525,8 +553,10 @@ def build_manifest(
         raise WorkspacePlanningError("WORKSPACE_NOT_FOUND", "arena has no floor fixture")
     target_ref, support_ref = _target_reference(task, target, fixture_by_name)
     sampling = _sampling_config(task, sampling_overrides)
-    profile_name, footprint, robot_profile = _robot_config(task)
-    collision_layers = robot_profile.collision_layers
+    profile_name = robot_profile.profile_id
+    footprint = robot_profile.placement.footprint_m
+    assert footprint is not None
+    collision_layers = robot_profile.placement.collision_layers
 
     candidates = sample_target_annulus(target_ref["world_xyz"][:2], sampling)
     if sampling.yaw_policy == "align_required_arm":
@@ -536,9 +566,9 @@ def build_manifest(
                 "align_required_arm requires a preselected left or right arm",
             )
         arm_base_xy = (
-            robot_profile.left_arm_base_xy_m
-            if required_arm == "left"
-            else robot_profile.right_arm_base_xy_m
+            robot_profile.arms[required_arm].arm_base_xy_m
+            if required_arm in robot_profile.arms
+            else None
         )
         if arm_base_xy is None:
             raise WorkspacePlanningError(
@@ -551,6 +581,7 @@ def build_manifest(
                 target_ref["world_xyz"][:2],
                 arm_base_xy,
             ) + candidate.yaw_offset_deg
+    _apply_authored_forward_yaw(candidates, robot_profile)
     for candidate in candidates:
         obstacle = colliding_fixture(candidate, footprint, fixtures)
         home_layer_obstacle = None
@@ -586,6 +617,8 @@ def build_manifest(
         sampling=sampling.to_dict(),
         robot={
             "profile": profile_name,
+            "profile_hash": robot_profile.profile_hash,
+            "placement_family": robot_profile.placement.family.value,
             "footprint_m": list(footprint),
             "collision_layers": [
                 {
@@ -597,16 +630,10 @@ def build_manifest(
                 }
                 for layer in collision_layers
             ],
-            "left_arm_base_xy_m": (
-                list(robot_profile.left_arm_base_xy_m)
-                if robot_profile.left_arm_base_xy_m is not None
-                else None
-            ),
-            "right_arm_base_xy_m": (
-                list(robot_profile.right_arm_base_xy_m)
-                if robot_profile.right_arm_base_xy_m is not None
-                else None
-            ),
+            "arm_base_xy_m": {
+                arm_id: (list(arm.arm_base_xy_m) if arm.arm_base_xy_m else None)
+                for arm_id, arm in robot_profile.arms.items()
+            },
         },
         geometry_candidates=[candidate.to_dict() for candidate in candidates],
         required_arm=required_arm,
@@ -617,11 +644,17 @@ def build_manifest(
     )
 
 
-def apply_candidate_to_document(
+def _apply_floor_candidate_to_document(
     document: Mapping[str, Any], input_path: Path, candidate: Mapping[str, Any]
 ) -> dict[str, Any]:
     output = copy.deepcopy(document)
     task = _one_task(output)
+    profile = _robot_config(task, input_path)
+    if profile.placement.family is not PlacementFamily.FLOOR_STANDING:
+        raise WorkspacePlanningError(
+            "INVALID_PLACEMENT_FAMILY",
+            f"floor-standing writer cannot place {profile.placement.family.value}",
+        )
     arena_path = _resolve_config_path(str(task.get("arena_file", "")), input_path)
     arena = load_yaml(arena_path)
     floor = next((fixture for fixture in arena.get("fixtures", []) if fixture.get("name") == "floor"), None)
@@ -642,55 +675,44 @@ def apply_candidate_to_document(
         robots[0]["euler"].append(0.0)
     robots[0]["euler"][2] = round(yaw_deg, 6)
 
-    source_region = next(
-        (
-            region
-            for region in task.get("source_regions", [])
-            if region.get("name") == "robot_initial_region" or region.get("A") in {"robot", robot_name}
-        ),
-        None,
-    )
-    if source_region is None:
-        source_region = {"name": "robot_initial_region", "type": "A_on_B_region_sampler", "A": "robot", "B": "floor"}
-        task.setdefault("source_regions", []).append(source_region)
-    source_region.update(
-        {
-            "center": [round(float(world_xy[0]), 6), round(float(world_xy[1]), 6)],
-            "center_xyz": [round(float(world_xy[0]), 6), 0.0, round(float(world_xy[1]), 6)],
-            "yaw_range": [round(yaw_deg, 6), round(yaw_deg, 6)],
-            "planned_by": "target_annulus_v1",
-            "candidate_id": candidate_id,
-        }
-    )
-    for obsolete in (
-        "pose_source",
-        "annotation_name",
-        "recommended_arm",
-        "interaction_edge",
-        "edge_clearance_m",
-        "lateral_offset_m",
-    ):
-        source_region.pop(obsolete, None)
+    source_region = {
+        "name": "robot_initial_region",
+        "type": "A_on_B_region_sampler",
+        "A": "robot",
+        "B": "floor",
+        "center": [round(float(world_xy[0]), 6), round(float(world_xy[1]), 6)],
+        "center_xyz": [round(float(world_xy[0]), 6), 0.0, round(float(world_xy[1]), 6)],
+        "yaw_range": [round(yaw_deg, 6), round(yaw_deg, 6)],
+        "planned_by": "target_annulus_v1",
+        "candidate_id": candidate_id,
+    }
+    task["source_regions"] = [
+        region
+        for region in task.get("source_regions", [])
+        if region.get("name") != "robot_initial_region"
+        and region.get("A") not in {"robot", robot_name}
+    ]
+    task["source_regions"].append(source_region)
 
-    robot_region = next((region for region in task.get("regions", []) if region.get("object") == robot_name), None)
-    if robot_region is None:
-        robot_region = {"object": robot_name, "target": "floor", "random_type": "A_on_B_region_sampler"}
-        task.setdefault("regions", []).append(robot_region)
     floor_translation = floor.get("translation", [0.0, 0.0, 0.0])
     shift = [
         round(float(world_xy[0]) - float(floor_translation[0]), 6),
         round(float(world_xy[1]) - float(floor_translation[1]), 6),
-        0.0,
+        round(profile.placement.base_contact_offset_m, 6),
     ]
-    robot_region.update(
-        {
-            "random_config": {"pos_range": [shift, shift], "yaw_rotation": [0.0, 0.0]},
-            "placement_mode": "planned_workspace_pose",
-            "candidate_id": candidate_id,
-        }
-    )
-    for obsolete in ("pose_source", "annotation_name"):
-        robot_region.pop(obsolete, None)
+    robot_region = {
+        "object": robot_name,
+        "target": "floor",
+        "B": "floor",
+        "random_type": "A_on_B_region_sampler",
+        "random_config": {"pos_range": [shift, shift], "yaw_rotation": [0.0, 0.0]},
+        "placement_mode": "planned_floor_standing_pose",
+        "candidate_id": candidate_id,
+    }
+    task["regions"] = [
+        region for region in task.get("regions", []) if region.get("object") != robot_name
+    ]
+    task["regions"].append(robot_region)
     _remove_stale_robot_regions(task, robot_name)
     task.setdefault("metadata", {})["workspace_candidate"] = {
         "planner": "target_annulus_v1",
@@ -699,6 +721,23 @@ def apply_candidate_to_document(
         "yaw_deg": yaw_deg,
     }
     return output
+
+
+def apply_candidate_to_document(
+    document: Mapping[str, Any], input_path: Path, candidate: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Apply a candidate using the placement family declared by its robot profile."""
+
+    task = _one_task(document)
+    profile = _robot_config(task, input_path)
+    if profile.placement.family is PlacementFamily.FLOOR_STANDING:
+        return _apply_floor_candidate_to_document(document, input_path, candidate)
+    if profile.placement.family is PlacementFamily.SUPPORT_MOUNTED:
+        return apply_support_mounted_candidate_to_document(document, input_path, candidate)
+    raise WorkspacePlanningError(
+        "INVALID_PLACEMENT_FAMILY",
+        f"unsupported placement family: {profile.placement.family}",
+    )
 
 
 def generate_manifest_file(
@@ -720,7 +759,7 @@ def generate_manifest_file(
     except WorkspacePlanningError as exc:
         dump_json(
             {
-                "version": 3,
+                "version": 4,
                 "source_task": str(input_path.resolve()),
                 "task_name": input_path.parent.name,
                 "target": {},
@@ -745,26 +784,79 @@ def generate_manifest_file(
     dump_json(manifest.to_dict(), manifest_path)
     return manifest
 
-def _resolve_table_name(task: Mapping[str, Any]) -> str:
-    active = list(task.get("delivery_active_objects") or [])
-    target = str(active[0]) if active else None
-    if target is None:
-        raise WorkspacePlanningError("TABLE_NOT_FOUND", "task has no delivery_active_objects")
+def _resolve_support_name(task: Mapping[str, Any], target: str) -> str:
+    if not target:
+        raise WorkspacePlanningError("SUPPORT_NOT_FOUND", "workspace target is empty")
     region = next((r for r in task.get("regions", []) if str(r.get("object", "")) == target), None)
     if region is None:
-        raise WorkspacePlanningError("TABLE_NOT_FOUND", f"no region for target {target!r}")
-    table_name = str(region.get("target") or region.get("B") or "")
-    if not table_name:
-        raise WorkspacePlanningError("TABLE_NOT_FOUND", f"region for {target!r} has no support target")
-    return table_name
+        raise WorkspacePlanningError("SUPPORT_NOT_FOUND", f"no region for target {target!r}")
+    support_name = str(region.get("target") or region.get("B") or "")
+    if not support_name:
+        raise WorkspacePlanningError("SUPPORT_NOT_FOUND", f"region for {target!r} has no support target")
+    return support_name
 
-def build_tabletop_manifest(
+
+def _mount_support_fixture(
+    task: Mapping[str, Any],
+    target: str,
+    fixtures: Mapping[str, Mapping[str, Any]],
+    footprint: Sequence[float],
+) -> Mapping[str, Any]:
+    runtime_support = _resolve_support_name(task, target)
+    region = next(
+        region
+        for region in task.get("regions", [])
+        if str(region.get("object", "")) == target
+    )
+    candidates = []
+    for name in (
+        str(region.get("parent_fixture") or ""),
+        str(region.get("support_target_fixture") or ""),
+        runtime_support,
+    ):
+        if name and name not in candidates:
+            candidates.append(name)
+    measured = []
+    for name in candidates:
+        fixture = fixtures.get(name)
+        if fixture is None:
+            continue
+        size = fixture.get("size")
+        if not isinstance(size, Sequence) or len(size) < 2:
+            continue
+        measured.append((name, fixture))
+        if float(size[0]) + 1e-9 >= float(footprint[0]) and float(
+            size[1]
+        ) + 1e-9 >= float(footprint[1]):
+            return fixture
+    raise WorkspacePlanningError(
+        "MOUNT_SUPPORT_TOO_SMALL",
+        f"no measured task support can contain robot footprint for target {target!r}",
+        {
+            "runtime_support": runtime_support,
+            "candidate_supports": [name for name, _ in measured],
+            "footprint_m": [float(footprint[0]), float(footprint[1])],
+        },
+    )
+
+def build_support_mounted_manifest(
     document: Mapping[str, Any],
     input_path: Path,
     target_name: str | None = None,
     sampling_overrides: Mapping[str, Any] | None = None,
+    *,
+    required_arm: str | None = None,
+    robot_profile: RobotModelProfile | None = None,
 ) -> WorkspaceManifest:
     task = _one_task(document)
+    if required_arm not in {None, "left", "right"}:
+        raise WorkspacePlanningError("INVALID_ARM", f"unsupported workspace arm: {required_arm}")
+    profile = robot_profile or _robot_config(task, input_path)
+    if profile.placement.family is not PlacementFamily.SUPPORT_MOUNTED:
+        raise WorkspacePlanningError(
+            "INVALID_PLACEMENT_FAMILY",
+            f"support-mounted planner cannot place {profile.placement.family.value}",
+        )
     task_name = str(task.get("name", input_path.parent.name))
     target = _resolve_target(task, target_name)
 
@@ -795,18 +887,16 @@ def build_tabletop_manifest(
 
     arena_path = _resolve_config_path(str(task.get("arena_file", "")), input_path)
     arena = load_yaml(arena_path)
-    fixtures = list(arena.get("fixtures") or [])
+    fixtures = _fixtures_with_asset_extents(task, list(arena.get("fixtures") or []))
     fixture_by_name = {str(fixture.get("name", "")): fixture for fixture in fixtures}
 
-    table_name = _resolve_table_name(task)
-    table = fixture_by_name.get(table_name)
-    if table is None:
-        raise WorkspacePlanningError(
-            "WORKSPACE_NOT_FOUND", f"table {table_name!r} is absent from arena fixtures"
-        )
+    footprint = profile.placement.footprint_m
+    assert footprint is not None
+    table = _mount_support_fixture(task, target, fixture_by_name, footprint)
+    table_name = str(table["name"])
 
-    table_translation = table.get("translation", [0.0, 0.0, 0.0])
-    table_size = table.get("size", [1.0, 1.0])
+    table_translation = table.get("translation")
+    table_size = table.get("size")
     if (
         not isinstance(table_translation, Sequence)
         or len(table_translation) < 2
@@ -822,8 +912,7 @@ def build_tabletop_manifest(
 
     target_ref, support_ref = _target_reference(task, target, fixture_by_name)
     sampling = _sampling_config(task, sampling_overrides)
-    profile_name, footprint, _robot_profile = _robot_config(task)
-
+    profile_name = profile.profile_id
     table_center = (float(table_translation[0]), float(table_translation[1]))
     table_size_tuple = (float(table_size[0]), float(table_size[1]))
 
@@ -837,8 +926,19 @@ def build_tabletop_manifest(
         all_candidates.extend(
             sample_table_edge(edge_name, start, end, inward_yaw, footprint, candidates_per_edge)
         )
+    _apply_authored_forward_yaw(all_candidates, profile)
+    for candidate in all_candidates:
+        candidate.mount_support = table_name
 
-    non_table_fixtures = [f for f in fixtures if str(f.get("name", "")) != table_name]
+    mount_fixture_names = {table_name, str(support_ref.get("name") or "")}
+    parent_fixture = str(support_ref.get("parent_fixture") or "")
+    if parent_fixture:
+        mount_fixture_names.add(parent_fixture)
+    non_table_fixtures = [
+        fixture
+        for fixture in fixtures
+        if str(fixture.get("name", "")) not in mount_fixture_names
+    ]
 
     for candidate in all_candidates:
         candidate.inside_floor = inside_rect(
@@ -867,14 +967,20 @@ def build_tabletop_manifest(
         target=target_ref,
         support=support_ref,
         sampling=sampling.to_dict(),
-        robot={"profile": profile_name, "footprint_m": list(footprint)},
+        robot={
+            "profile": profile_name,
+            "profile_hash": profile.profile_hash,
+            "placement_family": profile.placement.family.value,
+            "footprint_m": list(footprint),
+        },
         geometry_candidates=[candidate.to_dict() for candidate in all_candidates],
+        required_arm=required_arm,
         status="geometry_ready" if feasible_count else "no_geometry_candidate",
         failure_code=None if feasible_count else "NO_GEOMETRY_CANDIDATE",
         asset_audit=asset_rows,
     )
 
-def generate_tabletop_manifest_file(
+def generate_support_mounted_manifest_file(
     input_path: Path,
     output_dir: Path,
     target_name: str | None = None,
@@ -884,15 +990,17 @@ def generate_tabletop_manifest_file(
 ) -> WorkspaceManifest:
     manifest_path = output_dir / "candidates.json"
     try:
-        manifest = build_tabletop_manifest(
-            load_yaml(input_path), input_path, target_name, sampling_overrides
+        manifest = build_support_mounted_manifest(
+            load_yaml(input_path),
+            input_path,
+            target_name,
+            sampling_overrides,
+            required_arm=required_arm,
         )
-        if required_arm:
-            manifest.required_arm = required_arm
     except WorkspacePlanningError as exc:
         dump_json(
             {
-                "version": 3,
+                "version": 4,
                 "source_task": str(input_path.resolve()),
                 "task_name": input_path.parent.name,
                 "target": {},
@@ -916,11 +1024,17 @@ def generate_tabletop_manifest_file(
     dump_json(manifest.to_dict(), manifest_path)
     return manifest
 
-def apply_tabletop_candidate_to_document(
+def apply_support_mounted_candidate_to_document(
     document: Mapping[str, Any], input_path: Path, candidate: Mapping[str, Any]
 ) -> dict[str, Any]:
     output = copy.deepcopy(document)
     task = _one_task(output)
+    profile = _robot_config(task, input_path)
+    if profile.placement.family is not PlacementFamily.SUPPORT_MOUNTED:
+        raise WorkspacePlanningError(
+            "INVALID_PLACEMENT_FAMILY",
+            f"support-mounted writer cannot place {profile.placement.family.value}",
+        )
 
     world_xy = candidate.get("world_xy")
     if not isinstance(world_xy, Sequence) or len(world_xy) < 2:
@@ -937,7 +1051,11 @@ def apply_tabletop_candidate_to_document(
         robots[0]["euler"].append(0.0)
     robots[0]["euler"][2] = round(yaw_deg, 6)
 
-    table_name = _resolve_table_name(task)
+    table_name = str(candidate.get("mount_support") or "")
+    if not table_name:
+        raise WorkspacePlanningError(
+            "INVALID_CANDIDATE", "support-mounted candidate has no mount_support"
+        )
 
     arena_path = _resolve_config_path(str(task.get("arena_file", "")), input_path)
     arena = load_yaml(arena_path)
@@ -949,7 +1067,7 @@ def apply_tabletop_candidate_to_document(
     shift = [
         round(float(world_xy[0]) - float(table_translation[0]), 6),
         round(float(world_xy[1]) - float(table_translation[1]), 6),
-        0.0,
+        round(profile.placement.base_contact_offset_m, 6),
     ]
 
     source_region = {
@@ -960,7 +1078,7 @@ def apply_tabletop_candidate_to_document(
         "center": [round(float(world_xy[0]), 6), round(float(world_xy[1]), 6)],
         "center_xyz": [round(float(world_xy[0]), 6), 0.0, round(float(world_xy[1]), 6)],
         "yaw_range": [round(yaw_deg, 6), round(yaw_deg, 6)],
-        "planned_by": "tabletop_edge_v1",
+        "planned_by": "support_mounted_edge_v1",
         "candidate_id": candidate_id,
     }
     task["source_regions"] = [
@@ -970,26 +1088,22 @@ def apply_tabletop_candidate_to_document(
     ]
     task.setdefault("source_regions", []).append(source_region)
 
-    robot_region = next(
-        (r for r in task.get("regions", []) if r.get("object") == robot_name),
-        None,
-    )
-    if robot_region is None:
-        robot_region = {"object": robot_name, "target": table_name, "random_type": "A_on_B_region_sampler"}
-        task.setdefault("regions", []).append(robot_region)
-    robot_region.update(
-        {
-            "target": table_name,
-            "random_config": {"pos_range": [shift, shift], "yaw_rotation": [0.0, 0.0]},
-            "placement_mode": "planned_tabletop_pose",
-            "candidate_id": candidate_id,
-        }
-    )
-    for obsolete in ("pose_source", "annotation_name"):
-        robot_region.pop(obsolete, None)
+    robot_region = {
+        "object": robot_name,
+        "target": table_name,
+        "B": table_name,
+        "random_type": "A_on_B_region_sampler",
+        "random_config": {"pos_range": [shift, shift], "yaw_rotation": [0.0, 0.0]},
+        "placement_mode": "planned_support_mounted_pose",
+        "candidate_id": candidate_id,
+    }
+    task["regions"] = [
+        region for region in task.get("regions", []) if region.get("object") != robot_name
+    ]
+    task["regions"].append(robot_region)
     _remove_stale_robot_regions(task, robot_name)
     task.setdefault("metadata", {})["workspace_candidate"] = {
-        "planner": "tabletop_edge_v1",
+        "planner": "support_mounted_edge_v1",
         "candidate_id": candidate_id,
         "world_xy": [float(world_xy[0]), float(world_xy[1])],
         "yaw_deg": yaw_deg,

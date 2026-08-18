@@ -41,6 +41,7 @@ class LmdbLogger(BaseLogger):
         save_depth: bool = True,
         min_inttype: int = 0,
         max_inttype: int = 2**24 - 1,
+        robot_data_adapters: dict | None = None,
     ):
         super().__init__(
             task_dir=task_dir,
@@ -54,6 +55,7 @@ class LmdbLogger(BaseLogger):
         self.image_quality = image_quality
         self.min_inttype = min_inttype
         self.max_inttype = max_inttype
+        self.robot_data_adapters = dict(robot_data_adapters or {})
         self._video_temp_dir = None
         self._video_writers = {}
         self._video_temp_paths = {}
@@ -209,10 +211,6 @@ class LmdbLogger(BaseLogger):
             meta_info["keys"]["object_data"] = []
             if robot_name in self.object_data_logger:
                 for key, value in self.object_data_logger[robot_name].items():
-                    if "robotiq" in robot_name and key == "states.gripper.position":
-                        value = [self.action_data_logger[robot_name]["master_actions.gripper.position"][0]] + (
-                            self.action_data_logger[robot_name]["master_actions.gripper.position"]
-                        )[:-1]
                     txn.put(key.encode("utf-8"), pickle.dumps(value))
                     meta_info["keys"]["object_data"].append(key.encode("utf-8"))
 
@@ -237,23 +235,14 @@ class LmdbLogger(BaseLogger):
                     txn.put(new_key.encode("utf-8"), pickle.dumps(value))
                     meta_info["keys"]["action_data"].append(new_key.encode("utf-8"))
 
-            if (
-                "split_aloha" in robot_name
-                or "lift2" in robot_name
-                or "azure_loong" in robot_name
-                or "genie" in robot_name
-            ):
-                left_gripper_openness = self.action_data_logger[robot_name]["master_actions.left_gripper.openness"]
-                right_gripper_openness = self.action_data_logger[robot_name]["master_actions.right_gripper.openness"]
-
-                txn.put("actions.left_gripper.openness".encode("utf-8"), pickle.dumps(left_gripper_openness))
-                meta_info["keys"]["action_data"].append("actions.left_gripper.openness".encode("utf-8"))
-                txn.put("actions.right_gripper.openness".encode("utf-8"), pickle.dumps(right_gripper_openness))
-                meta_info["keys"]["action_data"].append("actions.right_gripper.openness".encode("utf-8"))
-            elif "franka" in robot_name:
-                gripper_openness = self.action_data_logger[robot_name]["master_actions.gripper.openness"]
-                txn.put("actions.gripper.openness".encode("utf-8"), pickle.dumps(gripper_openness))
-                meta_info["keys"]["action_data"].append("actions.gripper.openness".encode("utf-8"))
+            for key, value in self.action_data_logger.get(robot_name, {}).items():
+                if not key.startswith("master_actions.") or not key.endswith(
+                    "gripper.openness"
+                ):
+                    continue
+                action_key = key.replace("master_actions.", "actions.", 1)
+                txn.put(action_key.encode("utf-8"), pickle.dumps(value))
+                meta_info["keys"]["action_data"].append(action_key.encode("utf-8"))
 
             # Save color images
             if save_img:

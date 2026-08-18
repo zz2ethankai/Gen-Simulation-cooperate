@@ -6,8 +6,18 @@ from typing import Any
 
 
 PHYSICS_SCHEMA_SKILLS = {"pick", "place"}
-VALIDATION_ONLY_SKILLS = {"pick_plan_probe"}
+VALIDATION_ONLY_SKILL_OBJECT_COUNTS = {
+    "pick_plan_probe": 1,
+    "place_plan_probe": 2,
+}
 NON_MANIPULATION_SKILLS = {"observe_hold"}
+SPAWN_SETTLE_FIELDS = {
+    "max_object_linear_speed_m_s",
+    "max_object_angular_speed_rad_s",
+    "max_robot_joint_speed_rad_s",
+    "max_unexpected_contact_n",
+    "target_support",
+}
 
 
 def validate_planning_contract(task_cfg: dict[str, Any], collision_world_mode: str) -> None:
@@ -43,15 +53,37 @@ def validate_planning_contract(task_cfg: dict[str, Any], collision_world_mode: s
                         skill_name = str(skill_cfg.get("name", "")).lower()
                         if skill_name in NON_MANIPULATION_SKILLS:
                             continue
-                        if skill_name in VALIDATION_ONLY_SKILLS:
+                        if skill_name in VALIDATION_ONLY_SKILL_OBJECT_COUNTS:
                             if not isinstance(task_cfg.get("metadata", {}).get("workspace_probe"), dict):
                                 raise ValueError(
                                     f"validation-only Skill {skill_name!r} requires metadata.workspace_probe"
                                 )
-                            if len(skill_cfg.get("objects", [])) != 1:
+                            expected_count = VALIDATION_ONLY_SKILL_OBJECT_COUNTS[skill_name]
+                            if len(skill_cfg.get("objects", [])) != expected_count:
                                 raise ValueError(
-                                    f"validation-only Skill {skill_name!r} requires exactly 1 object identity"
+                                    f"validation-only Skill {skill_name!r} requires exactly "
+                                    f"{expected_count} object identities"
                                 )
+                            if (
+                                skill_name == "place_plan_probe"
+                                and str(skill_cfg.get("test_mode", "forward")) != "forward"
+                            ):
+                                raise ValueError(
+                                    "place_plan_probe requires test_mode=forward because "
+                                    "IK-only checks do not validate a collision-free path"
+                                )
+                            if skill_name == "pick_plan_probe":
+                                expectation = skill_cfg.get("spawn_expectation")
+                                missing = (
+                                    sorted(SPAWN_SETTLE_FIELDS - expectation.keys())
+                                    if isinstance(expectation, dict)
+                                    else sorted(SPAWN_SETTLE_FIELDS)
+                                )
+                                if missing:
+                                    raise ValueError(
+                                        "pick_plan_probe spawn_expectation is missing: "
+                                        + ", ".join(missing)
+                                    )
                             continue
                         if skill_name not in PHYSICS_SCHEMA_SKILLS:
                             raise ValueError(

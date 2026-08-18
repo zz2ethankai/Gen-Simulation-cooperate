@@ -1,48 +1,120 @@
 from pathlib import Path
+import math
+import shutil
 import numpy as np
 from omni.isaac.core.utils.prims import get_prim_at_path
 from omni.isaac.core.utils.transformations import get_relative_transform
 from omni.isaac.sensor import Camera
 
-def capture_topdown_screenshot(output_dir: str, world, task_cameras: dict | None = None, eye=None, target=None):
-    """Capture a top-down screenshot using an existing task camera.
 
-    Temporarily repositions the first available camera to look straight
-    down, renders one frame, saves ``topdown_check.png``, then restores
-    the original pose.  This works in headless mode because it reuses
-    an already-initialised camera with a valid RenderProduct.
+_topdown_camera_counter = 0
+def capture_topdown_screenshot(
+    output_dir: str,
+    room_half_extent=(2.777, 2.177),
+    room_height=2.8,
+    floor_z=0.0,
+    width=640,
+    height=480,
+    *,
+    eye=None,
+    target=None,
+    focal_length_mm=16.0,
+    filename="topdown.png",
+):
+    """Capture an independent scene-overview camera as a PNG.
+
+    Uses the same pose and synchronous replicator pipeline as visual_physics'
+    ``diagonal_overview``: a fresh camera + ``force_new`` render product +
+    BasicWriter, driven by ``rep.orchestrator.step()``/``wait_until_complete()``
+    until the PNG lands on disk.
     """
-    output_path = Path(output_dir) / "topdown_check.png"
+    import omni.replicator.core as rep
+
+    output_path = (Path(output_dir).resolve()) / str(filename)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    _eye = eye or [0.5, 0.5, 3.0]
+    half_x, half_y = room_half_extent
+    scene_radius = 0.5 * math.hypot(2.0 * half_x, 2.0 * half_y)
+    eye_pos = tuple(
+        float(value)
+        for value in (
+            eye
+            if eye is not None
+            else (
+                -2.0 * half_x * 0.44,
+                -2.0 * half_y * 0.44,
+                floor_z + room_height + scene_radius * 0.78,
+            )
+        )
+    )
+    target_pos = tuple(
+        float(value)
+        for value in (
+            target
+            if target is not None
+            else (
+                0.0,
+                0.0,
+                floor_z
+                + min(max(room_height * 0.22, 0.62), room_height - 0.75),
+            )
+        )
+    )
+    if len(eye_pos) != 3 or len(target_pos) != 3:
+        raise ValueError("overview camera eye and target must each contain three numbers")
+    camera_values = np.asarray((*eye_pos, *target_pos, focal_length_mm), dtype=float)
+    if not np.isfinite(camera_values).all() or float(focal_length_mm) <= 0.0:
+        raise ValueError("overview camera values must be finite and focal length positive")
+    if int(width) <= 0 or int(height) <= 0:
+        raise ValueError("overview camera resolution must be positive")
+    if np.linalg.norm(np.asarray(target_pos) - np.asarray(eye_pos)) <= 1e-9:
+        raise ValueError("overview camera eye and target must be different")
+    up_axis = (0.0, 0.0, 1.0)
 
-    if not task_cameras:
-        print("[topdown_check] ERROR: No task cameras available")
-        return
+    global _topdown_camera_counter
+    _topdown_camera_counter += 1
 
-    cam_name, cam = next(iter(task_cameras.items()))
+    camera = rep.create.camera(
+        name=f"topdown_debug_{_topdown_camera_counter}",
+        position=eye_pos,
+        look_at=target_pos,
+        look_at_up_axis=up_axis,
+        focal_length=float(focal_length_mm),
+        clipping_range=(0.01, 1000.0),
+    )
+    render_product = rep.create.render_product(camera, (int(width), int(height)), force_new=True)
+    writer = rep.WriterRegistry.get("BasicWriter")
+    writer.initialize(
+        output_dir=str(output_path.parent),
+        rgb=True,
+        image_output_format="png",
+        frame_padding=4,
+    )
+    rgb_source = output_path.parent / "rgb_0000.png"
+    if rgb_source.exists():
+        rgb_source.unlink()
+    attached = False
     try:
-        orig_trans, orig_orient = cam.get_local_pose()
-        cam.set_local_pose(translation=np.array(_eye))
-        world.render()
-        obs = cam.get_observations()
-        rgb = obs.get("color_image")
-        if rgb is not None and rgb.size > 0:
-            from PIL import Image
-
-            img = rgb.astype(np.uint8) if rgb.dtype != np.uint8 else rgb
-            Image.fromarray(img).save(str(output_path))
-            print(f"[topdown_check] Screenshot saved to {output_path} (via {cam_name})")
-        else:
-            print("[topdown_check] ERROR: Camera get_observations returned no color_image")
-    except Exception as exc:
-        print(f"[topdown_check] Failed: {exc}")
+        writer.attach([render_product])
+        attached = True
+        for _ in range(3):
+            rep.orchestrator.step(rt_subframes=32, pause_timeline=False)
+            rep.orchestrator.wait_until_complete()
+            if rgb_source.exists():
+                break
     finally:
         try:
-            cam.set_local_pose(translation=orig_trans, orientation=orig_orient)
-        except Exception:
-            pass
+            if attached:
+                writer.detach()
+        finally:
+            render_product.destroy()
+    if rgb_source.exists():
+        shutil.move(str(rgb_source), str(output_path))
+    if not output_path.exists():
+        raise RuntimeError(
+            f"[topdown] render did not produce {output_path} (writer output dir={output_path.parent})"
+        )
+    print(f"[topdown] Screenshot saved to {output_path} (eye={eye_pos}, target={target_pos})")
 
 def _get_annotator(camera: Camera, annotator_name: str):
     custom_annotators = getattr(camera, "_custom_annotators", None)

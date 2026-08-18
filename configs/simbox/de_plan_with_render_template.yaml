@@ -25,7 +25,7 @@ plan_with_render_stage:
   plan_with_render:                        # Plan and render in a single stage
     type: plan_with_render
     args:
-      save_failed: true                   # true: save data even when task fails (for debugging)
+      save_failed: false                  # true: save data even when task fails (for debugging)
 store_stage:
   writer:                                  # Data writer
     type: env_writer

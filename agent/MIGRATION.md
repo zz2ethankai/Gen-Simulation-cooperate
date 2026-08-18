@@ -48,7 +48,7 @@
 - `.claude/`、`.codex/`、`.env` 和用户凭据；
 - 与当前 Agent 无关的 Eval、StarVLA、邮件、Docker 之外的部署代码。
 
-这里的“不迁移文档”不包括 `agent/prompts/`、`agent/registry/`、`agent/README.md` 和本文件。它们会直接影响 Agent 决策或是 Agent 的随附使用说明，属于运行组件。
+这里的“不迁移文档”不包括 `agent/workflow/`、`agent/tools/`、`agent/robot_skills/`、`agent/registry/`、`agent/README.md` 和本文件。前三者分别承载语义流程、确定性仿真工具和机器人 Skill 机器契约；它们会直接影响 Agent 决策与执行，属于运行组件。
 
 ### 2.3 必须另行准备的资产
 
@@ -267,7 +267,9 @@ agent/
 ├── resolver.py
 ├── retention.py
 ├── settings.py
-├── prompts/
+├── workflow/
+├── tools/
+├── robot_skills/
 ├── registry/
 ├── experience/
 └── task_ir/
@@ -278,11 +280,9 @@ agent/
 ```text
 agent/task_generator.py
 agent/read.md
-agent/prompts/system.txt
-agent/prompts/user_template.txt
 ```
 
-`agent/prompts/` 和 `agent/registry/` 不是普通说明文档：规划规则、中心物品选择、左右臂顺序、Pick/Place 参数合法性和失败码都由这些文件约束，必须随代码迁移。
+`agent/workflow/`、`agent/tools/`、`agent/robot_skills/` 和 `agent/registry/` 不是普通说明文档：规划策略、对象角色、布局与反馈工具、Pick/Place 参数合法性、admission 和失败码都由这些文件约束，必须随代码迁移。
 
 ### 6.2 Workspace 文件
 

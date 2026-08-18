@@ -59,7 +59,8 @@ class TemplateController(BaseController):
     def __init__(
         self,
         name: str,
-        robot_file: str,
+        arm_id: str,
+        arm_config: dict,
         task: BaseTask,
         world: World,
         constrain_grasp_approach: bool = False,
@@ -101,14 +102,15 @@ class TemplateController(BaseController):
         self.usd_help = UsdHelper()
         self.tensor_args = TensorDeviceType()
         self.init_curobo = False
-        self.robot_file = robot_file
+        self.arm_config = dict(arm_config)
+        self.lr_name = str(arm_id)
+        self.robot_file = str(self.arm_config["curobo_file"])
         self.num_plan_failed = 0
         self.raw_js_names = []
         self.cmd_js_names = []
         self.arm_indices = np.array([])
         self.gripper_indices = np.array([])
         self.reference_prim_path = None
-        self.lr_name = None
         self._ee_trans = 0.0
         self._ee_ori = 0.0
         self._gripper_state = 1.0
@@ -127,10 +129,11 @@ class TemplateController(BaseController):
         self._phase_plan_failed = False
         self._phase_completion_logged = False
         self._last_commanded_arm_position = None
+        self.episode_initial_arm_joints = None
 
-        self._configure_joint_indices(robot_file)
+        self._configure_arm()
         self._resolve_runtime_control_indices()
-        self._load_robot(robot_file)
+        self._load_robot(self.robot_file)
         self._load_kin_model()
         self._load_world()
         self._init_motion_gen()
@@ -164,8 +167,41 @@ class TemplateController(BaseController):
     def _get_default_ignore_substring(self) -> List[str]:
         return ["material", "Plane", "conveyor", "scene", "table"]
 
-    def _configure_joint_indices(self, robot_file: str) -> None:
-        raise NotImplementedError
+    def _configure_arm(self) -> None:
+        if self.lr_name not in {"left", "right"}:
+            raise JointIndexResolutionError(
+                f"controller {self.name} received unsupported arm_id {self.lr_name!r}"
+            )
+        self.cmd_js_names = list(self.arm_config["command_joint_names"])
+        self.raw_js_names = list(
+            self.arm_config.get("trajectory_joint_names", self.cmd_js_names)
+        )
+        self.arm_indices = np.asarray(self.arm_config["joint_indices"], dtype=np.int64)
+        self.gripper_indices = np.asarray(
+            self.arm_config["gripper"]["joint_indices"], dtype=np.int64
+        )
+        self.reference_prim_path = (
+            f"{self.robot.robot_prim_path}/{self.arm_config['base_path']}"
+        )
+        gripper_state = getattr(self.robot, f"{self.lr_name}_gripper_state")
+        self._gripper_state = 1.0 if gripper_state == 1.0 else -1.0
+        action = self.arm_config["gripper"]["action"]
+        self._gripper_joint_position = np.asarray(action["command"], dtype=float)
+
+    def get_gripper_action(self):
+        action = self.arm_config["gripper"]["action"]
+        sign = -1.0 if bool(action.get("invert", False)) else 1.0
+        low, high = (float(value) for value in action["clip"])
+        return np.clip(
+            sign * self._gripper_state * self._gripper_joint_position,
+            low,
+            high,
+        )
+
+    @property
+    def grasp_approach_axis(self) -> int:
+        axis = str(self.robot.cfg["ee_axis"])
+        return {"x": 0, "y": 1, "z": 2}[axis]
 
     def _resolve_runtime_control_indices(self) -> None:
         """Resolve arm actuation indices by name and fail before any command can be misrouted."""
@@ -255,15 +291,7 @@ class TemplateController(BaseController):
         return {"obb": 700, "mesh": 700}
 
     def _get_grasp_approach_linear_axis(self) -> int:
-        """Axis for grasp approach constraint (0=x, 1=y, 2=z). Override in subclasses (e.g. Lift2 uses 0)."""
-        if self.robot.cfg["ee_axis"] == "x":
-            return 0
-        elif self.robot.cfg["ee_axis"] == "y":
-            return 1
-        elif self.robot.cfg["ee_axis"] == "z":
-            return 2
-        else:
-            raise NotImplementedError
+        return self.grasp_approach_axis
 
     def _get_sort_path_weights(self) -> Optional[List[float]]:
         """Optional per-joint weights for sort_by_difference_js.
@@ -460,6 +488,15 @@ class TemplateController(BaseController):
         )
         self.T_world_ee_init = self.T_world_base_init @ self.T_base_ee_init
         self._ee_trans, self._ee_ori = self.get_ee_pose()
+        self.episode_initial_arm_joints = np.asarray(
+            self.robot.get_joints_state().positions[self.arm_indices], dtype=float
+        ).copy()
+        LOGGER.warning(
+            "[ReturnInitialDebug] captured robot=%s arm=%s initial_joints=%s",
+            self.name,
+            self.lr_name,
+            np.round(self.episode_initial_arm_joints, 6).tolist(),
+        )
         self._ee_trans = self.tensor_args.to_device(self._ee_trans)
         self._ee_ori = self.tensor_args.to_device(self._ee_ori)
         self.update_pose_cost_metric()

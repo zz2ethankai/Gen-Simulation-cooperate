@@ -36,16 +36,19 @@ class Pick(BaseSkill):
 
         # Get grasp annotation
         object_cfg = next(obj for obj in task.cfg["objects"] if obj["name"] == object_name)
+        # Annotation t/depth are in the object model's native units; scale to scene
+        # units using the object's declared annotation scale (previously never applied).
+        ann_scale = float(object_cfg.get("grasp_annotation_scale", [1, 1, 1])[0])
         usd_path = resolve_asset_path(self.task.asset_root, object_cfg)
         grasp_pose_path = usd_path.replace(
             "Aligned_obj.usd", self.skill_cfg.get("npy_name", "Aligned_grasp_sparse.npy")
         )
         sparse_grasp_poses = np.load(grasp_pose_path)
-        lr_arm = "right" if "right" in self.controller.robot_file else "left"
+        lr_arm = self.controller.lr_name
         self.T_obj_ee, self.scores = self.robot.pose_post_process_fn(
             sparse_grasp_poses,
             lr_arm=lr_arm,
-            grasp_scale=self.skill_cfg.get("grasp_scale", 1),
+            grasp_scale=self.skill_cfg.get("grasp_scale", ann_scale),
             tcp_offset=self.skill_cfg.get("tcp_offset", self.robot.tcp_offset),
             constraints=self.skill_cfg.get("constraints", None),
         )
@@ -116,8 +119,24 @@ class Pick(BaseSkill):
         self.controller.update_pose_cost_metric(None)
         manager.sync_dynamic_poses(0, interval_steps=1, force=True)
         manager.begin_target_transit(object_name, robot, arm)
-
         transforms = self.sample_ee_pose()
+        if os.environ.get("SIMBOX_DRAW_GRASP_AXES") == "1":
+            try:
+                from core.utils.debug_marker import draw_grasp_debug
+
+                p_ee, q_ee = self.controller.get_ee_pose()
+                marker_root, n = draw_grasp_debug(
+                    self.controller,
+                    self.task.root_prim_path,
+                    p_ee,
+                    q_ee,
+                    transforms,
+                    max_frames=int(os.environ.get("SIMBOX_DRAW_GRASP_FRAMES", "8")),
+                )
+                LOGGER.warning("[PickDebug] drew EE + %d grasp-axes at %s", n, marker_root)
+            except Exception as exc:  # diagnostics must never break planning
+                LOGGER.warning("[PickDebug] grasp-axes debug failed: %r", exc)
+
         evaluator = GraspPlanEvaluator(self.controller, self._debug_log)
         missing = evaluator.missing_attach_prims(self.pick_obj.attach_collision_prim_paths)
         self.plan_evaluation = evaluator.evaluate(
@@ -132,6 +151,8 @@ class Pick(BaseSkill):
             attach_missing_paths=missing,
             prepare_pregrasp_world=lambda: manager.begin_target_transit(object_name, robot, arm),
             prepare_grasp_world=lambda: manager.begin_target_approach(object_name, robot, arm),
+            cartesian_ratio_limit=float(self.skill_cfg.get("cartesian_ratio_limit", 1.5)),
+            cartesian_deviation_m=float(self.skill_cfg.get("cartesian_deviation_m", 0.01)),
         )
         result = self.plan_evaluation.result
         # Candidate testing leaves the owner in the terminal world.  Execution
@@ -351,6 +372,8 @@ class Pick(BaseSkill):
             attach_config_failure_code=self.pick_obj.attach_collision_failure_code,
             attach_candidate_paths=self.pick_obj.attach_collision_candidates,
             attach_missing_paths=missing_attach_paths,
+            cartesian_ratio_limit=float(self.skill_cfg.get("cartesian_ratio_limit", 1.5)),
+            cartesian_deviation_m=float(self.skill_cfg.get("cartesian_deviation_m", 0.01)),
         )
         plan_result = self.plan_evaluation.result
         if not plan_result.feasible:
@@ -584,7 +607,41 @@ class Pick(BaseSkill):
         contact = np.atleast_1d(np.sum(np.abs(values), axis=-1).squeeze())
         indices = np.where(contact > contact_threshold)[0]
         return contact, indices
+    def _debug_contact_force(self, threshold: float = 0.0) -> None:
+        """Log the measured finger-to-target contact force at grasp time."""
+        if os.environ.get("SIMBOX_DEBUG_CONTACT") != "1":
+            return
 
+        values = np.asarray(
+            self.pickcontact_view.get_contact_force_matrix(), dtype=float
+        )
+        if not values.size:
+            LOGGER.warning(
+                "[ContactDebug] object=%s raw_shape=%s no finger-object contact",
+                self.pick_obj.name,
+                values.shape,
+            )
+            return
+
+        # RigidContactView stores a 3-vector per filter (the last dimension).
+        # Keep the same L1 reduction used by get_contact(), and also report
+        # the Euclidean norm for a physically meaningful Newton value.
+        l1_force = np.sum(np.abs(values), axis=-1).squeeze()
+        norm_force = np.linalg.norm(values, axis=-1).squeeze()
+        l1_force = np.atleast_1d(l1_force)
+        norm_force = np.atleast_1d(norm_force)
+        contacted = np.where(l1_force > threshold)[0].tolist()
+
+        LOGGER.warning(
+            "[ContactDebug] object=%s raw_shape=%s "
+            "finger_force_n=%s max=%.6fN contacted=%s threshold=%.6fN",
+            self.pick_obj.name,
+            values.shape,
+            np.array2string(norm_force, precision=6, suppress_small=False),
+            float(np.max(norm_force)) if norm_force.size else 0.0,
+            contacted,
+            threshold,
+        )
     def is_feasible(self, th=5):
         return self.controller.num_plan_failed <= th
 
@@ -595,6 +652,7 @@ class Pick(BaseSkill):
             done = self.controller.is_phase_command_complete(command)
             if done and command.phase == MotionPhase.GRIPPER_CLOSE:
                 threshold = float(command.params.get("contact_threshold_n", 0.0))
+                self._debug_contact_force(threshold=threshold)
                 _, indices = self.get_contact(contact_threshold=threshold)
                 self._grasp_contact_verified = len(indices) >= 1
                 command.params["contact_verified"] = self._grasp_contact_verified

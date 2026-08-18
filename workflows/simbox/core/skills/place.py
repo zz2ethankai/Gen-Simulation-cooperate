@@ -2,6 +2,7 @@ from copy import deepcopy
 
 import numpy as np
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand
+from core.planning.place_plan_evaluator import evaluate_place_paths
 from core.skills.base_skill import BaseSkill, register_skill
 from core.utils.box import Box, get_bbox_center_and_corners
 from core.utils.constants import CUROBO_BATCH_SIZE
@@ -10,6 +11,7 @@ from core.utils.plan_utils import (
     select_index_by_priority_dual,
     select_index_by_priority_single,
 )
+from core.utils.relation_predicates import evaluate_relation_predicate
 from core.utils.transformation_utils import create_pose_matrices, poses_from_tf_matrices
 from core.utils.usd_geom_utils import compute_bbox
 from core.visualization.skill_target_math import ratio_box_corners
@@ -51,12 +53,6 @@ class Place(BaseSkill):
         else:
             self.place_prim_path = self.place_obj.prim_path
         self.manip_list = []
-        # if "Franka" in self.controller.robot_file or "Franka" in self.robot.cfg["name"]:
-        #     self.robot_ee_path = self.robot.ee_path
-        #     self.robot_base_path = self.robot.base_path
-        # else:
-        #     self.robot_ee_path = self.controller.robot_ee_path
-        #     self.robot_base_path = self.controller.robot_base_path
         self.robot_ee_path = self.controller.robot_ee_path
         self.robot_base_path = self.controller.robot_base_path
 
@@ -121,7 +117,16 @@ class Place(BaseSkill):
         pre_position, pre_orientation = np.asarray(result[0][0]), np.asarray(result[0][1])
         place_position, place_orientation = np.asarray(result[1][0]), np.asarray(result[1][1])
         pick_place_cfg = self.task.cfg.get("planning", {}).get("pick_place", {})
-        terminal_step = float(pick_place_cfg.get("terminal_step_m", 0.005))
+        # ``terminal_step_m`` belongs to Pick's grasp approach.  Place has a
+        # separate control so changing Pick does not silently change the
+        # placement motion.  Zero means one continuous CuRobo descent; the
+        # support-contact monitor can terminate it before the nominal target.
+        descent_step = float(
+            self.skill_cfg.get(
+                "place_descent_step_m",
+                pick_place_cfg.get("place_descent_step_m", 0.0),
+            )
+        )
         max_terminal = float(pick_place_cfg.get("max_terminal_distance_m", 0.10))
         settle_steps = int(pick_place_cfg.get("place_settle_steps", 10))
         distance = float(np.linalg.norm(place_position - pre_position))
@@ -145,11 +150,25 @@ class Place(BaseSkill):
                 completion_tolerance=tolerance,
             )
         ]
-        terminal_points = self._terminal_samples(pre_position, place_position, terminal_step)
+        if descent_step > 0.0:
+            terminal_points = self._terminal_samples(
+                pre_position, place_position, descent_step
+            )
+        else:
+            terminal_points = [place_position]
+
+        print(
+            f"[PlaceDebug] descent object={object_name} support={support_name} "
+            f"distance={distance:.5f} step={descent_step:.5f} "
+            f"commands={len(terminal_points)} continuous={descent_step <= 0.0}"
+        )
         for point_index, point in enumerate(terminal_points):
-            ratio = (point_index + 1) / len(terminal_points)
-            quat = (1.0 - ratio) * pre_orientation + ratio * place_orientation
-            quat = quat / np.linalg.norm(quat)
+            if descent_step > 0.0:
+                ratio = (point_index + 1) / len(terminal_points)
+                quat = (1.0 - ratio) * pre_orientation + ratio * place_orientation
+                quat = quat / np.linalg.norm(quat)
+            else:
+                quat = place_orientation
             commands.append(
                 MotionPhaseCommand(
                     MotionPhase.TERMINAL_PLACE_DESCENT,
@@ -160,7 +179,8 @@ class Place(BaseSkill):
                     support_object=support_name,
                     allow_target_finger_contact=True,
                     allow_object_support_contact=True,
-                    completion_tolerance={"position_m": terminal_step, "orientation_rad": tolerance["orientation_rad"]},
+                    completion_tolerance=tolerance,
+                    params={"descent_step_m": descent_step},
                 )
             )
         commands.extend(
@@ -409,26 +429,37 @@ class Place(BaseSkill):
         p_base_ee_preplaces, q_base_ee_preplaces = poses_from_tf_matrices(T_base_ee_preplaces)
         p_base_ee_places, q_base_ee_places = poses_from_tf_matrices(T_base_ee_places)
 
-        if self.controller.use_batch:
+        if physics_schema:
+            evaluation = evaluate_place_paths(
+                self.controller,
+                self.controller.collision_scene_manager,
+                self.pick_obj.name,
+                self.place_obj.name,
+                p_base_ee_preplaces,
+                q_base_ee_preplaces,
+                p_base_ee_places,
+                q_base_ee_places,
+                test_mode=str(self.skill_cfg.get("test_mode", "forward")),
+            )
+            if not evaluation.feasible or evaluation.selected_index is None:
+                raise PlacePlanningError(
+                    evaluation.failure_code or "NO_COLLISION_FREE_PLACE_DESCENT_PLAN"
+                )
+            index = evaluation.selected_index
+            self._pending_place_plan_evaluation = evaluation
+        elif self.controller.use_batch:
             # Check if the input arrays are exactly the same
             if np.array_equal(p_base_ee_preplaces, p_base_ee_places) and np.array_equal(
                 q_base_ee_preplaces, q_base_ee_places
             ):
                 # Inputs are identical, compute only once to avoid redundant computation
                 result = self.controller.test_batch_forward(p_base_ee_places, q_base_ee_places)
-                if physics_schema and not bool(result.success.any().item()):
-                    raise PlacePlanningError("NO_COLLISION_FREE_PREPLACE_PLAN")
                 index = select_index_by_priority_single(result)
             else:
                 # Inputs are different, compute separately
                 pre_result = self.controller.test_batch_forward(p_base_ee_preplaces, q_base_ee_preplaces)
-                if physics_schema:
-                    if not bool(pre_result.success.any().item()):
-                        raise PlacePlanningError("NO_COLLISION_FREE_PREPLACE_PLAN")
-                    index = select_index_by_priority_single(pre_result)
-                else:
-                    result = self.controller.test_batch_forward(p_base_ee_places, q_base_ee_places)
-                    index = select_index_by_priority_dual(pre_result, result)
+                result = self.controller.test_batch_forward(p_base_ee_places, q_base_ee_places)
+                index = select_index_by_priority_dual(pre_result, result)
         else:
             selected_index = None
             for index in range(T_base_ee_places.shape[0]):
@@ -442,10 +473,6 @@ class Place(BaseSkill):
                 else:
                     raise NotImplementedError
 
-                if physics_schema and result_pre == 1:
-                    print("pre-place transit plan success")
-                    selected_index = index
-                    break
                 if self.skill_cfg.get("pre_grasp_offset", 0.1) > 0:
                     if test_mode == "forward":
                         result = self.controller.test_single_forward(p_base_ee_grasp, q_base_ee_grasp)
@@ -647,12 +674,59 @@ class Place(BaseSkill):
             return True
         if self.is_subtask_done(t_eps=self.skill_cfg.get("t_eps", 1e-3), o_eps=self.skill_cfg.get("o_eps", 5e-3)):
             self.manip_list.pop(0)
-        # if self.is_success():
-        #     self.manip_list.clear()
-        #     print("Rotate Done")
         return len(self.manip_list) == 0
 
+    def is_terminal_success(self):
+        if self.failure_reason or self.manip_list:
+            return False
+        if getattr(self.controller, "collision_world_mode", "") != "physics_schema":
+            return True
+        manager = getattr(self.controller, "collision_scene_manager", None)
+        record = manager.records.get(self.pick_obj.name) if manager is not None else None
+        raw_state = getattr(record, "state", None)
+        return getattr(raw_state, "value", raw_state) == "placed_world"
+
+    @staticmethod
+    def _world_bounds(value):
+        return {
+            "minimum": [float(item) for item in value.min],
+            "maximum": [float(item) for item in value.max],
+        }
+
+    def evaluate_relation(self):
+        predicate = self.skill_cfg.get("relation_predicate")
+        if predicate is None:
+            return {
+                "relation": str(
+                    self.skill_cfg.get("semantic_relation")
+                    or self.skill_cfg.get("success_mode", "3diou")
+                ),
+                "success": bool(self._configured_success_mode_result()),
+                "checks": {},
+                "measurements": {},
+                "thresholds": {},
+            }
+        manager = getattr(self.controller, "collision_scene_manager", None)
+        if manager is None:
+            raise RuntimeError("strict relation predicate requires CollisionSceneManager")
+        support_contact, unexpected_contact = manager.get_object_environment_contact_forces(
+            self.pick_obj.name,
+            self.place_obj.name,
+        )
+        return evaluate_relation_predicate(
+            predicate,
+            self._world_bounds(compute_bbox(self.pick_obj.prim)),
+            self._world_bounds(compute_bbox(get_prim_at_path(self.place_prim_path))),
+            support_contact,
+            unexpected_contact,
+        )
+
     def is_success(self, th=0.0):
+        if self.skill_cfg.get("success_mode") == "relation_predicate":
+            return bool(self.evaluate_relation()["success"])
+        return bool(self._configured_success_mode_result(th=th))
+
+    def _configured_success_mode_result(self, th=0.0):
         if self.skill_cfg.get("success_mode", "3diou") == "3diou":
             bbox_pick_obj = compute_bbox(self.pick_obj.prim)
             bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
@@ -687,6 +761,12 @@ class Place(BaseSkill):
             place_xy_min = bbox_place_obj.min[:2]
             place_xy_max = bbox_place_obj.max[:2]
             return pick_x > place_xy_max[0] + self.skill_cfg.get("threshold", 0.03)
+        elif self.skill_cfg.get("success_mode", "3diou") == "front":
+            bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
+            pick_x, pick_y = self.pick_obj.get_local_pose()[0][:2]
+            place_xy_min = bbox_place_obj.min[:2]
+            place_xy_max = bbox_place_obj.max[:2]
+            return pick_y > place_xy_max[1] + self.skill_cfg.get("threshold", 0.03)
         elif self.skill_cfg.get("success_mode", "3diou") == "flower":
             bbox_pick_obj = compute_bbox(self.pick_obj.prim)
             bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
@@ -717,3 +797,4 @@ class Place(BaseSkill):
             print("x_shelf, y_shelf, z_shelf", x_shelf, y_shelf, z_shelf)
 
             return (z_cup > z_shelf + 0.05) and (iou > self.skill_cfg.get("success_th", 0.0))
+        raise ValueError(f"unknown Place success_mode: {self.skill_cfg.get('success_mode')!r}")

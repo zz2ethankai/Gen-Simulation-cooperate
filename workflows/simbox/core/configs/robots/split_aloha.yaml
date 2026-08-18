@@ -1,93 +1,161 @@
-# SplitAloha robot configuration
-# Dual-arm 6-DOF robot
-
-# Robot info
+profile_id: split_aloha_floor_standing_v1
 target_class: SplitAloha
-path: "split_aloha_mid_360/robot.usd"
+path: split_aloha_mid_360/robot.usd
+asset_variants:
+  - variant_id: collision_enhanced_v1
+    sha256: c018f6fd2ead19964c362c937425938aea68e59f8e20a26efb2a0149ebf1aed1
 
-# CuRobo file
-robot_file:
-  - workflows/simbox/curobo/src/curobo/content/configs/robot/piper100_left_arm.yml
-  - workflows/simbox/curobo/src/curobo/content/configs/robot/piper100_right_arm.yml
+placement:
+  family: floor_standing
+  support_role: floor
+  footprint_m: [0.70, 0.47]
+  collision_layers:
+    - name: home_arms
+      center_xy_m: [0.3365, -0.0845]
+      size_xy_m: [0.67, 1.05]
+      min_z_m: 1.54
+      max_z_m: 2.05
+  base_contact_offset_m: 0.0
+  authored_forward_yaw_offset_deg: 0.0
 
-# Gripper parameters
-gripper_max_width: 0.10
-gripper_min_width: 0.0
-tcp_offset: 0.12
+base:
+  operation_mode: locked
+  locked_joint_names: [mobile_translate_x, mobile_translate_y, mobile_rotate]
+  joint_groups:
+    planar:
+      joint_names: [mobile_translate_x, mobile_translate_y, mobile_rotate]
+      joint_indices: []
+      home: [0.0, 0.0, 0.0]
+  hold:
+    stiffness: 100000.0
+    damping: 3000.0
+    max_effort: 10000.0
 
-# Solver parameters
-solver_position_iteration_count: 128
-solver_velocity_iteration_count: 4
-stabilization_threshold: 0.005
+arms:
+  left:
+    controller: SplitAloha
+    curobo_file: workflows/simbox/curobo/src/curobo/content/configs/robot/piper100_left_arm.yml
+    command_joint_names: [fl_joint1, fl_joint2, fl_joint3, fl_joint4, fl_joint5, fl_joint6]
+    trajectory_joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
+    joint_indices: [1, 8, 15, 18, 20, 22]
+    ee_path: split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link6
+    base_path: split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/arm_base
+    arm_base_xy_m: [0.36848, 0.306]
+    home: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    filter_paths:
+      - split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link7
+      - split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link8
+    forbid_collision_paths:
+      - split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link1
+      - split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link2
+      - split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link3
+      - split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link4
+      - split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link5
+      - split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link6
+    gripper:
+      joint_names: [fl_joint7]
+      joint_indices: [24]
+      max_width: 0.10
+      min_width: 0.0
+      tcp_offset: 0.12
+      home: [0.05]
+      keypoints:
+        tool_head: [0.0, 0.0, 0.12, 1.0]
+        tool_tail: [0.0, 0.0, 0.06, 1.0]
+        tool_side: [-0.05, 0.0, 0.12, 1.0]
+      action:
+        adapter: signed_clip
+        params:
+          command: [1.0]
+          invert: false
+          clip: [0.0, 0.1]
+  right:
+    controller: SplitAloha
+    curobo_file: workflows/simbox/curobo/src/curobo/content/configs/robot/piper100_right_arm.yml
+    command_joint_names: [fr_joint1, fr_joint2, fr_joint3, fr_joint4, fr_joint5, fr_joint6]
+    trajectory_joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
+    joint_indices: [2, 9, 16, 19, 21, 23]
+    ee_path: split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link6
+    base_path: split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/arm_base
+    arm_base_xy_m: [0.36848, -0.306]
+    home: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    filter_paths:
+      - split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link7
+      - split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link8
+    forbid_collision_paths:
+      - split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link1
+      - split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link2
+      - split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link3
+      - split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link4
+      - split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link5
+      - split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link6
+    gripper:
+      joint_names: [fr_joint7]
+      joint_indices: [26]
+      max_width: 0.10
+      min_width: 0.0
+      tcp_offset: 0.12
+      home: [0.05]
+      keypoints:
+        tool_head: [0.0, 0.0, 0.12, 1.0]
+        tool_tail: [0.0, 0.0, 0.06, 1.0]
+        tool_side: [-0.05, 0.0, 0.12, 1.0]
+      action:
+        adapter: signed_clip
+        params:
+          command: [1.0]
+          invert: false
+          clip: [0.0, 0.1]
 
-# Joint-name lists are authoritative. Numeric indices document the current USD
-# order and remain only as a compatibility fallback for older loaders.
-left_joint_names: [fl_joint1, fl_joint2, fl_joint3, fl_joint4, fl_joint5, fl_joint6]
-right_joint_names: [fr_joint1, fr_joint2, fr_joint3, fr_joint4, fr_joint5, fr_joint6]
-left_gripper_names: [fl_joint7]
-right_gripper_names: [fr_joint7]
-left_joint_indices: [1, 8, 15, 18, 20, 22]
-right_joint_indices: [2, 9, 16, 19, 21, 23]
-left_gripper_indices: [24]
-right_gripper_indices: [26]
+camera_rig:
+  - name_suffix: hand_left
+    save_name: hand_left
+    translation: [0.0, 0.08, 0.05]
+    orientation: [0.0, 0.0, 0.965, 0.259]
+    camera_axes: usd
+    camera_file: workflows/simbox/core/configs/cameras/astra.yaml
+    parent_suffix: split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link6
+    apply_randomization: true
+  - name_suffix: hand_right
+    save_name: hand_right
+    translation: [0.0, 0.08, 0.04]
+    orientation: [0.0, 0.0, 0.972, 0.233]
+    camera_axes: usd
+    camera_file: workflows/simbox/core/configs/cameras/astra.yaml
+    parent_suffix: split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link6
+    apply_randomization: true
+  - name_suffix: head
+    save_name: head
+    translation: [0.0, -0.00818, 0.1]
+    orientation: [0.658, 0.259, -0.282, -0.648]
+    camera_axes: usd
+    camera_file: workflows/simbox/core/configs/cameras/realsense_d455_v3.yaml
+    parent_suffix: split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/top_camera_link
+    apply_randomization: true
 
-# SplitAloha is a mobile platform. Its three planar base joints intentionally
-# have zero gains in the delivered navigation asset. Physics-schema Pick/Place
-# resolves these names at runtime and holds their measured positions while an
-# arm executes, so the CuRobo arm-base reference cannot drift under contact.
-manipulation_base_hold:
-  enabled: true
-  joint_names: [mobile_translate_x, mobile_translate_y, mobile_rotate]
-  stiffness: 100000.0
-  damping: 3000.0
-  max_effort: 10000.0
+data_adapter:
+  arms:
+    left:
+      action_name: left
+      joint_position_key: states.left_joint.position
+      gripper_position_key: states.left_gripper.position
+      gripper_pose_key: null
+    right:
+      action_name: right
+      joint_position_key: states.right_joint.position
+      gripper_position_key: states.right_gripper.position
+      gripper_pose_key: null
 
-# Paths
-fl_ee_path: "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link6"
-fr_ee_path: "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link6"
-fl_base_path: "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/arm_base"
-fr_base_path: "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/arm_base"
+capabilities: [pick, place]
+collision_world_modes: [physics_schema]
 
-# Gripper keypoints
-fl_gripper_keypoints:
-  tool_head: [0.0, 0.0, 0.12, 1]
-  tool_tail: [0.0, 0.0, 0.06, 1]
-  tool_side: [-0.05, 0.0, 0.12, 1]
-fr_gripper_keypoints:
-  tool_head: [0.0, 0.0, 0.12, 1]
-  tool_tail: [0.0, 0.0, 0.06, 1]
-  tool_side: [-0.05, 0.0, 0.12, 1]
+physics:
+  solver_position_iteration_count: 128
+  solver_velocity_iteration_count: 4
+  stabilization_threshold: 0.005
 
-# Collision paths
-fl_filter_paths:
-  - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link7"
-  - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link8"
-fr_filter_paths:
-  - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link7"
-  - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link8"
-fl_forbid_collision_paths:
-  - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link1"
-  - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link2"
-  - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link3"
-  - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link4"
-  - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link5"
-  - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link6"
-fr_forbid_collision_paths:
-  - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link1"
-  - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link2"
-  - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link3"
-  - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link4"
-  - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link5"
-  - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link6"
-
-# Pose processing (Z-axis gripper)
-R_ee_graspnet: [[0.0, -1.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]]
-ee_axis: "z"
-
-# Default joint home positions
-left_joint_home: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-right_joint_home: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-left_joint_home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-right_joint_home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-left_gripper_home: [0.05]
-right_gripper_home: [0.05]
+kinematics:
+  R_ee_graspnet: [[0.0, -1.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]]
+  ee_axis: z

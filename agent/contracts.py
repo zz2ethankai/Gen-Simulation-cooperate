@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -105,14 +105,25 @@ class AssetCapability(ContractModel):
     affordances: list[str] = Field(default_factory=list)
 
 
+class RobotInstanceCapability(ContractModel):
+    instance_name: str
+    profile_id: str
+    robot_config_file: str
+    target_class: str
+    placement_family: Literal["floor_standing", "support_mounted"]
+    available_arms: list[str] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=list)
+    collision_world_modes: list[str] = Field(default_factory=list)
+    profile_hash: str
+
+
 class SceneCapabilityManifest(ContractModel):
     task_id: str
     scene_id: str
     source_task: str
     task_class: str
     language: list[str] = Field(default_factory=list)
-    robots: list[str] = Field(default_factory=list)
-    robot_mounting: str = "floor"
+    robot_instances: list[RobotInstanceCapability] = Field(default_factory=list)
     active_objects: list[str] = Field(default_factory=list)
     objects: list[AssetCapability] = Field(default_factory=list)
     container_regions: list[dict[str, Any]] = Field(default_factory=list)
@@ -137,7 +148,7 @@ class SkillContract(ContractModel):
     name: str
     category: str
     object_count: int
-    supported_robots: list[str] = Field(default_factory=list)
+    required_capabilities: list[str] = Field(default_factory=list)
     collision_world_modes: list[str] = Field(default_factory=list)
     preconditions: list[str] = Field(default_factory=list)
     effects: list[str] = Field(default_factory=list)
@@ -145,9 +156,27 @@ class SkillContract(ContractModel):
 
     @property
     def allowed_params(self) -> list[str]:
-        """Compatibility view used by diagnosis and deterministic validation."""
+        """Parameter names exposed to diagnosis and deterministic validation."""
 
         return list(self.parameters)
+
+
+class RobotAdmissionState(str, Enum):
+    ABSENT = "absent"
+    IMPLEMENTED = "implemented"
+    ADMITTED = "admitted"
+    QUALIFIED = "qualified"
+
+
+class RobotAdmission(ContractModel):
+    profile_id: str
+    skill: str
+    collision_world_mode: str
+    state: RobotAdmissionState
+    profile_hash: str | None = None
+    evidence_run_ids: list[str] = Field(default_factory=list)
+    validated_seeds: list[int] = Field(default_factory=list)
+    last_failure_code: str | None = None
 
 
 class ResolutionDecision(ContractModel):
@@ -173,10 +202,35 @@ class SceneCompositionRequest(ContractModel):
     status: str = "COMPOSITION_NOT_IMPLEMENTED_V1"
 
 
-class RobotDecision(ContractModel):
-    robot_type: str = "split_aloha"
-    robot_profile: str = "split_aloha_tabletop_v1"
+class RobotRequirement(ContractModel):
+    required_capabilities: list[str] = Field(default_factory=list)
+    preferred_profile_ids: list[str] = Field(default_factory=list)
     decision_basis: str
+
+
+class ExecutionVariant(ContractModel):
+    variant_id: str
+    instance_name: str
+    profile_id: str
+    robot_config_file: str
+    placement_family: Literal["floor_standing", "support_mounted"]
+    profile_hash: str
+    collision_world_mode: str
+    arm_binding: dict[str, str]
+
+
+class ExecutionIdentity(ContractModel):
+    run_id: str = Field(min_length=1)
+    variant_id: str = Field(min_length=1)
+    seed: int = Field(ge=0)
+    profile_id: str = Field(min_length=1)
+    profile_hash: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    source_hash: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    scene_revision: str = Field(min_length=1)
+
+
+class EpisodeIdentity(ExecutionIdentity):
+    world_revision: int = Field(ge=0)
 
 
 class SkillStep(ContractModel):
@@ -210,7 +264,7 @@ class TaskPlan(ContractModel):
     selected_task_id: str
     source_task: str
     task_request: TaskRequest
-    robot: RobotDecision
+    robot_requirement: RobotRequirement
     subtasks: list[ObjectSubtask]
     decision_basis: str
     unresolved: list[str] = Field(default_factory=list)
@@ -230,6 +284,10 @@ class ResolutionResponse(ContractModel):
 
 class EvidenceBundle(ContractModel):
     attempt_id: str
+    failing_subtask_id: str | None = Field(default=None, min_length=1)
+    identity: EpisodeIdentity | None = None
+    identity_errors: list[str] = Field(default_factory=list)
+    variant_signature: str | None = None
     status: str
     task_success: bool = False
     event_status: str | None = None
@@ -252,6 +310,7 @@ class SkillParameterUpdate(ContractModel):
 class Diagnosis(ContractModel):
     stage: str
     failure_code: str
+    failing_subtask_id: str | None = Field(default=None, min_length=1)
     category: str
     root_cause: str
     confidence: float = 1.0
@@ -287,6 +346,7 @@ class RunState(ContractModel):
     attempt_index: int = 0
     max_revisions: int = 2
     task_plan_path: str | None = None
+    selected_manifest_path: str | None = None
     workspace_manifest_path: str | None = None
     config_path: str | None = None
     last_evidence_path: str | None = None

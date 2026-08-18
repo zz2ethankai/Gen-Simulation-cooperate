@@ -1,82 +1,64 @@
-from core.utils.transformation_utils import get_fk_solution, pose_to_6d
-
 from .lmdb_logger import LmdbLogger
 
 
-# pylint: disable=line-too-long,unused-argument
+def _master_key(action_name: str, field: str) -> str:
+    prefix = f"{action_name}_" if action_name else ""
+    return f"master_actions.{prefix}{field}"
+
+
 def log_dual_obs(logger: LmdbLogger, obs, action_dict, controllers, step_idx=0):
-    # Add robots' proprio
-    for robot_name, robot_infos in obs["robots"].items():
-        for key in robot_infos.keys():
-            logger.add_proprio_data(robot_name, key, robot_infos[key])
+    del step_idx
+    for robot_name, robot_info in obs["robots"].items():
+        for key, value in robot_info.items():
+            logger.add_proprio_data(robot_name, key, value)
 
-        # Add objects' data (if exists)
-        if "objects" in obs:
-            for object_name in obs["objects"].keys():
-                for attr_name, attr_value in obs["objects"][object_name].items():
-                    logger.add_object_data(robot_name, f"{object_name}/{attr_name}", attr_value)
+        for object_name, object_info in obs.get("objects", {}).items():
+            for attribute_name, value in object_info.items():
+                logger.add_object_data(
+                    robot_name, f"{object_name}/{attribute_name}", value
+                )
 
-        # Add robots' action data (very very important)
-        if "split_aloha" in robot_name or "lift2" in robot_name or "azure_loong" in robot_name or "genie" in robot_name:
-            left_joint_position = obs["robots"][robot_name]["states.left_joint.position"]
-            right_joint_position = obs["robots"][robot_name]["states.right_joint.position"]
-            left_gripper_position = obs["robots"][robot_name]["states.left_gripper.position"]
-            right_gripper_position = obs["robots"][robot_name]["states.right_gripper.position"]
-            left_gripper_openness = (
-                1.0 if controllers[robot_name]["left"]._gripper_state > 0.0 else 0.0
-            )  # 1.0 open, 0.0 close
-            right_gripper_openness = (
-                1.0 if controllers[robot_name]["right"]._gripper_state > 0.0 else 0.0
-            )  # 1.0 open, 0.0 close
+        try:
+            data_adapter = logger.robot_data_adapters[robot_name]
+        except KeyError as exc:
+            raise ValueError(
+                f"robot {robot_name!r} has no canonical data_adapter"
+            ) from exc
+        raw_actions = {
+            action["lr_name"]: action["arm_action"]
+            for action in (action_dict.get(robot_name) or {}).get("raw_action", [])
+            if action.get("lr_name") in controllers[robot_name]
+        }
+        for arm_id, arm_adapter in data_adapter["arms"].items():
+            controller = controllers[robot_name][arm_id]
+            action_name = str(arm_adapter.get("action_name", ""))
+            joint_position = raw_actions.get(
+                arm_id, robot_info[arm_adapter["joint_position_key"]]
+            )
+            gripper_position = robot_info[arm_adapter["gripper_position_key"]]
+            gripper_openness = 1.0 if controller._gripper_state > 0.0 else 0.0
 
-            # Use raw action to udpate if one arm is not static
-            robot_action = action_dict.get(robot_name, None)
-            if robot_action is not None:
-                raw_action = robot_action["raw_action"]
-                for action in raw_action:
-                    lr_name = action["lr_name"]
-                    if lr_name == "left":
-                        arm_action = action["arm_action"]
-                        left_joint_position = arm_action
-                    elif lr_name == "right":
-                        arm_action = action["arm_action"]
-                        right_joint_position = arm_action
-                    else:
-                        pass
+            logger.add_action_data(
+                robot_name,
+                _master_key(action_name, "joint.position"),
+                joint_position,
+            )
+            logger.add_action_data(
+                robot_name,
+                _master_key(action_name, "gripper.position"),
+                gripper_position,
+            )
+            logger.add_action_data(
+                robot_name,
+                _master_key(action_name, "gripper.openness"),
+                gripper_openness,
+            )
+            gripper_pose_key = arm_adapter.get("gripper_pose_key")
+            if gripper_pose_key:
+                logger.add_action_data(
+                    robot_name,
+                    _master_key(action_name, "gripper.pose"),
+                    robot_info[gripper_pose_key],
+                )
 
-            logger.add_action_data(robot_name, "master_actions.left_joint.position", left_joint_position)
-            logger.add_action_data(robot_name, "master_actions.right_joint.position", right_joint_position)
-            logger.add_action_data(robot_name, "master_actions.left_gripper.position", left_gripper_position)
-            logger.add_action_data(robot_name, "master_actions.right_gripper.position", right_gripper_position)
-            logger.add_action_data(robot_name, "master_actions.left_gripper.openness", left_gripper_openness)
-            logger.add_action_data(robot_name, "master_actions.right_gripper.openness", right_gripper_openness)
-        elif "franka" in robot_name:
-            joint_position = obs["robots"][robot_name]["states.joint.position"]
-            gripper_pose = obs["robots"][robot_name]["states.gripper.pose"]
-            gripper_openness = (
-                1.0 if controllers[robot_name]["left"]._gripper_state > 0.0 else 0.0
-            )  # 1.0 open, 0.0 close
-            gripper_position = obs["robots"][robot_name]["states.gripper.position"]
-
-            # Use raw action to udpate if one arm is not static
-            robot_action = action_dict.get(robot_name, None)
-            if robot_action is not None:
-                raw_action = robot_action["raw_action"]
-                for action in raw_action:
-                    lr_name = action["lr_name"]
-                    if lr_name == "left":
-                        arm_action = action["arm_action"]
-                        joint_position = arm_action
-                        gripper_pose = pose_to_6d(get_fk_solution(joint_position[:7]))
-                    else:
-                        pass
-
-            logger.add_action_data(robot_name, "master_actions.joint.position", joint_position)
-            logger.add_action_data(robot_name, "master_actions.gripper.position", gripper_position)
-            logger.add_action_data(robot_name, "master_actions.gripper.openness", gripper_openness)
-            logger.add_action_data(robot_name, "master_actions.gripper.pose", gripper_pose)
-        else:
-            raise NotImplementedError
-
-    # Count time steps
     logger.count_timestep()

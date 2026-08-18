@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from .compiler import (
     CompileError,
@@ -18,6 +21,8 @@ from .compiler import (
 from .contracts import (
     Diagnosis,
     EvidenceBundle,
+    ExecutionIdentity,
+    ExecutionVariant,
     ResolutionMode,
     RunState,
     RunStatus,
@@ -28,13 +33,51 @@ from .contracts import (
 )
 from .evidence import classify_evidence, collect_evidence
 from .inventory import DEFAULT_INDEX_PATH, load_or_build_inventory
-from .resolver import AgentDecisionError, CodexBackend, TaskResolver,OpenAIBackend
+from .resolver import AgentDecisionError, CodexBackend, OpenAIBackend, TaskResolver
 from .retention import RetentionManager
 from .settings import load_agent_settings, resolve_data_generation
+from .tools.artifacts import write_variant_artifact_manifest
+from .tools.feedback import RepairAction, classify_failure, failure_code_from_text
+from .tools.scene_layout import (
+    SceneLayoutBlocked,
+    SceneLayoutSearchResult,
+    run_scene_layout_search,
+)
+from .tools.scene_layout.models import load_scene_spec
+from .tools.source_integrity import build_source_snapshot, write_source_snapshot
+from .tools.trace import TraceContext, TraceEvent, TraceWriter
+from workflows.simbox.core.robots.profile import load_robot_profile
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RUN_ROOT = REPO_ROOT / "output" / "agent_runs"
+
+
+def _execution_identity(
+    run_id: str,
+    variant: ExecutionVariant,
+    seed: int,
+    config_path: Path,
+    source_snapshot_path: Path,
+) -> ExecutionIdentity:
+    source_snapshot = json.loads(source_snapshot_path.read_text(encoding="utf-8"))
+    source_hash = source_snapshot.get("source_hash")
+    document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    tasks = document.get("tasks") if isinstance(document, dict) else None
+    if not isinstance(tasks, list) or len(tasks) != 1 or not isinstance(tasks[0], dict):
+        raise ValueError("compiled task must contain exactly one task")
+    agent_plan = (tasks[0].get("metadata") or {}).get("agent_plan")
+    if not isinstance(agent_plan, dict):
+        raise ValueError("compiled task has no metadata.agent_plan")
+    return ExecutionIdentity(
+        run_id=run_id,
+        variant_id=variant.variant_id,
+        seed=seed,
+        profile_id=variant.profile_id,
+        profile_hash=variant.profile_hash,
+        source_hash=source_hash,
+        scene_revision=agent_plan.get("scene_revision"),
+    )
 
 def _create_backend(settings: dict[str, Any], model: str | None) -> CodexBackend | OpenAIBackend:
     backend_cfg = settings.get("backend", {})
@@ -73,9 +116,120 @@ class AgentOrchestrator:
         self.random_num = int(generation.get("random_num", 1))
         if self.random_num <= 0:
             raise ValueError("generation.random_num must be positive")
+        self.seed = int(generation.get("seed", 0))
+        if self.seed < 0:
+            raise ValueError("generation.seed must be non-negative")
         self.backend = _create_backend(self.settings, model)
         self.resolver = TaskResolver(self.backend, settings=self.settings)
         self.retention = RetentionManager(self.backend)
+
+    def _layout_gpu_ids(self) -> tuple[int, int, int, int]:
+        execution = self.settings.get("execution", {})
+        values = execution.get("layout_gpus", [0, 1, 2, 3])
+        if not isinstance(values, list) or len(values) != 4:
+            raise ValueError("execution.layout_gpus must contain exactly four GPU ids")
+        gpu_ids = tuple(int(value) for value in values)
+        if len(set(gpu_ids)) != 4 or any(value < 0 for value in gpu_ids):
+            raise ValueError(
+                "execution.layout_gpus must contain four distinct non-negative ids"
+            )
+        return gpu_ids
+
+    def _search_layout(
+        self,
+        plan: TaskPlan,
+        variant: ExecutionVariant,
+        manifest: SceneCapabilityManifest,
+        source_task: Path,
+        source_arena: Path,
+        failure_code: str,
+        output_dir: Path,
+        *,
+        subtask_id: str | None = None,
+    ) -> SceneLayoutSearchResult:
+        subtask_id = self._resolve_layout_subtask_id(plan, subtask_id)
+        result_path = output_dir / "scene_layout_search_result.json"
+        if result_path.is_file():
+            return SceneLayoutSearchResult.from_path(result_path)
+        if output_dir.is_dir() and any(output_dir.iterdir()):
+            raise SceneLayoutBlocked(
+                "LAYOUT_SEARCH_INCOMPLETE",
+                "an incomplete SceneLayout search cannot be resumed as a new search",
+                {"output_dir": str(output_dir)},
+            )
+        return run_scene_layout_search(
+            plan,
+            variant,
+            manifest,
+            source_task,
+            source_arena,
+            failure_code,
+            output_dir,
+            self._layout_gpu_ids(),
+            self.conda_env,
+            self.settings,
+            subtask_id=subtask_id,
+        )
+
+    @staticmethod
+    def _resolve_layout_subtask_id(
+        plan: TaskPlan, failing_subtask_id: str | None
+    ) -> str:
+        subtask_ids = {item.subtask_id for item in plan.subtasks}
+        if failing_subtask_id is not None:
+            if failing_subtask_id not in subtask_ids:
+                raise SceneLayoutBlocked(
+                    "LAYOUT_SUBTASK_UNKNOWN",
+                    f"failure references unknown subtask {failing_subtask_id!r}",
+                )
+            return failing_subtask_id
+        if len(subtask_ids) == 1:
+            return next(iter(subtask_ids))
+        raise SceneLayoutBlocked(
+            "FAILURE_SUBTASK_UNATTRIBUTED",
+            "multi-subtask layout repair requires a deterministically attributed failing_subtask_id",
+        )
+
+    @staticmethod
+    def _layout_results_path(run_dir: Path) -> Path:
+        return run_dir / "scene_layout_results.json"
+
+    def _load_layout_results(self, run_dir: Path) -> dict[str, dict[str, Any]]:
+        path = self._layout_results_path(run_dir)
+        if not path.is_file():
+            return {}
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict) or any(
+            not isinstance(key, str) or not isinstance(item, dict)
+            for key, item in value.items()
+        ):
+            raise RuntimeError(f"invalid SceneLayout result index: {path}")
+        return value
+
+    def _store_layout_result(
+        self,
+        run_dir: Path,
+        variant_id: str,
+        result: SceneLayoutSearchResult,
+    ) -> None:
+        values = self._load_layout_results(run_dir)
+        values[variant_id] = result.to_dict()
+        self._layout_results_path(run_dir).write_text(
+            json.dumps(values, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _source_arena_path(run_dir: Path, source_task: Path) -> Path:
+        scene_spec_path = run_dir / "scene_spec.json"
+        if scene_spec_path.is_file():
+            value = json.loads(scene_spec_path.read_text(encoding="utf-8"))
+            source_arena = value.get("source_arena") if isinstance(value, dict) else None
+            if isinstance(source_arena, str) and source_arena.strip():
+                path = Path(source_arena).expanduser().resolve()
+                if path.is_file():
+                    return path
+        return Path(load_scene_spec(source_task, REPO_ROOT).source_arena)
 
     @staticmethod
     def _run_id() -> str:
@@ -88,10 +242,26 @@ class AgentOrchestrator:
     def _save_state(self, state: RunState) -> None:
         dump_contract(state, self._state_path(Path(state.run_dir)))
 
+    def _configured_scene_roots(self) -> list[Path] | None:
+        values = self.settings.get("scene_roots")
+        if values is None:
+            return None
+        if not isinstance(values, list) or not all(
+            isinstance(value, str) and value.strip() for value in values
+        ):
+            raise ValueError("Agent config scene_roots must be a list of non-empty paths")
+        return [
+            path.resolve() if path.is_absolute() else (REPO_ROOT / path).resolve()
+            for path in (Path(value).expanduser() for value in values)
+        ]
+
     def build_index(self, scene_roots: list[Path] | None = None) -> Path:
         from .inventory import build_inventory, write_inventory
 
-        manifests = build_inventory(scene_roots)
+        manifests = build_inventory(
+            scene_roots if scene_roots is not None else self._configured_scene_roots(),
+            settings=self.settings,
+        )
         return write_inventory(manifests, self.inventory_path)
 
     def plan(self, prompt: str, run_id: str | None = None) -> RunState:
@@ -111,25 +281,32 @@ class AgentOrchestrator:
             encoding="utf-8",
         )
 
-        manifests = load_or_build_inventory(self.inventory_path)
+        manifests = load_or_build_inventory(
+            self.inventory_path,
+            self._configured_scene_roots(),
+        )
         response, candidates = self.resolver.resolve(prompt, manifests, run_dir / "decisions")
         dump_contract(response, run_dir / "selection.json")
         
-        if response.resolution.mode == ResolutionMode.REUSE_EXISTING:
-            selected = next(
-                item for item in manifests if item.task_id == response.resolution.selected_task_id
+        if response.resolution.mode in {
+            ResolutionMode.REUSE_EXISTING,
+            ResolutionMode.REUSE_SCENE_NEW_TASK,
+        }:
+            source_manifest = self.resolver.select_source_manifest(
+                response.resolution, candidates
             )
+        if response.resolution.mode == ResolutionMode.REUSE_EXISTING:
+            selected = source_manifest
         elif response.resolution.mode == ResolutionMode.REUSE_SCENE_NEW_TASK:
             try:
                 selected = self.resolver.build_synthetic_manifest(
-                    response.resolution, candidates
+                    response.resolution, source_manifest
                 )
             except AgentDecisionError as exc:
                 state.status = RunStatus.BLOCKED
                 state.message = str(exc)
                 self._save_state(state)
                 return state
-            dump_contract(selected, run_dir / "synthetic_manifest.json")
         else:
             composition = self.resolver.composition_request(prompt, response.resolution, candidates)
             dump_contract(composition, run_dir / "scene_composition_request.json")
@@ -138,11 +315,12 @@ class AgentOrchestrator:
             self._save_state(state)
             return state
 
-        # selected = next(
-        #     item for item in manifests if item.task_id == response.resolution.selected_task_id
-        # )
+        selected_manifest_path = run_dir / "selected_manifest.json"
+        dump_contract(selected, selected_manifest_path)
+        state.selected_manifest_path = str(selected_manifest_path)
+        self._save_state(state)
         task_plan = self.resolver.plan(prompt, response, selected, run_dir / "decisions")
-        plan_path = run_dir / "task_plan.json"
+        plan_path = run_dir / "semantic_task_plan.json"
         dump_contract(task_plan, plan_path)
         state.task_plan_path = str(plan_path)
         if task_plan.unresolved:
@@ -151,28 +329,200 @@ class AgentOrchestrator:
             self._save_state(state)
             return state
 
-        workspace_paths: dict[str, str] = {}
-        try:
-            for subtask in task_plan.subtasks:
-                workspace_dir = run_dir / "subtasks" / subtask.subtask_id / "workspace"
-                manifest_path = generate_workspace_manifest(
-                    Path(task_plan.source_task),
-                    subtask.manipulated_object,
-                    subtask.arm,
-                    workspace_dir,
-                    selected.robot_mounting,
-                )
-                workspace_paths[subtask.subtask_id] = str(manifest_path)
-        except CompileError as exc:
+        execution_variants = self.resolver.execution_variants(task_plan)
+        if not execution_variants:
             state.status = RunStatus.BLOCKED
-            state.message = str(exc)
+            state.message = "no admitted execution variant satisfies the semantic plan"
             self._save_state(state)
             return state
+        source_task = Path(task_plan.source_task)
+        if not source_task.is_absolute():
+            source_task = REPO_ROOT / source_task
+        try:
+            scene_spec = load_scene_spec(source_task, REPO_ROOT)
+            scene_spec.write(run_dir / "scene_spec.json")
+            source_snapshot = build_source_snapshot(
+                scene_spec.source_task,
+                scene_spec.source_arena,
+                [variant.robot_config_file for variant in execution_variants],
+                repo_root=REPO_ROOT,
+            )
+            source_hash = str(source_snapshot["source_hash"])
+            write_source_snapshot(
+                source_snapshot,
+                run_dir / "source_snapshot.json",
+            )
+        except (OSError, ValueError) as exc:
+            state.status = RunStatus.BLOCKED
+            state.message = f"scene normalization failed: {exc}"
+            self._save_state(state)
+            return state
+
+        TraceWriter(run_dir / "trace.jsonl").append(
+            TraceEvent(
+                TraceContext(
+                    run_id=state.run_id,
+                    source_hash=source_hash,
+                ),
+                stage="semantic_plan",
+                status="complete",
+                outputs={"semantic_task_plan": str(plan_path)},
+                artifact_refs=(str(run_dir / "scene_spec.json"), str(plan_path)),
+            )
+        )
+        workspace_paths: dict[str, dict[str, str]] = {}
+        layout_results: dict[str, dict[str, Any]] = {}
+        viable_variants: list[ExecutionVariant] = []
+        planning_failures: list[dict[str, str]] = []
+        for variant in execution_variants:
+            variant_root = run_dir / "variants" / variant.variant_id
+            base_task_path = variant_root / "base_task.yaml"
+            profile = load_robot_profile(variant.robot_config_file)
+            if profile.profile_hash != variant.profile_hash:
+                raise RuntimeError(
+                    f"execution variant profile hash drifted: {variant.variant_id}"
+                )
+            variant_root.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(
+                profile.source_path,
+                variant_root / "robot_profile.snapshot.yaml",
+            )
+            (variant_root / "parent.json").write_text(
+                json.dumps(
+                    {
+                        "variant_id": variant.variant_id,
+                        "parent_variant_id": None,
+                        "source_task": scene_spec.source_task,
+                        "source_task_hash": scene_spec.source_task_hash,
+                        "source_arena": scene_spec.source_arena,
+                        "source_arena_hash": scene_spec.source_arena_hash,
+                        "source_hash": source_hash,
+                        "scene_revision": "source",
+                        "world_revision": None,
+                        "profile_id": variant.profile_id,
+                        "profile_hash": variant.profile_hash,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            try:
+                compile_task_config(
+                    task_plan,
+                    variant,
+                    selected,
+                    base_task_path,
+                    settings=self.settings,
+                )
+            except (CompileError, ValueError) as exc:
+                failure = {
+                    "variant_id": variant.variant_id,
+                    "failure_code": "VARIANT_COMPILATION_FAILED",
+                    "message": str(exc),
+                }
+                planning_failures.append(failure)
+                (variant_root / "planning_failure.json").write_text(
+                    json.dumps(failure, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                continue
+
+            variant_paths: dict[str, str] = {}
+            preparation_error: Exception | None = None
+            for subtask in task_plan.subtasks:
+                workspace_dir = (
+                    variant_root
+                    / "subtasks"
+                    / subtask.subtask_id
+                    / "workspace"
+                )
+                try:
+                    manifest_path = generate_workspace_manifest(
+                        base_task_path,
+                        subtask.manipulated_object,
+                        variant.arm_binding[subtask.subtask_id],
+                        workspace_dir,
+                        variant.placement_family,
+                    )
+                    variant_paths[subtask.subtask_id] = str(manifest_path)
+                except (CompileError, ValueError) as exc:
+                    failure_code = failure_code_from_text(
+                        exc, "VARIANT_PREPARATION_FAILED"
+                    )
+                    repair = classify_failure(failure_code, "workspace")
+                    if repair.action != RepairAction.MUTATE_LAYOUT:
+                        preparation_error = exc
+                        break
+                    try:
+                        layout_result = self._search_layout(
+                            task_plan,
+                            variant,
+                            selected,
+                            source_task,
+                            Path(scene_spec.source_arena),
+                            failure_code,
+                            variant_root / "scene_layout" / "initial",
+                            subtask_id=subtask.subtask_id,
+                        )
+                    except (SceneLayoutBlocked, CompileError, OSError, ValueError) as layout_exc:
+                        preparation_error = layout_exc
+                        break
+                    variant_paths = dict(layout_result.workspace_paths)
+                    layout_results[variant.variant_id] = layout_result.to_dict()
+                    break
+            if preparation_error is None and set(variant_paths) == {
+                subtask.subtask_id for subtask in task_plan.subtasks
+            }:
+                workspace_paths[variant.variant_id] = variant_paths
+                viable_variants.append(variant)
+            else:
+                exc = preparation_error or RuntimeError(
+                    "workspace preparation did not cover every semantic subtask"
+                )
+                failure = {
+                    "variant_id": variant.variant_id,
+                    "failure_code": failure_code_from_text(
+                        exc, "VARIANT_PREPARATION_FAILED"
+                    ),
+                    "message": str(exc),
+                }
+                planning_failures.append(failure)
+                (variant_root / "planning_failure.json").write_text(
+                    json.dumps(failure, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+        if not viable_variants:
+            state.status = RunStatus.BLOCKED
+            state.message = "all execution variants failed deterministic preparation"
+            self._save_state(state)
+            return state
+        (run_dir / "execution_variants.json").write_text(
+            json.dumps(
+                [variant.to_dict() for variant in viable_variants],
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        if planning_failures:
+            (run_dir / "variant_planning_failures.json").write_text(
+                json.dumps(planning_failures, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
         (run_dir / "workspace_manifests.json").write_text(
             json.dumps(workspace_paths, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
-        state.workspace_manifest_path = next(iter(workspace_paths.values()), None)
+        if layout_results:
+            self._layout_results_path(run_dir).write_text(
+                json.dumps(layout_results, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        first_variant_paths = next(iter(workspace_paths.values()), {})
+        state.workspace_manifest_path = next(iter(first_variant_paths.values()), None)
         state.status = RunStatus.PLANNED
         state.message = "semantic plan and geometry workspace candidates are ready"
         self._save_state(state)
@@ -191,60 +541,200 @@ class AgentOrchestrator:
             return state
         if not state.task_plan_path or not Path(state.task_plan_path).is_file():
             raise RuntimeError(f"run has no resumable TaskPlan: {run_id}")
+        if (
+            not state.selected_manifest_path
+            or not Path(state.selected_manifest_path).is_file()
+        ):
+            raise RuntimeError(f"run has no resumable selected manifest: {run_id}")
         if not (run_dir / "workspace_manifests.json").is_file():
             raise RuntimeError(f"run has no workspace manifests: {run_id}")
         return self._execute_planned(state)
 
     def _execute_planned(self, state: RunState) -> RunState:
-        debug_cfg = self.settings.get("debug", {})
-        if debug_cfg.get("topdown_check"):
-            os.environ["INTERNDATA_DEBUG_TOPDOWN"] = "1"
-        else:
-            os.environ.pop("INTERNDATA_DEBUG_TOPDOWN", None)
         run_dir = Path(state.run_dir)
         plan = load_contract(TaskPlan, Path(str(state.task_plan_path)))
-        manifests = load_or_build_inventory(self.inventory_path)
-        selected_manifest = next(item for item in manifests if item.task_id == plan.selected_task_id)
-        workspace_paths = json.loads((run_dir / "workspace_manifests.json").read_text(encoding="utf-8"))
-        workspace_selection_dir = run_dir / "workspace_selection"
-        excluded_candidates: set[str] = set()
-        try:
-            selected_candidate = select_task_workspace_candidate(
-                plan,
-                workspace_paths,
-                selected_manifest,
-                workspace_selection_dir,
-                self.gpu,
-                self.conda_env,
-                self.settings,
+        if not state.selected_manifest_path:
+            raise RuntimeError(f"run has no selected manifest: {state.run_id}")
+        selected_manifest = load_contract(
+            SceneCapabilityManifest, Path(state.selected_manifest_path)
+        )
+        self.resolver.validate_plan(plan, selected_manifest)
+        execution_variants = [
+            ExecutionVariant.from_dict(value)
+            for value in json.loads(
+                (run_dir / "execution_variants.json").read_text(encoding="utf-8")
             )
-        except CompileError as exc:
+        ]
+        if not execution_variants:
+            raise RuntimeError(f"run has no execution variants: {state.run_id}")
+        all_workspace_paths = json.loads(
+            (run_dir / "workspace_manifests.json").read_text(encoding="utf-8")
+        )
+        layout_results = self._load_layout_results(run_dir)
+        source_task = Path(plan.source_task)
+        if not source_task.is_absolute():
+            source_task = REPO_ROOT / source_task
+        execution_variant = None
+        selected_candidate = None
+        workspace_paths: dict[str, str] = {}
+        workspace_selection_dir = run_dir / "workspace_selection"
+        workspace_selection_path = workspace_selection_dir / "position_selection.json"
+        active_scene_task_path: Path | None = None
+        variant_selection_failures: list[dict[str, str]] = []
+        excluded_candidates: set[str] = set()
+        for candidate_variant in execution_variants:
+            candidate_paths = all_workspace_paths.get(candidate_variant.variant_id)
+            if not isinstance(candidate_paths, dict):
+                variant_selection_failures.append(
+                    {
+                        "variant_id": candidate_variant.variant_id,
+                        "message": "workspace manifests are missing",
+                    }
+                )
+                continue
+            candidate_selection_dir = (
+                run_dir / "variants" / candidate_variant.variant_id / "workspace_selection"
+            )
+            candidate_layout = layout_results.get(candidate_variant.variant_id)
+            if candidate_layout is not None:
+                try:
+                    layout_result = SceneLayoutSearchResult(**candidate_layout)
+                except TypeError as exc:
+                    variant_selection_failures.append(
+                        {
+                            "variant_id": candidate_variant.variant_id,
+                            "message": f"invalid SceneLayout result: {exc}",
+                        }
+                    )
+                    continue
+                selection_path = Path(layout_result.workspace_selection_path)
+                scene_task_path = Path(layout_result.scene_task_path)
+                if not selection_path.is_file() or not scene_task_path.is_file():
+                    variant_selection_failures.append(
+                        {
+                            "variant_id": candidate_variant.variant_id,
+                            "message": "SceneLayout result artifacts are missing",
+                        }
+                    )
+                    continue
+                execution_variant = candidate_variant
+                workspace_paths = dict(layout_result.workspace_paths)
+                workspace_selection_dir = selection_path.parent
+                workspace_selection_path = selection_path
+                active_scene_task_path = scene_task_path
+                selected_candidate = dict(layout_result.workspace_candidate)
+                break
+            try:
+                candidate = select_task_workspace_candidate(
+                    plan,
+                    candidate_variant,
+                    candidate_paths,
+                    selected_manifest,
+                    candidate_selection_dir,
+                    self.gpu,
+                    self.conda_env,
+                    self.settings,
+                )
+            except CompileError as exc:
+                failure_code = failure_code_from_text(
+                    exc, "NO_CUROBO_CANDIDATE"
+                )
+                repair = classify_failure(failure_code, "workspace")
+                if repair.action in {
+                    RepairAction.MUTATE_LAYOUT,
+                    RepairAction.NEXT_CANDIDATE,
+                }:
+                    try:
+                        layout_result = self._search_layout(
+                            plan,
+                            candidate_variant,
+                            selected_manifest,
+                            source_task,
+                            self._source_arena_path(run_dir, source_task),
+                            failure_code,
+                            run_dir
+                            / "variants"
+                            / candidate_variant.variant_id
+                            / "scene_layout"
+                            / "selection_failure",
+                            subtask_id=exc.failing_subtask_id,
+                        )
+                    except (SceneLayoutBlocked, CompileError, OSError, ValueError) as layout_exc:
+                        variant_selection_failures.append(
+                            {
+                                "variant_id": candidate_variant.variant_id,
+                                "message": str(layout_exc),
+                            }
+                        )
+                        continue
+                    self._store_layout_result(
+                        run_dir, candidate_variant.variant_id, layout_result
+                    )
+                    execution_variant = candidate_variant
+                    workspace_paths = dict(layout_result.workspace_paths)
+                    workspace_selection_path = Path(
+                        layout_result.workspace_selection_path
+                    )
+                    workspace_selection_dir = workspace_selection_path.parent
+                    active_scene_task_path = Path(layout_result.scene_task_path)
+                    selected_candidate = dict(layout_result.workspace_candidate)
+                    break
+                variant_selection_failures.append(
+                    {"variant_id": candidate_variant.variant_id, "message": str(exc)}
+                )
+                continue
+            execution_variant = candidate_variant
+            workspace_paths = candidate_paths
+            workspace_selection_dir = candidate_selection_dir
+            workspace_selection_path = candidate_selection_dir / "position_selection.json"
+            selected_candidate = candidate
+            break
+        if execution_variant is None or selected_candidate is None:
             state.status = RunStatus.BLOCKED
-            state.message = str(exc)
-            state.workspace_manifest_path = str(workspace_selection_dir / "position_selection.json")
+            state.message = "no execution variant has a CuRobo-feasible workspace candidate"
+            state.workspace_manifest_path = str(workspace_selection_path)
+            (run_dir / "variant_selection_failures.json").write_text(
+                json.dumps(variant_selection_failures, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
             self._save_state(state)
             self._write_report(state)
             return state
 
         state.status = RunStatus.WORKSPACE_READY
-        state.workspace_manifest_path = str(workspace_selection_dir / "position_selection.json")
+        state.workspace_manifest_path = str(workspace_selection_path)
         self._save_state(state)
 
         start_attempt = state.attempt_index
+        data_generation = resolve_data_generation(
+            plan.task_request.data_generation,
+            self.settings,
+        )
+        variant_root = run_dir / "variants" / execution_variant.variant_id
         for attempt_index in range(start_attempt, state.max_revisions + 1):
             state.status = RunStatus.RUNNING
             state.attempt_index = attempt_index
-            attempt_dir = run_dir / "attempts" / f"{attempt_index:02d}"
+            attempt_dir = variant_root / "attempts" / f"{attempt_index:02d}"
             attempt_dir.mkdir(parents=True, exist_ok=True)
-            dump_contract(plan, attempt_dir / "task_plan.json")
+            trace = TraceWriter(attempt_dir / "trace.jsonl")
+            dump_contract(plan, attempt_dir / "semantic_task_plan.json")
             config_path = attempt_dir / "task.yaml"
             try:
                 compile_task_config(
                     plan,
+                    execution_variant,
                     selected_manifest,
                     config_path,
                     workspace_candidate=selected_candidate,
                     settings=self.settings,
+                    scene_task_path=active_scene_task_path,
+                )
+                expected_identity = _execution_identity(
+                    state.run_id,
+                    execution_variant,
+                    self.seed,
+                    config_path,
+                    run_dir / "source_snapshot.json",
                 )
             except (CompileError, ValueError) as exc:
                 diagnosis = Diagnosis(
@@ -268,12 +758,8 @@ class AgentOrchestrator:
             return_code, timed_out, event_path, log_path = self._run_simbox(
                 config_path,
                 attempt_dir,
-                state.run_id,
-                attempt_index,
-                data_generation=resolve_data_generation(
-                    plan.task_request.data_generation,
-                    self.settings,
-                ),
+                expected_identity,
+                data_generation=data_generation,
             )
             evidence = collect_evidence(
                 f"task:{attempt_index:02d}",
@@ -282,6 +768,11 @@ class AgentOrchestrator:
                 log_path,
                 return_code,
                 timed_out,
+                expected_identity=expected_identity,
+                data_generation_required=data_generation,
+                robot_profile_path=execution_variant.robot_config_file,
+                compiled_task_path=config_path,
+                source_snapshot_path=run_dir / "source_snapshot.json",
             )
             evidence_path = attempt_dir / "evidence.json"
             diagnosis = classify_evidence(evidence)
@@ -290,6 +781,143 @@ class AgentOrchestrator:
             state.last_evidence_path = str(evidence_path)
             state.last_diagnosis_path = str(diagnosis_path)
             self._save_state(state)
+            trace.append(
+                TraceEvent(
+                    TraceContext(
+                        run_id=state.run_id,
+                        variant_id=execution_variant.variant_id,
+                        attempt_id=attempt_dir.name,
+                        parent_variant_id="",
+                        seed=self.seed,
+                        profile_id=execution_variant.profile_id,
+                        profile_hash=execution_variant.profile_hash,
+                        source_hash=expected_identity.source_hash,
+                        scene_revision=expected_identity.scene_revision,
+                        world_revision=(
+                            evidence.identity.world_revision
+                            if evidence.identity is not None
+                            else None
+                        ),
+                    ),
+                    stage="episode_evaluation",
+                    status="success" if evidence.task_success else "failed",
+                    failure_code="" if evidence.task_success else diagnosis.failure_code,
+                    inputs={"config": str(config_path)},
+                    outputs={
+                        "strict_success": evidence.task_success,
+                        "identity_errors": evidence.identity_errors,
+                        "variant_signature": evidence.variant_signature,
+                    },
+                    artifact_refs=tuple(evidence.artifact_refs),
+                )
+            )
+            should_repair = (
+                not evidence.task_success
+                and diagnosis.retryable
+                and attempt_index < state.max_revisions
+            )
+            if should_repair:
+                repair = classify_failure(
+                    diagnosis.failure_code,
+                    diagnosis.category,
+                    failing_subtask_id=diagnosis.failing_subtask_id,
+                )
+                if repair.action == RepairAction.MUTATE_LAYOUT:
+                    try:
+                        diagnosis.failing_subtask_id = self._resolve_layout_subtask_id(
+                            plan, diagnosis.failing_subtask_id
+                        )
+                    except SceneLayoutBlocked as exc:
+                        diagnosis.failure_code = exc.failure_code
+                        diagnosis.category = "data_integrity"
+                        diagnosis.root_cause = str(exc)
+                        diagnosis.retryable = False
+                        diagnosis.recommended_action = (
+                            "record the active compiled subtask in the failure event before layout repair"
+                        )
+                        diagnosis.workspace_action = "block"
+                        repair = classify_failure(
+                            diagnosis.failure_code,
+                            diagnosis.category,
+                        )
+                    else:
+                        repair = classify_failure(
+                            diagnosis.failure_code,
+                            diagnosis.category,
+                            failing_subtask_id=diagnosis.failing_subtask_id,
+                        )
+                (attempt_dir / "repair.json").write_text(
+                    json.dumps(repair.to_dict(), ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                trace.append(
+                    TraceEvent(
+                        TraceContext(
+                            run_id=state.run_id,
+                            variant_id=execution_variant.variant_id,
+                            attempt_id=attempt_dir.name,
+                            seed=self.seed,
+                            profile_id=execution_variant.profile_id,
+                            profile_hash=execution_variant.profile_hash,
+                            source_hash=expected_identity.source_hash,
+                            scene_revision=expected_identity.scene_revision,
+                            world_revision=(
+                                evidence.identity.world_revision
+                                if evidence.identity is not None
+                                else None
+                            ),
+                        ),
+                        stage="feedback",
+                        status=repair.action.value,
+                        failure_code=diagnosis.failure_code,
+                        outputs=repair.to_dict(),
+                        artifact_refs=(str(attempt_dir / "repair.json"),),
+                    )
+                )
+                if repair.action == RepairAction.DIAGNOSE:
+                    proposal = self.resolver.diagnose_unknown(
+                        plan, evidence, attempt_dir / "decisions"
+                    )
+                    diagnosis.skill_updates = proposal.skill_updates
+                    diagnosis.workspace_action = proposal.workspace_action
+                    diagnosis.recommended_action = proposal.recommended_action
+                elif repair.action == RepairAction.NEXT_CANDIDATE:
+                    diagnosis.workspace_action = "replan"
+                elif repair.action == RepairAction.MUTATE_LAYOUT:
+                    diagnosis.workspace_action = "mutate_layout"
+                elif repair.action == RepairAction.BLOCK:
+                    diagnosis.workspace_action = "block"
+                else:
+                    diagnosis.workspace_action = "keep"
+                dump_contract(diagnosis, diagnosis_path)
+
+            artifact_manifest = write_variant_artifact_manifest(
+                variant_root,
+                attempt_dir,
+                workspace_selection_path,
+                data_required=data_generation,
+            )
+            if evidence.task_success and not artifact_manifest.complete:
+                diagnosis = Diagnosis(
+                    stage="artifact_contract",
+                    failure_code="ARTIFACT_CONTRACT_FAILED",
+                    category="data_integrity",
+                    root_cause=", ".join(artifact_manifest.failure_codes),
+                    retryable=False,
+                    recommended_action=(
+                        "produce every required structured artifact before qualification"
+                    ),
+                    evidence_refs=[str(attempt_dir / "artifact_manifest.json")],
+                )
+                dump_contract(diagnosis, diagnosis_path)
+                state.status = RunStatus.FAILED
+                state.message = (
+                    "ARTIFACT_CONTRACT_FAILED: "
+                    + ", ".join(artifact_manifest.failure_codes)
+                )
+                self._save_state(state)
+                self._finish(state, plan)
+                return state
             if evidence.task_success:
                 state.status = RunStatus.SUCCEEDED
                 state.message = "all object subtasks completed in one SimBox episode"
@@ -299,42 +927,106 @@ class AgentOrchestrator:
                 self._save_state(state)
                 self._finish(state, plan)
                 return state
-            if not diagnosis.retryable or attempt_index >= state.max_revisions:
+            if not should_repair:
                 state.status = RunStatus.FAILED
                 state.message = f"{diagnosis.failure_code}: {diagnosis.recommended_action}"
                 self._save_state(state)
                 self._finish(state, plan)
                 return state
 
-            proposal = self.resolver.diagnose_unknown(
-                plan, evidence, attempt_dir / "decisions"
-            )
-            diagnosis.skill_updates = proposal.skill_updates
-            if proposal.workspace_action in {"replan", "block"}:
-                diagnosis.workspace_action = proposal.workspace_action
-            diagnosis.recommended_action = proposal.recommended_action
-            dump_contract(diagnosis, diagnosis_path)
             changed = self._apply_skill_updates(plan, diagnosis, selected_manifest)
-            if diagnosis.workspace_action == "replan":
-                excluded_candidates.add(str(selected_candidate["candidate_id"]))
+            if diagnosis.workspace_action == "mutate_layout":
                 try:
-                    selected_candidate = select_task_workspace_candidate(
+                    layout_result = self._search_layout(
                         plan,
-                        workspace_paths,
+                        execution_variant,
                         selected_manifest,
-                        workspace_selection_dir / f"replan_{attempt_index + 1:02d}",
-                        self.gpu,
-                        self.conda_env,
-                        self.settings,
-                        excluded_candidate_ids=excluded_candidates,
+                        source_task,
+                        self._source_arena_path(run_dir, source_task),
+                        diagnosis.failure_code,
+                        variant_root
+                        / "scene_layout"
+                        / "repairs"
+                        / f"attempt_{attempt_index + 1:02d}",
+                        subtask_id=diagnosis.failing_subtask_id,
                     )
-                    changed = True
-                except CompileError as exc:
+                except (SceneLayoutBlocked, CompileError, OSError, ValueError) as exc:
                     state.status = RunStatus.BLOCKED
                     state.message = str(exc)
                     self._save_state(state)
                     self._finish(state, plan)
                     return state
+                self._store_layout_result(
+                    run_dir, execution_variant.variant_id, layout_result
+                )
+                active_scene_task_path = Path(layout_result.scene_task_path)
+                workspace_paths = dict(layout_result.workspace_paths)
+                selected_candidate = dict(layout_result.workspace_candidate)
+                workspace_selection_path = Path(
+                    layout_result.workspace_selection_path
+                )
+                workspace_selection_dir = workspace_selection_path.parent
+                excluded_candidates.clear()
+                changed = True
+            if diagnosis.workspace_action == "replan":
+                excluded_candidates.add(str(selected_candidate["candidate_id"]))
+                try:
+                    replan_dir = workspace_selection_dir / f"replan_{attempt_index + 1:02d}"
+                    selected_candidate = select_task_workspace_candidate(
+                        plan,
+                        execution_variant,
+                        workspace_paths,
+                        selected_manifest,
+                        replan_dir,
+                        self.gpu,
+                        self.conda_env,
+                        self.settings,
+                        excluded_candidate_ids=excluded_candidates,
+                    )
+                    workspace_selection_dir = replan_dir
+                    workspace_selection_path = replan_dir / "position_selection.json"
+                    changed = True
+                except CompileError as exc:
+                    failure_code = failure_code_from_text(
+                        exc, "NO_CUROBO_CANDIDATE"
+                    )
+                    try:
+                        layout_result = self._search_layout(
+                            plan,
+                            execution_variant,
+                            selected_manifest,
+                            source_task,
+                            self._source_arena_path(run_dir, source_task),
+                            failure_code,
+                            variant_root
+                            / "scene_layout"
+                            / "repairs"
+                            / f"replan_{attempt_index + 1:02d}",
+                            subtask_id=(
+                                exc.failing_subtask_id
+                                or diagnosis.failing_subtask_id
+                            ),
+                        )
+                    except (SceneLayoutBlocked, CompileError, OSError, ValueError) as layout_exc:
+                        state.status = RunStatus.BLOCKED
+                        state.message = str(layout_exc)
+                        self._save_state(state)
+                        self._finish(state, plan)
+                        return state
+                    self._store_layout_result(
+                        run_dir, execution_variant.variant_id, layout_result
+                    )
+                    active_scene_task_path = Path(layout_result.scene_task_path)
+                    workspace_paths = dict(layout_result.workspace_paths)
+                    selected_candidate = dict(layout_result.workspace_candidate)
+                    workspace_selection_path = Path(
+                        layout_result.workspace_selection_path
+                    )
+                    workspace_selection_dir = workspace_selection_path.parent
+                    excluded_candidates.clear()
+                    changed = True
+            state.workspace_manifest_path = str(workspace_selection_path)
+            self._save_state(state)
             if diagnosis.workspace_action == "block" or not changed:
                 state.status = RunStatus.BLOCKED
                 state.message = "diagnosis produced no safe, applicable single-cause revision"
@@ -353,8 +1045,7 @@ class AgentOrchestrator:
         self,
         config_path: Path,
         attempt_dir: Path,
-        run_id: str,
-        attempt_index: int,
+        identity: ExecutionIdentity,
         *,
         data_generation: bool,
     ) -> tuple[int | None, bool, Path, Path]:
@@ -368,13 +1059,22 @@ class AgentOrchestrator:
                 "TASK_CONFIG": str(config_path),
                 "GPU_ID": str(self.gpu),
                 "RANDOM_NUM": str(self.random_num),
-                "RANDOM_SEED": str(attempt_index),
-                "RUN_NAME": f"agent/{run_id}/attempt_{attempt_index:02d}",
+                "RANDOM_SEED": str(identity.seed),
+                "RUN_NAME": f"agent/{identity.run_id}/{identity.variant_id}/seed_{identity.seed}",
                 "OUTPUT_DIR": str(data_dir) if data_generation else "",
                 "INTERNDATA_EPISODE_EVENT_PATH": str(event_path),
-                "INTERNDATA_RANDOM_SEED": str(attempt_index),
+                "INTERNDATA_RUN_ID": identity.run_id,
+                "INTERNDATA_VARIANT_ID": identity.variant_id,
+                "INTERNDATA_RANDOM_SEED": str(identity.seed),
+                "INTERNDATA_PROFILE_ID": identity.profile_id,
+                "INTERNDATA_PROFILE_HASH": identity.profile_hash,
+                "INTERNDATA_SOURCE_HASH": identity.source_hash,
+                "INTERNDATA_SCENE_REVISION": identity.scene_revision,
                 "INTERNDATA_GPU": str(self.gpu),
                 "INTERNDATA_DEBUG_TOPDOWN": "1" if debug_cfg.get("topdown_check") else "0",
+                "INTERNDATA_SCREENSHOT_DIR": str(
+                    (attempt_dir / "screenshots").resolve()
+                ),
                 "INTERNDATA_TASK_PATH": str(config_path),
                 "CONDA_ENV": self.conda_env,
                 "PYTHONUNBUFFERED": "1",
@@ -467,7 +1167,7 @@ class AgentOrchestrator:
     def _write_report(self, state: RunState) -> dict[str, Any]:
         run_dir = Path(state.run_dir)
         attempts = []
-        for path in sorted(run_dir.glob("attempts/*/evidence.json")):
+        for path in sorted(run_dir.glob("variants/*/attempts/*/evidence.json")):
             value = json.loads(path.read_text(encoding="utf-8"))
             value["path"] = str(path)
             attempts.append(value)

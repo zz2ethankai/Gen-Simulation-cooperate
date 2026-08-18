@@ -59,8 +59,8 @@ class FakeWorld:
 
 class FakeController:
     use_batch = True
-    robot_file = "split_aloha_right.yml"
     lr_name = "right"
+    grasp_approach_axis = 2
 
     def __init__(self, results, attach_names=("/target/mesh",)):
         self.results = iter(results)
@@ -188,6 +188,25 @@ def test_pregrasp_and_terminal_world_callbacks_wrap_the_two_plan_sets():
     assert order[2] == ("world", "terminal")
 
 
+def test_pregrasp_offset_uses_profile_declared_approach_axis():
+    seen_positions = []
+
+    class XAxisController(FakeController):
+        grasp_approach_axis = 0
+
+        def test_batch_forward(self, positions, orientations):
+            seen_positions.append(np.asarray(positions).copy())
+            return super().test_batch_forward(positions, orientations)
+
+    controller = XAxisController(
+        [FakeResult([True, False, False]), FakeResult([True, False, False])]
+    )
+    GraspPlanEvaluator(controller).evaluate(
+        _grasps(), np.array([0.1, 0.2, 0.3]), 0.1, "/target/mesh"
+    )
+    np.testing.assert_allclose(seen_positions[0][:, 0], [-0.1, 0.0, 0.1])
+
+
 def test_chained_terminal_plan_rejects_nonstraight_path_and_keeps_selected_path():
     paths = [object(), object(), object()]
 
@@ -207,6 +226,8 @@ def test_chained_terminal_plan_rejects_nonstraight_path_and_keeps_selected_path(
     )
     assert evaluation.result.feasible
     assert evaluation.result.selected_grasp_index == 1
+    assert evaluation.pregrasp_path is paths[1]
+    assert evaluation.pregrasp_path_index == 1
     assert evaluation.terminal_path is paths[1]
     assert evaluation.terminal_path_length_ratio == 1.1
     assert evaluation.terminal_path_max_deviation_m == 0.004
@@ -227,6 +248,8 @@ def test_chained_terminal_all_failed_returns_safe_failure_without_paths():
     )
     assert not evaluation.result.feasible
     assert evaluation.result.failure_code == "NO_JOINT_GRASP_PLAN"
+    assert evaluation.pregrasp_path is paths[0]
+    assert evaluation.pregrasp_path_index == 0
     assert evaluation.terminal_path is None
 
 
@@ -290,6 +313,8 @@ def test_nonbatch_terminal_plan_starts_from_matching_pregrasp_path():
     assert evaluation.result.pregrasp_success_count == 2
     assert evaluation.result.grasp_success_count == 1
     assert evaluation.result.selected_grasp_index == 1
+    assert evaluation.pregrasp_path is pre_paths[1]
+    assert evaluation.pregrasp_path_index == 1
     assert evaluation.terminal_path is terminal_paths[1]
     assert evaluation.terminal_path_length_ratio == 1.2
     assert evaluation.terminal_path_max_deviation_m == 0.005

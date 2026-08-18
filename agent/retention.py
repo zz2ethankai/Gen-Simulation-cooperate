@@ -34,7 +34,9 @@ class RetentionManager:
         self.index_path = self.root / "index.yaml"
 
     def decide(self, run_summary: dict[str, Any], artifact_dir: Path) -> RetentionDecision:
-        template = (AGENT_DIR / "prompts" / "retain.md").read_text(encoding="utf-8")
+        template = (AGENT_DIR / "workflow" / "templates" / "retain.md").read_text(
+            encoding="utf-8"
+        )
         prompt = template.replace(
             "{{RUN_SUMMARY}}", json.dumps(run_summary, ensure_ascii=False, indent=2)
         )
@@ -46,7 +48,12 @@ class RetentionManager:
         name = _slug(decision.name)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         if decision.kind == RetentionKind.PLAYBOOK:
-            path = self.root / "playbooks" / f"{name}.md"
+            candidate_root = self.root / "playbooks" / "candidates" / name
+            if candidate_root.exists():
+                raise FileExistsError(
+                    f"candidate already exists and will not be overwritten: {candidate_root}"
+                )
+            path = candidate_root / "playbook.md"
             content = (
                 f"# {decision.name}\n\n"
                 f"{decision.summary}\n\n"
@@ -55,7 +62,7 @@ class RetentionManager:
                 + "\n".join(f"- `{item}`" for item in decision.evidence_refs)
                 + "\n"
             )
-            path.parent.mkdir(parents=True, exist_ok=True)
+            path.parent.mkdir(parents=True, exist_ok=False)
             path.write_text(content, encoding="utf-8")
         else:
             category = _slug(decision.category or _enum_text(decision.kind))
@@ -92,21 +99,25 @@ class RetentionManager:
             for target, content in generated_targets:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(content, encoding="utf-8")
-            payload = decision.to_dict()
-            payload.update(
-                {
-                    "status": "candidate",
-                    "created_at": timestamp,
-                    "promotion_gate": {
-                        "unit_and_contract_tests": "pending",
-                        "source_task_success": "0/3",
-                        "second_task_success": "0/3",
-                        "baseline_regression": "pending",
-                    },
-                }
-            )
-            path = candidate_root / "candidate.json"
-            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        payload = decision.to_dict()
+        payload.update(
+            {
+                "status": "candidate",
+                "created_at": timestamp,
+                "promotion_gate": {
+                    "unit_and_contract_tests": "pending",
+                    "cross_scene_validation": "pending",
+                    "debug_seeds": "0/5",
+                    "heldout_seeds": "0/20",
+                    "baseline_regression": "pending",
+                },
+            }
+        )
+        candidate_path = path.parent / "candidate.json"
+        candidate_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
         self._append_index(decision, path, timestamp)
         return path
 
@@ -120,7 +131,7 @@ class RetentionManager:
                 "name": decision.name,
                 "kind": _enum_text(decision.kind),
                 "category": decision.category,
-                "status": "active" if decision.kind == RetentionKind.PLAYBOOK else "candidate",
+                "status": "candidate",
                 "path": str(path.relative_to(REPO_ROOT)),
                 "created_at": timestamp,
             }

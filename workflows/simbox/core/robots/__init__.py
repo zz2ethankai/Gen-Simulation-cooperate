@@ -1,25 +1,36 @@
-"""
-Robot implementations using template-based approach.
-All robots inherit from TemplateRobot and are configured via yaml files.
-"""
-from core.robots.base_robot import ROBOT_DICT
+"""Lazy robot registry access that keeps profile loading Isaac-free."""
 
-from core.robots.template_robot import TemplateRobot
-from core.robots.fr3 import FR3
-from core.robots.franka_robotiq85 import FrankaRobotiq85
-from core.robots.genie1 import Genie1
-from core.robots.lift2 import Lift2
-from core.robots.split_aloha import SplitAloha
+from __future__ import annotations
 
-__all__ = [
-    "TemplateRobot",
-    "FR3",
-    "FrankaRobotiq85",
-    "Genie1",
-    "Lift2",
-    "SplitAloha",
-]
+from importlib import import_module
 
-def get_robot_cls(category_name):
-    """Get robot class by category name."""
+_ROBOT_MODULES = {
+    "TemplateRobot": "template_robot",
+    "FR3": "fr3",
+    "FrankaRobotiq85": "franka_robotiq85",
+    "Genie1": "genie1",
+    "Lift2": "lift2",
+    "SplitAloha": "split_aloha",
+}
+
+__all__ = ["get_robot_cls"]
+
+
+def get_robot_cls(category_name: str):
+    """Load and return one registered robot implementation on demand."""
+
+    from .base_robot import ROBOT_DICT
+
+    if category_name not in ROBOT_DICT:
+        try:
+            module_name = _ROBOT_MODULES[category_name]
+        except KeyError as exc:
+            raise KeyError(f"unknown robot target_class: {category_name}") from exc
+        import_module(f"{__package__}.{module_name}")
     return ROBOT_DICT[category_name]
+
+
+def __getattr__(name: str):
+    if name in _ROBOT_MODULES:
+        return get_robot_cls(name)
+    raise AttributeError(name)

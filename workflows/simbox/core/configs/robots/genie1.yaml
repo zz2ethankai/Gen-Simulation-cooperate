@@ -1,82 +1,142 @@
-# Genie1 robot configuration
-# Dual-arm 7-DOF robot with body and head joints
-
-# Robot info
+profile_id: genie1_floor_standing_v1
 target_class: Genie1
-path: "G1_120s/robot.usd"
+path: G1_120s/robot.usd
 
-# CuRobo file
-robot_file:
-  - workflows/simbox/curobo/src/curobo/content/configs/robot/G1_120s_left_arm_parallel_gripper.yml
-  - workflows/simbox/curobo/src/curobo/content/configs/robot/G1_120s_right_arm_parallel_gripper.yml
+placement:
+  family: floor_standing
+  support_role: floor
+  footprint_m: null
+  collision_layers: []
+  base_contact_offset_m: 0.0
+  authored_forward_yaw_offset_deg: 0.0
 
-# Gripper parameters
-gripper_max_width: 0.1
-gripper_min_width: 0.0
-tcp_offset: 0.217
+base:
+  operation_mode: locked
+  locked_joint_names: [idx01_body_joint1, idx02_body_joint2, idx11_head_joint1, idx12_head_joint2]
+  joint_groups:
+    body:
+      joint_names: [idx01_body_joint1, idx02_body_joint2]
+      joint_indices: [0, 1]
+      home: [0.32, 0.63]
+    head:
+      joint_names: [idx11_head_joint1, idx12_head_joint2]
+      joint_indices: [2, 3]
+      home: [0.0, 0.349]
+  hold:
+    stiffness: 100000.0
+    damping: 3000.0
+    max_effort: 10000.0
 
-# Solver parameters
-solver_position_iteration_count: 128
-solver_velocity_iteration_count: 4
-stabilization_threshold: 0.005
+arms:
+  left:
+    controller: Genie1
+    curobo_file: workflows/simbox/curobo/src/curobo/content/configs/robot/G1_120s_left_arm_parallel_gripper.yml
+    command_joint_names: [idx21_arm_l_joint1, idx22_arm_l_joint2, idx23_arm_l_joint3, idx24_arm_l_joint4, idx25_arm_l_joint5, idx26_arm_l_joint6, idx27_arm_l_joint7]
+    trajectory_joint_names: [idx21_arm_l_joint1, idx22_arm_l_joint2, idx23_arm_l_joint3, idx24_arm_l_joint4, idx25_arm_l_joint5, idx26_arm_l_joint6, idx27_arm_l_joint7]
+    joint_indices: [4, 6, 8, 10, 12, 14, 16]
+    ee_path: arm_l_end_link
+    base_path: arm_base_link
+    arm_base_xy_m: null
+    home: [-1.069, 0.608, 0.279, -1.278, 0.727, 1.489, -0.186]
+    home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    filter_paths: [gripper_l_outer_link5, gripper_l_inner_link5]
+    forbid_collision_paths: [arm_l_link2, arm_l_link3, arm_l_link4, arm_l_link5]
+    gripper:
+      joint_names: []
+      joint_indices: [19]
+      max_width: 0.10
+      min_width: 0.0
+      tcp_offset: 0.217
+      home: [1.0]
+      keypoints:
+        tool_head: [0.0, 0.0, 0.217, 1.0]
+        tool_tail: [0.0, 0.0, 0.03, 1.0]
+        tool_side: [0.05, 0.0, 0.217, 1.0]
+      action:
+        adapter: signed_clip
+        params:
+          command: [1.0]
+          invert: false
+          clip: [0.0, 1.0]
+  right:
+    controller: Genie1
+    curobo_file: workflows/simbox/curobo/src/curobo/content/configs/robot/G1_120s_right_arm_parallel_gripper.yml
+    command_joint_names: [idx61_arm_r_joint1, idx62_arm_r_joint2, idx63_arm_r_joint3, idx64_arm_r_joint4, idx65_arm_r_joint5, idx66_arm_r_joint6, idx67_arm_r_joint7]
+    trajectory_joint_names: [idx61_arm_r_joint1, idx62_arm_r_joint2, idx63_arm_r_joint3, idx64_arm_r_joint4, idx65_arm_r_joint5, idx66_arm_r_joint6, idx67_arm_r_joint7]
+    joint_indices: [5, 7, 9, 11, 13, 15, 17]
+    ee_path: arm_r_end_link
+    base_path: arm_base_link
+    arm_base_xy_m: null
+    home: [1.074, -0.611, -0.280, 1.284, -0.730, -1.495, 0.188]
+    home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    filter_paths: [gripper_r_outer_link5, gripper_r_inner_link5]
+    forbid_collision_paths: [arm_r_link2, arm_r_link3, arm_r_link4, arm_r_link5]
+    gripper:
+      joint_names: []
+      joint_indices: [21]
+      max_width: 0.10
+      min_width: 0.0
+      tcp_offset: 0.217
+      home: [1.0]
+      keypoints:
+        tool_head: [0.0, 0.0, 0.217, 1.0]
+        tool_tail: [0.0, 0.0, 0.03, 1.0]
+        tool_side: [0.05, 0.0, 0.217, 1.0]
+      action:
+        adapter: signed_clip
+        params:
+          command: [1.0]
+          invert: false
+          clip: [0.0, 1.0]
 
-# Arm joint names are authoritative; indices are legacy compatibility fallbacks.
-left_joint_names: [idx21_arm_l_joint1, idx22_arm_l_joint2, idx23_arm_l_joint3, idx24_arm_l_joint4, idx25_arm_l_joint5, idx26_arm_l_joint6, idx27_arm_l_joint7]
-right_joint_names: [idx61_arm_r_joint1, idx62_arm_r_joint2, idx63_arm_r_joint3, idx64_arm_r_joint4, idx65_arm_r_joint5, idx66_arm_r_joint6, idx67_arm_r_joint7]
-left_joint_indices: [4, 6, 8, 10, 12, 14, 16]
-right_joint_indices: [5, 7, 9, 11, 13, 15, 17]
-left_gripper_indices: [19]
-right_gripper_indices: [21]
-body_indices: [0, 1]
-head_indices: [2, 3]
+camera_rig:
+  - name_suffix: hand_left
+    save_name: hand_left
+    translation: [-0.01, -0.07, 0.08]
+    orientation: [0.191, 0.981, 0.003, 0.017]
+    camera_axes: usd
+    camera_file: workflows/simbox/core/configs/cameras/realsense_d405_v2.yaml
+    parent_suffix: gripper_l_base_link
+    apply_randomization: false
+  - name_suffix: hand_right
+    save_name: hand_right
+    translation: [0.015, 0.094, 0.07]
+    orientation: [0.0, 0.0, 0.974, 0.225]
+    camera_axes: usd
+    camera_file: workflows/simbox/core/configs/cameras/realsense_d405_v2.yaml
+    parent_suffix: gripper_r_base_link
+    apply_randomization: false
+  - name_suffix: head
+    save_name: head
+    translation: [0.05, -0.05, 0.0]
+    orientation: [0.0, 0.697, 0.0128, -0.717]
+    camera_axes: usd
+    camera_file: workflows/simbox/core/configs/cameras/realsense_d455_v3.yaml
+    parent_suffix: head_link2
+    apply_randomization: false
 
-# Paths
-fl_ee_path: "arm_l_end_link"
-fr_ee_path: "arm_r_end_link"
-fl_base_path: "arm_base_link"
-fr_base_path: "arm_base_link"
+data_adapter:
+  arms:
+    left:
+      action_name: left
+      joint_position_key: states.left_joint.position
+      gripper_position_key: states.left_gripper.position
+      gripper_pose_key: null
+    right:
+      action_name: right
+      joint_position_key: states.right_joint.position
+      gripper_position_key: states.right_gripper.position
+      gripper_pose_key: null
 
-# Gripper keypoints
-fl_gripper_keypoints:
-  tool_head: [0.0, 0.0, 0.217, 1]
-  tool_tail: [0.0, 0.0, 0.03, 1]
-  tool_side: [0.05, 0.0, 0.217, 1]
-fr_gripper_keypoints:
-  tool_head: [0.0, 0.0, 0.217, 1]
-  tool_tail: [0.0, 0.0, 0.03, 1]
-  tool_side: [0.05, 0.0, 0.217, 1]
+capabilities: [pick, place]
+collision_world_modes: [physics_schema]
 
-# Collision paths
-fl_filter_paths:
-  - "gripper_l_outer_link5"
-  - "gripper_l_inner_link5"
-fr_filter_paths:
-  - "gripper_r_outer_link5"
-  - "gripper_r_inner_link5"
-fl_forbid_collision_paths:
-  - "arm_l_link2"
-  - "arm_l_link3"
-  - "arm_l_link4"
-  - "arm_l_link5"
-fr_forbid_collision_paths:
-  - "arm_r_link2"
-  - "arm_r_link3"
-  - "arm_r_link4"
-  - "arm_r_link5"
+physics:
+  solver_position_iteration_count: 128
+  solver_velocity_iteration_count: 4
+  stabilization_threshold: 0.005
 
-# Pose processing (Z-axis gripper)
-R_ee_graspnet: [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]]
-ee_axis: "z"
-
-# Extra depth file
-extra_depth_file: "tcp2base_offset.json"
-
-# Default joint home positions
-left_joint_home: [-1.069, 0.608, 0.279, -1.278, 0.727, 1.489, -0.186]
-right_joint_home: [1.074, -0.611, -0.280, 1.284, -0.730, -1.495, 0.188]
-left_joint_home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-right_joint_home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-left_gripper_home: [1.0]
-right_gripper_home: [1.0]
-body_home: [0.32, 0.63]
-head_home: [0.0, 0.349]
+kinematics:
+  R_ee_graspnet: [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]]
+  ee_axis: z
+  extra_depth_file: tcp2base_offset.json

@@ -7,6 +7,11 @@ planning:
     terminal_step_m: 0.005
     max_terminal_distance_m: 0.10
     place_settle_steps: 10
+  spawn_settle:
+    max_object_linear_speed_m_s: 0.02
+    max_object_angular_speed_rad_s: 0.05
+    max_robot_joint_speed_rad_s: 0.05
+    max_unexpected_contact_n: 5.0
   execution_safety:
     enabled: true
     max_waypoint_stride: 2

@@ -24,9 +24,11 @@ from .observe_hold import ObserveHold
 from .pick import Pick
 from .pick_plan_probe import PickPlanProbe
 from .place import Place
+from .place_plan_probe import PlacePlanProbe
 from .pour_water_succ import Pour_Water_Succ
 from .rotate import Rotate
 from .rotate_obj import Rotate_Obj
+from .return_to_episode_initial import ReturnToEpisodeInitial
 from .scan import Scan
 from .track import Track
 from .wait import Wait
@@ -48,6 +50,7 @@ __all__ = [
     "Joint_Ctrl",
     "Mobile_Rotate",
     "Mobile_Translate",
+    "ReturnToEpisodeInitial",
     "Move",
     "Open",
     "ObserveHold",
@@ -55,6 +58,7 @@ __all__ = [
     "PickPlanProbe",
     "Manualpick",
     "Place",
+    "PlacePlanProbe",
     "Pour_Water_Succ",
     "Rotate",
     "Rotate_Obj",
