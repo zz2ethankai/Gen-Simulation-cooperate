@@ -192,7 +192,22 @@ class TemplateController(BaseController):
                 DeprecationWarning,
                 stacklevel=2,
             )
-        self.use_batch = use_batch
+        # Native Physics-schema Pick/Place evaluates a candidate set against
+        # one exact collision world.  Running that path with ``use_batch``
+        # disabled turns the normal 20-candidate query into up to 40 serial
+        # IK/TrajOpt solves (pre-grasp plus terminal), which is the source of
+        # the multi-minute planning traces seen in native-v2 runs.  Keep the
+        # serial opt-out for the legacy Stage-scan implementation, but do not
+        # allow it to select the unbounded native-v2 fallback path.
+        requested_use_batch = bool(use_batch)
+        if self.collision_world_mode == "physics_schema" and not requested_use_batch:
+            LOGGER.warning(
+                "[PlanDebug] overriding use_batch=False for native Physics-schema "
+                "planner robot=%s; candidate evaluation requires batch planning",
+                name,
+            )
+            requested_use_batch = True
+        self.use_batch = requested_use_batch
         self.constrain_grasp_approach = constrain_grasp_approach
         self.collision_activation_distance = collision_activation_distance
         self.usd_parser = UsdSceneParser()
@@ -1870,7 +1885,13 @@ class TemplateController(BaseController):
         }
 
     def retarget_pick_phase_commands(self, object_name: str, commands):
-        """Retarget pending Physics Pick phases after rigid target motion."""
+        """Retarget pending Physics Pick phases after rigid target motion.
+
+        A command sequence is also retargeted once immediately after candidate
+        evaluation.  Preserve a validated terminal path for that no-motion
+        case; invalidate it only when the object or the arm base actually
+        changed pose.
+        """
 
         reference = self._pick_plan_references.get(object_name)
         if reference is None:
@@ -1892,6 +1913,18 @@ class TemplateController(BaseController):
         )
         rotation_delta_deg = float(np.degrees(np.arccos(cosine)))
         translation_delta = float(np.linalg.norm(object_delta[:3, 3]))
+        reference_world_armbase_tf = np.asarray(
+            reference["world_armbase_tf"], dtype=float
+        )
+        base_pose_changed = not np.allclose(
+            current_world_armbase_tf,
+            reference_world_armbase_tf,
+            atol=1e-6,
+            rtol=0.0,
+        )
+        target_pose_changed = (
+            translation_delta > 1e-6 or rotation_delta_deg > 1e-4 or base_pose_changed
+        )
 
         current_base_inverse = np.linalg.inv(current_world_armbase_tf)
         for pending in commands:
@@ -1906,7 +1939,7 @@ class TemplateController(BaseController):
             target_position, target_orientation = pose_from_tf_matrix(current_base_ee_tf)
             pending.target_position = np.asarray(target_position, dtype=float).reshape(3)
             pending.target_orientation = np.asarray(target_orientation, dtype=float).reshape(4)
-            if pending.phase == MotionPhase.TERMINAL_GRASP_APPROACH:
+            if target_pose_changed and pending.phase == MotionPhase.TERMINAL_GRASP_APPROACH:
                 pending.params.pop("preplanned_joint_path", None)
                 pending.params.pop("path_length_ratio", None)
                 pending.params.pop("path_max_deviation_m", None)
@@ -1940,15 +1973,16 @@ class TemplateController(BaseController):
                 command.phase.value,
             )
             return False
-        LOGGER.warning(
-            "[PickSafety] retargeted active object=%s phase=%s "
-            "translation_delta_m=%.6f rotation_delta_deg=%.3f "
-            "terminal_path_invalidated=true",
-            object_name,
-            command.phase.value,
-            translation_delta,
-            rotation_delta_deg,
-        )
+        if translation_delta > 1e-6 or rotation_delta_deg > 1e-4:
+            LOGGER.warning(
+                "[PickSafety] retargeted active object=%s phase=%s "
+                "translation_delta_m=%.6f rotation_delta_deg=%.3f "
+                "terminal_path_invalidated=true",
+                object_name,
+                command.phase.value,
+                translation_delta,
+                rotation_delta_deg,
+            )
         return True
 
     def forward_phase_command(self, command: MotionPhaseCommand):

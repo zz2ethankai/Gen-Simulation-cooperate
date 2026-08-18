@@ -341,12 +341,14 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             for neglect_collision_name in neglect_collision_names:
                 if neglect_collision_name not in candidate["name"]:
                     continue
-                # A neglected fixture is intentionally excluded from the
-                # robot's own collision group.  For a static geometry
-                # fixture, replace its referenced collision subtree with a
-                # native proxy and keep that proxy in global_group so dynamic
-                # objects can still rest on a table.
+                # Keep the neglected fixture in the robot filter group.  With
+                # inverted PhysX collision filtering, leaving the source
+                # collider in neither group makes it collide by default with
+                # the robot.  Static geometry additionally gets a native
+                # support proxy in global_group so dynamic objects can still
+                # rest on the fixture without re-enabling robot contact.
                 if candidate.get("target_class") == "GeometryObject":
+                    prim_paths.append(candidate_prim_path)
                     support_obj = getattr(self.task, "_task_objects", {}).get(candidate["name"])
                     support_proxy_path = None
                     if os.environ.get("INTERNDATA_DEBUG_RESET_LIFECYCLE") == "1":
@@ -1945,6 +1947,21 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         base_rotation = float(np.degrees(quaternion_angle(base_orientation, initial_orientation)))
         velocity = np.asarray(joint_state.velocities, dtype=float)
         arm_velocity = velocity[controller.arm_indices]
+        command = skill.manip_list[0]
+        if isinstance(command, MotionPhaseCommand):
+            LOGGER.warning(
+                "[VelocityTrace] step=%d phase=%s cmd_idx=%d plan_len=%s "
+                "actual=%s commanded=%s velocity=%s",
+                self._active_execution_step_id,
+                command.phase.value,
+                int(getattr(controller, "cmd_idx", -1)),
+                len(controller.cmd_plan) if controller.cmd_plan is not None else None,
+                np.array2string(actual_arm, precision=5),
+                np.array2string(np.asarray(commanded_arm, dtype=float), precision=5)
+                if commanded_arm is not None
+                else None,
+                np.array2string(arm_velocity, precision=5),
+            )
         joint_limit_violation = False
         try:
             limits = np.asarray(controller.robot.get_dof_limits(), dtype=float)
@@ -1966,7 +1983,6 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         except CollisionSceneError:
             illegal_state = True
         dropped = False
-        command = skill.manip_list[0]
         if command.phase in {
             MotionPhase.SYNC_WORLD,
             MotionPhase.GRIPPER_CLOSE,
