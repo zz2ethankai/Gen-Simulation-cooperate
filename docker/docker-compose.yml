@@ -43,6 +43,7 @@ services:
       CUROBO_DEBUG_WORLD_COLLISION: ${CUROBO_DEBUG_WORLD_COLLISION:-0}
       CUROBO_TORCH_CUDA_GRAPH_RESET: ${CUROBO_TORCH_CUDA_GRAPH_RESET:-1}
       SIMBOX_DEBUG_OUTPUT_DIR: ${SIMBOX_DEBUG_OUTPUT_DIR:-output/simbox_debug}
+      SIMBOX_DEBUG_PICK: ${SIMBOX_DEBUG_PICK:-0}
     volumes:
       - ${ISAAC_CACHE_MAIN:-../.docker/isaac-sim/cache/main}:/isaac-sim/.cache:rw
       - ${ISAAC_CACHE_COMPUTE:-../.docker/isaac-sim/cache/computecache}:/isaac-sim/.nv/ComputeCache:rw

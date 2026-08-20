@@ -80,7 +80,11 @@ class Pick(BaseSkill):
         self.manip_list = []
         self.pickcontact_view = task.pickcontact_views[robot.name][lr_arm][object_name]
         self.process_valid = True
-        self.obj_init_trans = deepcopy(self.pick_obj.get_local_pose()[0])
+        # Success is defined by the object's motion in the task/world frame.
+        # A RigidObject can be a child of a referenced USD asset with a
+        # non-unit authored scale; comparing its local z coordinate then
+        # mixes the parent scale into the lift measurement.
+        self.obj_init_trans = deepcopy(self._get_object_world_pose()[0])
         final_gripper_state = self.skill_cfg.get("final_gripper_state", -1)
         if final_gripper_state == 1:
             self.gripper_cmd = "open_gripper"
@@ -486,6 +490,7 @@ class Pick(BaseSkill):
                 "pregrasp_orientations": self.plan_evaluation.pregrasp_orientations,
                 "grasp_positions": self.plan_evaluation.grasp_positions,
                 "grasp_orientations": self.plan_evaluation.grasp_orientations,
+                "pregrasp_plan_diagnostics": self.plan_evaluation.pregrasp_plan_diagnostics,
                 "terminal_plan_diagnostics": self.plan_evaluation.terminal_plan_diagnostics,
                 "post_grasp_validation": self.plan_evaluation.post_grasp_validation,
                 "world_collision_diagnostic": world_collision_diagnostic,
@@ -545,6 +550,7 @@ class Pick(BaseSkill):
             gripper_action=self.gripper_cmd,
             post_grasp_offset=post_grasp_offset,
             terminal_path=self.plan_evaluation.terminal_path,
+            pregrasp_path=self.plan_evaluation.pregrasp_path,
             terminal_path_length_ratio=self.plan_evaluation.terminal_path_length_ratio,
             terminal_path_max_deviation_m=self.plan_evaluation.terminal_path_max_deviation_m,
             return_to_pregrasp=bool(self.skill_cfg.get("return_to_pregrasp", False)),
@@ -993,7 +999,7 @@ class Pick(BaseSkill):
         flag = flag and self.process_valid
 
         lift_threshold = float(self.skill_cfg.get("lift_th", 0.0))
-        object_position = deepcopy(self.pick_obj.get_local_pose()[0])
+        object_position = deepcopy(self._get_object_world_pose()[0])
         lift_delta = float(object_position[2] - self.obj_init_trans[2])
         lift_valid = True
         if self.skill_cfg.get("lift_th", 0.0) > 0.0:

@@ -192,22 +192,11 @@ class TemplateController(BaseController):
                 DeprecationWarning,
                 stacklevel=2,
             )
-        # Native Physics-schema Pick/Place evaluates a candidate set against
-        # one exact collision world.  Running that path with ``use_batch``
-        # disabled turns the normal 20-candidate query into up to 40 serial
-        # IK/TrajOpt solves (pre-grasp plus terminal), which is the source of
-        # the multi-minute planning traces seen in native-v2 runs.  Keep the
-        # serial opt-out for the legacy Stage-scan implementation, but do not
-        # allow it to select the unbounded native-v2 fallback path.
-        requested_use_batch = bool(use_batch)
-        if self.collision_world_mode == "physics_schema" and not requested_use_batch:
-            LOGGER.warning(
-                "[PlanDebug] overriding use_batch=False for native Physics-schema "
-                "planner robot=%s; candidate evaluation requires batch planning",
-                name,
-            )
-            requested_use_batch = True
-        self.use_batch = requested_use_batch
+        # Preserve the controller's requested planner mode.  Native v2's
+        # batch query is preferred by callers that opt into it, while the
+        # serial path remains available for candidate sets whose batched
+        # graph cannot represent the current goal/world state.
+        self.use_batch = bool(use_batch)
         self.constrain_grasp_approach = constrain_grasp_approach
         self.collision_activation_distance = collision_activation_distance
         self.usd_parser = UsdSceneParser()
@@ -1134,18 +1123,27 @@ class TemplateController(BaseController):
         return list(self.planner.joint_names)
 
     def _arm_joint_state(self, sim_js, *, repeat=1):
-        """Build a native-v2 named state in the planner's active-joint order."""
+        """Build a position-only native-v2 start state in planner joint order.
+
+        CuRobo plans from a kinematic configuration.  Isaac's instantaneous
+        articulation derivatives describe the previous control step (and can
+        contain contact-induced spikes), not boundary conditions for the new
+        trajectory.  Supplying them here makes TrajOpt reject otherwise
+        collision-free post-grasp paths as infeasible.  Native v1 planning
+        also used zero derivatives at every phase boundary.
+        """
 
         positions = np.asarray(sim_js.positions, dtype=float).reshape(-1)
-        velocities, accelerations, jerks = self._joint_state_derivatives(sim_js)
         arm_names = list(self.raw_js_names)
         if len(arm_names) != len(self.arm_indices):
             raise ValueError("raw arm joint names and runtime arm indices have different lengths")
+        arm_positions = positions[self.arm_indices]
+        zeros = np.zeros_like(arm_positions)
         state = JointState(
-            position=self.tensor_args.to_device(positions[self.arm_indices]),
-            velocity=self.tensor_args.to_device(velocities[self.arm_indices]),
-            acceleration=self.tensor_args.to_device(accelerations[self.arm_indices]),
-            jerk=self.tensor_args.to_device(jerks[self.arm_indices]),
+            position=self.tensor_args.to_device(arm_positions),
+            velocity=self.tensor_args.to_device(zeros),
+            acceleration=self.tensor_args.to_device(zeros),
+            jerk=self.tensor_args.to_device(zeros),
             joint_names=arm_names,
         ).reorder(self._planner_joint_names())
         if repeat > 1:
@@ -1599,6 +1597,7 @@ class TemplateController(BaseController):
         gripper_action: str,
         post_grasp_offset: float = 0.0,
         source_support=None,
+        pregrasp_path=None,
         terminal_path=None,
         terminal_path_length_ratio=None,
         terminal_path_max_deviation_m=None,
@@ -1628,6 +1627,9 @@ class TemplateController(BaseController):
                 .get("pick_place", {})
                 .get("terminal_step_m", 0.005)
             )
+        # ``terminal_step_m`` controls terminal-path waypoint sampling only.
+        # The phase completion threshold comes from the skill's
+        # ``completion_tolerance`` (for Pick, this is ``t_eps``).
         terminal_step_m = max(float(terminal_step_m), 1e-6)
         tolerance = dict(
             completion_tolerance
@@ -1656,6 +1658,11 @@ class TemplateController(BaseController):
                 gripper_action="open_gripper",
                 active_object=object_name,
                 completion_tolerance=tolerance,
+                params=(
+                    {"preplanned_joint_path": pregrasp_path}
+                    if pregrasp_path is not None
+                    else {}
+                ),
             ),
         ]
 
@@ -1669,7 +1676,7 @@ class TemplateController(BaseController):
                     active_object=object_name,
                     allow_target_finger_contact=True,
                     completion_tolerance={
-                        "position_m": terminal_step_m,
+                        "position_m": tolerance["position_m"],
                         "orientation_rad": tolerance["orientation_rad"],
                     },
                     params={
@@ -1700,7 +1707,7 @@ class TemplateController(BaseController):
                         active_object=object_name,
                         allow_target_finger_contact=True,
                         completion_tolerance={
-                            "position_m": terminal_step_m,
+                            "position_m": tolerance["position_m"],
                             "orientation_rad": tolerance["orientation_rad"],
                         },
                     )
@@ -1912,7 +1919,16 @@ class TemplateController(BaseController):
             np.clip((np.trace(relative_rotation) - 1.0) * 0.5, -1.0, 1.0)
         )
         rotation_delta_deg = float(np.degrees(np.arccos(cosine)))
-        translation_delta = float(np.linalg.norm(object_delta[:3, 3]))
+        # ``object_delta`` is a rigid transform about the world origin.  Its
+        # translation component includes the lever-arm term introduced by a
+        # target rotation (for an object 0.2 m from the origin, a 9 degree
+        # rotation alone looks like roughly 3 cm of translation).  Safety
+        # retargeting must compare the two object-frame origins directly; the
+        # rigid transform above is still the correct transform for retargeting
+        # the object-relative EE targets.
+        translation_delta = float(
+            np.linalg.norm(current_object_pose[0] - reference["object_pose"][0])
+        )
         reference_world_armbase_tf = np.asarray(
             reference["world_armbase_tf"], dtype=float
         )
@@ -1939,7 +1955,10 @@ class TemplateController(BaseController):
             target_position, target_orientation = pose_from_tf_matrix(current_base_ee_tf)
             pending.target_position = np.asarray(target_position, dtype=float).reshape(3)
             pending.target_orientation = np.asarray(target_orientation, dtype=float).reshape(4)
-            if target_pose_changed and pending.phase == MotionPhase.TERMINAL_GRASP_APPROACH:
+            if target_pose_changed and pending.phase in {
+                MotionPhase.TRANSIT_PREGRASP,
+                MotionPhase.TERMINAL_GRASP_APPROACH,
+            }:
                 pending.params.pop("preplanned_joint_path", None)
                 pending.params.pop("path_length_ratio", None)
                 pending.params.pop("path_max_deviation_m", None)
@@ -1977,7 +1996,7 @@ class TemplateController(BaseController):
             LOGGER.warning(
                 "[PickSafety] retargeted active object=%s phase=%s "
                 "translation_delta_m=%.6f rotation_delta_deg=%.3f "
-                "terminal_path_invalidated=true",
+                "cached_pick_paths_invalidated=true",
                 object_name,
                 command.phase.value,
                 translation_delta,
@@ -2001,6 +2020,8 @@ class TemplateController(BaseController):
                 self._phase_bookkeeping_done = True
             elif command.phase == MotionPhase.TRANSIT_PREGRASP:
                 manager.begin_target_transit(command.active_object, robot, arm)
+                if command.params.get("preplanned_joint_path") is not None:
+                    self._install_preplanned_phase_path(command)
             elif command.phase == MotionPhase.TERMINAL_GRASP_APPROACH:
                 manager.begin_target_approach(command.active_object, robot, arm)
                 preplanned_path = command.params.get("preplanned_joint_path")
@@ -2743,7 +2764,6 @@ class TemplateController(BaseController):
             raise
         self._native_attached_obstacle_names = list(paths)
         self._native_batch_attached_obstacle_names = []
-        LOGGER.warning("[AttachDebug] attached=native disabled_world_obstacles=%s", paths)
         # Native v2 mutates the attachment manager in-place and intentionally
         # returns None. Keep this controller API boolean for its callers.
         return True
@@ -2797,12 +2817,6 @@ class TemplateController(BaseController):
             raise
 
         self._native_batch_attached_obstacle_names = paths
-        LOGGER.info(
-            "[AttachDebug] synchronized=native_batch robot=%s arm=%s paths=%s",
-            self.name,
-            self.lr_name,
-            paths,
-        )
         return True
 
     def test_attached_forward_from_joint_positions(

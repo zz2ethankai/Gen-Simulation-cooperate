@@ -43,10 +43,12 @@ class GraspPlanEvaluation:
     pregrasp_orientations: np.ndarray
     grasp_positions: np.ndarray
     grasp_orientations: np.ndarray
+    pregrasp_path: Any | None = None
     terminal_path: Any | None = None
     terminal_paths: list[Any | None] = field(default_factory=list)
     terminal_path_length_ratio: float | None = None
     terminal_path_max_deviation_m: float | None = None
+    pregrasp_plan_diagnostics: list[dict[str, Any]] = field(default_factory=list)
     terminal_plan_diagnostics: list[dict[str, Any]] = field(default_factory=list)
     post_grasp_validation: list[dict[str, Any]] = field(default_factory=list)
 
@@ -150,6 +152,14 @@ class GraspPlanEvaluator:
         success = getattr(result, "success", None)
         feasible = getattr(result, "feasible", None)
         debug_info = getattr(result, "debug_info", None)
+        trajectory_info = {}
+        for name in ("interpolated_trajectory", "js_solution"):
+            state = getattr(result, name, None)
+            position = getattr(state, "position", None)
+            trajectory_info[name] = {
+                "present": state is not None,
+                "position_shape": list(position.shape) if position is not None else None,
+            }
         return {
             "candidate_index": int(candidate_index),
             "success": cls._tensor_summary(success),
@@ -162,6 +172,10 @@ class GraspPlanEvaluator:
             "goalset_index": cls._tensor_summary(getattr(result, "goalset_index", None)),
             "num_seeds": getattr(result, "num_seeds", None),
             "batch_size": getattr(result, "batch_size", None),
+            "trajectory": trajectory_info,
+            "interpolated_last_tstep": cls._tensor_summary(
+                getattr(result, "interpolated_last_tstep", None)
+            ),
             "debug_info_keys": sorted(str(key) for key in debug_info.keys())
             if isinstance(debug_info, dict)
             else None,
@@ -227,8 +241,10 @@ class GraspPlanEvaluator:
         grasp_success_count = 0
         joint_success_count = 0
         selected_index: int | None = None
+        pregrasp_paths: list[Any | None] = []
         terminal_paths: list[Any | None] = []
         path_metrics: dict[int, tuple[float, float]] = {}
+        pregrasp_plan_diagnostics: list[dict[str, Any]] = []
         terminal_plan_diagnostics: list[dict[str, Any]] = []
         post_grasp_validation: list[dict[str, Any]] = []
 
@@ -279,6 +295,7 @@ class GraspPlanEvaluator:
             else:
                 pre_result = self.controller.test_batch_forward(pre_positions, pre_orientations)
                 self.debug_log("pregrasp " + self._planner_diagnostic(pre_result))
+                pregrasp_plan_diagnostics.append(self._result_diagnostic(pre_result, -1))
                 pre_success_count = self._count(pre_result)
                 pre_paths = extract_result_paths(pre_result)
                 candidate_count = len(grasps)
@@ -289,6 +306,43 @@ class GraspPlanEvaluator:
                         "treating all terminal candidates as failed"
                     )
                     pre_paths = [None] * candidate_count
+                pregrasp_paths = pre_paths
+                pre_success = self._success_mask(pre_result)
+                if pre_success.shape != (candidate_count,) or not np.any(pre_success):
+                    pre_success = np.zeros(candidate_count, dtype=bool)
+                # BatchMotionPlanner returns None when its batched IK graph
+                # finds no seed.  That is not proof that every candidate is
+                # invalid: the single native planner uses its normal seed
+                # budget and can solve a candidate from the same world.  Try
+                # that bounded fallback before declaring the whole Pick
+                # infeasible, and retain the result diagnostics in the
+                # snapshot for post-run review.
+                if not np.any(pre_success) or not any(path is not None for path in pre_paths):
+                    single_forward = getattr(
+                        self.controller, "test_single_forward_result", None
+                    )
+                    if callable(single_forward):
+                        pre_paths = [None] * candidate_count
+                        pregrasp_paths = pre_paths
+                        for candidate_index in range(candidate_count):
+                            single_result = single_forward(
+                                pre_positions[candidate_index],
+                                pre_orientations[candidate_index],
+                            )
+                            diagnostic = self._result_diagnostic(
+                                single_result, candidate_index
+                            )
+                            diagnostic["mode"] = "native_single_pregrasp_fallback"
+                            pregrasp_plan_diagnostics.append(diagnostic)
+                            single_paths = extract_result_paths(single_result)
+                            if (
+                                self._count(single_result)
+                                and single_paths
+                                and single_paths[0] is not None
+                            ):
+                                pre_success[candidate_index] = True
+                                pre_paths[candidate_index] = single_paths[0]
+                        pre_success_count = int(np.count_nonzero(pre_success))
                 # Native v2 may leave ``interpolated_trajectory`` unset when
                 # every candidate fails.
                 # Treat this as the expected no-path outcome and
@@ -301,7 +355,6 @@ class GraspPlanEvaluator:
                         positions, orientations, pre_paths
                     )
                     self.debug_log("terminal-grasp " + self._planner_diagnostic(result))
-                    pre_success = self._success_mask(pre_result)
                     result_success = self._success_mask(result)
                     # Native v2 returns ``success=None`` when every batch
                     # IK/TrajOpt attempt fails.  A batch failure is not
@@ -475,11 +528,15 @@ class GraspPlanEvaluator:
         else:
             pre_results = []
             pre_paths: list[Any | None] = []
+            pregrasp_paths = pre_paths
             terminal_paths = [None] * len(grasps)
             for pre_position, pre_orientation in zip(pre_positions, pre_orientations):
                 if test_mode == "forward":
                     pre_result = self.controller.test_single_forward_result(
                         pre_position, pre_orientation
+                    )
+                    pregrasp_plan_diagnostics.append(
+                        self._result_diagnostic(pre_result, len(pregrasp_plan_diagnostics))
                     )
                     pre_ok = bool(self._success_mask(pre_result).any())
                     pre_paths_for_result = extract_result_paths(pre_result)
@@ -577,6 +634,11 @@ class GraspPlanEvaluator:
             pregrasp_orientations=pre_orientations,
             grasp_positions=positions,
             grasp_orientations=orientations,
+            pregrasp_path=(
+                pregrasp_paths[selected_index]
+                if selected_index is not None and selected_index < len(pregrasp_paths)
+                else None
+            ),
             terminal_path=(
                 terminal_paths[selected_index]
                 if selected_index is not None and selected_index < len(terminal_paths)
@@ -589,6 +651,7 @@ class GraspPlanEvaluator:
             terminal_path_max_deviation_m=(
                 path_metrics[selected_index][1] if selected_index in path_metrics else None
             ),
+            pregrasp_plan_diagnostics=pregrasp_plan_diagnostics,
             terminal_plan_diagnostics=terminal_plan_diagnostics,
             post_grasp_validation=post_grasp_validation,
         )

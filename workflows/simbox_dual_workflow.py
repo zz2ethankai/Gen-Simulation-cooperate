@@ -66,6 +66,7 @@ from core.visualization.skill_targets import create_skill_target_visualizer
 
 
 LOGGER = logging.getLogger("de_logger")
+VELOCITY_TRACE_LOGGER = logging.getLogger("de_velocity_trace")
 
 
 class _PassiveSkillController:
@@ -1949,7 +1950,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         arm_velocity = velocity[controller.arm_indices]
         command = skill.manip_list[0]
         if isinstance(command, MotionPhaseCommand):
-            LOGGER.warning(
+            VELOCITY_TRACE_LOGGER.info(
                 "[VelocityTrace] step=%d phase=%s cmd_idx=%d plan_len=%s "
                 "actual=%s commanded=%s velocity=%s",
                 self._active_execution_step_id,

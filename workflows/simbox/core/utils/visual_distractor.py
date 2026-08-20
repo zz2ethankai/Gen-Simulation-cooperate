@@ -10,6 +10,7 @@ from core.utils.usd_geom_utils import compute_bbox, recursive_parse_new
 from scipy.spatial import ConvexHull
 from scipy.spatial.transform import Rotation as R
 from shapely.geometry import Polygon
+from pxr import Usd, UsdGeom
 
 
 def visualize_polygons(polygons: list[Polygon]):
@@ -68,6 +69,43 @@ def rotate_object(obj, category):
 def get_pcd_from_mesh(mesh, num_points=1000):
     pcd = mesh.sample_points_uniformly(number_of_points=num_points)
     return pcd
+
+
+def _mesh_points_at_live_pose(obj):
+    """Read mesh geometry in the object's live PhysX pose.
+
+    ``recursive_parse_new`` applies the transform authored in USD.  A rigid
+    body's pose can be updated through PhysX without updating that authored
+    xform, so using its result directly after ``set_world_pose`` mixes the
+    stale USD pose with the current physics pose.  Remove only the USD root's
+    authored translation/orientation, preserve its geometry scale, then apply
+    the pose reported by the rigid-object view.
+    """
+
+    points, face_counts, face_indices = recursive_parse_new(obj.prim)
+    points = np.asarray(points, dtype=float)
+    root_transform = np.asarray(
+        UsdGeom.Imageable(obj.prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default()),
+        dtype=float,
+    )
+
+    # ``recursive_parse_new`` has already applied the complete authored mesh
+    # transform, including the asset's scale.  Only remove the rigid root's
+    # authored translation/orientation here.  Inverting the complete matrix
+    # would also undo the authored scale and turn a centimetre-sized mesh into
+    # its raw (tens-of-metres) asset coordinates.
+    source_translation = root_transform[3, :3]
+    source_linear = root_transform[:3, :3]
+    source_scale = np.linalg.norm(source_linear, axis=0)
+    source_scale = np.where(source_scale > 1.0e-12, source_scale, 1.0)
+    source_rotation = source_linear / source_scale
+    source_rotation = R.from_matrix(source_rotation).as_matrix()
+    source_points = (points - source_translation) @ source_rotation
+
+    translation, orientation = obj.get_world_pose()
+    rotation = R.from_quat(np.asarray(orientation, dtype=float), scalar_first=True).as_matrix()
+    live_points = source_points @ rotation.T + np.asarray(translation, dtype=float)
+    return live_points.tolist(), face_counts, face_indices
 
 
 def transform_pointcloud(
@@ -213,7 +251,7 @@ def set_distractors(
     cfgs,
 ):
     # Get meshes
-    objects_meshes = [recursive_parse_new(prim.prim) for prim in objects.values()]
+    objects_meshes = [_mesh_points_at_live_pose(obj) for obj in objects.values()]
     objects_meshes = [
         o3d.geometry.TriangleMesh(
             vertices=o3d.utility.Vector3dVector(mesh[0]),
@@ -221,7 +259,7 @@ def set_distractors(
         )
         for mesh in objects_meshes
     ]
-    distractors_meshes = [recursive_parse_new(prim.prim) for prim in distractors.values()]
+    distractors_meshes = [_mesh_points_at_live_pose(obj) for obj in distractors.values()]
     distractors_meshes = [
         o3d.geometry.TriangleMesh(
             vertices=o3d.utility.Vector3dVector(mesh[0]),
@@ -229,7 +267,7 @@ def set_distractors(
         )
         for mesh in distractors_meshes
     ]
-    target_mesh = recursive_parse_new(target.prim)
+    target_mesh = _mesh_points_at_live_pose(target)
     target_mesh = o3d.geometry.TriangleMesh(
         vertices=o3d.utility.Vector3dVector(target_mesh[0]),
         triangles=o3d.utility.Vector3iVector(np.array(target_mesh[2]).reshape(-1, 3)),

@@ -683,12 +683,23 @@ class CollisionSceneManager:
         prim_world = cache.GetLocalToWorldTransform(prim)
         reference_world = cache.GetLocalToWorldTransform(reference)
         relative = prim_world * reference_world.GetInverse()
-        transform = Gf.Transform(relative)
-        scale = transform.GetScale()
-        dims = [
-            abs(float(local_dims[index]) * float(scale[index]))
-            for index in range(3)
-        ]
+        # ``Gf.Transform.GetScale`` clamps very small scales to 1e-10.  The
+        # legacy assets used here legitimately produce relative scales below
+        # that threshold after USD unit conversion, so using it collapses a
+        # valid collider into a near-zero CuRobo cuboid.  Measure each local
+        # axis directly from the affine matrix and normalize a copy only for
+        # extracting the orientation.
+        axis_rows = [relative.GetRow3(index) for index in range(3)]
+        scale = [float(row.GetLength()) for row in axis_rows]
+        if not all(np.isfinite(value) and value > 0.0 for value in scale):
+            raise CollisionSceneError(
+                f"cannot build collision proxy with invalid scale: {prim_path} {scale}"
+            )
+        rotation_matrix = Gf.Matrix4d(relative)
+        for index, row in enumerate(axis_rows):
+            rotation_matrix.SetRow3(index, row / scale[index])
+        transform = Gf.Transform(rotation_matrix.GetOrthonormalized())
+        dims = [abs(float(local_dims[index]) * scale[index]) for index in range(3)]
         if min(dims) <= 0.0:
             raise CollisionSceneError(
                 f"cannot build collision proxy with non-positive dimensions: {prim_path} {dims}"
