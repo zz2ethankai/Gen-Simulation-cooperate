@@ -262,9 +262,13 @@ class MotionPlannerRuntime:
         # IK/TrajOpt attempts.
         batch_graph_enabled = bool(pick_cfg.get("batch_enable_graph", False))
         try:
-            max_attempts = max(1, int(pick_cfg.get("max_plan_attempts", 4)))
+            # Single-object phases are sensitive to the sampled IK seed after
+            # attachment.  Keep the historical retry budget close to 10
+            # without making every batch candidate pay for it; batch attempts
+            # remain capped independently below.
+            max_attempts = max(1, int(pick_cfg.get("max_plan_attempts", 8)))
         except (TypeError, ValueError):
-            max_attempts = 4
+            max_attempts = 8
         try:
             batch_attempts = max(1, int(pick_cfg.get("batch_max_plan_attempts", min(max_attempts, 4))))
         except (TypeError, ValueError):

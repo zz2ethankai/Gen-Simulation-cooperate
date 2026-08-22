@@ -68,3 +68,11 @@
 - 静态检查：本阶段修改后执行 py_compile 与 `git diff --check`。
 - r10 运行：官方 wrapper 已完成，但由于 compose 尚未透传该开关，未产生原生约束摘要；任务仍以 `place_preplace_batch 0/20` 失败，不能把本轮当作诊断闭环。
 - checkpoint：完成静态检查后提交本阶段独立 checkpoint，再以诊断开关运行 r11 官方闭环。
+
+## Stage 8 — restore single-query retry budget
+
+- r11 运行：未到 Place；`post_grasp_lift` 的单目标规划连续 3 次失败，最终由 ExecutionSafety abort。r10 在同一任务和 seed 下第 3 次重试成功，说明失败来自单目标 IK/TrajOpt seed 波动，而不是 live 起点碰撞或 Physics Schema 初始化。
+- 修复：controller 的单目标 `max_plan_attempts` 默认从 4 调到 8，接近历史实现的 10；batch 仍通过独立的 `batch_max_plan_attempts` 默认最多 4 次，不让候选 batch 继承单目标预算。
+- 约束：不改变碰撞世界、attachment、batch graph 或 `dummy_forward`；任务 YAML 无修改。
+- 静态检查：本阶段修改后执行 py_compile 与 `git diff --check`。
+- checkpoint：完成静态检查后提交本阶段独立 checkpoint，再运行 r12，确认先能稳定通过 Pick 并重新取得 Place 的约束诊断。
