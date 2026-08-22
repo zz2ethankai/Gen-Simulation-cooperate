@@ -7,25 +7,13 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from core.planning.domain_types import PlanResult
+
 
 ROOT = Path(__file__).resolve().parents[2]
 _SKILL_PATH = (
     ROOT / "workflows" / "simbox" / "core" / "skills" / "heuristic_skill.py"
 )
-
-
-class _SuccessTensor:
-    def __init__(self, value=True):
-        self.value = bool(value)
-
-    def detach(self):
-        return self
-
-    def cpu(self):
-        return self
-
-    def __array__(self, dtype=None):
-        return np.asarray([self.value], dtype=dtype)
 
 
 class _Command:
@@ -65,15 +53,16 @@ def _skill(*, gripper_state=-1.0, mode="home", results=None):
     if results is None:
         results = [True]
     plan_results = [
-        SimpleNamespace(
-            success=_SuccessTensor(success),
-            get_interpolated_plan=lambda index=index: f"joint-path-{index}",
+        PlanResult(
+            success=bool(success),
+            trajectory=f"joint-path-{index}",
         )
         for index, success in enumerate(results)
     ]
     planned_goals = []
 
-    def plan_joint_positions(goal):
+    def plan_cspace(goal, *, context=None):
+        assert context == "carry_home"
         planned_goals.append(np.asarray(goal).copy())
         return plan_results[len(planned_goals) - 1]
 
@@ -82,7 +71,7 @@ def _skill(*, gripper_state=-1.0, mode="home", results=None):
         lr_name="left",
         collision_scene_manager=manager,
         num_plan_failed=4,
-        plan_joint_positions=plan_joint_positions,
+        plan_cspace=plan_cspace,
         forward_kinematic=lambda goal: (
             np.asarray([0.1, 0.2, 0.3]),
             np.asarray([1.0, 0.0, 0.0, 0.0]),
@@ -126,7 +115,7 @@ def test_attached_home_builds_cached_physics_phase_and_preserves_attachment():
     assert command.active_object == "apple"
     assert command.allow_target_finger_contact is True
     assert command.gripper_action == "close_gripper"
-    assert command.params["preplanned_joint_path"] == "joint-path-0"
+    assert command.params["preplanned_joint_path"].positions == "joint-path-0"
     assert command.params["home_progress"] == 1.0
     np.testing.assert_allclose(planned_goals, [[1.0, 2.0, 3.0]])
     assert command.completion_tolerance == {
@@ -151,7 +140,7 @@ def test_attached_home_falls_back_to_nearest_collision_free_tuck_posture():
     np.testing.assert_allclose(planned_goals[1], [0.75, 1.5, 2.25])
     np.testing.assert_allclose(skill._goal_joints, [0.75, 1.5, 2.25])
     assert skill.manip_list[0].params["home_progress"] == 0.75
-    assert skill.manip_list[0].params["preplanned_joint_path"] == "joint-path-1"
+    assert skill.manip_list[0].params["preplanned_joint_path"].positions == "joint-path-1"
 
 
 def test_attached_home_reports_failure_after_all_tuck_candidates_fail():

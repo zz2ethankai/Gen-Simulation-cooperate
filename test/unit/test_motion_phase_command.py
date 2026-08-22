@@ -13,6 +13,7 @@ if str(SIMBOX_ROOT) not in sys.path:
     sys.path.insert(0, str(SIMBOX_ROOT))
 
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand  # noqa: E402
+from core.planning.domain_types import CollisionPolicy, PlanningProfile  # noqa: E402
 
 
 def test_motion_phase_command_validates_pose_and_exposes_semantics():
@@ -48,4 +49,53 @@ def test_motion_phase_command_rejects_partial_or_invalid_pose():
             MotionPhase.TRANSIT_PREGRASP,
             target_position=np.zeros(2),
             target_orientation=np.array([1.0, 0.0, 0.0, 0.0]),
+        )
+
+
+def test_motion_phase_command_preserves_typed_planner_request_metadata():
+    command = MotionPhaseCommand(
+        phase=MotionPhase.TERMINAL_PLACE_DESCENT,
+        target_position=np.zeros(3),
+        target_orientation=np.array([1.0, 0.0, 0.0, 0.0]),
+        active_target="apple",
+        support="tray",
+        completion_policy="contact_or_tolerance",
+        replan_policy="dynamic_scene",
+        collision_policy=CollisionPolicy.PLACEMENT_DESCENT,
+        profile=PlanningProfile.TERMINAL_LINEAR,
+        phase_id="place.descent",
+    )
+
+    assert command.active_object == "apple"
+    assert command.support_object == "tray"
+    assert command.active_target == "apple"
+    assert command.support == "tray"
+    assert command.planning_request_metadata == {
+        "phase_id": "place.descent",
+        "completion_policy": "contact_or_tolerance",
+        "replan_policy": "dynamic_scene",
+        "candidate_replan_limit": None,
+        "collision_policy": CollisionPolicy.PLACEMENT_DESCENT,
+        "collision_options": command.collision_options,
+        "active_target": "apple",
+        "support": "tray",
+        "profile": PlanningProfile.TERMINAL_LINEAR,
+        "preplanned_joint_path": None,
+        "metadata": {},
+    }
+
+
+def test_joint_target_is_planner_input_and_direct_payload_requires_hold():
+    command = MotionPhaseCommand(
+        phase=MotionPhase.CARRY_HOME,
+        joint_target=np.array([0.1, 0.2]),
+    )
+    assert command.target_joint_positions.tolist() == [0.1, 0.2]
+    assert command.profile is PlanningProfile.CSPACE
+    assert command.collision_policy is CollisionPolicy.WORLD_TRANSIT
+
+    with pytest.raises(ValueError, match="direct_joint_action"):
+        MotionPhaseCommand(
+            phase=MotionPhase.CARRY_HOME,
+            params={"direct_joint_action": np.array([0.1, 0.2])},
         )

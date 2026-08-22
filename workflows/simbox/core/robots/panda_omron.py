@@ -326,6 +326,10 @@ class PandaOmron(TemplateRobot):
             joint_indices=joint_indices,
         )
         self._set_active_manipulator_position_target(joint_positions, joint_indices)
+        # Keep the mobile-base hold separate from the arm action.  The hold
+        # strategy writes its own base position/velocity targets and never
+        # changes this action's joint-index payload.
+        self.reapply_manipulation_base_hold()
 
     def _set_active_manipulator_position_target(self, joint_positions, joint_indices):
         joint_positions = np.asarray(joint_positions, dtype=np.float32).reshape(1, -1)

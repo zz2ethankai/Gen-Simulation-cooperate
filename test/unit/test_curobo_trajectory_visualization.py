@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from pxr import Usd, UsdGeom
 
 
@@ -16,9 +17,12 @@ if str(SIMBOX_ROOT) not in sys.path:
     sys.path.insert(0, str(SIMBOX_ROOT))
 
 from core.visualization.curobo_trajectory import (  # noqa: E402
+    CuroboTrajectoryPlannerAdapter,
     CuroboTrajectoryVisualizer,
+    TrajectoryVisualizationFrame,
     create_curobo_trajectory_visualizer,
 )
+from core.planning.domain_types import JointTrajectory  # noqa: E402
 import core.visualization.curobo_trajectory as trajectory_module  # noqa: E402
 from core.visualization.trajectory_math import (  # noqa: E402
     distance_sample_indices,
@@ -86,6 +90,32 @@ def test_disabled_config_does_not_create_visualizer():
     )
 
 
+def test_visualizer_rejects_native_or_controller_plan_inputs():
+    source = (
+        ROOT / "workflows/simbox/core/visualization/curobo_trajectory.py"
+    ).read_text(encoding="utf-8")
+    assert "controller._planner" not in source
+    assert "controller.planner" not in source
+    visualizer = CuroboTrajectoryVisualizer(
+        Usd.Stage.CreateInMemory(), "/World/task_0", {}
+    )
+    frame = TrajectoryVisualizationFrame(
+        name="robot",
+        arm_name="left",
+        robot_base_path="/World/task_0/base",
+        task_root_path="/World/task_0",
+        planner=CuroboTrajectoryPlannerAdapter(
+            SimpleNamespace(joint_names=["joint"], tool_frames=["tool"])
+        ),
+    )
+    with pytest.raises(TypeError, match="normalized PlanResult"):
+        visualizer.record_plan(
+            SimpleNamespace(position=np.zeros((1, 1))),
+            frame=frame,
+            command="probe",
+        )
+
+
 def test_exported_overlay_contains_only_rendering_schemas(tmp_path):
     stage = Usd.Stage.CreateInMemory()
     UsdGeom.Xform.Define(stage, "/World")
@@ -141,6 +171,16 @@ class _ArrayTensor:
         return self.value
 
 
+def _frame(kinematics, arm="right"):
+    return TrajectoryVisualizationFrame(
+        name="split_aloha",
+        arm_name=arm,
+        robot_base_path="/World/task_0/robot/base",
+        task_root_path="/World/task_0",
+        planner=CuroboTrajectoryPlannerAdapter(kinematics),
+    )
+
+
 def test_selected_plan_records_custom_data_and_both_marker_types(monkeypatch, tmp_path):
     stage = Usd.Stage.CreateInMemory()
     UsdGeom.Xform.Define(stage, "/World")
@@ -148,36 +188,45 @@ def test_selected_plan_records_custom_data_and_both_marker_types(monkeypatch, tm
     visualizer = CuroboTrajectoryVisualizer(stage, "/World/task_0", {})
 
     class Kinematics:
+        joint_names = [f"joint_{index}" for index in range(6)]
+        tool_frames = ["tool"]
+
         @staticmethod
-        def get_state(q):
-            return SimpleNamespace(ee_position=_ArrayTensor(q.value[:, :3]))
+        def compute_kinematics(q):
+            positions = q.position.detach().cpu().numpy()
+            return SimpleNamespace(
+                tool_poses=SimpleNamespace(
+                    get_link_pose=lambda _frame: SimpleNamespace(
+                        position=_ArrayTensor(positions[:, :3])
+                    )
+                )
+            )
 
         @staticmethod
         def get_robot_as_spheres(q, filter_valid=True):
             assert filter_valid is True
+            values = q.detach().cpu().numpy() if hasattr(q, "detach") else np.asarray(q)
             return [
                 [
                     SimpleNamespace(
                         pose=[row[0], row[1], row[2], 1, 0, 0, 0], radius=0.03
                     )
                 ]
-                for row in q.value
+                for row in values
             ]
 
-    controller = SimpleNamespace(
-        name="split_aloha",
-        lr_name="right",
-        robot_base_path="/World/task_0/robot/base",
-        planner=SimpleNamespace(kinematics=Kinematics()),
-    )
+    kinematics = Kinematics()
     monkeypatch.setattr(trajectory_module, "get_prim_at_path", lambda path: path)
     monkeypatch.setattr(
         trajectory_module, "get_relative_transform", lambda source, target: np.eye(4)
     )
-    cmd_plan = SimpleNamespace(
-        position=_ArrayTensor(np.arange(60, dtype=float).reshape(10, 6) / 100.0)
+    cmd_plan = JointTrajectory(
+        positions=np.arange(60, dtype=float).reshape(10, 6) / 100.0,
+        joint_names=kinematics.joint_names,
     )
-    visualizer.record_plan(controller, cmd_plan, "close_gripper")
+    visualizer.record_plan(
+        cmd_plan, frame=_frame(kinematics), command="close_gripper"
+    )
 
     plan = stage.GetPrimAtPath(
         "/World/task_0/__debug_curobo_trajectory__/split_aloha/right/plan_000"
@@ -217,20 +266,25 @@ def test_marker_switches_hide_robot_spheres_and_space_ee_path(monkeypatch):
     )
 
     class Kinematics:
+        joint_names = [f"joint_{index}" for index in range(6)]
+        tool_frames = ["tool"]
+
         @staticmethod
-        def get_state(q):
-            return SimpleNamespace(ee_position=_ArrayTensor(q.value[:, :3]))
+        def compute_kinematics(q):
+            positions = q.position.detach().cpu().numpy()
+            return SimpleNamespace(
+                tool_poses=SimpleNamespace(
+                    get_link_pose=lambda _frame: SimpleNamespace(
+                        position=_ArrayTensor(positions[:, :3])
+                    )
+                )
+            )
 
         @staticmethod
         def get_robot_as_spheres(q, filter_valid=True):
             raise AssertionError("hidden robot spheres must skip CuRobo sphere FK")
 
-    controller = SimpleNamespace(
-        name="split_aloha",
-        lr_name="right",
-        robot_base_path="/World/task_0/robot/base",
-        planner=SimpleNamespace(kinematics=Kinematics()),
-    )
+    kinematics = Kinematics()
     monkeypatch.setattr(trajectory_module, "get_prim_at_path", lambda path: path)
     monkeypatch.setattr(
         trajectory_module, "get_relative_transform", lambda source, target: np.eye(4)
@@ -238,7 +292,9 @@ def test_marker_switches_hide_robot_spheres_and_space_ee_path(monkeypatch):
     positions = np.zeros((11, 6), dtype=float)
     positions[:, 0] = np.linspace(0.0, 0.2, num=11)
     visualizer.record_plan(
-        controller, SimpleNamespace(position=_ArrayTensor(positions)), "reach"
+        JointTrajectory(positions=positions, joint_names=kinematics.joint_names),
+        frame=_frame(kinematics),
+        command="reach",
     )
 
     plan_path = (
@@ -264,31 +320,33 @@ def test_marker_switches_can_hide_ee_path_and_keep_robot_spheres(monkeypatch):
     )
 
     class Kinematics:
+        joint_names = [f"joint_{index}" for index in range(6)]
+        tool_frames = ["tool"]
+
         @staticmethod
-        def get_state(q):
+        def compute_kinematics(q):
             raise AssertionError("hidden EE path must skip EE FK")
 
         @staticmethod
         def get_robot_as_spheres(q, filter_valid=True):
+            values = q.detach().cpu().numpy() if hasattr(q, "detach") else np.asarray(q)
             return [
                 [SimpleNamespace(pose=[0, 0, 0, 1, 0, 0, 0], radius=0.03)]
-                for _ in q.value
+                for _ in values
             ]
 
-    controller = SimpleNamespace(
-        name="split_aloha",
-        lr_name="left",
-        robot_base_path="/World/task_0/robot/base",
-        planner=SimpleNamespace(kinematics=Kinematics()),
-    )
+    kinematics = Kinematics()
     monkeypatch.setattr(trajectory_module, "get_prim_at_path", lambda path: path)
     monkeypatch.setattr(
         trajectory_module, "get_relative_transform", lambda source, target: np.eye(4)
     )
     visualizer.record_plan(
-        controller,
-        SimpleNamespace(position=_ArrayTensor(np.zeros((3, 6), dtype=float))),
-        "reach",
+        JointTrajectory(
+            positions=np.zeros((3, 6), dtype=float),
+            joint_names=kinematics.joint_names,
+        ),
+        frame=_frame(kinematics, arm="left"),
+        command="reach",
     )
 
     plan_path = "/World/task_0/__debug_curobo_trajectory__/split_aloha/left/plan_000"

@@ -1,31 +1,63 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, Protocol
+
 from core.utils.transformation_utils import get_fk_solution, pose_to_6d
 
 from .lmdb_logger import LmdbLogger
+
+if TYPE_CHECKING:
+    from core.controllers.skill_runtime import SkillRuntimePort
+
+
+class _LoggingBaseBridge(Protocol):
+    """Narrow local-base logging contract used by :func:`log_dual_obs`."""
+
+    def get_logging_action_snapshot(self) -> Mapping[str, Any]:
+        """Return the most recent body-twist command snapshot."""
+
+
+RuntimePorts = Mapping[str, Mapping[str, "SkillRuntimePort"]]
 
 
 def _robot_has_keys(robot_infos, *keys):
     return all(key in robot_infos for key in keys)
 
 
-def _get_controller(controllers, robot_name, lr_name="left"):
-    robot_controllers = controllers.get(robot_name, {})
-    controller = robot_controllers.get(lr_name)
-    if controller is not None:
-        return controller
-    if robot_controllers:
-        return next(iter(robot_controllers.values()))
-    return None
+def _gripper_openness(runtime_ports: RuntimePorts, robot_name: str, lr_name: str = "left") -> float:
+    """Read gripper state through the explicit runtime port only.
 
+    A missing arm is a valid configuration for single-arm/passive robots, and
+    is represented as the neutral open value.  Active arms must expose the
+    typed execution state carried by ``SkillRuntimePort``; no controller
+    façade or private state is inspected here.
+    """
 
-def _gripper_openness(controllers, robot_name, lr_name="left"):
-    controller = _get_controller(controllers, robot_name, lr_name)
-    if controller is None:
+    robot_ports = runtime_ports.get(robot_name, {})
+    runtime = robot_ports.get(lr_name)
+    if runtime is None:
         return 1.0
-    return 1.0 if getattr(controller, "_gripper_state", 1.0) > 0.0 else 0.0
+    return 1.0 if float(runtime.execution_state.gripper_state) > 0.0 else 0.0
 
 
 # pylint: disable=line-too-long,unused-argument
-def log_dual_obs(logger: LmdbLogger, obs, action_dict, controllers, base_bridges=None, step_idx=0):
+def log_dual_obs(
+    logger: LmdbLogger,
+    obs,
+    action_dict,
+    runtime_ports: RuntimePorts,
+    base_bridges: Mapping[str, _LoggingBaseBridge] | None = None,
+    step_idx: int = 0,
+):
+    """Record one observation using explicit runtime/state inputs.
+
+    ``runtime_ports`` is a robot-to-arm mapping of ``SkillRuntimePort``
+    instances.  The logger intentionally receives neither the controller
+    façade nor a private gripper field; command actions remain in
+    ``action_dict`` and measured robot state remains in ``obs``.
+    """
+
     base_bridges = base_bridges or {}
 
     # Add robots' proprio
@@ -40,7 +72,7 @@ def log_dual_obs(logger: LmdbLogger, obs, action_dict, controllers, base_bridges
                     logger.add_object_data(robot_name, f"{object_name}/{attr_name}", attr_value)
 
         base_bridge = base_bridges.get(robot_name)
-        if base_bridge is not None and hasattr(base_bridge, "get_logging_action_snapshot"):
+        if base_bridge is not None:
             base_action = base_bridge.get_logging_action_snapshot()
             logger.add_action_data(robot_name, "base_actions.vx_body", base_action["vx_body"])
             logger.add_action_data(robot_name, "base_actions.vy_body", base_action["vy_body"])
@@ -69,8 +101,8 @@ def log_dual_obs(logger: LmdbLogger, obs, action_dict, controllers, base_bridges
             right_joint_position = obs["robots"][robot_name]["states.right_joint.position"]
             left_gripper_position = obs["robots"][robot_name]["states.left_gripper.position"]
             right_gripper_position = obs["robots"][robot_name]["states.right_gripper.position"]
-            left_gripper_openness = _gripper_openness(controllers, robot_name, "left")
-            right_gripper_openness = _gripper_openness(controllers, robot_name, "right")
+            left_gripper_openness = _gripper_openness(runtime_ports, robot_name, "left")
+            right_gripper_openness = _gripper_openness(runtime_ports, robot_name, "right")
 
             # Use raw action to udpate if one arm is not static
             robot_action = action_dict.get(robot_name, None)
@@ -101,7 +133,7 @@ def log_dual_obs(logger: LmdbLogger, obs, action_dict, controllers, base_bridges
         ):
             joint_position = obs["robots"][robot_name]["states.joint.position"]
             gripper_pose = obs["robots"][robot_name]["states.gripper.pose"]
-            gripper_openness = _gripper_openness(controllers, robot_name, "left")
+            gripper_openness = _gripper_openness(runtime_ports, robot_name, "left")
             gripper_position = obs["robots"][robot_name]["states.gripper.position"]
 
             # Use raw action to udpate if one arm is not static

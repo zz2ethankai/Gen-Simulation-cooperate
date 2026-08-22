@@ -1,4 +1,4 @@
-"""Runtime Hybrid resolution tests without importing Isaac Sim."""
+"""Runtime world binding tests for the single Physics-schema workflow."""
 
 import ast
 import sys
@@ -11,13 +11,10 @@ SIMBOX_ROOT = ROOT / "workflows" / "simbox"
 if str(SIMBOX_ROOT) not in sys.path:
     sys.path.insert(0, str(SIMBOX_ROOT))
 
-from core.planning.config_contract import (  # noqa: E402
-    PASSTHROUGH_MODE,
-    resolve_runtime_skill_collision_world_mode,
-)
+from core.planning.config_contract import PASSTHROUGH_MODE, PHYSICS_SCHEMA_MODE  # noqa: E402
 
 
-_WORKFLOW_PATH = ROOT / "workflows" / "simbox_dual_workflow.py"
+_WORKFLOW_PATH = ROOT / "workflows/simbox_dual_workflow.py"
 
 
 def _load_activation_method():
@@ -35,8 +32,7 @@ def _load_activation_method():
     )
     namespace = {
         "PASSTHROUGH_MODE": PASSTHROUGH_MODE,
-        "resolve_runtime_skill_collision_world_mode": resolve_runtime_skill_collision_world_mode,
-        "LOGGER": SimpleNamespace(info=lambda *args, **kwargs: None),
+        "PHYSICS_SCHEMA_MODE": PHYSICS_SCHEMA_MODE,
     }
     module = ast.fix_missing_locations(ast.Module(body=[method_node], type_ignores=[]))
     exec(compile(module, _WORKFLOW_PATH, "exec"), namespace)
@@ -47,7 +43,6 @@ class _Workflow:
     _activate_skill_collision_world = _load_activation_method()
 
     def __init__(self, attached_entity):
-        self.requested_collision_world_mode = "auto"
         self.collision_scene_manager = SimpleNamespace(
             get_attached_entity=lambda _robot, _arm: attached_entity
         )
@@ -63,37 +58,29 @@ class _Controller:
         self.lr_name = "left"
         self.activations = []
 
-    def activate_collision_world_mode(self, mode):
-        self.activations.append(mode)
 
-
-def _home_skill():
-    return SimpleNamespace(
-        collision_world_mode="legacy_stage_scan",
+def test_operation_skill_reuses_physics_world_without_activation_switch():
+    workflow = _Workflow("apple")
+    skill = SimpleNamespace(
+        collision_world_mode=PHYSICS_SCHEMA_MODE,
         skill_cfg={"name": "heuristic__skill", "mode": "home"},
         controller=_Controller(),
     )
 
-
-def test_attached_home_is_promoted_to_physics_runtime_adapter():
-    workflow = _Workflow("apple")
-    skill = _home_skill()
-
     mode = workflow._activate_skill_collision_world(skill)
 
-    assert mode == "physics_schema"
-    assert skill.controller.activations == ["physics_schema"]
+    assert mode == PHYSICS_SCHEMA_MODE
+    assert skill.controller.activations == []
     assert skill._physics_schema_active_object == "apple"
-    assert skill.effective_collision_world_mode == "physics_schema"
+    assert skill.effective_collision_world_mode == PHYSICS_SCHEMA_MODE
 
 
-def test_post_detach_home_returns_to_legacy_fallback():
+def test_passthrough_skill_does_not_require_a_controller_or_world_switch():
     workflow = _Workflow(None)
-    skill = _home_skill()
+    skill = SimpleNamespace(
+        collision_world_mode=PASSTHROUGH_MODE,
+        skill_cfg={"name": "observe_hold"},
+    )
 
-    mode = workflow._activate_skill_collision_world(skill)
-
-    assert mode == "legacy_stage_scan"
-    assert skill.controller.activations == ["legacy_stage_scan"]
-    assert skill._physics_schema_active_object is None
-    assert skill.effective_collision_world_mode == "legacy_stage_scan"
+    assert workflow._activate_skill_collision_world(skill) == PASSTHROUGH_MODE
+    assert skill.effective_collision_world_mode == PASSTHROUGH_MODE

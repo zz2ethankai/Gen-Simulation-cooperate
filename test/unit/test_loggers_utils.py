@@ -23,6 +23,9 @@ lmdb_stub.open = lambda *args, **kwargs: None
 sys.modules.setdefault("lmdb", lmdb_stub)
 
 from core.loggers.utils import log_dual_obs  # noqa: E402
+from core.loggers.lmdb_logger import _filter_missing_image_frames  # noqa: E402
+from core.controllers.controller_component import MutableExecutionState  # noqa: E402
+from core.controllers.skill_runtime import SkillRuntimePort  # noqa: E402
 
 
 class _FakeLogger:
@@ -46,6 +49,39 @@ class _FakeLogger:
 
 
 class LogDualObsTest(unittest.TestCase):
+    def test_missing_image_frames_are_dropped_with_original_step_ids(self):
+        first = np.zeros((2, 2, 3), dtype=np.uint8)
+        last = np.ones((2, 2, 3), dtype=np.uint8)
+
+        frames, step_ids = _filter_missing_image_frames(
+            [first, None, last], [3, 4, 8]
+        )
+
+        self.assertEqual(step_ids, [3, 8])
+        self.assertEqual(len(frames), 2)
+        np.testing.assert_array_equal(frames[0], first)
+        np.testing.assert_array_equal(frames[1], last)
+
+        empty_frames, empty_step_ids = _filter_missing_image_frames([None, None], [1, 2])
+        self.assertEqual(empty_frames, [])
+        self.assertEqual(empty_step_ids, [])
+
+    @staticmethod
+    def _runtime(gripper_state, arm_name="left"):
+        return SkillRuntimePort(
+            robot=SimpleNamespace(),
+            runtime=None,
+            execution_state=MutableExecutionState(gripper_state=gripper_state),
+            arm_spec=None,
+            arm_indices=[0],
+            gripper_indices=[1],
+            name="test_robot",
+            arm_name=arm_name,
+            ee_pose=lambda: None,
+            arm_base_pose=lambda: None,
+            compute_fk=lambda joints: joints,
+        )
+
     def test_single_arm_robot_logs_master_actions_from_obs_keys(self):
         obs = {
             "robots": {
@@ -57,10 +93,10 @@ class LogDualObsTest(unittest.TestCase):
                 }
             }
         }
-        controllers = {"panda_omron": {"left": SimpleNamespace(_gripper_state=1.0)}}
+        runtime_ports = {"panda_omron": {"left": self._runtime(1.0)}}
         logger = _FakeLogger()
 
-        log_dual_obs(logger, obs, {}, controllers)
+        log_dual_obs(logger, obs, {}, runtime_ports)
 
         self.assertEqual(logger.steps, 1)
         robot_actions = logger.actions["panda_omron"]
@@ -79,15 +115,15 @@ class LogDualObsTest(unittest.TestCase):
                 }
             }
         }
-        controllers = {
+        runtime_ports = {
             "custom_dual": {
-                "left": SimpleNamespace(_gripper_state=1.0),
-                "right": SimpleNamespace(_gripper_state=-1.0),
+                "left": self._runtime(1.0),
+                "right": self._runtime(-1.0, arm_name="right"),
             }
         }
         logger = _FakeLogger()
 
-        log_dual_obs(logger, obs, {}, controllers)
+        log_dual_obs(logger, obs, {}, runtime_ports)
 
         self.assertEqual(logger.steps, 1)
         robot_actions = logger.actions["custom_dual"]

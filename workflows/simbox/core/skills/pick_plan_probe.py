@@ -84,55 +84,26 @@ class PickPlanProbe(Pick):
         temporary.replace(result_path)
 
     def simple_generate_manip_cmds(self):
+        planning = self._require_pick_planning()
         spawn_check = self._spawn_check()
+        target_only = bool(self.skill_cfg.get("diagnostic_target_only_world", False))
+        empty_world = bool(self.skill_cfg.get("diagnostic_empty_world", False))
         if spawn_check["stable"]:
-            manager = getattr(self.controller, "collision_scene_manager", None)
-            target_only = bool(self.skill_cfg.get("diagnostic_target_only_world", False))
-            empty_world = bool(self.skill_cfg.get("diagnostic_empty_world", False))
-            disabled_paths: list[str] = []
-            original_begin_target_transit = None
-            if (target_only or empty_world) and manager is not None:
-                key = (str(self.controller.name), str(self.controller.lr_name))
-                target_paths = set(manager.records[self.pick_obj.name].collision_prim_paths)
-                enabled = manager.controller_enabled.get(key, {})
-                disabled_paths = [
-                    path
-                    for path, is_enabled in enabled.items()
-                    if is_enabled and (empty_world or path not in target_paths)
-                ]
-                for path in disabled_paths:
-                    self.controller.planner.scene_collision_checker.enable_obstacle(path, False)
-                self._debug_log(
-                    "diagnostic %s world disabled_obstacle_count=%d"
-                    % ("empty" if empty_world else "target-only", len(disabled_paths))
-                )
-                if empty_world:
-                    original_begin_target_transit = manager.begin_target_transit
-
-                    def _begin_target_transit_without_world(entity_name, robot, arm):
-                        record = original_begin_target_transit(entity_name, robot, arm)
-                        for path in target_paths:
-                            self.controller.planner.scene_collision_checker.enable_obstacle(path, False)
-                        return record
-
-                    manager.begin_target_transit = _begin_target_transit_without_world
-            try:
-                super().simple_generate_manip_cmds()
-            finally:
-                if original_begin_target_transit is not None:
-                    manager.begin_target_transit = original_begin_target_transit
-                for path in disabled_paths:
-                    self.controller.planner.scene_collision_checker.enable_obstacle(path, True)
+            # Probes always use the canonical Physics-schema world.  The old
+            # diagnostic flags used temporary obstacle toggles and monkey
+            # patched scene transitions; probes must not mutate that world.
+            super().simple_generate_manip_cmds()
             result = self.plan_evaluation.result.to_dict() if self.plan_evaluation is not None else {
                 "feasible": False,
                 "failure_code": "PROBE_DID_NOT_RUN",
             }
             result["diagnostic_target_only_world"] = target_only
             result["diagnostic_empty_world"] = empty_world
+            result["diagnostic_world_override_ignored"] = bool(target_only or empty_world)
         else:
             result = {
                 "feasible": False,
-                "arm": getattr(self.controller, "lr_name", None),
+                "arm": planning.lr_name,
                 "grasp_count": 0,
                 "pregrasp_success_count": 0,
                 "grasp_success_count": 0,
@@ -143,12 +114,10 @@ class PickPlanProbe(Pick):
             }
         result["spawn_check"] = spawn_check
         self._write_result(result)
-        # Keep the standard controller contract valid without moving the robot.
-        # The external validator ends the process once both arm JSONs exist.
-        position, orientation = self.controller.get_ee_pose()
-        self.manip_list = [
-            (position, orientation, "update_pose_cost_metric", {"hold_vec_weight": None})
-        ]
+        # Keep the standard controller contract valid without moving the robot
+        # or changing the gripper.  The external validator ends the process
+        # once both arm JSONs exist.
+        self.manip_list = [self.measured_hold_command()]
 
     def is_success(self):
         # Probe execution success is separate from grasp feasibility, which is

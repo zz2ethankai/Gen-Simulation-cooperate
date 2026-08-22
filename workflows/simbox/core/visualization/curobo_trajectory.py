@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from curobo.types import JointState
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
+
+from core.planning.domain_types import BatchPlanResult, JointTrajectory, PlanResult
 
 try:
     from isaacsim.core.utils.prims import get_prim_at_path
@@ -27,6 +31,110 @@ from .trajectory_math import (
 
 LOGGER = logging.getLogger("de_logger")
 DEBUG_ROOT_NAME = "__debug_curobo_trajectory__"
+
+
+@dataclass(frozen=True)
+class CuroboTrajectoryPlannerAdapter:
+    """Explicit kinematics seam used by trajectory visualization.
+
+    The renderer needs forward kinematics and collision spheres, but it does
+    not need (and must not discover) a controller-owned private planner.  The
+    controller setup composes this adapter from the planner runtime's public
+    kinematics object at construction time.
+    """
+
+    kinematics: Any
+    tensor_args: Any = None
+
+    @property
+    def joint_names(self) -> tuple[str, ...]:
+        return tuple(str(name) for name in self.kinematics.joint_names)
+
+    @property
+    def tool_frames(self) -> tuple[str, ...]:
+        return tuple(str(frame) for frame in self.kinematics.tool_frames)
+
+    def native_positions(self, trajectory: JointTrajectory):
+        values = np.asarray(trajectory.positions, dtype=np.float64)
+        if values.ndim != 2:
+            raise ValueError(
+                "trajectory visualization requires JointTrajectory positions [time, dof]"
+            )
+        if values.shape[1] != len(self.joint_names):
+            raise ValueError(
+                "trajectory visualization joint count does not match planner kinematics: "
+                f"trajectory={values.shape[1]} planner={len(self.joint_names)}"
+            )
+        if self.tensor_args is None:
+            return values
+        return self.tensor_args.to_device(values)
+
+    def canonical_trajectory(self, trajectory: JointTrajectory) -> JointTrajectory:
+        if trajectory.joint_names and tuple(trajectory.joint_names) != self.joint_names:
+            return trajectory.reorder(self.joint_names)
+        return trajectory
+
+    def joint_state(self, trajectory: JointTrajectory):
+        trajectory = self.canonical_trajectory(trajectory)
+        positions = self.native_positions(trajectory)
+        names = trajectory.joint_names or self.joint_names
+        return JointState.from_position(positions, joint_names=list(names))
+
+
+@dataclass(frozen=True)
+class TrajectoryVisualizationFrame:
+    """Reference-frame and identity values needed for one overlay path."""
+
+    name: str
+    arm_name: str
+    robot_base_path: str
+    task_root_path: str
+    planner: CuroboTrajectoryPlannerAdapter
+
+    def __post_init__(self) -> None:
+        if not str(self.name).strip():
+            raise ValueError("trajectory visualization frame requires a robot name")
+        if str(self.arm_name) not in {"left", "right"}:
+            raise ValueError("trajectory visualization frame requires left/right arm_name")
+        if not str(self.robot_base_path).strip():
+            raise ValueError("trajectory visualization frame requires robot_base_path")
+        if not str(self.task_root_path).strip():
+            raise ValueError("trajectory visualization frame requires task_root_path")
+
+
+def _selected_trajectory(
+    plan: PlanResult | BatchPlanResult | JointTrajectory,
+) -> JointTrajectory | None:
+    """Extract the selected typed path; reject all native/raw plan objects."""
+
+    if isinstance(plan, JointTrajectory):
+        return plan
+    if isinstance(plan, BatchPlanResult):
+        index = plan.selected_candidate_index
+        if index is None:
+            index = next(
+                (candidate for candidate, success in enumerate(plan.success_mask) if success),
+                None,
+            )
+        if index is None or index < 0 or index >= len(plan.trajectories):
+            return None
+        return plan.trajectories[index]
+    if isinstance(plan, PlanResult):
+        return plan.trajectory if plan.success else None
+    raise TypeError(
+        "trajectory visualization requires a normalized PlanResult, "
+        "BatchPlanResult, or JointTrajectory"
+    )
+
+
+def _numpy_value(value: Any) -> np.ndarray:
+    """Convert a CuRobo tensor-like value to a host NumPy array."""
+
+    try:
+        value = value.detach().cpu().numpy()
+    except AttributeError:
+        pass
+    return np.asarray(value, dtype=np.float64)
 
 
 class CuroboTrajectoryExportSnapshot:
@@ -207,29 +315,42 @@ class CuroboTrajectoryVisualizer:
             )
         )
 
-    def record_plan(self, controller, cmd_plan, command: str):
-        """Render the final selected JointState trajectory for one controller plan."""
+    def record_plan(
+        self,
+        plan: PlanResult | BatchPlanResult | JointTrajectory,
+        *,
+        frame: TrajectoryVisualizationFrame,
+        command: str,
+    ):
+        """Render one selected typed trajectory in an explicit scene frame."""
         if self._closed:
+            return
+        if not isinstance(frame, TrajectoryVisualizationFrame):
+            raise TypeError(
+                "record_plan requires a TrajectoryVisualizationFrame"
+            )
+        trajectory = _selected_trajectory(plan)
+        if trajectory is None:
             return
         if get_prim_at_path is None or get_relative_transform is None:
             raise RuntimeError("record_plan requires the Isaac Sim runtime")
-        positions = cmd_plan.position
-        trajectory_length = int(positions.shape[0])
+        trajectory = frame.planner.canonical_trajectory(trajectory)
+        positions = frame.planner.native_positions(trajectory)
+        positions_np = np.asarray(trajectory.positions, dtype=np.float64)
+        trajectory_length = int(positions_np.shape[0])
         if trajectory_length <= 0:
             return
         if not self.accumulate:
             self.clear()
 
-        kinematics = controller.planner.kinematics
+        kinematics = frame.planner.kinematics
         ee_indices = np.empty((0,), dtype=np.int64)
         ee_points_base = np.empty((0, 3), dtype=np.float64)
         if self.show_ee_path:
-            joint_state = JointState.from_position(
-                positions, joint_names=kinematics.joint_names
-            )
+            joint_state = frame.planner.joint_state(trajectory)
             all_ee_state = kinematics.compute_kinematics(joint_state)
-            ee_pose = all_ee_state.tool_poses.get_link_pose(kinematics.tool_frames[0])
-            all_ee_points_base = ee_pose.position.detach().cpu().numpy()
+            ee_pose = all_ee_state.tool_poses.get_link_pose(frame.planner.tool_frames[0])
+            all_ee_points_base = _numpy_value(ee_pose.position).reshape(-1, 3)
             ee_indices = distance_sample_indices(
                 all_ee_points_base,
                 self.ee_min_center_spacing_m,
@@ -255,8 +376,8 @@ class CuroboTrajectoryVisualizer:
                     frame_radii.append(radii * self.robot_radius_scale)
 
         task_from_arm_base = get_relative_transform(
-            get_prim_at_path(controller.robot_base_path),
-            get_prim_at_path(self.task_root_path),
+            get_prim_at_path(frame.robot_base_path),
+            get_prim_at_path(frame.task_root_path),
         )
         ee_points_task = transform_points(ee_points_base, task_from_arm_base)
         robot_points_task = (
@@ -268,15 +389,15 @@ class CuroboTrajectoryVisualizer:
             np.concatenate(frame_radii, axis=0) if frame_radii else np.empty((0,))
         )
 
-        robot_name = _prim_name(controller.name)
-        arm_name = _prim_name(controller.lr_name or "unknown")
+        robot_name = _prim_name(frame.name)
+        arm_name = _prim_name(frame.arm_name)
         plan_name = f"plan_{self.plan_count:03d}"
         plan_path = f"{self.root_path}/{robot_name}/{arm_name}/{plan_name}"
         with self._edit():
             plan_prim = UsdGeom.Xform.Define(self.stage, plan_path).GetPrim()
             plan_prim.SetCustomData(
                 {
-                    "arm": str(controller.lr_name or "unknown"),
+                    "arm": str(frame.arm_name),
                     "command": str(command),
                     "trajectory_length": trajectory_length,
                     "ee_sample_indices": Vt.IntArray(ee_indices.tolist()),
@@ -306,8 +427,8 @@ class CuroboTrajectoryVisualizer:
         LOGGER.info(
             "[TrajectoryDebug] recorded robot=%s arm=%s command=%s trajectory_length=%d ee_samples=%d "
             "robot_pose_samples=%d robot_spheres=%d",
-            controller.name,
-            controller.lr_name,
+            frame.name,
+            frame.arm_name,
             command,
             trajectory_length,
             len(ee_indices),
@@ -322,3 +443,12 @@ class CuroboTrajectoryVisualizer:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         self._standalone_layer_copy().Export(str(output_path))
         return output_path
+
+
+__all__ = [
+    "CuroboTrajectoryExportSnapshot",
+    "CuroboTrajectoryPlannerAdapter",
+    "CuroboTrajectoryVisualizer",
+    "TrajectoryVisualizationFrame",
+    "create_curobo_trajectory_visualizer",
+]

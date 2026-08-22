@@ -359,6 +359,7 @@ class SplitAloha(SplitAlohaActual):
         self._set_initial_positions()
         self._configure_mobile_base_wheel_drives()
         self._reset_virtual_base_joint_state(require_ready=True)
+        self.recapture_manipulation_base_hold()
 
     def _setup_manipulator_joint_indices(self):
         dof_names = list(self._articulation_view.dof_names)
@@ -555,6 +556,7 @@ class SplitAloha(SplitAlohaActual):
         self._set_initial_positions()
         self._configure_mobile_base_wheel_drives()
         self._reset_virtual_base_joint_state(require_ready=True)
+        self.recapture_manipulation_base_hold()
 
     def apply_action(self, joint_positions, joint_indices, *args, **kwargs):
         positions = np.asarray(joint_positions, dtype=np.float32).reshape(1, -1)
@@ -573,6 +575,7 @@ class SplitAloha(SplitAlohaActual):
         self._articulation_view.set_joint_position_targets(positions, joint_indices=indices)
         self._active_manipulator_joint_positions = positions.copy()
         self._active_manipulator_joint_indices = indices.copy()
+        self.reapply_manipulation_base_hold()
 
     def _reapply_active_manipulator_position_target(self):
         if self._active_manipulator_joint_positions is None or self._active_manipulator_joint_indices is None:

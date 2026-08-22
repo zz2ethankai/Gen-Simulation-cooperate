@@ -3,28 +3,33 @@ import os
 from copy import deepcopy
 
 import numpy as np
+from core.planning.motion_command import MotionPhase
 from core.skills.base_skill import BaseSkill, register_skill
 from core.utils.asset_path_utils import resolve_asset_path
 from omegaconf import DictConfig
 from isaacsim.core.api.controllers import BaseController
 from isaacsim.core.api.robots.robot import Robot
 from isaacsim.core.api.tasks import BaseTask
-from isaacsim.core.utils.prims import get_prim_at_path
-from isaacsim.core.utils.transformations import (
-    get_relative_transform,
-    pose_from_tf_matrix,
-    tf_matrix_from_pose,
-)
-from isaacsim.core.utils.xforms import get_world_pose
+from isaacsim.core.utils.transformations import pose_from_tf_matrix, tf_matrix_from_pose
 
 
 # pylint: disable=unused-argument
 @register_skill
 class FailPick(BaseSkill):
-    def __init__(self, robot: Robot, controller: BaseController, task: BaseTask, cfg: DictConfig, *args, **kwargs):
+    def __init__(
+        self,
+        robot: Robot,
+        skill_runtime,
+        task: BaseTask,
+        cfg: DictConfig,
+        *args,
+        pick_planning=None,
+        **kwargs,
+    ):
         super().__init__()
         self.robot = robot
-        self.controller = controller
+        self.bind_skill_runtime(skill_runtime, pick_planning=pick_planning)
+        self.planning = self._require_pick_planning()
         self.task = task
         self.skill_cfg = cfg
         object_name = self.skill_cfg["objects"][0]
@@ -35,7 +40,7 @@ class FailPick(BaseSkill):
         usd_path = resolve_asset_path(self.task.asset_root, object_cfg)
         grasp_pose_path = usd_path.replace("Aligned_obj.usd", "Aligned_grasp_sparse.npy")
         sparse_grasp_poses = np.load(grasp_pose_path)
-        lr_arm = "right" if "right" in self.controller.robot_file else "left"
+        lr_arm = self.planning.lr_name
         self.T_ee2o, self.scores = self.robot.pose_post_process_fn(sparse_grasp_poses, lr_arm=lr_arm)
 
         # !!! keyposes should be generated after previous skill is done
@@ -43,17 +48,8 @@ class FailPick(BaseSkill):
         self.process_valid = True
         self.obj_init_trans = deepcopy(self.object.get_local_pose()[0])
 
-    @staticmethod
-    def _get_world_pose_from_path(prim_path):
-        return get_world_pose(prim_path)
-
     def _get_armbase_world_tf(self):
-        reference_prim_path = str(getattr(self.controller, "reference_prim_path", "")).strip()
-        if reference_prim_path:
-            return tf_matrix_from_pose(*self._get_world_pose_from_path(reference_prim_path))
-        return get_relative_transform(
-            get_prim_at_path(self.controller.reference_prim_path), get_prim_at_path(self.task.root_prim_path)
-        )
+        return self.planning.arm_base_transform()
 
     def _get_object_world_tf(self):
         get_obj_world_pose = getattr(self.object, "get_world_pose", None)
@@ -63,73 +59,75 @@ class FailPick(BaseSkill):
 
     def simple_generate_manip_cmds(self):
         manip_list = []
-
-        # Update
-        ignore_substring = deepcopy(self.controller.ignore_substring + self.skill_cfg.get("ignore_substring", []))
-        ignore_substring.append(self.object.name)
-
-        # Pre grasp
         poses = self.sample_ee_pose()
-        self.controller.update_specific(
-            ignore_substring=ignore_substring, reference_prim_path=self.controller.reference_prim_path
+        pose = poses[0]
+        grasp_trans, grasp_ori = pose_from_tf_matrix(pose)
+        x_offset = np.random.choice(
+            [
+                np.random.uniform(
+                    self.skill_cfg.get("grasp_x_offset_min", 0.05), self.skill_cfg.get("grasp_x_offset_max", 0.1)
+                ),
+                np.random.uniform(
+                    -self.skill_cfg.get("grasp_x_offset_max", 0.1), -self.skill_cfg.get("grasp_x_offset_min", 0.05)
+                ),
+            ],
         )
-        for pose in poses:
-            grasp_trans, grasp_ori = pose_from_tf_matrix(pose)
-            x_offset = np.random.choice(
-                [
-                    np.random.uniform(
-                        self.skill_cfg.get("grasp_x_offset_min", 0.05), self.skill_cfg.get("grasp_x_offset_max", 0.1)
-                    ),
-                    np.random.uniform(
-                        -self.skill_cfg.get("grasp_x_offset_max", 0.1), -self.skill_cfg.get("grasp_x_offset_min", 0.05)
-                    ),
-                ],
+        y_offset = np.random.choice(
+            [
+                np.random.uniform(
+                    self.skill_cfg.get("grasp_y_offset_min", 0.05), self.skill_cfg.get("grasp_y_offset_max", 0.1)
+                ),
+                np.random.uniform(
+                    -self.skill_cfg.get("grasp_y_offset_max", 0.1), -self.skill_cfg.get("grasp_y_offset_min", 0.05)
+                ),
+            ],
+        )
+        grasp_trans[0] += x_offset
+        grasp_trans[1] += y_offset
+
+        object_name = getattr(self.object, "name", None)
+        manip_list.append(
+            self.pose_command(
+                MotionPhase.TERMINAL_GRASP_APPROACH,
+                grasp_trans,
+                grasp_ori,
+                gripper_action="open_gripper",
+                active_object=object_name,
             )
-            y_offset = np.random.choice(
-                [
-                    np.random.uniform(
-                        self.skill_cfg.get("grasp_y_offset_min", 0.05), self.skill_cfg.get("grasp_y_offset_max", 0.1)
-                    ),
-                    np.random.uniform(
-                        -self.skill_cfg.get("grasp_y_offset_max", 0.1), -self.skill_cfg.get("grasp_y_offset_min", 0.05)
-                    ),
-                ],
+        )
+        manip_list.append(
+            self.pose_command(
+                MotionPhase.GRIPPER_CLOSE,
+                grasp_trans,
+                grasp_ori,
+                gripper_action="close_gripper",
+                active_object=object_name,
+                replan_allowed=False,
+                dwell_steps=int(self.skill_cfg.get("gripper_change_steps", 10)),
             )
-            grasp_trans[0] += x_offset
-            grasp_trans[1] += y_offset
-
-            test_mode = self.skill_cfg.get("test_mode", "forward")
-            if test_mode == "forward":
-                result = self.controller.test_single_forward(grasp_trans, grasp_ori)
-            elif test_mode == "ik":
-                result = self.controller.test_single_ik(grasp_trans, grasp_ori)
-            else:
-                raise NotImplementedError
-            if result == 1:
-                print("pick plan success")
-                break
-
-        cmd = (grasp_trans, grasp_ori, "close_gripper", {})
-        manip_list.append(cmd)
-
-        # Grasp
-        manip_list.extend([cmd] * self.skill_cfg.get("gripper_change_steps", 10))
+        )
 
         # Post grasp
         post_grasp_pose = pose.copy()
         post_grasp_pose[2, 3] += np.random.uniform(
             self.skill_cfg.get("post_grasp_offset_min", 0.05), self.skill_cfg.get("post_grasp_offset_max", 0.05)
         )
-        cmd = (*pose_from_tf_matrix(post_grasp_pose), "close_gripper", {})
-        manip_list.append(cmd)
-
-        # cmd = (*pose_from_tf_matrix(post_grasp_pose), 'open_gripper', {})
-        # manip_list.extend([cmd] * self.skill_cfg.get("gripper_change_steps", 10))
+        post_position, post_orientation = pose_from_tf_matrix(post_grasp_pose)
+        manip_list.append(
+            self.pose_command(
+                MotionPhase.POST_GRASP_LIFT,
+                post_position,
+                post_orientation,
+                gripper_action="close_gripper",
+                active_object=object_name,
+                allow_target_finger_contact=True,
+            )
+        )
 
         self.manip_list = manip_list
 
     def sample_ee_pose(self, max_length=30):
-        T_ee2r = self.get_ee_poses("robot")
+        T_ee2r = self.get_ee_poses("armbase")
 
         num_pose = T_ee2r.shape[0]
         flags = {
@@ -216,17 +214,7 @@ class FailPick(BaseSkill):
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        curr_ee_trans, curr_ee_ori = self.controller.get_ee_pose()
-        ee_trans, ee_ori, *_ = self.manip_list[0]
-        diff_trans = np.linalg.norm(curr_ee_trans - ee_trans)
-        diff_ori = 2 * np.arccos(min(abs(np.dot(curr_ee_ori, ee_ori)), 1.0))
-        pose_flag = np.logical_and(
-            diff_trans < t_eps,
-            diff_ori < o_eps,
-        )
-        self.plan_flag = self.controller.num_last_cmd > 10
-        # self.plan_flag = False
-        return np.logical_or(pose_flag, self.plan_flag)
+        return self.planning.phase_complete(self.manip_list[0])
 
     def is_record(self):
         return len(self.manip_list) < (1 * self.skill_cfg.get("gripper_change_steps", 10) + 2)
@@ -243,4 +231,4 @@ class FailPick(BaseSkill):
         return len(self.manip_list) == 0
 
     def is_feasible(self, th=5):
-        return self.controller.num_plan_failed <= th
+        return self.planning.plan_failure_count <= th

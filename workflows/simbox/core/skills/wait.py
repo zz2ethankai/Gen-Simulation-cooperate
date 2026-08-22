@@ -1,4 +1,5 @@
 import numpy as np
+from core.planning.motion_command import MotionPhase
 from core.skills.base_skill import BaseSkill, register_skill
 from omegaconf import DictConfig
 from isaacsim.core.api.controllers import BaseController
@@ -9,71 +10,69 @@ from isaacsim.core.api.tasks import BaseTask
 # pylint: disable=consider-using-generator,too-many-public-methods,unused-argument
 @register_skill
 class Wait(BaseSkill):
-    def __init__(self, robot: Robot, controller: BaseController, task: BaseTask, cfg: DictConfig, *args, **kwargs):
+    def __init__(self, robot: Robot, skill_runtime, task: BaseTask, cfg: DictConfig, *args, **kwargs):
         super().__init__()
         self.robot = robot
-        self.controller = controller
+        self.bind_skill_runtime(skill_runtime)
         self.task = task
         self.skill_cfg = cfg
         self.success_threshold = cfg["success_threshold"]
         self.name = cfg["name"]
         self.move_obj = task.objects[cfg["objects"][0]]
-        if "left" in controller.robot_file:
-            self.robot_lr = "left"
-        elif "right" in controller.robot_file:
-            self.robot_lr = "right"
+        # Wait is a non-manipulation synchronization Skill.  Its workflow
+        # tick is the observable wait; no planner command is emitted.
+        self._passthrough = True
+        self.robot_lr = ""
 
-        self.manip_list = []
+        self.wait_steps = int(cfg.get("wait_steps", cfg.get("hold_steps", 1)))
+        if self.wait_steps <= 0:
+            raise ValueError("Wait requires wait_steps > 0")
+        self.manip_list = [None] * self.wait_steps
 
     def simple_generate_manip_cmds(self):
+        if self._passthrough:
+            self.manip_list = [None] * self.wait_steps
+            return
         manip_list = []
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        cmd = (p_base_ee_cur, q_base_ee_cur, "update_pose_cost_metric", {"hold_vec_weight": [0, 0, 1, 0, 0, 0]})
-        manip_list.append(cmd)
-        ignore_substring = self.controller.ignore_substring + self.skill_cfg.get("ignore_substring", [])
-        cmd = (
-            p_base_ee_cur,
-            q_base_ee_cur,
-            "update_specific",
-            {"ignore_substring": ignore_substring, "reference_prim_path": self.controller.reference_prim_path},
-        )
-        manip_list.append(cmd)
+        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.ee_pose()
 
         self.p_base_ee_tgt = p_base_ee_cur
         self.q_base_ee_tgt = q_base_ee_cur
 
-        cmd = (
-            self.p_base_ee_tgt,
-            self.q_base_ee_tgt,
-            "close_gripper" if self.skill_cfg.get("gripper_state", -1.0) == -1.0 else "open_gripper",
-            {},
+        action = (
+            "close_gripper"
+            if self.skill_cfg.get("gripper_state", -1.0) == -1.0
+            else "open_gripper"
         )
-
-        for _ in range(self.skill_cfg.get("wait_steps", 50)):
-            manip_list.append(cmd)
+        phase = MotionPhase.GRIPPER_CLOSE if action == "close_gripper" else MotionPhase.GRIPPER_OPEN
+        manip_list.append(
+            self.pose_command(
+                phase,
+                self.p_base_ee_tgt,
+                self.q_base_ee_tgt,
+                gripper_action=action,
+                replan_allowed=False,
+                dwell_steps=int(self.skill_cfg.get("wait_steps", 50)),
+            )
+        )
 
         self.manip_list = manip_list
 
+    def is_ready(self):
+        return not self._passthrough
+
     def is_feasible(self, th=5):
-        return self.controller.num_plan_failed <= th
+        return self._passthrough or self.skill_runtime.num_plan_failed <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        p_base_ee, q_base_ee, *_ = self.manip_list[0]
-        diff_trans = np.linalg.norm(p_base_ee_cur - p_base_ee)
-        diff_ori = 2 * np.arccos(min(abs(np.dot(q_base_ee_cur, q_base_ee)), 1.0))
-        pose_flag = np.logical_and(
-            diff_trans < t_eps,
-            diff_ori < o_eps,
-        )
-        self.plan_flag = self.controller.num_last_cmd > 10
-        if self.plan_flag:
-            print(f"move_only plan_flag: {self.plan_flag}, num_last_cmd: {self.controller.num_last_cmd}")
-
-        return np.logical_or(pose_flag, self.plan_flag)
+        return self.command_complete(self.manip_list[0])
 
     def is_done(self):
+        if self._passthrough:
+            if self.manip_list:
+                self.manip_list.pop(0)
+            return not self.manip_list
         if len(self.manip_list) == 0:
             return True
         if self.is_subtask_done():
@@ -81,7 +80,9 @@ class Wait(BaseSkill):
         return len(self.manip_list) == 0
 
     def is_success(self):
-        p_base_ee_cur, _ = self.controller.get_ee_pose()
+        if self._passthrough:
+            return True
+        p_base_ee_cur, _ = self.skill_runtime.ee_pose()
         distance = np.linalg.norm(p_base_ee_cur - self.p_base_ee_tgt)
         flag = (distance < self.success_threshold) and (len(self.manip_list) == 0)
 

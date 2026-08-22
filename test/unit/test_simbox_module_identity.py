@@ -26,7 +26,7 @@ def test_dual_workflow_does_not_double_load_core_runtime_types():
 
 def test_phase_identity_uses_object_reference_not_reusable_python_id():
     source = (
-        ROOT / "workflows/simbox/core/controllers/template_controller.py"
+        ROOT / "workflows/simbox/core/controllers/controller_phases.py"
     ).read_text(encoding="utf-8")
     assert "self._active_phase_command = command" in source
     assert "command is self._active_phase_command" in source

@@ -3,6 +3,7 @@ from copy import deepcopy
 
 import numpy as np
 from core.utils.usd_geom_utils import compute_bbox
+from core.utils.rigid_pose import upright_world_orientation
 from scipy.spatial.transform import Rotation as R
 
 
@@ -46,15 +47,16 @@ class RandomRegionSampler:
         # Orientation
         yaw = np.random.uniform(*yaw_rotation)
         dr = R.from_euler("xyz", [0.0, 0.0, yaw], degrees=True)
-        r = R.from_quat(obj.get_world_pose()[1], scalar_first=True)
         if keep_upright:
             # Region metadata uses this flag for tabletop rigid bodies such
             # as apples and oranges.  Preserve their existing yaw while
             # removing roll/pitch accumulated by a previous physics reset;
             # otherwise the dynamic body can immediately roll off the
             # support surface before Pick planning starts.
-            yaw0 = float(r.as_euler("xyz", degrees=False)[2])
-            r = R.from_euler("z", yaw0, degrees=False)
+            base_orientation = upright_world_orientation(obj.get_world_pose()[1])
+        else:
+            base_orientation = obj.get_world_pose()[1]
+        r = R.from_quat(base_orientation, scalar_first=True)
         orientation = (dr * r).as_quat(scalar_first=True)
         return place_pos, orientation
 

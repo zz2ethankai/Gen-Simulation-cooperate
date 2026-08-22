@@ -1,6 +1,6 @@
 """Skills module initialization."""
 
-from core.skills.base_skill import SKILL_DICT
+from core.skills.base_skill import SKILL_DICT, SkillBindings, SkillExecutorPort
 
 from .approach_rotate import Approach_Rotate
 from .artpreplan import Artpreplan
@@ -15,7 +15,6 @@ from .gripper_action import Gripper_Action
 from .heuristic_skill import Heuristic_Skill
 from .home import Home
 from .joint_ctrl import Joint_Ctrl
-from .legacy_pick import LegacyPick
 from .manualpick import Manualpick
 from .move import Move
 from .navigate import Navigate
@@ -46,7 +45,6 @@ __all__ = [
     "Heuristic_Skill",
     "Home",
     "Joint_Ctrl",
-    "LegacyPick",
     "Move",
     "Navigate",
     "Open",
@@ -61,6 +59,8 @@ __all__ = [
     "Scan",
     "Track",
     "Wait",
+    "SkillBindings",
+    "SkillExecutorPort",
     "get_skill_cls",
     "get_skill_dict",
 ]

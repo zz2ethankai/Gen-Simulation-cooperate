@@ -1,18 +1,15 @@
 """PandaOmron controller - template-based Panda arm controller."""
 
 import numpy as np
-from core.controllers.base_controller import register_controller
+from core.controllers.base_controller import ArmSpec, register_controller
 from core.controllers.template_controller import TemplateController
 
 
 # pylint: disable=unused-argument
 @register_controller
 class PandaOmronController(TemplateController):
-    def _get_default_ignore_substring(self):
-        return ["material", "Plane", "conveyor", "scene", "table", "fluid"]
-
-    def _configure_joint_indices(self, robot_file: str) -> None:
-        self.raw_js_names = [
+    arm_spec = ArmSpec(
+        planner_joints=(
             "panda_joint1",
             "panda_joint2",
             "panda_joint3",
@@ -20,25 +17,14 @@ class PandaOmronController(TemplateController):
             "panda_joint5",
             "panda_joint6",
             "panda_joint7",
-        ]
-        if "left" not in robot_file:
-            raise NotImplementedError("PandaOmron currently exposes the Panda arm as the left controller")
-
-        self.cmd_js_names = [
-            "robot0_joint1",
-            "robot0_joint2",
-            "robot0_joint3",
-            "robot0_joint4",
-            "robot0_joint5",
-            "robot0_joint6",
-            "robot0_joint7",
-        ]
-        self.arm_indices = np.asarray(self.robot.left_joint_indices, dtype=np.int32)
-        self.gripper_indices = np.asarray(self.robot.left_gripper_indices, dtype=np.int32)
-        self.reference_prim_path = self.task.robots[self.name].fl_base_path
-        self.lr_name = "left"
-        self._gripper_state = 1.0 if self.robot.left_gripper_state == 1.0 else -1.0
-        self._gripper_joint_position = np.asarray(self.robot.left_gripper_home, dtype=float)
+        ),
+        control_joints={"left": (
+            "robot0_joint1", "robot0_joint2", "robot0_joint3", "robot0_joint4",
+            "robot0_joint5", "robot0_joint6", "robot0_joint7",
+        )},
+        default_ignore_substring=("material", "Plane", "conveyor", "scene", "table", "fluid"),
+        supported_arms=("left",),
+    )
 
     def get_gripper_action(self):
         if self._gripper_state > 0.0:

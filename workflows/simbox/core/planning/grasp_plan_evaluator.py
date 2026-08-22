@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from collections.abc import Mapping
 from typing import Any, Callable, Sequence
 
 import numpy as np
 
-from core.utils.plan_utils import (
-    extract_result_paths,
-    select_index_by_priority_dual,
-    select_index_by_priority_single,
-)
+from core.controllers.pick_planning import PickPlanningQueryPort
+from core.planning.domain_types import BatchPlanResult, CollisionPolicy, PlanResult
 from core.utils.transformation_utils import poses_from_tf_matrices
 
 
@@ -54,18 +52,22 @@ class GraspPlanEvaluation:
 
 
 class GraspPlanEvaluator:
-    """Evaluate pre-grasp and grasp paths without executing robot commands."""
+    """Evaluate grasp paths through the narrow typed Pick planning port."""
 
-    def __init__(self, controller: Any, debug_log: Callable[[str], None] | None = None):
-        self.controller = controller
+    def __init__(
+        self,
+        planning_port: PickPlanningQueryPort,
+        debug_log: Callable[[str], None] | None = None,
+    ):
+        self.planning_port = planning_port
         self.debug_log = debug_log or (lambda _message: None)
 
     @property
     def arm(self) -> str:
-        value = getattr(self.controller, "lr_name", None)
-        if value in {"left", "right"}:
-            return value
-        return "right" if "right" in str(self.controller.robot_file) else "left"
+        value = self.planning_port.lr_name
+        if value not in {"left", "right"}:
+            raise ValueError(f"Pick planning port has invalid arm identity: {value!r}")
+        return value
 
     @staticmethod
     def _normalize_attach_paths(prim_paths: str | Sequence[str]) -> list[str]:
@@ -74,11 +76,8 @@ class GraspPlanEvaluator:
         return [str(path) for path in prim_paths]
 
     def missing_attach_prims(self, prim_paths: str | Sequence[str]) -> list[str]:
-        world = getattr(self.controller, "world_cfg", None)
         paths = self._normalize_attach_paths(prim_paths)
-        if world is None:
-            return paths
-        return [path for path in paths if world.get_obstacle(path) is None]
+        return [path for path in paths if not self.planning_port.has_native_obstacle(path)]
 
     def attach_prims_valid(self, prim_paths: str | Sequence[str]) -> bool:
         paths = self._normalize_attach_paths(prim_paths)
@@ -91,23 +90,263 @@ class GraspPlanEvaluator:
 
     @staticmethod
     def _success_mask(result: Any) -> np.ndarray:
-        success = getattr(result, "success", None)
+        """Read the normalized success mask without touching native results."""
+
+        if isinstance(result, BatchPlanResult):
+            success = result.success_mask
+        elif isinstance(result, PlanResult):
+            success = result.success
+        else:
+            raise TypeError(
+                "GraspPlanEvaluator expects a normalized PlanResult or "
+                "BatchPlanResult"
+            )
         if success is None:
             return np.zeros(0, dtype=bool)
         if hasattr(success, "detach"):
             success = success.detach().cpu().numpy()
         success = np.asarray(success, dtype=bool)
+        if success.ndim == 0:
+            return success.reshape(1)
         return success.any(axis=-1) if success.ndim > 1 else success
 
     @staticmethod
-    def _planner_diagnostic(result: Any) -> str:
-        """Return the CuRobo failure layer without changing planner behavior."""
+    def _result_paths(result: PlanResult | Any) -> list[Any | None]:
+        """Return paths from the normalized planner result only.
 
-        status = getattr(result, "status", None)
+        Batch trajectories are represented by a sequence or by a named
+        trajectory object whose first dimension is the candidate index.  The
+        evaluator never reaches through the result wrapper to planner-native
+        fields.
+        """
+
+        if isinstance(result, BatchPlanResult):
+            trajectory = result.trajectories
+        elif isinstance(result, PlanResult):
+            trajectory = result.trajectory
+        else:
+            raise TypeError(
+                "GraspPlanEvaluator expects a normalized PlanResult or "
+                "BatchPlanResult"
+            )
+        if trajectory is None:
+            return []
+        if isinstance(trajectory, list):
+            return trajectory
+        if isinstance(trajectory, tuple):
+            return list(trajectory)
+        position = getattr(trajectory, "position", None)
+        if getattr(position, "ndim", 0) >= 3:
+            try:
+                return [trajectory[index] for index in range(int(position.shape[0]))]
+            except (IndexError, TypeError, ValueError):
+                return []
+        return [trajectory]
+
+    @staticmethod
+    def _result_metrics(result: Any) -> Any:
+        """Return normalized per-candidate metrics when the result supplies them."""
+
+        if isinstance(result, BatchPlanResult):
+            return result.metrics
+        if isinstance(result, PlanResult):
+            return result.metrics
+        raise TypeError(
+            "GraspPlanEvaluator expects a normalized PlanResult or BatchPlanResult"
+        )
+
+    @staticmethod
+    def _result_selected_index(result: Any) -> int | None:
+        """Return the planner-selected candidate from a normalized batch result."""
+
+        if isinstance(result, BatchPlanResult):
+            value = result.selected_candidate_index
+        elif isinstance(result, PlanResult):
+            value = result.selected_candidate_index
+        else:
+            raise TypeError(
+                "GraspPlanEvaluator expects a normalized PlanResult or "
+                "BatchPlanResult"
+            )
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _metric_vector(
+        metrics: Mapping[str, Any], keys: Sequence[str]
+    ) -> np.ndarray | None:
+        """Extract one plain numeric value per candidate from result metrics."""
+
+        value = next((metrics[key] for key in keys if key in metrics), None)
+        if value is None:
+            return None
+        try:
+            if hasattr(value, "detach"):
+                value = value.detach().cpu().numpy()
+            values = np.asarray(value, dtype=float)
+            if values.ndim == 0:
+                values = values.reshape(1)
+            elif values.ndim > 1:
+                values = values[:, 0]
+            return values.reshape(-1)
+        except (TypeError, ValueError, RuntimeError):
+            return None
+
+    @staticmethod
+    def _trajectory_cost(path: Any) -> float | None:
+        """Return cumulative joint movement for a normalized trajectory."""
+
+        positions = getattr(path, "positions", None)
+        if positions is None:
+            positions = getattr(path, "position", None)
+        if positions is None:
+            return None
+        try:
+            values = np.asarray(positions, dtype=float)
+            if values.ndim < 2 or values.shape[0] < 2:
+                return 0.0
+            return float(np.abs(np.diff(values, axis=0)).sum())
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def choose_candidate_index(
+        cls,
+        pre_result: Any,
+        result: Any,
+        valid_indices: Sequence[int] | None = None,
+    ) -> int:
+        """Choose one candidate from normalized pre/terminal plan results.
+
+        The planner owns batch success and selected-index semantics.  The
+        evaluator only intersects the normalized masks, honors the planner's
+        selected index when valid, and uses deterministic lowest-index
+        fallback for malformed or incomplete diagnostics.
+        """
+
+        pre_success = cls._success_mask(pre_result)
+        result_success = cls._success_mask(result)
+        common_count = min(len(pre_success), len(result_success))
+        common = np.logical_and(
+            pre_success[:common_count], result_success[:common_count]
+        )
+        if valid_indices is not None:
+            requested = np.asarray(valid_indices, dtype=int).reshape(-1)
+            common_indices = [
+                int(index)
+                for index in requested
+                if 0 <= int(index) < len(common) and bool(common[int(index)])
+            ]
+        else:
+            common_indices = [int(index) for index in np.flatnonzero(common)]
+        if not common_indices:
+            return 0
+
+        selected = cls._result_selected_index(result)
+        if selected in common_indices:
+            return int(selected)
+        selected = cls._result_selected_index(pre_result)
+        if selected in common_indices:
+            return int(selected)
+
+        metrics = cls._result_metrics(result)
+        if not isinstance(metrics, Mapping):
+            metrics = {}
+
+        # Preserve the old error-filter behavior using only normalized
+        # per-candidate metrics.  If a metric is present but filters every
+        # common candidate, retain the complete common set as a safe fallback.
+        filtered_indices = list(common_indices)
+        for keys in (
+            ("position_error", "position_errors", "goal_position_error", "pose_error"),
+            ("rotation_error", "rotation_errors", "orientation_error", "orientation_errors"),
+        ):
+            values = cls._metric_vector(metrics, keys)
+            if values is None:
+                continue
+            eligible = [
+                index
+                for index in filtered_indices
+                if index < len(values) and np.isfinite(values[index])
+            ]
+            if not eligible:
+                continue
+            threshold = float(np.mean([values[index] for index in eligible]))
+            within_threshold = [
+                index for index in eligible if values[index] <= threshold
+            ]
+            if within_threshold:
+                filtered_indices = within_threshold
+
+        # If the normalized result publishes a numeric priority/cost metric,
+        # use it without interpreting native solver fields.  Lower is
+        # preferred; unavailable/non-finite values fall back to trajectory
+        # movement and then candidate order.
+        common_indices = filtered_indices or common_indices
+        metric_values = None
+        for key in (
+            "priority",
+            "path_cost",
+            "path_costs",
+            "trajectory_cost",
+            "cost",
+            "costs",
+            "joint_difference",
+            "score",
+            "scores",
+        ):
+            if key in metrics:
+                metric_values = metrics[key]
+                break
+        if metric_values is not None:
+            try:
+                values = np.asarray(metric_values, dtype=float)
+                if values.ndim > 1:
+                    values = values[:, 0]
+                values = values.reshape(-1)
+                ranked = [
+                    index
+                    for index in common_indices
+                    if index < len(values) and np.isfinite(values[index])
+                ]
+                if ranked:
+                    return min(ranked, key=lambda index: (float(values[index]), index))
+            except (TypeError, ValueError):
+                pass
+
+        paths = cls._result_paths(result)
+        path_costs = {
+            index: cls._trajectory_cost(paths[index])
+            for index in common_indices
+            if index < len(paths) and paths[index] is not None
+        }
+        ranked_paths = [
+            index
+            for index, cost in path_costs.items()
+            if cost is not None and np.isfinite(cost)
+        ]
+        if ranked_paths:
+            return min(ranked_paths, key=lambda index: (path_costs[index], index))
+        return min(common_indices)
+
+    @staticmethod
+    def _planner_diagnostic(result: Any) -> str:
+        """Return the typed planner status without exposing native details."""
+
+        if not isinstance(result, (PlanResult, BatchPlanResult)):
+            raise TypeError(
+                "GraspPlanEvaluator expects a normalized PlanResult or "
+                "BatchPlanResult"
+            )
+        status = result.status
         status = getattr(status, "value", status)
-        return "status=%s valid_query=%s success=%d" % (
+        return "status=%s reason=%s success=%d" % (
             status,
-            getattr(result, "valid_query", None),
+            result.reason,
             GraspPlanEvaluator._count(result),
         )
 
@@ -143,42 +382,36 @@ class GraspPlanEvaluator:
 
     @classmethod
     def _result_diagnostic(cls, result: Any, candidate_index: int) -> dict[str, Any]:
-        """Capture native failure layers for a candidate planning attempt."""
+        """Capture typed planner status for a candidate planning attempt."""
 
-        status = getattr(result, "status", None)
+        if not isinstance(result, (PlanResult, BatchPlanResult)):
+            raise TypeError(
+                "GraspPlanEvaluator expects a normalized PlanResult or "
+                "BatchPlanResult"
+            )
+        status = result.status
         status = getattr(status, "value", status)
         if status is not None:
             status = str(status)
-        success = getattr(result, "success", None)
-        feasible = getattr(result, "feasible", None)
-        debug_info = getattr(result, "debug_info", None)
-        trajectory_info = {}
-        for name in ("interpolated_trajectory", "js_solution"):
-            state = getattr(result, name, None)
-            position = getattr(state, "position", None)
-            trajectory_info[name] = {
-                "present": state is not None,
-                "position_shape": list(position.shape) if position is not None else None,
-            }
+        success = cls._success_mask(result)
+        paths = cls._result_paths(result)
+        metrics = cls._result_metrics(result)
+        trajectory_info = {
+            "count": len(paths),
+            "available_count": sum(path is not None for path in paths),
+        }
+        metadata = result.metadata
         return {
             "candidate_index": int(candidate_index),
             "success": cls._tensor_summary(success),
-            "feasible": cls._tensor_summary(feasible),
             "status": status,
-            "valid_query": getattr(result, "valid_query", None),
-            "position_error": cls._tensor_summary(getattr(result, "position_error", None)),
-            "rotation_error": cls._tensor_summary(getattr(result, "rotation_error", None)),
-            "cspace_error": cls._tensor_summary(getattr(result, "cspace_error", None)),
-            "goalset_index": cls._tensor_summary(getattr(result, "goalset_index", None)),
-            "num_seeds": getattr(result, "num_seeds", None),
-            "batch_size": getattr(result, "batch_size", None),
+            "reason": result.reason,
+            "world_revision": result.world_revision,
+            "candidate_indices": list(result.candidate_indices or ()),
+            "selected_index": cls._result_selected_index(result),
+            "metrics": cls._tensor_summary(metrics),
             "trajectory": trajectory_info,
-            "interpolated_last_tstep": cls._tensor_summary(
-                getattr(result, "interpolated_last_tstep", None)
-            ),
-            "debug_info_keys": sorted(str(key) for key in debug_info.keys())
-            if isinstance(debug_info, dict)
-            else None,
+            "metadata": dict(metadata) if isinstance(metadata, Mapping) else {},
         }
 
     def evaluate(
@@ -188,7 +421,6 @@ class GraspPlanEvaluator:
         pregrasp_offset_m: float,
         attach_prim_paths: str | Sequence[str],
         fixed_orientation: np.ndarray | None = None,
-        test_mode: str = "forward",
         attach_config_failure_code: str | None = None,
         attach_candidate_paths: Sequence[str] | None = None,
         attach_missing_paths: Sequence[str] | None = None,
@@ -227,7 +459,7 @@ class GraspPlanEvaluator:
             raise ValueError("grasp_scores length must match grasp_transforms")
 
         pregrasps = grasps.copy()
-        if "r5a" in str(self.controller.robot_file):
+        if "r5a" in str(self.planning_port.robot_file):
             pregrasps[:, :3, 3] -= pregrasps[:, :3, 0] * float(pregrasp_offset_m)
         else:
             pregrasps[:, :3, 3] -= pregrasps[:, :3, 2] * float(pregrasp_offset_m)
@@ -274,7 +506,7 @@ class GraspPlanEvaluator:
 
         if prepare_pregrasp_world is not None:
             prepare_pregrasp_world()
-        if self.controller.use_batch:
+        if self.planning_port.batch_capability:
             if np.array_equal(pre_positions, positions) and np.array_equal(pre_orientations, orientations):
                 # A zero pre-grasp offset still has terminal-grasp semantics.
                 # The legacy evaluator switched to its grasp-specific world
@@ -285,19 +517,34 @@ class GraspPlanEvaluator:
                 # rejected by IK before the gripper can close around it.
                 if prepare_grasp_world is not None:
                     prepare_grasp_world()
-                result = self.controller.test_batch_forward(positions, orientations)
+                result = self.planning_port.plan_pose_batch(
+                    positions,
+                    orientations,
+                    collision_policy=CollisionPolicy.TARGET_APPROACH,
+                )
                 self.debug_log("grasp-only " + self._planner_diagnostic(result))
                 grasp_success_count = self._count(result)
                 pre_success_count = grasp_success_count
                 joint_success_count = grasp_success_count
                 if joint_success_count:
-                    selected_index = int(select_index_by_priority_single(result))
+                    selected_index = self._result_selected_index(result)
+                    result_mask = self._success_mask(result)
+                    if (
+                        selected_index is None
+                        or not 0 <= selected_index < len(result_mask)
+                        or not bool(result_mask[selected_index])
+                    ):
+                        selected_index = self.choose_candidate_index(result, result)
             else:
-                pre_result = self.controller.test_batch_forward(pre_positions, pre_orientations)
+                pre_result = self.planning_port.plan_pose_batch(
+                    pre_positions,
+                    pre_orientations,
+                    collision_policy=CollisionPolicy.WORLD_TRANSIT,
+                )
                 self.debug_log("pregrasp " + self._planner_diagnostic(pre_result))
                 pregrasp_plan_diagnostics.append(self._result_diagnostic(pre_result, -1))
                 pre_success_count = self._count(pre_result)
-                pre_paths = extract_result_paths(pre_result)
+                pre_paths = self._result_paths(pre_result)
                 candidate_count = len(grasps)
                 if len(pre_paths) != candidate_count:
                     self.debug_log(
@@ -310,61 +557,25 @@ class GraspPlanEvaluator:
                 pre_success = self._success_mask(pre_result)
                 if pre_success.shape != (candidate_count,) or not np.any(pre_success):
                     pre_success = np.zeros(candidate_count, dtype=bool)
-                # BatchMotionPlanner returns None when its batched IK graph
-                # finds no seed.  That is not proof that every candidate is
-                # invalid: the single native planner uses its normal seed
-                # budget and can solve a candidate from the same world.  Try
-                # that bounded fallback before declaring the whole Pick
-                # infeasible, and retain the result diagnostics in the
-                # snapshot for post-run review.
-                if not np.any(pre_success) or not any(path is not None for path in pre_paths):
-                    single_forward = getattr(
-                        self.controller, "test_single_forward_result", None
-                    )
-                    if callable(single_forward):
-                        pre_paths = [None] * candidate_count
-                        pregrasp_paths = pre_paths
-                        for candidate_index in range(candidate_count):
-                            single_result = single_forward(
-                                pre_positions[candidate_index],
-                                pre_orientations[candidate_index],
-                            )
-                            diagnostic = self._result_diagnostic(
-                                single_result, candidate_index
-                            )
-                            diagnostic["mode"] = "native_single_pregrasp_fallback"
-                            pregrasp_plan_diagnostics.append(diagnostic)
-                            single_paths = extract_result_paths(single_result)
-                            if (
-                                self._count(single_result)
-                                and single_paths
-                                and single_paths[0] is not None
-                            ):
-                                pre_success[candidate_index] = True
-                                pre_paths[candidate_index] = single_paths[0]
-                        pre_success_count = int(np.count_nonzero(pre_success))
-                # Native v2 may leave ``interpolated_trajectory`` unset when
-                # every candidate fails.
+                # A typed batch result may carry no trajectory when every
+                # candidate fails.
                 # Treat this as the expected no-path outcome and
                 # never enter the terminal-world planning pass.
                 result = None
                 if pre_success_count and any(path is not None for path in pre_paths):
                     if prepare_grasp_world is not None:
                         prepare_grasp_world()
-                    result = self.controller.test_batch_forward_from_paths(
-                        positions, orientations, pre_paths
+                    result = self.planning_port.plan_pose_batch(
+                        positions,
+                        orientations,
+                        collision_policy=CollisionPolicy.TARGET_APPROACH,
+                        start_paths=pre_paths,
                     )
                     self.debug_log("terminal-grasp " + self._planner_diagnostic(result))
+                    batch_diagnostic = self._result_diagnostic(result, -1)
+                    batch_diagnostic["mode"] = "native_batch"
+                    terminal_plan_diagnostics.append(batch_diagnostic)
                     result_success = self._success_mask(result)
-                    # Native v2 returns ``success=None`` when every batch
-                    # IK/TrajOpt attempt fails.  A batch failure is not
-                    # necessarily a per-candidate failure: the batch solver
-                    # uses one padded CUDA-graph query, while the ordinary
-                    # native planner can still solve an individual goal
-                    # from the same named pre-grasp endpoint.  Retry only
-                    # this exceptional all-failed case; successful batch
-                    # planning keeps the fast path and its exact result.
-                    single_fallback = False
                     if result_success.shape != pre_success.shape:
                         self.debug_log(
                             "terminal-grasp success-mask mismatch "
@@ -372,62 +583,97 @@ class GraspPlanEvaluator:
                             "treating terminal candidates as failed"
                         )
                         result_success = np.zeros_like(pre_success)
-                    if not np.any(result_success):
-                        single_fallback = True
+                    # A complete batch terminal miss is not evidence that
+                    # every candidate is unreachable.  The single typed
+                    # planner uses its normal seed budget and can still solve
+                    # a candidate from the same named pre-grasp endpoint.
+                    # Retry only this exceptional all-failed case so the
+                    # normal batch path remains unchanged.
+                    single_fallback = not np.any(result_success)
+                    if single_fallback:
                         self.debug_log(
                             "terminal-grasp batch returned no valid candidate; "
-                            "retrying eligible candidates with native single planner"
+                            "retrying eligible candidates with typed single planner"
                         )
                     path_available = np.zeros_like(pre_success)
                     terminal_paths = [None] * len(pre_success)
-                    single_from_path = getattr(
-                        self.controller, "test_single_forward_from_path", None
-                    )
-                    if single_fallback and not callable(single_from_path):
-                        self.debug_log(
-                            "terminal-grasp single fallback unavailable; "
-                            "controller has no native path query"
+                    if single_fallback:
+                        single_from_path = getattr(
+                            self.planning_port, "plan_pose_from_path", None
                         )
-                    elif single_fallback:
-                        for candidate_index, (pre_ok, pre_path) in enumerate(
-                            zip(pre_success, pre_paths)
-                        ):
-                            if not pre_ok or pre_path is None:
-                                continue
-                            single_result = single_from_path(
-                                positions[candidate_index],
-                                orientations[candidate_index],
-                                pre_path,
+                        if not callable(single_from_path):
+                            self.debug_log(
+                                "terminal-grasp typed single fallback unavailable; "
+                                "planning port has no path query"
                             )
-                            diagnostic = self._result_diagnostic(
-                                single_result, candidate_index
-                            )
-                            diagnostic["mode"] = "native_single_fallback"
-                            single_paths = extract_result_paths(single_result)
-                            single_path = (
-                                single_paths[0]
-                                if self._count(single_result) and single_paths
-                                else None
-                            )
-                            if single_path is None:
-                                diagnostic["path_available"] = False
+                        else:
+                            for candidate_index, (pre_ok, pre_path) in enumerate(
+                                zip(pre_success, pre_paths)
+                            ):
+                                if not pre_ok or pre_path is None:
+                                    continue
+                                try:
+                                    single_result = single_from_path(
+                                        positions[candidate_index],
+                                        orientations[candidate_index],
+                                        pre_path,
+                                        collision_policy=CollisionPolicy.TARGET_APPROACH,
+                                    )
+                                except Exception as exc:  # Evidence only; keep trying candidates.
+                                    diagnostic = {
+                                        "candidate_index": int(candidate_index),
+                                        "mode": "native_single_fallback",
+                                        "success": False,
+                                        "path_available": False,
+                                        "error": f"{type(exc).__name__}: {exc}",
+                                    }
+                                    terminal_plan_diagnostics.append(diagnostic)
+                                    continue
+
+                                diagnostic = self._result_diagnostic(
+                                    single_result, candidate_index
+                                )
+                                diagnostic["mode"] = "native_single_fallback"
+                                single_paths = self._result_paths(single_result)
+                                single_path = (
+                                    single_paths[0]
+                                    if self._count(single_result) and single_paths
+                                    else None
+                                )
+                                if single_path is None:
+                                    diagnostic["path_available"] = False
+                                    terminal_plan_diagnostics.append(diagnostic)
+                                    continue
+
+                                try:
+                                    ratio, deviation = (
+                                        self.planning_port.measure_cartesian_path(
+                                            single_path,
+                                            pre_positions[candidate_index],
+                                            positions[candidate_index],
+                                        )
+                                    )
+                                except Exception as exc:  # Evidence only; keep trying candidates.
+                                    diagnostic["path_available"] = False
+                                    diagnostic[
+                                        "error"
+                                    ] = f"{type(exc).__name__}: {exc}"
+                                    terminal_plan_diagnostics.append(diagnostic)
+                                    continue
+
+                                ratio = float(ratio)
+                                deviation = float(deviation)
+                                path_metrics[candidate_index] = (ratio, deviation)
+                                diagnostic["path_available"] = True
+                                diagnostic["path_length_ratio"] = ratio
+                                diagnostic["path_max_deviation_m"] = deviation
                                 terminal_plan_diagnostics.append(diagnostic)
-                                continue
-                            ratio, deviation = self.controller.measure_cartesian_path(
-                                single_path,
-                                pre_positions[candidate_index],
-                                positions[candidate_index],
-                            )
-                            diagnostic["path_available"] = True
-                            diagnostic["path_length_ratio"] = float(ratio)
-                            diagnostic["path_max_deviation_m"] = float(deviation)
-                            terminal_plan_diagnostics.append(diagnostic)
-                            if ratio <= 1.5 and deviation <= 0.01:
-                                result_success[candidate_index] = True
-                                terminal_paths[candidate_index] = single_path
-                                path_available[candidate_index] = True
+                                if ratio <= 1.5 and deviation <= 0.01:
+                                    result_success[candidate_index] = True
+                                    terminal_paths[candidate_index] = single_path
+                                    path_available[candidate_index] = True
                     elif np.any(result_success):
-                        candidate_paths = extract_result_paths(result)
+                        candidate_paths = self._result_paths(result)
                         if len(candidate_paths) != len(pre_success):
                             self.debug_log(
                                 "terminal path-count mismatch "
@@ -455,7 +701,7 @@ class GraspPlanEvaluator:
                         ):
                             continue
                         if candidate_index not in path_metrics:
-                            ratio, deviation = self.controller.measure_cartesian_path(
+                            ratio, deviation = self.planning_port.measure_cartesian_path(
                                 path,
                                 pre_positions[candidate_index],
                                 positions[candidate_index],
@@ -491,6 +737,10 @@ class GraspPlanEvaluator:
 
                     if joint_success_count:
                         if single_fallback:
+                            # The batch result has no successful candidate to
+                            # rank.  Select deterministically from the valid
+                            # fallback paths instead of asking the normalized
+                            # batch result to rank an empty intersection.
                             proposed_index = int(np.flatnonzero(both)[0])
                         elif candidate_selector is not None:
                             valid_indices = np.flatnonzero(both).astype(int)
@@ -514,16 +764,16 @@ class GraspPlanEvaluator:
                                     "candidate selector failed; using native priority "
                                     f"fallback error={exc!r}"
                                 )
-                                proposed_index = int(
-                                    select_index_by_priority_dual(pre_result, result)
+                                proposed_index = self.choose_candidate_index(
+                                    pre_result, result, valid_indices
                                 )
                         else:
-                            proposed_index = int(select_index_by_priority_dual(pre_result, result))
+                            proposed_index = self.choose_candidate_index(pre_result, result)
                         if 0 <= proposed_index < len(both) and both[proposed_index]:
                             selected_index = proposed_index
                         else:
                             # A selector must never turn a malformed or stale
-                            # native result into an executable candidate.
+                            # planner result into an executable candidate.
                             selected_index = int(np.flatnonzero(both)[0])
         else:
             pre_results = []
@@ -531,59 +781,54 @@ class GraspPlanEvaluator:
             pregrasp_paths = pre_paths
             terminal_paths = [None] * len(grasps)
             for pre_position, pre_orientation in zip(pre_positions, pre_orientations):
-                if test_mode == "forward":
-                    pre_result = self.controller.test_single_forward_result(
-                        pre_position, pre_orientation
-                    )
-                    pregrasp_plan_diagnostics.append(
-                        self._result_diagnostic(pre_result, len(pregrasp_plan_diagnostics))
-                    )
-                    pre_ok = bool(self._success_mask(pre_result).any())
-                    pre_paths_for_result = extract_result_paths(pre_result)
-                    pre_path = pre_paths_for_result[0] if pre_ok and pre_paths_for_result else None
-                elif test_mode == "ik":
-                    pre_ok = bool(self.controller.test_single_ik(pre_position, pre_orientation))
-                    pre_path = None
-                else:
-                    raise ValueError(f"unsupported grasp test_mode: {test_mode}")
+                pre_result = self.planning_port.plan_pose_result(
+                    pre_position,
+                    pre_orientation,
+                    collision_policy=CollisionPolicy.WORLD_TRANSIT,
+                )
+                pregrasp_plan_diagnostics.append(
+                    self._result_diagnostic(pre_result, len(pregrasp_plan_diagnostics))
+                )
+                pre_ok = bool(self._success_mask(pre_result).any())
+                pre_paths_for_result = self._result_paths(pre_result)
+                pre_path = pre_paths_for_result[0] if pre_ok and pre_paths_for_result else None
                 pre_success_count += int(pre_ok)
                 pre_results.append(pre_ok)
                 pre_paths.append(pre_path)
             if prepare_grasp_world is not None:
                 prepare_grasp_world()
             for index, (position, orientation) in enumerate(zip(positions, orientations)):
-                if test_mode == "forward":
-                    if pre_results[index] and pre_paths[index] is not None:
-                        grasp_result = self.controller.test_single_forward_from_path(
-                            position, orientation, pre_paths[index]
-                        )
-                        terminal_plan_diagnostics.append(
-                            self._result_diagnostic(grasp_result, index)
-                        )
-                        grasp_ok = bool(self._success_mask(grasp_result).any())
-                        terminal_paths_for_result = extract_result_paths(grasp_result)
-                        terminal_path = terminal_paths_for_result[0] if grasp_ok and terminal_paths_for_result else None
-                        if terminal_path is None:
-                            grasp_ok = False
-                        if terminal_path is not None:
-                            ratio, deviation = self.controller.measure_cartesian_path(
-                                terminal_path,
-                                pre_positions[index],
-                                positions[index],
-                            )
-                            path_metrics[index] = (ratio, deviation)
-                            if ratio > 1.5 or deviation > 0.01:
-                                grasp_ok = False
-                                terminal_path = None
-                        if grasp_ok and terminal_path is not None:
-                            grasp_ok = _validate_postgrasp(index, terminal_path)
-                            if not grasp_ok:
-                                terminal_path = None
-                    else:
+                if pre_results[index] and pre_paths[index] is not None:
+                    grasp_result = self.planning_port.plan_pose_from_path(
+                        position,
+                        orientation,
+                        pre_paths[index],
+                        collision_policy=CollisionPolicy.TARGET_APPROACH,
+                    )
+                    terminal_plan_diagnostics.append(
+                        self._result_diagnostic(grasp_result, index)
+                    )
+                    grasp_ok = bool(self._success_mask(grasp_result).any())
+                    terminal_paths_for_result = self._result_paths(grasp_result)
+                    terminal_path = terminal_paths_for_result[0] if grasp_ok and terminal_paths_for_result else None
+                    if terminal_path is None:
                         grasp_ok = False
-                        terminal_path = None
+                    if terminal_path is not None:
+                        ratio, deviation = self.planning_port.measure_cartesian_path(
+                            terminal_path,
+                            pre_positions[index],
+                            positions[index],
+                        )
+                        path_metrics[index] = (ratio, deviation)
+                        if ratio > 1.5 or deviation > 0.01:
+                            grasp_ok = False
+                            terminal_path = None
+                    if grasp_ok and terminal_path is not None:
+                        grasp_ok = _validate_postgrasp(index, terminal_path)
+                        if not grasp_ok:
+                            terminal_path = None
                 else:
-                    grasp_ok = bool(self.controller.test_single_ik(position, orientation))
+                    grasp_ok = False
                     terminal_path = None
                 grasp_success_count += int(grasp_ok)
                 if pre_results[index] and grasp_ok:

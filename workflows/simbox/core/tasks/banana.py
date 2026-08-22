@@ -16,7 +16,9 @@ from core.utils.dr import update_articulated_objs, update_rigid_objs, update_sce
 from core.utils.asset_path_utils import resolve_asset_root
 from core.utils.language import update_language
 from core.utils.layout import optimize_2d_manip_layout
+from core.utils.region_metadata import merge_source_region_sampling_metadata
 from core.utils.region_sampler import RandomRegionSampler
+from core.utils.rigid_pose import upright_world_orientation
 from core.utils.scene_utils import deactivate_selected_prims
 from core.utils.transformation_utils import get_orientation
 from core.utils.visual_distractor import set_distractors
@@ -38,7 +40,7 @@ from pxr import Gf, PhysxSchema, Sdf, Usd, UsdShade, Vt
 from scipy.spatial.transform import Rotation as R
 
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger("de_logger")
 
 
 @register_task
@@ -83,46 +85,9 @@ class BananaBaseTask(BaseTask):
 
     @staticmethod
     def _merge_source_region_sampling_metadata(cfg):
-        """Preserve source-region sampling contracts in runtime regions.
+        """Preserve source-region sampling contracts in runtime regions."""
 
-        Scene conversion keeps the executable placement entries in
-        ``regions`` and the richer authored metadata in ``source_regions``.
-        The latter carries flags such as ``sampling.keep_upright`` that affect
-        dynamic rigid-body stability, but older generated runtime regions do
-        not repeat them.  Merge only missing sampling keys by object name so
-        executable coordinates/random ranges remain authoritative.
-        """
-
-        active_regions = cfg.get("regions", []) or []
-        source_regions = cfg.get("source_regions", []) or []
-        if not active_regions or not source_regions:
-            return
-
-        source_by_object = {}
-        for source_region in source_regions:
-            if not hasattr(source_region, "get"):
-                continue
-            object_name = source_region.get("object") or source_region.get("A")
-            if object_name:
-                source_by_object[str(object_name)] = source_region
-
-        for active_region in active_regions:
-            if not hasattr(active_region, "get"):
-                continue
-            object_name = active_region.get("object") or active_region.get("A")
-            source_region = source_by_object.get(str(object_name))
-            if source_region is None:
-                continue
-            source_sampling = source_region.get("sampling", {}) or {}
-            if not hasattr(source_sampling, "items"):
-                continue
-            active_sampling = active_region.get("sampling")
-            if active_sampling is None:
-                active_sampling = {}
-                active_region["sampling"] = active_sampling
-            for key, value in source_sampling.items():
-                if key not in active_sampling:
-                    active_sampling[key] = deepcopy(value)
+        merge_source_region_sampling_metadata(cfg)
 
     def set_up_scene(self, scene: Scene) -> None:
         super().set_up_scene(scene)
@@ -279,6 +244,26 @@ class BananaBaseTask(BaseTask):
             }
             if hasattr(obj, "get_local_scale"):
                 state["scale"] = self._state_value_to_numpy(obj.get_local_scale())
+            if hasattr(obj, "get_visibility"):
+                try:
+                    state["visibility"] = bool(obj.get_visibility())
+                except Exception:
+                    LOGGER.debug("Could not snapshot visibility for %s", getattr(obj, "name", obj), exc_info=True)
+            for method_name, state_name in (
+                ("get_linear_velocity", "linear_velocity"),
+                ("get_angular_velocity", "angular_velocity"),
+            ):
+                getter = getattr(obj, method_name, None)
+                if callable(getter):
+                    try:
+                        state[state_name] = self._state_value_to_numpy(getter())
+                    except Exception:
+                        LOGGER.debug(
+                            "Could not snapshot %s for %s",
+                            state_name,
+                            getattr(obj, "name", obj),
+                            exc_info=True,
+                        )
             self._rigid_object_reset_states[self._rigid_object_state_key(obj)] = state
 
             # Native v2 default state is reapplied by post_reset/world.reset.
@@ -329,7 +314,7 @@ class BananaBaseTask(BaseTask):
             )
         return states
 
-    def restore_rigid_object_states(self, states=None):
+    def restore_rigid_object_states(self, states=None, object_keys=None, world_orientation_overrides=None):
         """Restore rigid object state after the active physics view is ready."""
 
         states = states or self._rigid_object_reset_states
@@ -340,6 +325,8 @@ class BananaBaseTask(BaseTask):
             self._rigid_object_state_key(obj): obj for obj in self._iter_rigid_objects()
         }
         for key, state in states.items():
+            if object_keys is not None and key not in object_keys:
+                continue
             obj = objects_by_path.get(key)
             if obj is None:
                 continue
@@ -348,6 +335,12 @@ class BananaBaseTask(BaseTask):
                     obj.set_local_scale(state["scale"])
             except Exception:
                 LOGGER.debug("Could not restore scale for %s", key, exc_info=True)
+
+            try:
+                if "visibility" in state and hasattr(obj, "set_visibility"):
+                    obj.set_visibility(bool(state["visibility"]))
+            except Exception:
+                LOGGER.debug("Could not restore visibility for %s", key, exc_info=True)
 
             try:
                 # A reset can change the effective parent transform of a
@@ -360,9 +353,12 @@ class BananaBaseTask(BaseTask):
                 # sole restore authority.  A large resulting local value is
                 # expected for a child below a 1e-3-scaled asset.
                 if "world_translation" in state and "world_orientation" in state:
+                    world_orientation = state["world_orientation"]
+                    if world_orientation_overrides and key in world_orientation_overrides:
+                        world_orientation = world_orientation_overrides[key]
                     obj.set_world_pose(
                         position=state["world_translation"],
-                        orientation=state["world_orientation"],
+                        orientation=world_orientation,
                     )
                 elif "translation" in state and "orientation" in state:
                     # Backward-compatible fallback for snapshots created
@@ -371,7 +367,18 @@ class BananaBaseTask(BaseTask):
                         translation=state["translation"],
                         orientation=state["orientation"],
                     )
-                self._zero_object_velocity(obj)
+                # Placement/reset snapshots are captured at rest.  Keep the
+                # explicit zero fallback for old snapshots that predate
+                # velocity fields, while preserving a captured state when a
+                # caller intentionally records one.
+                linear_velocity = state.get("linear_velocity")
+                angular_velocity = state.get("angular_velocity")
+                if linear_velocity is not None and hasattr(obj, "set_linear_velocity"):
+                    obj.set_linear_velocity(linear_velocity)
+                if angular_velocity is not None and hasattr(obj, "set_angular_velocity"):
+                    obj.set_angular_velocity(angular_velocity)
+                if linear_velocity is None or angular_velocity is None:
+                    self._zero_object_velocity(obj)
                 if self._debug_reset_lifecycle:
                     local_translation, _ = obj.get_local_pose()
                     world_translation, _ = obj.get_world_pose()
@@ -383,6 +390,204 @@ class BananaBaseTask(BaseTask):
                     )
             except Exception:
                 LOGGER.warning("Could not restore rigid object state for %s", key, exc_info=True)
+
+    def _fixed_rigid_object_state_keys(self):
+        """Return loaded rigid prim keys whose asset selection is fixed.
+
+        ``apply_randomization: false`` means the loaded USD and authored
+        placement are fixed; it does not make the body kinematic.  Restricting
+        this list to task objects and fixtures avoids resetting a distractor
+        pool that is deliberately re-sampled on each episode.
+        """
+
+        keys = set()
+        configured = (
+            (self.cfg.get("objects", []) or [], self.objects),
+            ((self.cfg.get("arena", {}) or {}).get("fixtures", []) or [], self.fixtures),
+        )
+        for cfgs, collection in configured:
+            for cfg in cfgs:
+                if cfg.get("target_class") != "RigidObject":
+                    continue
+                if bool(cfg.get("apply_randomization", False)):
+                    continue
+                obj = collection.get(cfg.get("name"))
+                if isinstance(obj, SingleRigidPrim):
+                    keys.add(self._rigid_object_state_key(obj))
+        return keys
+
+    def audit_fixed_rigid_object_reset(self, label="audit"):
+        """Emit a reset audit that is visible on the workflow logger.
+
+        Keep this diagnostic independent of the restore result: a missing
+        fixed-object line must distinguish an empty effective selection from
+        a task type/wrapper mismatch or a missing captured state.  The audit
+        records the effective config flag, wrapper type, state key, configured
+        keep-upright flag, and both current/captured world poses.
+        """
+
+        rows = []
+        configured = (
+            ("object", self.cfg.get("objects", []) or [], self.objects),
+            (
+                "fixture",
+                ((self.cfg.get("arena", {}) or {}).get("fixtures", []) or []),
+                self.fixtures,
+            ),
+        )
+
+        def safe_pose(obj):
+            try:
+                position, orientation = obj.get_world_pose()
+                return {
+                    "world_translation": self._state_value_to_numpy(position).tolist(),
+                    "world_orientation": self._state_value_to_numpy(orientation).tolist(),
+                }
+            except Exception as exc:
+                return {"pose_error": repr(exc)}
+
+        for collection_name, cfgs, collection in configured:
+            for cfg in cfgs:
+                if cfg.get("target_class") != "RigidObject":
+                    continue
+                object_name = str(cfg.get("name"))
+                obj = collection.get(cfg.get("name"))
+                row = {
+                    "collection": collection_name,
+                    "name": object_name,
+                    "apply_randomization": bool(cfg.get("apply_randomization", False)),
+                    "object_type": None if obj is None else type(obj).__name__,
+                    "is_single_rigid_prim": isinstance(obj, SingleRigidPrim),
+                }
+                region_cfg = self._get_region_cfg_for_object(object_name)
+                sampling_cfg = (region_cfg or {}).get("sampling", {}) or {}
+                row["keep_upright"] = (
+                    None
+                    if sampling_cfg.get("keep_upright") is None
+                    else bool(sampling_cfg.get("keep_upright"))
+                )
+                if isinstance(obj, SingleRigidPrim):
+                    key = self._rigid_object_state_key(obj)
+                    row["state_key"] = key
+                    row["state_present"] = key in self._rigid_object_reset_states
+                    row.update(safe_pose(obj))
+                    state = self._rigid_object_reset_states.get(key)
+                    if state is not None:
+                        if "world_translation" in state:
+                            row["captured_world_translation"] = self._state_value_to_numpy(
+                                state["world_translation"]
+                            ).tolist()
+                        if "world_orientation" in state:
+                            row["captured_world_orientation"] = self._state_value_to_numpy(
+                                state["world_orientation"]
+                            ).tolist()
+                rows.append(row)
+
+        LOGGER.warning(
+            "[ResetLifecycle] fixed rigid audit label=%s task_type=%s rows=%s",
+            label,
+            f"{type(self).__module__}.{type(self).__qualname__}",
+            rows,
+        )
+        return rows
+
+    def restore_fixed_rigid_object_states(self, label="warmup"):
+        """Restore fixed rigid prims after reset warmup and report pose deltas.
+
+        Region sampling and the first physics ticks happen before the normal
+        planning world is rebuilt.  A dynamic fixed asset can settle or roll
+        during that interval; restore the captured world state at this final
+        reset boundary so planning starts from the same configured pose.
+        Existing prims and tensor views are reused.
+        """
+
+        audit_rows = self.audit_fixed_rigid_object_reset(label=f"{label}:before")
+        object_keys = self._fixed_rigid_object_state_keys()
+        if not object_keys:
+            LOGGER.warning(
+                "[ResetLifecycle] fixed rigid restore label=%s selected=0 "
+                "audit_rows=%d captured_state_keys=%d",
+                label,
+                len(audit_rows),
+                len(self._rigid_object_reset_states),
+            )
+            return []
+        objects_by_path = {
+            self._rigid_object_state_key(obj): obj for obj in self._iter_rigid_objects()
+        }
+        states = self._rigid_object_reset_states
+        restored = []
+        for key in sorted(object_keys):
+            obj = objects_by_path.get(key)
+            state = states.get(key)
+            if obj is None or state is None:
+                continue
+            try:
+                before_position, before_orientation = obj.get_world_pose()
+                before_position = self._state_value_to_numpy(before_position)
+                before_orientation = self._state_value_to_numpy(before_orientation)
+            except Exception:
+                before_position = None
+                before_orientation = None
+
+            object_name = getattr(obj, "name", key)
+            region_cfg = self._get_region_cfg_for_object(object_name)
+            sampling_cfg = (region_cfg or {}).get("sampling", {}) or {}
+            keep_upright = bool(sampling_cfg.get("keep_upright", False))
+            desired_orientation = self._state_value_to_numpy(state["world_orientation"])
+            if keep_upright:
+                desired_orientation = upright_world_orientation(desired_orientation)
+
+            # Reuse the common state restore path, including scale,
+            # visibility and velocity reset.  Pass one key at a time so the
+            # diagnostic below identifies the exact prim.
+            self.restore_rigid_object_states(
+                states=states,
+                object_keys={key},
+                world_orientation_overrides={key: desired_orientation},
+            )
+            self._zero_object_velocity(obj)
+
+            try:
+                after_position, after_orientation = obj.get_world_pose()
+                after_position = self._state_value_to_numpy(after_position)
+                after_orientation = self._state_value_to_numpy(after_orientation)
+                desired_position = self._state_value_to_numpy(state["world_translation"])
+                translation_delta = float(np.linalg.norm(before_position - desired_position)) if before_position is not None else None
+                relative = R.from_quat(before_orientation, scalar_first=True).inv() * R.from_quat(
+                    desired_orientation, scalar_first=True
+                )
+                rotation_delta = float(np.degrees(np.linalg.norm(relative.as_rotvec())))
+                restore_relative = R.from_quat(after_orientation, scalar_first=True).inv() * R.from_quat(
+                    desired_orientation, scalar_first=True
+                )
+                restore_error_deg = float(np.degrees(np.linalg.norm(restore_relative.as_rotvec())))
+            except Exception:
+                after_position = None
+                translation_delta = None
+                rotation_delta = None
+                restore_error_deg = None
+
+            entry = {
+                "key": key,
+                "label": label,
+                "keep_upright": keep_upright,
+                "translation_delta_m": translation_delta,
+                "rotation_delta_deg": rotation_delta,
+                "restore_error_deg": restore_error_deg,
+                "normalized_orientation": desired_orientation.tolist(),
+            }
+            restored.append(entry)
+            LOGGER.info("[ResetLifecycle] fixed rigid restore %s", entry)
+        LOGGER.warning(
+            "[ResetLifecycle] fixed rigid restore label=%s selected=%d restored=%d "
+            "entries=%s",
+            label,
+            len(object_keys),
+            len(restored),
+            restored,
+        )
+        return restored
 
     def debug_reset_dynamics(self, label):
         """Log rigid poses/velocities and fixture collision USD state.

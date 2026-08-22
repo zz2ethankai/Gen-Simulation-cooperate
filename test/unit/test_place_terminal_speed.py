@@ -8,6 +8,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from core.planning.domain_types import BatchPlanResult, PlanResult
+
 
 ROOT = Path(__file__).resolve().parents[2]
 PLACE_PATH = ROOT / "workflows" / "simbox" / "core" / "skills" / "place.py"
@@ -25,7 +27,11 @@ def _load_place_methods(*method_names: str):
         for node in place_node.body
         if isinstance(node, ast.FunctionDef) and node.name in method_names
     ]
-    namespace = {"np": np}
+    namespace = {
+        "np": np,
+        "BatchPlanResult": BatchPlanResult,
+        "PlanResult": PlanResult,
+    }
     module = ast.fix_missing_locations(ast.Module(body=methods, type_ignores=[]))
     exec(compile(module, PLACE_PATH, "exec"), namespace)
     return [namespace[name] for name in method_names]
@@ -101,3 +107,30 @@ def test_segmented_fallback_keeps_one_centimeter_motion_bound():
         np.linalg.norm(current - previous)
         for previous, current in zip([start] + samples[:-1], samples)
     ) <= 0.01 + 1e-12
+
+
+def test_place_candidate_helpers_consume_typed_plan_results():
+    candidate_mask, result_paths = _load_place_methods(
+        "_candidate_mask", "_result_paths"
+    )
+    single = PlanResult(success=True, trajectory=[[0.1, 0.2]])
+    batch = BatchPlanResult(
+        success=[True, False],
+        trajectories=[[[0.1, 0.2]], None],
+    )
+
+    assert candidate_mask(single, 1) == [True]
+    assert candidate_mask(batch, 2) == [True, False]
+    assert len(result_paths(single)) == 1
+    assert len(result_paths(batch)) == 2
+    assert result_paths(batch)[1] is None
+
+
+def test_place_candidate_helpers_reject_untyped_results():
+    candidate_mask, result_paths = _load_place_methods(
+        "_candidate_mask", "_result_paths"
+    )
+
+    assert candidate_mask(object(), 1) == [False]
+    with pytest.raises(TypeError, match="normalized PlanResult"):
+        result_paths(object())

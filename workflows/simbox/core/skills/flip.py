@@ -1,6 +1,7 @@
 from copy import deepcopy
 
 import numpy as np
+from core.planning.motion_command import MotionPhase
 from core.skills.base_skill import BaseSkill, register_skill
 from omegaconf import DictConfig
 from isaacsim.core.api.controllers import BaseController
@@ -19,10 +20,10 @@ from scipy.spatial.transform import Rotation as R
 # pylint: disable=unused-argument
 @register_skill
 class Flip(BaseSkill):
-    def __init__(self, robot: Robot, controller: BaseController, task: BaseTask, cfg: DictConfig, *args, **kwargs):
+    def __init__(self, robot: Robot, skill_runtime, task: BaseTask, cfg: DictConfig, *args, **kwargs):
         super().__init__()
         self.robot = robot
-        self.controller = controller
+        self.bind_skill_runtime(skill_runtime)
         self.task = task
         self.name = cfg["name"]
         self.pick_obj = task.objects[cfg["objects"][0]]
@@ -31,12 +32,8 @@ class Flip(BaseSkill):
         self.manip_list = []
         if kwargs:
             self.draw = kwargs["draw"]
-        if "left" in self.controller.robot_file:
-            self.robot_ee_path = self.robot.fl_ee_path
-            self.robot_base_path = self.robot.fl_base_path
-        elif "right" in self.controller.robot_file:
-            self.robot_ee_path = self.robot.fr_ee_path
-            self.robot_base_path = self.robot.fr_base_path
+        self.robot_ee_path = self.skill_runtime.robot_ee_path
+        self.robot_base_path = self.skill_runtime.robot_base_path
 
     @staticmethod
     def _get_object_world_tf(obj):
@@ -52,16 +49,37 @@ class Flip(BaseSkill):
             # Having waypoints
             for waypoint in place_traj[:-1]:
                 p_base_ee, q_base_ee = waypoint[:3], waypoint[3:]
-                cmd = (p_base_ee, q_base_ee, "close_gripper", {})
-                manip_list.append(cmd)
+                manip_list.append(
+                    self.pose_command(
+                        MotionPhase.TRANSIT_PREPLACE,
+                        p_base_ee,
+                        q_base_ee,
+                        gripper_action="close_gripper",
+                        active_object=getattr(self.pick_obj, "name", None),
+                    )
+                )
         # The last waypoint
         p_base_ee_place, q_base_ee_place = place_traj[-1][:3], place_traj[-1][3:]
-        cmd = (p_base_ee_place, q_base_ee_place, "close_gripper", {})
-        manip_list.append(cmd)
-        cmd = (p_base_ee_place, q_base_ee_place, "open_gripper", {})
-        manip_list.extend(
-            [cmd] * self.skill_cfg.get("open_wait_steps", 20)
-        )  # here we use 20 steps to make sure the gripper is fully open
+        manip_list.append(
+            self.pose_command(
+                MotionPhase.TRANSIT_PREPLACE,
+                p_base_ee_place,
+                q_base_ee_place,
+                gripper_action="close_gripper",
+                active_object=getattr(self.pick_obj, "name", None),
+            )
+        )
+        manip_list.append(
+            self.pose_command(
+                MotionPhase.GRIPPER_OPEN,
+                p_base_ee_place,
+                q_base_ee_place,
+                gripper_action="open_gripper",
+                active_object=getattr(self.pick_obj, "name", None),
+                replan_allowed=False,
+                dwell_steps=int(self.skill_cfg.get("open_wait_steps", 20)),
+            )
+        )
 
         # Adding a pose place pose to avoid collision when combining place skill and close skill
         T_base_ee_place = tf_matrix_from_pose(p_base_ee_place, q_base_ee_place)
@@ -69,8 +87,16 @@ class Flip(BaseSkill):
         T_base_ee_postplace = deepcopy(T_base_ee_place)
         # Retreat for a bit along gripper axis
         T_base_ee_postplace[0:3, 3] = T_base_ee_postplace[0:3, 3] - T_base_ee_postplace[0:3, 0] * post_place_level
-        cmd = (*pose_from_tf_matrix(T_base_ee_postplace), "open_gripper", {})
-        manip_list.append(cmd)
+        p_post, q_post = pose_from_tf_matrix(T_base_ee_postplace)
+        manip_list.append(
+            self.pose_command(
+                MotionPhase.TERMINAL_RETREAT,
+                p_post,
+                q_post,
+                gripper_action="open_gripper",
+                active_object=getattr(self.pick_obj, "name", None),
+            )
+        )
         self.manip_list = manip_list
 
     def sample_place_traj(self):
@@ -85,7 +111,7 @@ class Flip(BaseSkill):
         camera_axis = np.array([0, 1, 0])
         q_world_ee = self.get_ee_ori(gripper_axis, T_world_ee, camera_axis)
         # 2. Obtaining ee_trans
-        p_world_ee_init = self.controller.T_world_ee_init[0:3, 3]  # getting initial ee position
+        p_world_ee_init = self.skill_runtime.initial_ee_pose()[0:3, 3]
         p_world_ee = p_world_ee_init.copy()
         p_world_ee[0] += np.random.uniform(0.19, 0.21)  # 0.2
         p_world_ee[1] += np.random.uniform(0.23, 0.27)  # 0.25
@@ -139,20 +165,11 @@ class Flip(BaseSkill):
         return waypoint
 
     def is_feasible(self, th=10):
-        return self.controller.num_plan_failed <= th
+        return self.skill_runtime.num_plan_failed <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        p_base_ee, q_base_ee, *_ = self.manip_list[0]
-        diff_trans = np.linalg.norm(p_base_ee_cur - p_base_ee)
-        diff_ori = 2 * np.arccos(min(abs(np.dot(q_base_ee_cur, q_base_ee)), 1.0))
-        pose_flag = np.logical_and(
-            diff_trans < t_eps,
-            diff_ori < o_eps,
-        )
-        self.plan_flag = self.controller.num_last_cmd > 10
-        return np.logical_or(pose_flag, self.plan_flag)
+        return self.command_complete(self.manip_list[0])
 
     def is_done(self):
         if len(self.manip_list) == 0:
@@ -171,7 +188,7 @@ class Flip(BaseSkill):
         angle = np.arccos(np.clip(dot_product, -1.0, 1.0))  # Clip to handle numerical errors
         angle_degrees = np.degrees(angle)
         # Position
-        ee_init_position = self.controller.T_world_ee_init[0:3, 3]  # getting initial ee position
+        ee_init_position = self.skill_runtime.initial_ee_pose()[0:3, 3]
         obj_position = T_world_obj[0:3, 3]
         delta_y = obj_position[1] - ee_init_position[1]
         return angle_degrees < 90 and 0 < delta_y < 0.7

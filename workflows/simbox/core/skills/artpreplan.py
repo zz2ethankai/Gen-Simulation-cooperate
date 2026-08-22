@@ -1,23 +1,25 @@
 from copy import deepcopy
 
 import numpy as np
+from core.planning.motion_command import MotionPhase
 from core.skills.base_skill import BaseSkill, register_skill
 from omegaconf import DictConfig
-from isaacsim.core.api.controllers import BaseController
 from isaacsim.core.api.robots.robot import Robot
 from isaacsim.core.api.tasks import BaseTask
 from isaacsim.core.utils.prims import get_prim_at_path
 from isaacsim.core.utils.transformations import get_relative_transform
-from solver.planner import KPAMPlanner
+from isaacsim.core.utils.xforms import get_world_pose
+from scipy.spatial.transform import Rotation as R
+from solver.planner import KPAMPlanner, KPAMPlannerQueries, KPAMRobotFrame
 
 
 # pylint: disable=unused-argument
 @register_skill
 class Artpreplan(BaseSkill):
-    def __init__(self, robot: Robot, controller: BaseController, task: BaseTask, cfg: DictConfig, *args, **kwargs):
+    def __init__(self, robot: Robot, skill_runtime, task: BaseTask, cfg: DictConfig, *args, **kwargs):
         super().__init__()
         self.robot = robot
-        self.controller = controller
+        self.bind_skill_runtime(skill_runtime)
         self.task = task
         self.stage = task.stage
         self.name = cfg["name"]
@@ -36,7 +38,7 @@ class Artpreplan(BaseSkill):
         if self.skill_cfg.get("obj_info_path", None):
             self.art_obj.update_articulated_info(self.skill_cfg["obj_info_path"])
 
-        lr_arm = "left" if "left" in self.controller.robot_file else "right"
+        lr_arm = self.skill_runtime.arm_name
         self.fingers_link_contact_view = task.artcontact_views[robot.name][lr_arm][art_obj_name + "_fingers_link"]
         self.fingers_base_contact_view = task.artcontact_views[robot.name][lr_arm][art_obj_name + "_fingers_base"]
         self.forbid_collision_contact_view = task.artcontact_views[robot.name][lr_arm][
@@ -46,12 +48,28 @@ class Artpreplan(BaseSkill):
         self.process_valid = True
 
     def setup_kpam(self):
+        robot_config = self.skill_runtime.robot_config
+        robot_frame = KPAMRobotFrame.from_config(
+            robot_config=robot_config,
+            arm_name=self.skill_runtime.arm_name,
+            base_path=self.skill_runtime.robot_base_path,
+            ee_path=self.skill_runtime.robot_ee_path,
+            hand_path=self.skill_runtime.robot_ee_path,
+        )
+        queries = KPAMPlannerQueries(
+            get_joint_positions=self.robot.get_joint_positions,
+            get_world_pose=get_world_pose,
+            get_prim_at_path=get_prim_at_path,
+            get_relative_transform=get_relative_transform,
+        )
         self.planner = KPAMPlanner(
             env=self.world,
-            robot=self.robot,
             object=self.art_obj,
             cfg_path=self.planner_setting,
-            controller=self.controller,
+            robot_name=self.robot.name,
+            robot_config=robot_config,
+            robot_frame=robot_frame,
+            queries=queries,
             draw_points=self.draw,
             stage=self.stage,
         )
@@ -68,7 +86,8 @@ class Artpreplan(BaseSkill):
             return
 
         T_world_base = get_relative_transform(
-            get_prim_at_path(self.robot.base_path), get_prim_at_path(self.task.root_prim_path)
+            get_prim_at_path(self.skill_runtime.robot_base_path),
+            get_prim_at_path(self.task.root_prim_path),
         )
         self.traj_keyframes = traj_keyframes
         self.sample_times = sample_times
@@ -77,19 +96,21 @@ class Artpreplan(BaseSkill):
                 self.draw.draw_points([(T_world_base @ np.append(keypose[:3, 3], 1))[:3]], [(0, 0, 0, 1)], [7])
         manip_list = []
 
-        # Update
-        p_base_ee, q_base_ee = self.controller.get_ee_pose()
-        ignore_substring = deepcopy(self.controller.ignore_substring)
-        cmd = (
-            p_base_ee,
-            q_base_ee,
-            "update_specific",
-            {"ignore_substring": ignore_substring, "reference_prim_path": self.controller.reference_prim_path},
-        )
-        manip_list.append(cmd)
-
-        self.p_base_ee_tgt = p_base_ee
-        self.q_base_ee_tgt = q_base_ee
+        self.p_base_ee_tgt = self.traj_keyframes[-1][:3, 3]
+        self.q_base_ee_tgt = R.from_matrix(self.traj_keyframes[-1][:3, :3]).as_quat(scalar_first=True)
+        manip_list = []
+        for keypose in self.traj_keyframes:
+            position = keypose[:3, 3]
+            orientation = R.from_matrix(keypose[:3, :3]).as_quat(scalar_first=True)
+            manip_list.append(
+                self.pose_command(
+                    MotionPhase.TRANSIT_PREGRASP,
+                    position,
+                    orientation,
+                    gripper_action="open_gripper",
+                    active_object=self.art_obj.name,
+                )
+            )
         self.manip_list = manip_list
 
     def update(self):
@@ -128,20 +149,11 @@ class Artpreplan(BaseSkill):
         return contact
 
     def is_feasible(self, th=5):
-        return self.controller.num_plan_failed <= th
+        return self.skill_runtime.num_plan_failed <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        p_base_ee, q_base_ee, *_ = self.manip_list[0]
-        diff_trans = np.linalg.norm(p_base_ee_cur - p_base_ee)
-        diff_ori = 2 * np.arccos(min(abs(np.dot(q_base_ee_cur, q_base_ee)), 1.0))
-        pose_flag = np.logical_and(
-            diff_trans < t_eps,
-            diff_ori < o_eps,
-        )
-        self.plan_flag = self.controller.num_last_cmd > 10
-        return np.logical_or(pose_flag, self.plan_flag)
+        return self.command_complete(self.manip_list[0])
 
     def is_done(self):
         if len(self.manip_list) == 0:
@@ -155,7 +167,7 @@ class Artpreplan(BaseSkill):
         return len(self.manip_list) == 0
 
     def is_success(self, t_eps=5e-3, o_eps=0.087):
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
+        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.ee_pose()
         diff_pos = np.linalg.norm(p_base_ee_cur - self.p_base_ee_tgt)
         diff_ori = 2 * np.arccos(min(abs(np.dot(q_base_ee_cur, self.q_base_ee_tgt)), 1.0))
         pose_flag = np.logical_or(

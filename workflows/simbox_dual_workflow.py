@@ -39,11 +39,13 @@ from core.execution.safety_monitor import (
 )
 from core.execution.execution_supervisor import ExecutionSupervisor
 from core.planning.config_contract import (
+    PHYSICS_SCHEMA_MODE,
     PASSTHROUGH_MODE,
+    canonicalize_planning_config,
+    derive_batch_capability,
+    is_passthrough_skill,
     resolve_collision_world_mode,
-    resolve_runtime_skill_collision_world_mode,
     resolve_skill_collision_world_mode,
-    task_uses_physics_schema,
     validate_planning_contract,
 )
 from core.utils.camera_utils import capture_topdown_screenshot
@@ -54,8 +56,38 @@ from core.planning.collision_scene_manager import (
     CollisionSceneManager,
 )
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand
+from core.planning.skill_dag_compiler import compile_skill_dag_configs
 from core.loggers.utils import log_dual_obs
-from core.skills import get_skill_cls
+from core.skills import (
+    Approach_Rotate,
+    Artpreplan,
+    Close,
+    Dexpick,
+    Dexplace,
+    Dynamicpick,
+    FailPick,
+    Flip,
+    Goto_Pose,
+    Gripper_Action,
+    Heuristic_Skill,
+    Home,
+    Joint_Ctrl,
+    Manualpick,
+    Move,
+    Navigate,
+    Open,
+    ObserveHold,
+    Pick,
+    PickPlanProbe,
+    Place,
+    Pour_Water_Succ,
+    Rotate,
+    Rotate_Obj,
+    Scan,
+    Track,
+    Wait,
+    get_skill_cls,
+)
 from core.tasks import get_task_cls
 from core.telemetry import SkillTimingRecorder
 from core.utils.collision_utils import filter_collisions
@@ -76,6 +108,12 @@ class _PassiveSkillController:
         self.name = robot_name
         self.robot_file = f"{controller_name}_passive_skill_controller"
         self._gripper_state = 1.0
+        # Passthrough Skills are compiled without a manipulator controller.
+        # Keep the port slots explicit so the compiler never has to reflect
+        # through a controller façade while constructing them.
+        self.skill_runtime = None
+        self.pick_planning = None
+        self.placement_planning = None
 
     def reset(self):
         return None
@@ -85,6 +123,154 @@ class _PassiveSkillController:
             "joint_positions": np.array([], dtype=np.float32),
             "joint_indices": np.array([], dtype=np.int64),
         }
+
+
+def _construct_runtime_skill(
+    skill_cls,
+    robot,
+    task,
+    skill_cfg,
+    *,
+    skill_runtime,
+    pick_planning,
+    placement_planning,
+    world,
+    workflow,
+    draw,
+):
+    """Construct a registry Skill from explicit narrow ports.
+
+    The registry stores classes for historical YAML compatibility, but the
+    classes no longer receive a ``TemplateController``.  This explicit table
+    is the one compatibility boundary for constructor shape differences.
+    """
+
+    factory = _SKILL_CONSTRUCTOR_FACTORIES.get(skill_cls)
+    if factory is None:
+        raise TypeError(
+            f"Skill registry class {skill_cls.__name__!r} "
+            "has no typed constructor factory"
+        )
+    return factory(
+        skill_cls,
+        robot,
+        task,
+        skill_cfg,
+        skill_runtime=skill_runtime,
+        pick_planning=pick_planning,
+        placement_planning=placement_planning,
+        world=world,
+        workflow=workflow,
+        draw=draw,
+    )
+
+
+def _factory_runtime_only(
+    skill_cls,
+    robot,
+    task,
+    skill_cfg,
+    *,
+    skill_runtime,
+    pick_planning,
+    placement_planning,
+    world,
+    workflow,
+    draw,
+):
+    del pick_planning, placement_planning
+    return skill_cls(
+        robot,
+        skill_runtime,
+        task,
+        skill_cfg,
+        world=world,
+        workflow=workflow,
+        draw=draw,
+    )
+
+
+def _factory_pick(
+    skill_cls,
+    robot,
+    task,
+    skill_cfg,
+    *,
+    skill_runtime,
+    pick_planning,
+    placement_planning,
+    world,
+    workflow,
+    draw,
+):
+    del placement_planning
+    return skill_cls(
+        robot,
+        skill_runtime,
+        task,
+        skill_cfg,
+        pick_planning=pick_planning,
+        world=world,
+        workflow=workflow,
+        draw=draw,
+    )
+
+
+def _factory_place(
+    skill_cls,
+    robot,
+    task,
+    skill_cfg,
+    *,
+    skill_runtime,
+    pick_planning,
+    placement_planning,
+    world,
+    workflow,
+    draw,
+):
+    del pick_planning
+    return skill_cls(
+        robot,
+        skill_runtime,
+        task,
+        skill_cfg,
+        placement_planning=placement_planning,
+        world=world,
+        workflow=workflow,
+        draw=draw,
+    )
+
+
+_SKILL_CONSTRUCTOR_FACTORIES = {
+    Approach_Rotate: _factory_runtime_only,
+    Artpreplan: _factory_runtime_only,
+    Close: _factory_runtime_only,
+    Dexpick: _factory_pick,
+    Dexplace: _factory_place,
+    Dynamicpick: _factory_pick,
+    FailPick: _factory_pick,
+    Flip: _factory_runtime_only,
+    Goto_Pose: _factory_runtime_only,
+    Gripper_Action: _factory_runtime_only,
+    Heuristic_Skill: _factory_runtime_only,
+    Home: _factory_runtime_only,
+    Joint_Ctrl: _factory_runtime_only,
+    Manualpick: _factory_pick,
+    Move: _factory_runtime_only,
+    Navigate: _factory_runtime_only,
+    Open: _factory_runtime_only,
+    ObserveHold: _factory_runtime_only,
+    Pick: _factory_pick,
+    PickPlanProbe: _factory_pick,
+    Place: _factory_place,
+    Pour_Water_Succ: _factory_runtime_only,
+    Rotate: _factory_runtime_only,
+    Rotate_Obj: _factory_runtime_only,
+    Scan: _factory_runtime_only,
+    Track: _factory_runtime_only,
+    Wait: _factory_runtime_only,
+}
 
 
 # pylint: disable=unused-argument
@@ -114,9 +300,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
 
     @staticmethod
     def _skill_requires_controller(skill_cfg: dict) -> bool:
-        if not isinstance(skill_cfg, dict):
-            return True
-        return str(skill_cfg.get("name", "")).strip() != "navigate"
+        return not is_passthrough_skill(skill_cfg)
 
     def _skill_controller_names(self, task_cfg: dict, robot_name: str) -> set[str]:
         controller_names = set()
@@ -551,6 +735,30 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             physx_interface = acquire_physx_interface()
             physx_interface.overwrite_gpu_setting(1)
 
+        # Normalize before constructing the task so every downstream owner
+        # (collision groups, task.cfg, controllers, and Skills) observes the
+        # same single-world contract.
+        self.task_cfg = canonicalize_planning_config(
+            self.task_cfg,
+            config_path=self.task_cfg.get("metadata", {}).get("source_yaml")
+            if isinstance(self.task_cfg.get("metadata", {}), dict)
+            else self.task_cfg_path,
+        )
+        planning_cfg = self.task_cfg.get("planning", {})
+        collision_cfg = planning_cfg.get("collision_world", {})
+        safety_cfg = planning_cfg.get("execution_safety", {})
+        self.requested_collision_world_mode = PHYSICS_SCHEMA_MODE
+        self.collision_world_mode, collision_mode_reason = resolve_collision_world_mode(
+            self.task_cfg, PHYSICS_SCHEMA_MODE
+        )
+        LOGGER.warning(
+            "[CollisionWorld] requested_mode=%s resolved_mode=%s reason=%s",
+            self.requested_collision_world_mode,
+            self.collision_world_mode,
+            collision_mode_reason,
+        )
+        self._validate_planning_contract(self.task_cfg, self.collision_world_mode)
+
         self.task = get_task_cls(self.task_cfg["task"])(self.task_cfg)
         self.stage = self.world.stage
         self.stage.SetDefaultPrim(self.stage.GetPrimAtPath("/World"))
@@ -573,20 +781,6 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         self.task._before_physics_scene_finalize = self._configure_collision_groups
         self.world.add_task(self.task)
 
-        planning_cfg = self.task_cfg.get("planning", {})
-        collision_cfg = planning_cfg.get("collision_world", {})
-        safety_cfg = planning_cfg.get("execution_safety", {})
-        self.requested_collision_world_mode = str(collision_cfg.get("mode", "auto"))
-        self.collision_world_mode, collision_mode_reason = resolve_collision_world_mode(
-            self.task_cfg, self.requested_collision_world_mode
-        )
-        LOGGER.warning(
-            "[CollisionWorld] requested_mode=%s resolved_mode=%s reason=%s",
-            self.requested_collision_world_mode,
-            self.collision_world_mode,
-            collision_mode_reason,
-        )
-        self._validate_planning_contract(self.task_cfg, self.collision_world_mode)
         self.world.reset()
         # Hold configured virtual-base DOFs before the first Physics step, then
         # keep the local world-step and fixed-start-pose sequence authoritative.
@@ -594,23 +788,19 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         self._step_world(render=True)
         self._initialize_task_physics_views()
         self._set_fixed_robot_start_poses_after_reset()
-        if task_uses_physics_schema(self.collision_world_mode):
-            # The task-level mode may be ``auto``/``hybrid``, but this manager
-            # owns only the exact Physics-schema subset of the collision world.
-            collision_manager_cfg = dict(collision_cfg)
-            collision_manager_cfg["mode"] = "physics_schema"
-            self.collision_scene_manager = CollisionSceneManager(
-                self.stage, self.task, collision_manager_cfg, safety_cfg
-            )
-        elif self.collision_world_mode == "legacy_stage_scan":
-            self.collision_scene_manager = None
-        else:
-            raise ValueError(
-                f"unsupported planning.collision_world.mode: {self.collision_world_mode!r}"
-            )
+        # Pass the canonical task-entity names to the collision compiler.  It
+        # resolves each name to its unique collider; no Prim-path or reason
+        # mapping is performed by the workflow.
+        collision_manager_cfg = dict(collision_cfg)
+        collision_manager_cfg["mode"] = PHYSICS_SCHEMA_MODE
+        planning_exclusions = list(planning_cfg.get("planning_exclusions", []))
+        collision_manager_cfg["planning_exclusions"] = planning_exclusions
+        self.collision_scene_manager = CollisionSceneManager(
+            self.stage, self.task, collision_manager_cfg, safety_cfg
+        )
         self.execution_safety_enabled = bool(
             safety_cfg.get(
-                "enabled", task_uses_physics_schema(self.collision_world_mode)
+                "enabled", True
             )
         )
         LOGGER.info(
@@ -691,10 +881,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         else:
             draw = None
 
-        self._skills_use_dag = self._task_uses_skill_dag(task_cfg)
-        if self._skills_use_dag:
-            return self._initialize_skill_dag(task, task_cfg, controllers, world, draw)
-        return self._initialize_legacy_skills(task, task_cfg, controllers, world, draw)
+        return self._initialize_skill_dag(task, task_cfg, controllers, world, draw)
 
     def _start_skill_timing(self, robot_name, skill):
         """Bind one recorder scope to one skill/controller pair."""
@@ -705,9 +892,10 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         recorder = getattr(self, "timing_recorder", None)
         if recorder is None:
             return None
+        runtime = skill.skill_runtime
         metadata = {
             "robot": str(robot_name),
-            "controller": str(getattr(getattr(skill, "controller", None), "lr_name", "")),
+            "controller": str(runtime.arm_name if runtime is not None else ""),
             "skill_id": str(getattr(skill, "skill_id", "")),
         }
         try:
@@ -787,10 +975,8 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 ).start()
             except Exception:
                 LOGGER.debug("Failed to start skill planner timing", exc_info=True)
-        controller = getattr(skill, "controller", None)
-        push_scope = getattr(controller, "push_timing_scope", None)
-        restore_scope = getattr(controller, "restore_timing_scope", None)
-        previous_scope = push_scope(scope) if callable(push_scope) else None
+        runtime = skill.skill_runtime
+        previous_scope = runtime.push_timing_scope(scope) if runtime is not None else None
         try:
             skill.simple_generate_manip_cmds()
         except Exception as exc:
@@ -802,8 +988,8 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             self._finish_skill_timing(skill, False, reason=str(exc), error=exc)
             raise
         finally:
-            if callable(restore_scope) and callable(push_scope):
-                restore_scope(previous_scope)
+            if runtime is not None:
+                runtime.restore_timing_scope(previous_scope)
         if phase is not None:
             try:
                 phase.finish(success=True)
@@ -838,11 +1024,10 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             scope.finish(success=bool(success), reason=reason, error=error)
         except Exception:
             LOGGER.debug("Failed to finish skill timing", exc_info=True)
-        controller = getattr(skill, "controller", None)
-        clear = getattr(controller, "clear_timing_scope", None)
-        if callable(clear):
+        runtime = skill.skill_runtime
+        if runtime is not None:
             try:
-                clear(scope)
+                runtime.clear_timing_scope(scope)
             except Exception:
                 pass
         setattr(skill, "_timing_execution_phase", None)
@@ -898,128 +1083,65 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
 
     def _bind_skill_collision_world_mode(self, skill, skill_cfg):
         mode = resolve_skill_collision_world_mode(
-            skill_cfg.get("name", ""), self.requested_collision_world_mode
+            skill_cfg.get("name", ""), PHYSICS_SCHEMA_MODE
         )
         setattr(skill, "collision_world_mode", mode)
         return mode
 
-    @staticmethod
-    def _task_uses_skill_dag(task_cfg):
-        for cfg_skill_dict in task_cfg.get("skills", []):
-            if not isinstance(cfg_skill_dict, dict):
-                continue
-            for robot_skill_list in cfg_skill_dict.values():
-                if not isinstance(robot_skill_list, list):
-                    continue
-                for lr_skill_dict in robot_skill_list:
-                    if not isinstance(lr_skill_dict, dict):
-                        continue
-                    for lr_skill_list in lr_skill_dict.values():
-                        if not isinstance(lr_skill_list, list):
-                            continue
-                        for skill_cfg in lr_skill_list:
-                            if isinstance(skill_cfg, dict) and ("id" in skill_cfg or "depends_on" in skill_cfg):
-                                return True
-        return False
-
-    def _initialize_legacy_skills(self, task, task_cfg, controllers, world, draw):
-        # Initialize skills for each robot and bind optional target diagnostics.
-        skills = []
-        skill_index = 0
-        for cfg_skill_dict in task_cfg["skills"]:
-            skill_dict = defaultdict(list)
-            for robot_name, robot_skill_list in cfg_skill_dict.items():
-                robot = task.robots[robot_name]
-                controller = controllers[robot_name]
-
-                for lr_skill_dict in robot_skill_list:
-                    skill_sequence = []
-                    for lr_name, lr_skill_list in lr_skill_dict.items():
-                        arm_skills = []
-                        for skill_cfg in lr_skill_list:
-                            skill = get_skill_cls(skill_cfg["name"])(
-                                robot,
-                                controller[lr_name],
-                                task,
-                                skill_cfg,
-                                world=world,
-                                workflow=self,
-                                draw=draw,
-                            )
-                            self._bind_skill_collision_world_mode(skill, skill_cfg)
-                            skill.bind_target_visualizer(
-                                self.skill_target_visualizer,
-                                robot=robot_name,
-                                arm=lr_name,
-                                skill=skill_cfg["name"],
-                                skill_index=skill_index,
-                            )
-                            arm_skills.append(skill)
-                            skill_index += 1
-                        skill_sequence.append(arm_skills)
-                    skill_dict[robot_name].append(skill_sequence)
-            skills.append(skill_dict)
-        return skills
-
     def _initialize_skill_dag(self, task, task_cfg, controllers, world, draw):
         nodes_by_id = {}
         nodes = []
+        # Compile all IDs and dependency metadata before constructing a Skill.
+        # Legacy YAMLs often omit ``id``; the compiler supplies a stable
+        # source-location ID and reconstructs phase/sequence barriers without
+        # mutating the source task or reintroducing the old controller API.
+        compiled_skills = compile_skill_dag_configs(task_cfg)
 
-        for phase_idx, cfg_skill_dict in enumerate(task_cfg["skills"]):
-            for robot_name, robot_skill_list in cfg_skill_dict.items():
-                robot = task.robots[robot_name]
-                controller = controllers[robot_name]
+        for compiled in compiled_skills:
+            robot_name = compiled.robot_name
+            lr_name = compiled.controller_name
+            skill_cfg = compiled.skill_cfg
+            robot = task.robots[robot_name]
+            arm_controllers = controllers[robot_name]
+            controller_ports = arm_controllers[lr_name]
+            skill_id = compiled.skill_id
+            depends_on = list(compiled.depends_on)
 
-                for sequence_idx, lr_skill_dict in enumerate(robot_skill_list):
-                    for lr_name, lr_skill_list in lr_skill_dict.items():
-                        for skill_idx, skill_cfg in enumerate(lr_skill_list):
-                            if "id" not in skill_cfg:
-                                raise ValueError(
-                                    f"DAG skill config requires 'id': robot={robot_name}, "
-                                    f"controller={lr_name}, phase={phase_idx}, sequence={sequence_idx}, skill={skill_idx}"
-                                )
-                            skill_id = str(skill_cfg["id"])
-                            if skill_id in nodes_by_id:
-                                raise ValueError(f"Duplicate skill id in DAG config: {skill_id}")
-
-                            depends_on = skill_cfg.get("depends_on", [])
-                            if depends_on is None:
-                                depends_on = []
-                            if not isinstance(depends_on, list):
-                                raise TypeError(f"Skill '{skill_id}' depends_on must be a list")
-                            depends_on = [str(dep_id) for dep_id in depends_on]
-
-                            skill = get_skill_cls(skill_cfg["name"])(
-                                robot,
-                                controller[lr_name],
-                                task,
-                                skill_cfg,
-                                world=world,
-                                workflow=self,
-                                draw=draw,
-                            )
-                            skill_collision_mode = self._bind_skill_collision_world_mode(
-                                skill, skill_cfg
-                            )
-                            skill.bind_target_visualizer(
-                                self.skill_target_visualizer,
-                                robot=robot_name,
-                                arm=lr_name,
-                                skill=skill_cfg["name"],
-                                skill_index=len(nodes),
-                            )
-                            setattr(skill, "skill_id", skill_id)
-                            node = {
-                                "id": skill_id,
-                                "depends_on": depends_on,
-                                "robot_name": robot_name,
-                                "controller_name": str(lr_name),
-                                "collision_world_mode": skill_collision_mode,
-                                "skill": skill,
-                                "state": "pending",
-                            }
-                            nodes_by_id[skill_id] = node
-                            nodes.append(node)
+            skill_cls = get_skill_cls(skill_cfg["name"])
+            skill = _construct_runtime_skill(
+                skill_cls,
+                robot,
+                task,
+                skill_cfg,
+                skill_runtime=controller_ports.skill_runtime,
+                pick_planning=controller_ports.pick_planning,
+                placement_planning=controller_ports.placement_planning,
+                world=world,
+                workflow=self,
+                draw=draw,
+            )
+            skill_collision_mode = self._bind_skill_collision_world_mode(
+                skill, skill_cfg
+            )
+            skill.bind_target_visualizer(
+                self.skill_target_visualizer,
+                robot=robot_name,
+                arm=lr_name,
+                skill=skill_cfg["name"],
+                skill_index=len(nodes),
+            )
+            setattr(skill, "skill_id", skill_id)
+            node = {
+                "id": skill_id,
+                "depends_on": depends_on,
+                "robot_name": robot_name,
+                "controller_name": lr_name,
+                "collision_world_mode": skill_collision_mode,
+                "skill": skill,
+                "state": "pending",
+            }
+            nodes_by_id[skill_id] = node
+            nodes.append(node)
 
         ordered_nodes = self._toposort_skill_nodes(nodes, nodes_by_id)
         return {"nodes": ordered_nodes, "nodes_by_id": nodes_by_id}
@@ -1053,6 +1175,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
     def _initialize_controllers(self, task, task_cfg, world):
         """Initialize controllers for each robot."""
         controllers = {}
+        batch_capabilities = derive_batch_capability(task_cfg)
         for robot in task_cfg["robots"]:
             robot_name = robot["name"]
             controllers[robot_name] = {}
@@ -1080,23 +1203,16 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                     collision_activation_distance=robot.get("collision_activation_distance", 0.03),
                     task=task,
                     world=world,
-                    # Let each controller provide its own collision-filter defaults.
-                    # In particular, fluid-capable controllers must ignore the
-                    # runtime particle isosurface during legacy Stage scans.
-                    ignore_substring=robot.get("ignore_substring"),
-                    # Keep candidate grasp evaluation batched unless a task
-                    # explicitly opts out.  The old MotionGen workflow used
-                    # this default; changing it to False turns 20 grasp
-                    # candidates into 20 serial IK+TrajOpt queries.
-                    use_batch=robot.get("use_batch", True),
+                    # Physics schema discovers exact CollisionAPI prims.  The
+                    # old substring list is intentionally not passed to the
+                    # controller; it is a deprecated inert field.
+                    batch_capability=bool(
+                        batch_capabilities.get((robot_name, controller_name), False)
+                    ),
                     trajectory_visualizer=self.trajectory_visualizer,
                     skill_target_visualizer=self.skill_target_visualizer,
                     collision_scene_manager=self.collision_scene_manager,
-                    collision_world_mode=(
-                        "physics_schema"
-                        if task_uses_physics_schema(self.collision_world_mode)
-                        else "legacy_stage_scan"
-                    ),
+                    collision_world_mode=PHYSICS_SCHEMA_MODE,
                     timing_recorder=self.timing_recorder,
                 )
                 controllers[robot_name][controller_name].reset()
@@ -1132,6 +1248,18 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             setattr(robot, "_simbox_local_base_driver", driver)
         if self._local_base_drivers:
             print(f"[local-base-driver] Initialized {sorted(self._local_base_drivers.keys())}")
+
+    def _skill_runtime_ports_for_logging(self):
+        """Return the narrow runtime mapping consumed by observation logging."""
+
+        return {
+            robot_name: {
+                arm_name: arm_controller.skill_runtime
+                for arm_name, arm_controller in arm_controllers.items()
+                if arm_controller.skill_runtime is not None
+            }
+            for robot_name, arm_controllers in self.controllers.items()
+        }
 
     def _ensure_local_base_driver_bindings(self):
         """Restore robot-to-driver bindings before reading observations.
@@ -1184,6 +1312,34 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             except Exception as exc:
                 raise RuntimeError(f"Local base driver step failed for '{robot_name}'") from exc
 
+    def _reapply_manipulation_base_holds(self):
+        """Refresh active base position/velocity holds at each physics boundary."""
+
+        for robot_name, robot in getattr(self.task, "robots", {}).items():
+            reapply = getattr(robot, "reapply_manipulation_base_hold", None)
+            if not callable(reapply):
+                continue
+            try:
+                reapply()
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Manipulation base hold reapply failed for '{robot_name}'"
+                ) from exc
+
+    def _recapture_manipulation_base_holds(self):
+        """Refresh active hold targets after a fixed robot pose/reset write."""
+
+        for robot_name, robot in getattr(self.task, "robots", {}).items():
+            recapture = getattr(robot, "recapture_manipulation_base_hold", None)
+            if not callable(recapture):
+                continue
+            try:
+                recapture()
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Manipulation base hold recapture failed for '{robot_name}'"
+                ) from exc
+
     def get_local_base_driver(self, robot_name: str):
         return self._local_base_drivers.get(robot_name)
 
@@ -1208,6 +1364,9 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
     def _step_world(self, render: bool = False):
         # Apply the skill's body twist immediately before the physics step.
         self._step_local_base_drivers()
+        # Navigation suspends the hold; manipulation resumes it and this
+        # boundary reapplies both position and zero-velocity targets.
+        self._reapply_manipulation_base_holds()
         self.world.step(render=render)
         if self._timing_record_simulation_steps:
             self._record_skill_simulation_steps()
@@ -1256,6 +1415,62 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         if callable(debug_reset_dynamics):
             debug_reset_dynamics("after_initialize_and_restore")
 
+    def _restore_fixed_rigid_objects_after_warmup(self, label):
+        """Restore fixed rigid state before exposing the reset to planning.
+
+        Fixed assets are still dynamic bodies; this boundary only restores the
+        captured pose/scale/visibility and clears residual velocity after the
+        reset warmup.  The collision manager then republishes the exact USD
+        poses through PlanningSceneRuntime/NativeSceneAdapter with a fresh
+        monotonic world revision.
+        """
+
+        task_type = f"{type(self.task).__module__}.{type(self.task).__qualname__}"
+        audit = getattr(self.task, "audit_fixed_rigid_object_reset", None)
+        if callable(audit):
+            audit(label=f"{label}:dispatch")
+        else:
+            LOGGER.warning(
+                "[ResetLifecycle] fixed rigid audit unavailable label=%s task_type=%s",
+                label,
+                task_type,
+            )
+
+        restore = getattr(self.task, "restore_fixed_rigid_object_states", None)
+        if not callable(restore):
+            LOGGER.warning(
+                "[ResetLifecycle] fixed rigid restore unavailable label=%s task_type=%s",
+                label,
+                task_type,
+            )
+            return []
+        restored = restore(label=label)
+        if callable(audit):
+            audit(label=f"{label}:after")
+        if self.collision_scene_manager is not None:
+            sync = getattr(self.collision_scene_manager, "sync_after_task_state_restore", None)
+            if callable(sync):
+                sync(label=label)
+            else:
+                LOGGER.warning(
+                    "[ResetLifecycle] fixed rigid scene sync unavailable label=%s task_type=%s",
+                    label,
+                    task_type,
+                )
+        else:
+            LOGGER.warning(
+                "[ResetLifecycle] fixed rigid scene manager unavailable label=%s task_type=%s",
+                label,
+                task_type,
+            )
+        LOGGER.warning(
+            "[ResetLifecycle] fixed rigid restore dispatched label=%s task_type=%s restored=%d",
+            label,
+            task_type,
+            len(restored),
+        )
+        return restored
+
     def _refresh_task_rigid_views_after_world_reset(self):
         """Rebind task rigid wrappers before any post-reset pose writes.
 
@@ -1287,8 +1502,6 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
     def _enable_manipulation_base_holds(self):
         """Freeze configured mobile-base DOFs for Physics-schema Pick/Place."""
 
-        if not task_uses_physics_schema(self.collision_world_mode):
-            return
         for robot in self.task.robots.values():
             enable = getattr(robot, "enable_manipulation_base_hold", None)
             if enable is not None:
@@ -1315,11 +1528,13 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
 
     def _set_fixed_robot_start_poses_after_reset(self):
         self.task.set_fixed_robot_start_poses()
+        self._recapture_manipulation_base_holds()
         self._step_world(render=False)
 
     def _reset_fixed_robot_start_states_after_physics(self, *, clear_debug_history: bool):
         self.task.set_fixed_robot_start_poses()
         self._reset_local_base_drivers(clear_debug_history=clear_debug_history)
+        self._recapture_manipulation_base_holds()
 
     def _run_reset_warmup(self, step_count: int):
         debug_reset_dynamics = getattr(self.task, "debug_reset_dynamics", None)
@@ -1383,6 +1598,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             self._step_world(render=False)
             self._debug_reset_warmup_step(debug_reset_dynamics, "layout_mem_warmup", step_index, 20)
         self._reset_fixed_robot_start_states_after_physics(clear_debug_history=True)
+        self._restore_fixed_rigid_objects_after_warmup("layout_mem_warmup_complete")
 
         self._initialize_world_recorder()
 
@@ -1455,6 +1671,8 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 self._step_world(render=False)
             self._reset_fixed_robot_start_states_after_physics(clear_debug_history=True)
 
+        self._restore_fixed_rigid_objects_after_warmup("layout_warmup_complete")
+
         self._initialize_world_recorder()
 
         self.logger.clear(
@@ -1504,6 +1722,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             self._step_world(render=False)
             self._debug_reset_warmup_step(debug_reset_dynamics, "failed_generation_warmup", step_index, 20)
         self._reset_fixed_robot_start_states_after_physics(clear_debug_history=True)
+        self._restore_fixed_rigid_objects_after_warmup("failed_generation_warmup_complete")
 
         self._initialize_world_recorder()
 
@@ -1523,109 +1742,16 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             raise e
 
     def update_skill_states(self, skills, episode_success, should_continue):
-        """Update and manage skill states."""
-        if self._skills_use_dag:
-            return self.update_dag_skill_states(skills, episode_success, should_continue)
+        """Update the compiled Skill DAG and start newly-unblocked nodes."""
 
-        current_skills = skills[0]
-
-        # Check if any skills remain
-        if not any(current_skills.values()):
-            skills.pop(0)
-            if skills:
-                should_continue = self.plan_first_skill(skills, should_continue)
-            return episode_success, should_continue
-
-        # Update each robot's skills
-        for robot_name, skill_sequences in current_skills.items():
-            if not skill_sequences:
-                continue
-
-            # Update all skills first
-            for lr_skill_list in skill_sequences[0]:
-                if lr_skill_list:
-                    start_lr_skill = lr_skill_list[0]
-                    start_lr_skill.update()  # Must update regardless of completion
-                    if start_lr_skill.is_done():
-                        skill_success = bool(start_lr_skill.is_success())
-                        start_lr_skill.complete_target_intent(skill_success)
-                        if not skill_success:
-                            self._record_skill_failure(
-                                robot_name,
-                                start_lr_skill,
-                                fallback_reason="skill_reported_unsuccessful",
-                                fallback_message="Skill completed but reported unsuccessful status.",
-                            )
-                            episode_success = False
-                            should_continue = False
-                        else:
-                            self._finish_skill_timing(start_lr_skill, True)
-                        lr_skill_list.remove(start_lr_skill)
-
-                        # Do not plan or publish the next target after a failed
-                        # prerequisite Skill.  The episode is already stopping,
-                        # and showing a Place intent in that state would imply a
-                        # target that will never be executed.
-                        if skill_success and lr_skill_list:
-                            next_skill = lr_skill_list[0]
-                            self._activate_skill_collision_world(next_skill)
-                            self._run_skill_planner(robot_name, next_skill)
-                            if hasattr(next_skill, "visualize_target"):
-                                next_skill.visualize_target(self.world)
-                            if len(next_skill.manip_list) == 0:
-                                self._safety_failure_reason = getattr(
-                                    next_skill,
-                                    "failure_reason",
-                                    "NO_COLLISION_FREE_PLAN",
-                                ) or "NO_COLLISION_FREE_PLAN"
-                                ready = bool(next_skill.is_ready())
-                                if ready:
-                                    self._finish_skill_timing(
-                                        next_skill, False, reason="empty_manip_list"
-                                    )
-                                should_continue = not ready
-                    if hasattr(start_lr_skill, "visualize_target"):
-                        start_lr_skill.visualize_target(self.world)
-
-            # Remove empty skill sequences
-            completed_skills = []
-            for lr_skill_list in skill_sequences[0]:
-                if not lr_skill_list:
-                    completed_skills.append(lr_skill_list)
-            for completed_skill in completed_skills:
-                skill_sequences[0].remove(completed_skill)
-
-            # Move to next sequence if current is empty
-            if not skill_sequences[0]:
-                skill_sequences.pop(0)
-                if skill_sequences:
-                    for skill in skill_sequences[0]:
-                        if not skill:
-                            continue
-                        self._activate_skill_collision_world(skill[0])
-                        self._run_skill_planner(robot_name, skill[0])
-                        if len(skill[0].manip_list) == 0:
-                            self._safety_failure_reason = getattr(
-                                skill[0],
-                                "failure_reason",
-                                "NO_COLLISION_FREE_PLAN",
-                            ) or "NO_COLLISION_FREE_PLAN"
-                            ready = bool(skill[0].is_ready())
-                            if ready:
-                                self._finish_skill_timing(
-                                    skill[0], False, reason="empty_manip_list"
-                                )
-                            should_continue = not ready
-        return episode_success, should_continue
+        return self.update_dag_skill_states(skills, episode_success, should_continue)
 
     @staticmethod
     def _dag_skill_done(skills):
         return all(node["state"] == "succeeded" for node in skills["nodes"])
 
     def _skills_complete(self):
-        if self._skills_use_dag:
-            return self._dag_skill_done(self.skills)
-        return not self.skills
+        return self._dag_skill_done(self.skills)
 
     def _dag_ready_to_start(self, node, nodes_by_id):
         return node["state"] == "pending" and all(
@@ -1634,9 +1760,8 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
 
     def _start_dag_ready_skills(self, skills, should_continue):
         nodes_by_id = skills["nodes_by_id"]
-        arm_manipulation_running = any(
+        operation_running = any(
             node["state"] == "running"
-            and node["controller_name"] in {"left", "right"}
             and node.get("collision_world_mode") != PASSTHROUGH_MODE
             for node in skills["nodes"]
         )
@@ -1644,11 +1769,8 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             if not self._dag_ready_to_start(node, nodes_by_id):
                 continue
 
-            is_arm_manipulation = (
-                node["controller_name"] in {"left", "right"}
-                and node.get("collision_world_mode") != PASSTHROUGH_MODE
-            )
-            if arm_manipulation_running and is_arm_manipulation:
+            is_operation = node.get("collision_world_mode") != PASSTHROUGH_MODE
+            if operation_running and is_operation:
                 continue
 
             skill = node["skill"]
@@ -1667,7 +1789,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 should_continue = False
                 continue
             node["state"] = "running"
-            arm_manipulation_running = arm_manipulation_running or is_arm_manipulation
+            operation_running = operation_running or is_operation
             if len(skill.manip_list) == 0 and not skill.is_ready():
                 should_continue = True
         return should_continue
@@ -1676,9 +1798,20 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         actions_by_robot = defaultdict(list)
         running_nodes = [node for node in skills["nodes"] if node["state"] == "running"]
         record_flag = True
+        operation_node_id = None
 
         for node in running_nodes:
             skill = node["skill"]
+            if node.get("collision_world_mode") == PASSTHROUGH_MODE:
+                # Navigation/observation Skills update their own state and do
+                # not emit an arm action into the typed MotionPlanner path.
+                continue
+            if operation_node_id is not None:
+                raise RuntimeError(
+                    "DAG scheduler invariant violated: multiple operation "
+                    f"commands are running ({operation_node_id!r}, {node['id']!r})"
+                )
+            operation_node_id = node["id"]
             if not skill.is_feasible():
                 self._record_skill_failure(
                     node["robot_name"],
@@ -1701,6 +1834,11 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                     )
                     node["state"] = "failed"
                     return {}, False, True
+                if not isinstance(skill.manip_list[0], MotionPhaseCommand):
+                    raise TypeError(
+                        f"operation Skill {self._skill_display_name(skill)!r} must emit "
+                        "MotionPhaseCommand values"
+                    )
                 actions_by_robot[node["robot_name"]].append(self._forward_or_hold(skill))
 
         action_dict = {}
@@ -1782,47 +1920,35 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         return str(skill.__class__.__name__).lower()
 
     def _activate_skill_collision_world(self, skill) -> str:
+        """Bind execution metadata without switching planner worlds.
+
+        The workflow owns one Physics-schema world for the episode.  A
+        passthrough Skill (for example local navigation or observe-hold) does
+        not need a planner activation; an operation Skill simply reuses the
+        controller's already initialized runtime.
+        """
+
         mode = getattr(skill, "collision_world_mode", PASSTHROUGH_MODE)
         if mode == PASSTHROUGH_MODE:
+            setattr(skill, "effective_collision_world_mode", PASSTHROUGH_MODE)
             return mode
-        controller = getattr(skill, "controller", None)
-        activate = getattr(controller, "activate_collision_world_mode", None)
-        if not callable(activate):
-            if mode == "physics_schema":
-                raise RuntimeError(
-                    f"Physics-schema Skill {self._skill_display_name(skill)!r} "
-                    "requires an active manipulator controller"
-                )
-            return mode
+        runtime = skill.skill_runtime
+        if runtime is None:
+            raise RuntimeError(
+                f"Physics-schema Skill {self._skill_display_name(skill)!r} "
+                "requires an active manipulator controller"
+            )
+        if mode != PHYSICS_SCHEMA_MODE:
+            raise RuntimeError(
+                "operation Skills must use the canonical Physics-schema planner"
+            )
         attached_entity = None
         if self.collision_scene_manager is not None:
             attached_entity = self.collision_scene_manager.get_attached_entity(
-                controller.name, controller.lr_name
+                runtime.name, runtime.arm_name
             )
-        runtime_mode = resolve_runtime_skill_collision_world_mode(
-            getattr(skill, "skill_cfg", {}),
-            self.requested_collision_world_mode,
-            attached_object=attached_entity is not None,
-        )
         setattr(skill, "_physics_schema_active_object", attached_entity)
-        setattr(skill, "effective_collision_world_mode", runtime_mode)
-        adapter_state = (mode, runtime_mode, attached_entity)
-        if runtime_mode != mode and getattr(
-            skill, "_last_collision_world_adapter_log_state", None
-        ) != adapter_state:
-            LOGGER.info(
-                "[CollisionWorld] runtime-adapter skill=%s configured_mode=%s "
-                "effective_mode=%s attached_object=%s controller=%s/%s",
-                self._skill_display_name(skill),
-                mode,
-                runtime_mode,
-                attached_entity,
-                controller.name,
-                controller.lr_name,
-            )
-        setattr(skill, "_last_collision_world_adapter_log_state", adapter_state)
-        mode = runtime_mode
-        activate(mode)
+        setattr(skill, "effective_collision_world_mode", PHYSICS_SCHEMA_MODE)
         return mode
 
     def get_failure_context(self) -> dict:
@@ -1864,35 +1990,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         self._finish_skill_timing(skill, False, reason=failure_reason)
 
     def plan_first_skill(self, skills, should_continue):
-        if self._skills_use_dag:
-            return self._start_dag_ready_skills(skills, should_continue)
-
-        for robot_name, robot_skill_list in skills[0].items():
-            for lr_skill_list in robot_skill_list[0]:
-                # Dual-arm configs legitimately use an empty list for the idle
-                # arm.  Do not index it as if it contained a first Skill.
-                if not lr_skill_list:
-                    continue
-                self._activate_skill_collision_world(lr_skill_list[0])
-                self._run_skill_planner(robot_name, lr_skill_list[0])
-                if hasattr(lr_skill_list[0], "visualize_target"):
-                    lr_skill_list[0].visualize_target(self.world)
-                if len(lr_skill_list[0].manip_list) == 0:
-                    plan_result = getattr(
-                        getattr(lr_skill_list[0], "plan_evaluation", None), "result", None
-                    )
-                    self._safety_failure_reason = getattr(
-                        lr_skill_list[0],
-                        "failure_reason",
-                        getattr(plan_result, "failure_code", "") or "NO_COLLISION_FREE_PLAN",
-                    )
-                    ready = bool(lr_skill_list[0].is_ready())
-                    if ready:
-                        self._finish_skill_timing(
-                            lr_skill_list[0], False, reason="empty_manip_list"
-                        )
-                    should_continue = not ready
-        return should_continue
+        return self._start_dag_ready_skills(skills, should_continue)
 
     def _dump_navigation_debug_snapshots(self, tag: str):
         for robot_name, driver in getattr(self, "_local_base_drivers", {}).items():
@@ -1908,23 +2006,40 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
     def _iter_active_skills(self):
         if not self.skills:
             return
-        if self._skills_use_dag:
-            for node in self.skills["nodes"]:
-                if node["state"] == "running":
-                    yield node["robot_name"], node["skill"]
-            return
-        for robot_name, skill_sequences in self.skills[0].items():
-            if not skill_sequences or not skill_sequences[0]:
-                continue
-            for arm_skill_list in skill_sequences[0]:
-                if arm_skill_list:
-                    yield robot_name, arm_skill_list[0]
+        for node in self.skills["nodes"]:
+            if node["state"] == "running":
+                yield node["robot_name"], node["skill"]
+
+    @staticmethod
+    def _execution_status(runtime, command=None):
+        """Read the detailed execution snapshot from the typed runtime port."""
+
+        return runtime.execution_status(command)
+
+    @staticmethod
+    def _status_value(status, name, default=None):
+        if isinstance(status, dict):
+            return status.get(name, default)
+        return getattr(status, name, default)
+
+    @classmethod
+    def _status_tracking_failed(cls, status) -> bool:
+        return bool(
+            cls._status_value(status, "tracking_failed", False)
+            or cls._status_value(status, "tracking_completion_failed", False)
+            or str(cls._status_value(status, "reason", "")).lower()
+            in {"tracking_failed", "tracking_completion_failed"}
+        )
 
     def _safety_measurements(self, skill, dynamic_changed: bool) -> SafetyMeasurements:
-        controller = skill.controller
-        joint_state = controller.robot.get_joints_state()
-        actual_arm = np.asarray(joint_state.positions[controller.arm_indices], dtype=float)
-        commanded_arm = controller._last_commanded_arm_position
+        runtime = skill.skill_runtime
+        if runtime is None:
+            raise RuntimeError("execution safety requires a composed SkillRuntimePort")
+        robot = runtime.robot
+        arm_indices = runtime.arm_indices
+        joint_state = robot.get_joints_state()
+        actual_arm = np.asarray(joint_state.positions[arm_indices], dtype=float)
+        commanded_arm = runtime.last_commanded_arm_position
         joint_error = (
             float(np.max(np.abs(actual_arm - commanded_arm)))
             if commanded_arm is not None and len(commanded_arm) == len(actual_arm)
@@ -1933,46 +2048,51 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         ee_position_error = 0.0
         ee_orientation_error = 0.0
         if commanded_arm is not None and len(commanded_arm) == len(actual_arm):
-            expected_position, expected_orientation = controller.forward_kinematic(commanded_arm)
-            actual_position, actual_orientation = controller.get_ee_pose()
+            expected_position, expected_orientation = runtime.compute_fk(commanded_arm)
+            actual_position, actual_orientation = runtime.ee_pose()
             ee_position_error = float(np.linalg.norm(expected_position - actual_position))
             ee_orientation_error = quaternion_angle(expected_orientation, actual_orientation)
 
-        base_position, base_orientation = controller.get_armbase_pose()
-        if hasattr(controller, "_phase_base_position"):
-            initial_position = controller._phase_base_position
-            initial_orientation = controller._phase_base_orientation
+        base_position, base_orientation = runtime.arm_base_pose()
+        phase_base_pose = runtime.phase_base_pose()
+        if phase_base_pose is None:
+            initial_position, initial_orientation = base_position, base_orientation
         else:
-            initial_position, initial_orientation = pose_from_tf_matrix(controller.T_world_base_init)
+            initial_position, initial_orientation = phase_base_pose
         base_translation = float(np.linalg.norm(np.asarray(base_position) - np.asarray(initial_position)))
         base_rotation = float(np.degrees(quaternion_angle(base_orientation, initial_orientation)))
         velocity = np.asarray(joint_state.velocities, dtype=float)
-        arm_velocity = velocity[controller.arm_indices]
+        arm_velocity = velocity[arm_indices]
         command = skill.manip_list[0]
-        if isinstance(command, MotionPhaseCommand):
-            VELOCITY_TRACE_LOGGER.info(
-                "[VelocityTrace] step=%d phase=%s cmd_idx=%d plan_len=%s "
-                "actual=%s commanded=%s velocity=%s",
-                self._active_execution_step_id,
-                command.phase.value,
-                int(getattr(controller, "cmd_idx", -1)),
-                len(controller.cmd_plan) if controller.cmd_plan is not None else None,
-                np.array2string(actual_arm, precision=5),
-                np.array2string(np.asarray(commanded_arm, dtype=float), precision=5)
-                if commanded_arm is not None
-                else None,
-                np.array2string(arm_velocity, precision=5),
+        if not isinstance(command, MotionPhaseCommand):
+            raise TypeError(
+                f"operation Skill {self._skill_display_name(skill)!r} must emit "
+                "MotionPhaseCommand values"
             )
+        execution_status = runtime.execution_status(command)
+        VELOCITY_TRACE_LOGGER.info(
+            "[VelocityTrace] step=%d phase=%s plan_active=%s steps_remaining=%s "
+            "actual=%s commanded=%s velocity=%s",
+            self._active_execution_step_id,
+            self._status_value(execution_status, "phase", command.phase.value),
+            bool(self._status_value(execution_status, "plan_active", False)),
+            int(self._status_value(execution_status, "plan_steps_remaining", 0)),
+            np.array2string(actual_arm, precision=5),
+            np.array2string(np.asarray(commanded_arm, dtype=float), precision=5)
+            if commanded_arm is not None
+            else None,
+            np.array2string(arm_velocity, precision=5),
+        )
         joint_limit_violation = False
         try:
-            limits = np.asarray(controller.robot.get_dof_limits(), dtype=float)
-            arm_limits = limits[controller.arm_indices]
+            limits = np.asarray(robot.get_dof_limits(), dtype=float)
+            arm_limits = limits[arm_indices]
             joint_limit_violation = bool(
                 np.any(actual_arm < arm_limits[:, 0] - 1e-4)
                 or np.any(actual_arm > arm_limits[:, 1] + 1e-4)
             )
         except (AttributeError, IndexError, TypeError, ValueError):
-            # Some legacy robot wrappers do not expose limits.  Physics-schema
+            # Some robot wrappers do not expose limits.  Physics-schema
             # SplitAloha does; strict world audit remains the primary guard.
             joint_limit_violation = False
         arrays = (actual_arm, velocity, np.asarray(base_position), np.asarray(base_orientation))
@@ -1999,13 +2119,18 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         record = None
         if command.active_object:
             record = self.collision_scene_manager.records.get(command.active_object)
-            if record is not None and record.state == CollisionObjectState.ATTACHED and hasattr(skill, "get_contact"):
-                _, indices = skill.get_contact()
-                dropped = len(indices) == 0
+            if record is not None and record.state == CollisionObjectState.ATTACHED:
+                try:
+                    get_contact = skill.get_contact
+                except AttributeError:
+                    get_contact = None
+                if get_contact is not None:
+                    _, contact_indices = get_contact()
+                    dropped = len(contact_indices) == 0
         target_owner_matches = bool(
             record is not None
             and (str(record.owner_robot), str(record.owner_arm))
-            == (str(controller.name), str(controller.lr_name))
+            == (str(runtime.name), str(runtime.arm_name))
         )
         pending_detach = bool(
             command.phase == MotionPhase.DETACH_AND_SETTLE
@@ -2026,14 +2151,14 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             )
         )
         unexpected_contact = self.collision_scene_manager.get_unexpected_robot_contact_force(
-            controller.name,
-            controller.lr_name,
+            runtime.name,
+            runtime.arm_name,
             command.active_object if allow_target_robot_contact else None,
         )
         _, unexpected_finger_contact = (
             self.collision_scene_manager.get_finger_environment_contact_forces(
-                controller.name,
-                controller.lr_name,
+                runtime.name,
+                runtime.arm_name,
                 command.active_object if command.allow_target_finger_contact else None,
             )
         )
@@ -2064,14 +2189,11 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 and allowed_support_contact > 0.0
             ):
                 command.params["contact_complete"] = True
-                controller.complete_terminal_place_on_contact(command)
+                skill.placement_planning.complete_terminal_place_on_contact(command)
                 skill.manip_list[:] = [command] + [
                     later
                     for later in skill.manip_list[1:]
-                    if not (
-                        isinstance(later, MotionPhaseCommand)
-                        and later.phase == MotionPhase.TERMINAL_PLACE_DESCENT
-                    )
+                    if later.phase != MotionPhase.TERMINAL_PLACE_DESCENT
                 ]
         return SafetyMeasurements(
             joint_error_rad=joint_error,
@@ -2100,8 +2222,8 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             abnormal_velocity=False,
             illegal_object_state=illegal_state,
             attached_object_dropped=dropped,
-            plan_failed=bool(controller._phase_plan_failed),
-            tracking_completion_failed=bool(controller._phase_tracking_failed),
+            plan_failed=bool(self._status_value(execution_status, "plan_failed", False)),
+            tracking_completion_failed=self._status_tracking_failed(execution_status),
         )
 
     @staticmethod
@@ -2137,7 +2259,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         relevant_entities = owned_entities | configured_entities
         # A structured motion command without an object owner has no semantic
         # way to narrow its world dependency, so retain the conservative
-        # all-entity behavior for that legacy/diagnostic case.
+        # all-entity behavior for that diagnostic case.
         if not relevant_entities:
             return changed
         return changed & relevant_entities
@@ -2146,9 +2268,9 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         """Evaluate the previous step before producing the next command.
 
         On a hard abort the articulation must receive a measured hold target
-        in this same simulation step. Merely clearing ``cmd_plan`` leaves the
-        previous PhysX drive target active and can move the robot once more
-        after the safety decision.
+        in this same simulation step. The runtime status is evaluated before
+        another command is consumed, so a failed plan cannot advance its
+        trajectory consumer after the safety decision.
         """
 
         if step_id % 100 == 0:
@@ -2171,37 +2293,51 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 "[ExecutionSafety] dynamic obstacle pose synced step=%d entities=%s",
                 step_id,
                 sorted(changed),
-            )
+        )
         for robot_name, skill in self._iter_active_skills() or []:
-            if not skill.manip_list or not isinstance(skill.manip_list[0], MotionPhaseCommand):
+            if (
+                not skill.manip_list
+                or getattr(skill, "collision_world_mode", PHYSICS_SCHEMA_MODE)
+                == PASSTHROUGH_MODE
+            ):
                 continue
             command = skill.manip_list[0]
-            controller = skill.controller
+            if not isinstance(command, MotionPhaseCommand):
+                raise TypeError(
+                    f"operation Skill {self._skill_display_name(skill)!r} must emit "
+                    "MotionPhaseCommand values"
+                )
+            runtime = skill.skill_runtime
+            if runtime is None:
+                raise RuntimeError("execution safety requires a composed SkillRuntimePort")
             # This precheck evaluates the result of the *previous* physics
             # step.  A newly selected command has not run yet, so its phase
             # baseline and first commanded joint target do not exist.  Using
             # the controller's initialization pose here caused step-0 and
             # phase-transition false base-drift aborts.
-            if command is not controller._active_phase_command:
+            if command is not runtime.active_phase_command:
                 continue
-            if self.execution_supervisor.is_holding(controller):
+            if self.execution_supervisor.is_holding(runtime):
                 continue
             if (
                 step_id % 100 == 0
-                or controller._phase_plan_failed
-                or controller._phase_tracking_failed
+                or bool(self._status_value(
+                    self._execution_status(runtime, command), "plan_failed", False
+                ))
+                or self._status_tracking_failed(self._execution_status(runtime, command))
             ):
+                execution_status = self._execution_status(runtime, command)
                 LOGGER.info(
-                    "[ExecutionHeartbeat] step=%d robot=%s arm=%s phase=%s plan_active=%s plan_index=%d phase_finished=%s plan_failed=%s tracking_failed=%s",
+                    "[ExecutionHeartbeat] step=%d robot=%s arm=%s phase=%s plan_active=%s steps_remaining=%d complete=%s plan_failed=%s tracking_failed=%s",
                     step_id,
                     robot_name,
-                    controller.lr_name,
-                    command.phase.value,
-                    controller.cmd_plan is not None,
-                    int(controller.cmd_idx),
-                    bool(controller._phase_plan_finished),
-                    bool(controller._phase_plan_failed),
-                    bool(controller._phase_tracking_failed),
+                    runtime.arm_name,
+                    self._status_value(execution_status, "phase", command.phase.value),
+                    bool(self._status_value(execution_status, "plan_active", False)),
+                    int(self._status_value(execution_status, "plan_steps_remaining", 0)),
+                    bool(self._status_value(execution_status, "complete", False)),
+                    bool(self._status_value(execution_status, "plan_failed", False)),
+                    self._status_tracking_failed(execution_status),
                 )
             relevant_changed = self._dynamic_changes_relevant_to_command(
                 changed, command, safety_cfg
@@ -2227,7 +2363,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 LOGGER.exception(
                     "[ExecutionSafety] collision/contact audit failed for %s/%s: %s",
                     robot_name,
-                    controller.lr_name,
+                    runtime.arm_name,
                     exc,
                 )
                 measurements = SafetyMeasurements(illegal_object_state=True)
@@ -2242,7 +2378,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             if decision == SafetyDecision.ABORT:
                 self._safety_failure_reason = self.execution_supervisor.failure_reason
                 if action_dict is not None:
-                    hold = controller.hold_action()
+                    hold = runtime.hold("execution_safety_abort")
                     action_dict[robot_name] = {
                         "joint_positions": np.asarray(hold["joint_positions"]),
                         "joint_indices": np.asarray(hold["joint_indices"]),
@@ -2252,44 +2388,45 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         return True
 
     def _forward_or_hold(self, skill):
-        controller = skill.controller
+        runtime = skill.skill_runtime
+        if runtime is None:
+            raise RuntimeError("operation Skill requires a composed SkillRuntimePort")
         self._activate_skill_collision_world(skill)
         command = skill.manip_list[0]
-        if isinstance(command, MotionPhaseCommand):
-            self._start_skill_motion_phase(skill, command)
+        if not isinstance(command, MotionPhaseCommand):
+            raise TypeError(
+                f"operation Skill {self._skill_display_name(skill)!r} must emit "
+                "MotionPhaseCommand values"
+        )
+        self._start_skill_motion_phase(skill, command)
         scope = getattr(skill, "_timing_scope", None)
-        push_scope = getattr(controller, "push_timing_scope", None)
-        restore_scope = getattr(controller, "restore_timing_scope", None)
-        previous_scope = push_scope(scope) if callable(push_scope) else None
+        previous_scope = runtime.push_timing_scope(scope)
         try:
-            if not isinstance(command, MotionPhaseCommand):
-                return controller.forward(command)
             try:
                 return self.execution_supervisor.forward_or_hold(
-                    controller,
-                    lambda: controller.forward(command),
+                    runtime,
+                    command,
                 )
             except CollisionSceneError as exc:
                 LOGGER.exception(
                     "[ExecutionSafety] collision-state operation failed for %s/%s: %s",
-                    controller.name,
-                    controller.lr_name,
+                    runtime.name,
+                    runtime.arm_name,
                     exc,
                 )
                 self.execution_supervisor.evaluate(
                     SafetyMeasurements(illegal_object_state=True),
                     step_id=self._active_execution_step_id,
-                    robot=controller.name,
+                    robot=runtime.name,
                     skill=skill,
                     command=command,
                     world_revision=self.collision_scene_manager.world_revision,
                 )
                 self._safety_failure_reason = f"COLLISION_SCENE_ERROR:{exc}"
                 self._safety_abort_requested = True
-                return controller.hold_action()
+                return runtime.hold("collision_scene_error")
         finally:
-            if callable(restore_scope) and callable(push_scope):
-                restore_scope(previous_scope)
+            runtime.restore_timing_scope(previous_scope)
 
     def generate_seq(self) -> list:
         end = False
@@ -2330,51 +2467,11 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             ):
                 episode_success = False
                 should_continue = False
-            if self._skills_use_dag and not self._skills_complete() and should_continue:
+            if not self._skills_complete() and should_continue:
                 action_dict, record_flag, skill_failed = self._collect_dag_skill_actions(self.skills)
                 if skill_failed:
                     episode_success = False
                     should_continue = False
-            elif not self._skills_use_dag and self.skills and should_continue:
-                # Process current skills
-                current_skills = self.skills[0]
-                for robot_name, skill_sequences in current_skills.items():
-                    if skill_sequences and skill_sequences[0]:
-                        action = [
-                            self._forward_or_hold(skill[0])
-                            for skill in skill_sequences[0]
-                            if skill and skill[0] and skill[0].is_ready()
-                        ]
-
-                        feasible_labels = [
-                            skill[0].is_feasible() for skill in skill_sequences[0] if skill and skill[0]
-                        ]
-                        record_labels = [
-                            skill[0].is_record() for skill in skill_sequences[0] if skill and skill[0]
-                        ]
-
-                        if False in feasible_labels:
-                            failed_skill = next(
-                                (skill[0] for skill in skill_sequences[0] if skill[0] and not skill[0].is_feasible()),
-                                None,
-                            )
-                            if failed_skill is not None:
-                                self._record_skill_failure(
-                                    robot_name,
-                                    failed_skill,
-                                    fallback_reason="skill_not_feasible",
-                                    fallback_message="Skill feasibility check failed before completion.",
-                                )
-                            should_continue = False
-                        if False in record_labels:
-                            record_flag = False
-
-                        if action:
-                            action_dict[robot_name] = {
-                                "joint_positions": np.concatenate([a["joint_positions"] for a in action]),
-                                "joint_indices": np.concatenate([a["joint_indices"] for a in action]),
-                                "raw_action": action,
-                            }
             if self._safety_abort_requested:
                 episode_success = False
                 should_continue = False
@@ -2387,7 +2484,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                         self.logger,
                         obs,
                         action_dict,
-                        self.controllers,
+                        self._skill_runtime_ports_for_logging(),
                         self._local_base_drivers,
                         step_idx=step_id + j_idx,
                     )
@@ -2406,7 +2503,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                     self.logger,
                     obs,
                     action_dict,
-                    self.controllers,
+                    self._skill_runtime_ports_for_logging(),
                     self._local_base_drivers,
                     step_idx=step_id,
                 )
@@ -2688,51 +2785,11 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             ):
                 episode_success = False
                 should_continue = False
-            if self._skills_use_dag and not self._skills_complete() and should_continue:
+            if not self._skills_complete() and should_continue:
                 action_dict, record_flag, skill_failed = self._collect_dag_skill_actions(self.skills)
                 if skill_failed:
                     episode_success = False
                     should_continue = False
-            elif not self._skills_use_dag and self.skills and should_continue:
-                # Process current skills
-                current_skills = self.skills[0]
-                for robot_name, skill_sequences in current_skills.items():
-                    if skill_sequences and skill_sequences[0]:
-                        action = [
-                            self._forward_or_hold(skill[0])
-                            for skill in skill_sequences[0]
-                            if skill and skill[0] and skill[0].is_ready()
-                        ]
-
-                        feasible_labels = [
-                            skill[0].is_feasible() for skill in skill_sequences[0] if skill and skill[0]
-                        ]
-                        record_labels = [
-                            skill[0].is_record() for skill in skill_sequences[0] if skill and skill[0]
-                        ]
-
-                        if False in feasible_labels:
-                            failed_skill = next(
-                                (skill[0] for skill in skill_sequences[0] if skill[0] and not skill[0].is_feasible()),
-                                None,
-                            )
-                            if failed_skill is not None:
-                                self._record_skill_failure(
-                                    robot_name,
-                                    failed_skill,
-                                    fallback_reason="skill_not_feasible",
-                                    fallback_message="Skill feasibility check failed before completion.",
-                                )
-                            should_continue = False
-                        if False in record_labels:
-                            record_flag = False
-
-                        if action:
-                            action_dict[robot_name] = {
-                                "joint_positions": np.concatenate([a["joint_positions"] for a in action]),
-                                "joint_indices": np.concatenate([a["joint_indices"] for a in action]),
-                                "raw_action": action,
-                            }
             if self._safety_abort_requested:
                 episode_success = False
                 should_continue = False
@@ -2745,7 +2802,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                         self.logger,
                         obs,
                         action_dict,
-                        self.controllers,
+                        self._skill_runtime_ports_for_logging(),
                         self._local_base_drivers,
                         step_idx=step_id + j_idx,
                     )
@@ -2765,7 +2822,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                     self.logger,
                     obs,
                     action_dict,
-                    self.controllers,
+                    self._skill_runtime_ports_for_logging(),
                     self._local_base_drivers,
                     step_idx=step_id,
                 )
@@ -2804,7 +2861,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                         self.logger,
                         obs,
                         action_dict,
-                        self.controllers,
+                        self._skill_runtime_ports_for_logging(),
                         step_idx=failure_step,
                     )
                     self._record_rgb_depth(failure_step)

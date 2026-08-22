@@ -656,10 +656,10 @@ skills:
 
 | 字段 | 类型 | 规则 |
 | --- | --- | --- |
-| `id` | `str` | 每个 skill 必须有唯一 id。 |
-| `depends_on` | `list[str]` | 依赖的 skill id，必须是 list。 |
+| `id` | `str` | 可选。显式 ID 必须唯一；legacy 嵌套 skill 省略时由 workflow 按源位置生成稳定 `legacy:` ID。 |
+| `depends_on` | `list[str]` | 可选，默认空列表；依赖的 skill id，若出现则必须是 list。 |
 
-运行规则：workflow 对全部 skill 拓扑排序；依赖全部成功后节点进入 running；依赖 id 不存在或成环会报错。scene-4 基础任务的典型 5-skill DAG 形态见 AGENTS.md 与 `output/scene4_nav_skill_generation/scene4_nav_skill_generation_summary.json`。
+运行规则：workflow 对全部 skill 拓扑排序；依赖全部成功后节点进入 running；依赖 id 不存在或成环会报错。legacy 节点的隐式 phase/sequence 边只补给编译生成 ID 的节点，并在可能形成环时跳过；显式 DAG 依赖保持原语义。scene-4 基础任务的典型 5-skill DAG 形态见 AGENTS.md 与 `output/scene4_nav_skill_generation/scene4_nav_skill_generation_summary.json`。
 
 ---
 

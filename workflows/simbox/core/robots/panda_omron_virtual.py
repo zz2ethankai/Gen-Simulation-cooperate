@@ -16,6 +16,25 @@ from pxr import PhysxSchema, UsdPhysics
 class PandaOmronVirtual(PandaOmron):
     """Panda on Omron geometry driven by X/Y/yaw virtual base joints."""
 
+    def _manipulation_base_hold_config(self):
+        """Use the virtual base's intrinsic three-DOF hold contract.
+
+        The arm controller remains the Panda-only [arm, gripper] action.  The
+        virtual base owns its hold policy here as a thin asset-specific
+        default, so physical PandaOmron and task YAMLs stay unchanged.
+        """
+
+        configured = super()._manipulation_base_hold_config()
+        if configured:
+            return configured
+        return {
+            "enabled": True,
+            "joint_names": tuple(self.base_wheel_joint_names),
+            "stiffness": 100000.0,
+            "damping": 3000.0,
+            "max_effort": 60000.0,
+        }
+
     def initialize(self, *args, **kwargs):
         super().initialize(*args, **kwargs)
         self._reset_virtual_base_joint_state(require_ready=True)
@@ -178,6 +197,7 @@ class PandaOmronVirtual(PandaOmron):
         self._configure_mobile_base_wheel_drives()
         self._reset_virtual_base_joint_state(require_ready=True)
         self._configure_virtual_base_runtime_drives(require_ready=True)
+        self.recapture_manipulation_base_hold()
 
     def apply_base_command(self, steering_positions, wheel_velocities, *, step_dt: float):
         steering_positions = np.asarray(steering_positions, dtype=np.float32).reshape(-1)

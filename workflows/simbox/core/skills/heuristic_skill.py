@@ -2,7 +2,6 @@ import logging
 
 import numpy as np
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand
-from core.utils.plan_utils import extract_result_paths, result_success_mask
 from core.skills.base_skill import BaseSkill, register_skill
 from omegaconf import DictConfig
 from isaacsim.core.api.controllers import BaseController
@@ -20,14 +19,14 @@ LOGGER = logging.getLogger("de_logger")
 # pylint: disable=unused-argument
 @register_skill
 class Heuristic_Skill(BaseSkill):
-    def __init__(self, robot: Robot, controller: BaseController, task: BaseTask, cfg: DictConfig, *args, **kwargs):
+    def __init__(self, robot: Robot, skill_runtime, task: BaseTask, cfg: DictConfig, *args, **kwargs):
         super().__init__()
         self.robot = robot
-        self.controller = controller
+        self.bind_skill_runtime(skill_runtime)
         self.task = task
         self.skill_cfg = cfg
 
-        self.lr_hand = "right" if "right" in self.controller.robot_file else "left"
+        self.lr_hand = "right" if "right" in self.skill_runtime.robot_file else "left"
         if self.lr_hand == "left":
             self._joint_indices = self.robot.left_joint_indices
             self._joint_home = self.robot.left_joint_home
@@ -82,23 +81,18 @@ class Heuristic_Skill(BaseSkill):
 
         object_name = getattr(self, "_physics_schema_active_object", None)
         try:
-            self.controller.collision_scene_manager.assert_attached_owner(
-                object_name,
-                self.controller.name,
-                self.controller.lr_name,
-            )
-            result = self.controller.plan_joint_positions(self._goal_joints)
-            success = bool(result_success_mask(result).any().item())
+            self.skill_runtime.assert_attached_owner(object_name)
+            result = self.skill_runtime.plan_cspace(self._goal_joints, context="carry_home_replan")
+            success = bool(result.success)
             if not success:
-                self.controller.num_plan_failed += 1
+                self.skill_runtime.record_plan_failure()
                 self.failure_reason = "CARRY_HOME_REPLAN_FAILED"
                 self.error_message = (
                     "CuRobo could not rebuild the carry-home path from the "
                     "measured safety-hold state."
                 )
                 return False
-            paths = extract_result_paths(result)
-            path = paths[0] if paths else None
+            path = result.trajectory
             if path is None:
                 self.failure_reason = "CARRY_HOME_REPLAN_EMPTY"
                 self.error_message = "CuRobo returned no interpolated carry-home path."
@@ -108,18 +102,18 @@ class Heuristic_Skill(BaseSkill):
             self.error_message = str(exc)
             LOGGER.exception(
                 "[PhaseDebug] carry-home recovery failed robot=%s arm=%s object=%s",
-                self.controller.name,
-                self.controller.lr_name,
+                self.skill_runtime.name,
+                self.skill_runtime.arm_name,
                 object_name,
             )
             return False
 
         command.params["preplanned_joint_path"] = path
-        self.controller.num_plan_failed = 0
+        self.skill_runtime.reset_plan_failures()
         LOGGER.info(
             "[PhaseDebug] replanned robot=%s arm=%s phase=%s object=%s cached=true",
-            self.controller.name,
-            self.controller.lr_name,
+            self.skill_runtime.name,
+            self.skill_runtime.arm_name,
             command.phase.value,
             object_name,
         )
@@ -138,77 +132,48 @@ class Heuristic_Skill(BaseSkill):
 
     def _solve_goal_joints_via_plan(self, ee_trans_goal, ee_ori_goal):
         """
-        Use controller.plan to get a collision-free joint path,
+        Use the runtime port's planner to get a collision-free joint path,
         and take the last waypoint as goal arm joints.
         """
-        sim_js = self.robot.get_joints_state()
-        js_names = self.robot.dof_names
-        result = self.controller.plan(ee_trans_goal, ee_ori_goal, sim_js, js_names)
-        if not bool(result_success_mask(result).any().item()):
+        result = self.skill_runtime.plan_pose(
+            ee_trans_goal,
+            ee_ori_goal,
+            context="heuristic_rel_ee",
+        )
+        if not result.success:
             return None
-        paths = extract_result_paths(result)
-        cmd_plan = paths[0] if paths else None
-        if cmd_plan is None:
+        planned_path = result.trajectory
+        if planned_path is None:
             return None
-        goal_arm_joints = cmd_plan[-1].position.cpu().numpy()  # replace by ik
+        positions = np.asarray(planned_path.positions, dtype=float)
+        goal_arm_joints = positions[-1] if positions.ndim > 1 else positions
         return goal_arm_joints
 
     def _build_joint_traj(self, curr_joints, goal_joints, p_base_ee_cur, q_base_ee_cur):
-        """Build a list of dummy_forward commands interpolating in joint space."""
+        """Build typed c-space targets interpolating in joint space."""
         manip_list = []
         for k in range(self.move_steps):
             alpha = float(k + 1) / float(self.move_steps) * 1.25
             arm_action = goal_joints * alpha + curr_joints * (1.0 - alpha)
-            cmd = (
-                p_base_ee_cur,
-                q_base_ee_cur,
-                "dummy_forward",
-                {
-                    "arm_action": arm_action,
-                    "gripper_state": self._gripper_state,
-                },
+            target_position, target_orientation = self.skill_runtime.compute_fk(
+                arm_action,
+                joint_names=self.skill_runtime.raw_joint_names,
+            )
+            cmd = MotionPhaseCommand(
+                MotionPhase.CARRY_HOME,
+                target_position,
+                target_orientation,
+                gripper_action=(
+                    "open_gripper" if float(self._gripper_state) >= 0.0 else "close_gripper"
+                ),
+                replan_allowed=False,
+                joint_target=np.asarray(arm_action, dtype=float),
             )
             manip_list.append(cmd)
         return manip_list
 
     def simple_generate_manip_cmds(self):
-        if getattr(self.controller, "collision_world_mode", "legacy_stage_scan") == "physics_schema":
-            return self._physics_schema_generate_manip_cmds()
-
-        self.manip_list = []
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        curr_joints = self.robot.get_joint_positions()[self._joint_indices]
-
-        if self.mode == "home":
-            self._goal_joints = self._joint_home.copy()
-        else:
-            if self.mode == "abs_qpos":
-                self._goal_joints = self.skill_cfg.get("value", self._joint_home)
-            elif self.mode == "rel_qpos":
-                self._goal_joints = self.skill_cfg.get("value", np.zeros(self._joint_home.shape))
-            elif self.mode == "rel_ee":
-                p_base_ee_tgt, q_base_ee_tgt = self._compute_ee_goal(
-                    p_base_ee_cur, q_base_ee_cur, self.skill_cfg.get("value", np.eye(4))
-                )
-                self._goal_joints = self._solve_goal_joints_via_plan(p_base_ee_tgt, q_base_ee_tgt)
-            else:
-                raise NotImplementedError
-
-        if self._goal_joints is None:
-            self.manip_list = []
-            cmd = (
-                p_base_ee_cur,
-                q_base_ee_cur,
-                "update_specific",
-                {
-                    "ignore_substring": self.controller.ignore_substring,
-                    "reference_prim_path": self.controller.reference_prim_path,
-                },
-            )
-            self.manip_list.append(cmd)
-            return
-
-        self.manip_list = self._build_joint_traj(curr_joints, self._goal_joints, p_base_ee_cur, q_base_ee_cur)
+        return self._physics_schema_generate_manip_cmds()
 
     def _physics_schema_generate_manip_cmds(self):
         """Plan an attached-object carry posture without leaving Physics mode."""
@@ -223,17 +188,14 @@ class Heuristic_Skill(BaseSkill):
         object_name = getattr(self, "_physics_schema_active_object", None)
         if not object_name:
             raise RuntimeError("Physics-schema carry-home requires an attached object")
-        manager = self.controller.collision_scene_manager
-        manager.assert_attached_owner(
-            object_name, self.controller.name, self.controller.lr_name
-        )
+        self.skill_runtime.assert_attached_owner(object_name)
         if float(self._gripper_state) >= 0.0:
             raise RuntimeError(
                 "Physics-schema carry-home must keep the gripper closed while the object is attached"
             )
         self._pickcontact_view = self.task.pickcontact_views[
             self.robot.name
-        ][self.controller.lr_name][object_name]
+        ][self.skill_runtime.arm_name][object_name]
         current_joints = np.asarray(
             self.robot.get_joint_positions(), dtype=float
         )[self._joint_indices]
@@ -264,29 +226,28 @@ class Heuristic_Skill(BaseSkill):
             candidate = current_joints + progress * (
                 self._joint_home - current_joints
             )
-            candidate_result = self.controller.plan_joint_positions(candidate)
-            success = bool(result_success_mask(candidate_result).any().item())
+            candidate_result = self.skill_runtime.plan_cspace(candidate, context="carry_home")
+            success = bool(candidate_result.success)
             if success:
                 self._goal_joints = candidate
                 result = candidate_result
                 selected_progress = progress
                 break
         if result is None:
-            self.controller.num_plan_failed += 1
+            self.skill_runtime.record_plan_failure()
             self.failure_reason = "NO_COLLISION_FREE_CARRY_HOME_PLAN"
             self.error_message = (
                 "Could not plan any configured carry posture with the attached object "
                 f"in the Physics world; attempted_home_progress={progress_candidates}."
             )
             return
-        self.controller.num_plan_failed = 0
-        paths = extract_result_paths(result)
-        carry_path = paths[0] if paths else None
+        self.skill_runtime.reset_plan_failures()
+        carry_path = result.trajectory
         if carry_path is None:
             self.failure_reason = "CARRY_HOME_EMPTY_PATH"
             self.error_message = "CuRobo reported a carry-home success without a trajectory."
             return
-        target_position, target_orientation = self.controller.forward_kinematic(
+        target_position, target_orientation = self.skill_runtime.compute_fk(
             self._goal_joints
         )
         self.manip_list = [
@@ -323,7 +284,7 @@ class Heuristic_Skill(BaseSkill):
         return contact, indices
 
     def is_feasible(self, th=5):
-        return self.controller.num_plan_failed <= th
+        return self.skill_runtime.num_plan_failed <= th
 
     def is_subtask_done(self, t_eps=0.088):
         if len(self.manip_list) == 0:
@@ -331,20 +292,15 @@ class Heuristic_Skill(BaseSkill):
         if self._goal_joints is None:
             return True
         curr_joints = self.robot.get_joint_positions()[self._joint_indices]
-        target_joints = self.manip_list[0][3]["arm_action"]
-        diff_trans = np.linalg.norm(curr_joints - target_joints)
-        pose_flag = diff_trans < t_eps
-        self.plan_flag = self.controller.num_last_cmd > 10
-        return np.logical_or(pose_flag, self.plan_flag)
+        command = self.manip_list[0]
+        if not isinstance(command, MotionPhaseCommand):
+            raise TypeError("Heuristic_Skill emits MotionPhaseCommand values only")
+        return self.command_complete(command)
 
     def is_done(self):
         if len(self.manip_list) == 0:
             return True
-        if isinstance(self.manip_list[0], MotionPhaseCommand):
-            if self.controller.is_phase_command_complete(self.manip_list[0]):
-                self.manip_list.pop(0)
-            return len(self.manip_list) == 0
-        if self.is_subtask_done(t_eps=self.t_eps):
+        if self.command_complete(self.manip_list[0]):
             self.manip_list.pop(0)
         if self.is_success(t_eps=self.t_eps):
             self.manip_list.clear()
@@ -360,12 +316,9 @@ class Heuristic_Skill(BaseSkill):
         diff_trans = np.linalg.norm(curr_joints - self._goal_joints)
         success = bool(diff_trans < t_eps)
         if self._physics_schema_active_object:
-            manager = self.controller.collision_scene_manager
             try:
-                manager.assert_attached_owner(
-                    self._physics_schema_active_object,
-                    self.controller.name,
-                    self.controller.lr_name,
+                self.skill_runtime.assert_attached_owner(
+                    self._physics_schema_active_object
                 )
             except Exception as exc:
                 self.failure_reason = "CARRY_HOME_ATTACHMENT_LOST"

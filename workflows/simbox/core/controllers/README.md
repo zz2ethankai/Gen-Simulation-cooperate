@@ -26,7 +26,7 @@ Set joint names and indices for the planner and the simulation articulation.
 
 You must set:
 
-- **`self.raw_js_names`** – Joint names in the **planner / CuRobo** order (arm only, no gripper). Used with native `JointState.reorder(raw_js_names)` when building `cmd_plan`.
+- **`self.raw_js_names`** – Joint names in the **planner / CuRobo** order (arm only, no gripper). Used to reorder the public `JointTrajectory` before execution.
 - **`self.cmd_js_names`** – Same as `raw_js_names` use the **scene/articulation** names in the robot usd (e.g. `fl_joint1`… or `idx21_arm_l_joint1`…).
 - **`self.arm_indices`** – Indices of arm joints in the **simulation** `dof_names` (e.g. `np.array([0,1,2,3,4,5,6])`).
 - **`self.gripper_indices`** – Indices of gripper joints in the simulation (e.g. `np.array([7])` or `np.array([7,8])`).

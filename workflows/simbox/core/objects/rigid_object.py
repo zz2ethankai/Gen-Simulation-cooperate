@@ -58,9 +58,54 @@ class RigidObject(SingleRigidPrim):
         # ===== Initialize =====
         create_prim(prim_path=prim_path, usd_path=self.usd_path)
         self.base_prim_path = prim_path
-        self.rigid_prim_path = join_prim_path(self.base_prim_path, cfg["prim_path_child"])
-        if not get_prim_at_path(self.rigid_prim_path).IsValid():
-            raise ValueError(f"rigid prim does not exist for {cfg_name}: {self.rigid_prim_path}")
+        configured_child = cfg.get("prim_path_child")
+        configured_path = None
+        configured_prim = None
+        configured_error = None
+        if configured_child:
+            try:
+                configured_path = join_prim_path(self.base_prim_path, configured_child)
+                configured_prim = get_prim_at_path(configured_path)
+                if not configured_prim.IsValid():
+                    configured_error = "prim is invalid"
+                elif not configured_prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                    configured_error = "prim has no UsdPhysics.RigidBodyAPI"
+            except (TypeError, ValueError) as exc:
+                configured_error = str(exc)
+        else:
+            configured_error = "prim_path_child is not configured"
+
+        if configured_error is None:
+            self.rigid_prim_path = configured_path
+            self.rigid_prim_path_source = "configured"
+        else:
+            root_prim = get_prim_at_path(self.base_prim_path)
+            fallback_prim = next(
+                (
+                    prim
+                    for prim in Usd.PrimRange(root_prim)
+                    if prim.IsValid() and prim.HasAPI(UsdPhysics.RigidBodyAPI)
+                ),
+                None,
+            )
+            if fallback_prim is None:
+                configured_display = configured_path or "<unset>"
+                raise ValueError(
+                    f"no rigid body prim found for {cfg_name}: "
+                    f"configured={configured_display} ({configured_error}), "
+                    f"root={self.base_prim_path}"
+                )
+            self.rigid_prim_path = str(fallback_prim.GetPath())
+            self.rigid_prim_path_source = "fallback_first_rigid_body"
+            LOGGER.warning(
+                "[RigidObject] %s configured rigid child invalid (%s): %s; "
+                "using first rigid body under %s: %s",
+                cfg_name,
+                configured_error,
+                configured_path or "<unset>",
+                self.base_prim_path,
+                self.rigid_prim_path,
+            )
         self._apply_small_scale_collision_fallback(cfg)
         resolution = resolve_attach_collision_prims(
             self.base_prim_path,

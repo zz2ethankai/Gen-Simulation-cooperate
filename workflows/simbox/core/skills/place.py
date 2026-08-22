@@ -4,18 +4,12 @@ import time
 from copy import deepcopy
 
 import numpy as np
+from core.planning.domain_types import BatchPlanResult, CollisionPolicy, PlanResult
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand
-from core.planning.config_contract import resolve_skill_test_mode
 from core.skills.base_skill import BaseSkill, register_skill
 from core.utils.box import Box, get_bbox_center_and_corners
 from core.utils.constants import CUROBO_BATCH_SIZE
 from core.utils.iou import IoU
-from core.utils.plan_utils import (
-    extract_result_paths,
-    result_success_mask,
-    select_index_by_priority_dual,
-    select_index_by_priority_single,
-)
 from core.utils.transformation_utils import create_pose_matrices, poses_from_tf_matrices
 from core.utils.usd_geom_utils import compute_bbox
 from core.visualization.skill_target_math import ratio_box_corners
@@ -40,10 +34,24 @@ class PlacePlanningError(RuntimeError):
 # pylint: disable=consider-using-generator,too-many-public-methods,unused-argument
 @register_skill
 class Place(BaseSkill):
-    def __init__(self, robot: Robot, controller: BaseController, task: BaseTask, cfg: DictConfig, *args, **kwargs):
+    def __init__(
+        self,
+        robot: Robot,
+        skill_runtime,
+        task: BaseTask,
+        cfg: DictConfig,
+        *args,
+        placement_planning=None,
+        **kwargs,
+    ):
         super().__init__()
         self.robot = robot
-        self.controller = controller
+        self.bind_skill_runtime(
+            skill_runtime,
+            placement_planning=placement_planning,
+        )
+        self._require_skill_runtime()
+        self.placement_planning = self._require_placement_planning()
         self.task = task
 
         self.name = cfg["name"]
@@ -58,14 +66,8 @@ class Place(BaseSkill):
         else:
             self.place_prim_path = self.place_obj.prim_path
         self.manip_list = []
-        # if "Franka" in self.controller.robot_file or "Franka" in self.robot.cfg["name"]:
-        #     self.robot_ee_path = self.robot.ee_path
-        #     self.robot_base_path = self.robot.base_path
-        # else:
-        #     self.robot_ee_path = self.controller.robot_ee_path
-        #     self.robot_base_path = self.controller.robot_base_path
-        self.robot_ee_path = self.controller.robot_ee_path
-        self.robot_base_path = self.controller.robot_base_path
+        self.robot_ee_path = self.placement_planning.scene_port.robot_ee_path
+        self.robot_base_path = self.placement_planning.scene_port.reference_prim_path
 
         self.skill_cfg = cfg
         self.align_pick_obj_axis = self.skill_cfg.get("align_pick_obj_axis", None)
@@ -84,11 +86,11 @@ class Place(BaseSkill):
         self._plan_failure_debug_path = None
         self._plan_failure_snapshot_written = False
         self._pending_target_intent = None
-        # Native-v2 candidate evaluation returns paths separately from the
+        # Typed candidate evaluation returns paths separately from the
         # selected Cartesian poses.  Keep the selected paths alongside the
         # pose result so the physics-schema command builder can reuse the
         # exact batch plan instead of planning the same phase again.
-        self._native_selected_plan = {
+        self._selected_plan = {
             "candidate_index": None,
             "preplace_path": None,
             "terminal_path": None,
@@ -102,9 +104,12 @@ class Place(BaseSkill):
         return get_world_pose(prim_path)
 
     def _get_armbase_world_tf(self):
-        armbase_tf_getter = getattr(self.robot, "get_armbase_world_transform", None)
-        if callable(armbase_tf_getter):
-            return armbase_tf_getter()
+        try:
+            return self.placement_planning.arm_base_transform()
+        except (AttributeError, RuntimeError):
+            armbase_tf_getter = getattr(self.robot, "get_armbase_world_transform", None)
+            if callable(armbase_tf_getter):
+                return armbase_tf_getter()
         armbase_t, armbase_q = self._get_world_pose_from_path(self.robot_base_path)
         return tf_matrix_from_pose(armbase_t, armbase_q)
 
@@ -142,43 +147,46 @@ class Place(BaseSkill):
         return output_path
 
     def _manip_cmd_to_debug(self, manip_cmd):
-        if isinstance(manip_cmd, MotionPhaseCommand):
-            return {
-                "phase": manip_cmd.phase.value,
-                "target_position": manip_cmd.target_position,
-                "target_orientation": manip_cmd.target_orientation,
-                "gripper_action": manip_cmd.gripper_action,
-                "active_object": manip_cmd.active_object,
-                "support_object": manip_cmd.support_object,
-                "replan_allowed": manip_cmd.replan_allowed,
-            }
-        if isinstance(manip_cmd, (list, tuple)) and len(manip_cmd) >= 3:
-            return {
-                "target_position": manip_cmd[0],
-                "target_orientation": manip_cmd[1],
-                "command": str(manip_cmd[2]),
-                "params": manip_cmd[3] if len(manip_cmd) > 3 else {},
-            }
-        return str(manip_cmd)
+        if not isinstance(manip_cmd, MotionPhaseCommand):
+            raise TypeError("Place emits MotionPhaseCommand values only")
+        return {
+            "phase": manip_cmd.phase.value,
+            "target_position": manip_cmd.target_position,
+            "target_orientation": manip_cmd.target_orientation,
+            "gripper_action": manip_cmd.gripper_action,
+            "active_object": manip_cmd.active_object,
+            "support_object": manip_cmd.support_object,
+            "replan_allowed": manip_cmd.replan_allowed,
+        }
 
     def _write_runtime_failure_snapshot(self, th: int):
         """Best-effort evidence for a Place planning failure before release."""
         current_cmd = self.manip_list[0] if self.manip_list else None
+        command_status = (
+            self.skill_runtime.execution_status(current_cmd)
+            if current_cmd is not None
+            else None
+        )
         payload = {
             "robot": self.robot.name,
             "skill": self.name,
             "pick_object": self.pick_obj.name,
             "place_object": self.place_obj.name,
-            "collision_world_mode": getattr(self.controller, "collision_world_mode", None),
-            "num_plan_failed": int(getattr(self.controller, "num_plan_failed", 0)),
+            "collision_policy": self.placement_planning.collision_policy.value,
+            "num_plan_failed": int(self.skill_runtime.num_plan_failed),
             "failure_threshold": int(th),
             "failure_reason": self.failure_reason,
             "error_message": self.error_message,
-            "controller_last_command": getattr(self.controller, "_last_command_name", None),
-            "controller_cmd_plan_active": getattr(self.controller, "cmd_plan", None) is not None,
-            "controller_cmd_idx": getattr(self.controller, "cmd_idx", None),
-            "controller_num_last_cmd": getattr(self.controller, "num_last_cmd", None),
-            "controller_gripper_state": getattr(self.controller, "_gripper_state", None),
+            "controller_last_command": (
+                command_status.phase if command_status is not None else None
+            ),
+            "controller_command_status": (
+                self.command_status_debug(command_status)
+            ),
+            "controller_num_last_cmd": self.skill_runtime.num_last_cmd,
+            "controller_gripper_state": (
+                current_cmd.gripper_action if current_cmd is not None else None
+            ),
             "current_command": self._manip_cmd_to_debug(current_cmd) if current_cmd is not None else None,
             "selected_place_target": self._pending_target_intent,
             "constraints": {
@@ -194,11 +202,10 @@ class Place(BaseSkill):
         try:
             payload["armbase_world_pose"] = self._get_world_pose_from_path(self.robot_base_path)
             payload["ee_world_pose"] = self._get_world_pose_from_path(self.robot_ee_path)
-            payload["ee_armbase_pose"] = self.controller.get_ee_pose()
+            payload["ee_armbase_pose"] = self.placement_planning.ee_pose()
             payload["pick_object_world_pose"] = self.pick_obj.get_world_pose()
             payload["place_object_world_pose"] = self.place_obj.get_world_pose()
-            manager = getattr(self.controller, "collision_scene_manager", None)
-            record = getattr(manager, "records", {}).get(self.pick_obj.name) if manager else None
+            record = self.placement_planning.collision_record(self.pick_obj.name)
             payload["pick_collision_record"] = record.to_dict() if record else None
         except Exception as exc:  # Debug capture must not change episode outcome.
             payload["runtime_state_capture_error"] = repr(exc)
@@ -238,7 +245,7 @@ class Place(BaseSkill):
             "pick_object": self.pick_obj.name,
             "place_object": self.place_obj.name,
             "failure_reason": failure_reason,
-            "collision_world_mode": getattr(self.controller, "collision_world_mode", None),
+            "collision_policy": self.placement_planning.collision_policy.value,
             "constraints": {
                 key: self.skill_cfg[key]
                 for key in (
@@ -282,11 +289,11 @@ class Place(BaseSkill):
             payload["T_obj_ee"] = getattr(self, "T_obj_ee", None)
             payload["T_base_world"] = getattr(self, "T_base_world", None)
             payload["T_world_container"] = getattr(self, "T_world_container", None)
-            manager = getattr(self.controller, "collision_scene_manager", None)
-            record = getattr(manager, "records", {}).get(self.pick_obj.name) if manager else None
+            manager = self.placement_planning
+            record = manager.collision_record(self.pick_obj.name)
             payload["pick_collision_record"] = record.to_dict() if record else None
             if manager is not None and record is not None:
-                slip_getter = getattr(manager, "get_attached_object_slip", None)
+                slip_getter = getattr(manager, "attached_object_slip", None)
                 if callable(slip_getter):
                     payload["attached_object_slip"] = slip_getter(self.pick_obj.name)
         except Exception as exc:  # Debug capture must not change episode outcome.
@@ -327,9 +334,10 @@ class Place(BaseSkill):
             print(f"[place-debug] Wrote place success check snapshot: {self._success_check_debug_path}")
 
     def simple_generate_manip_cmds(self):
-        if getattr(self.controller, "collision_world_mode", "legacy_stage_scan") == "physics_schema":
-            return self._physics_schema_generate_manip_cmds()
-        return self._legacy_simple_generate_manip_cmds()
+        # Place is always emitted as the typed exact-world phase sequence.
+        # Legacy dispatch branches were retired with the MotionPlanner API
+        # migration.
+        return self._generate_manip_cmds()
 
     @staticmethod
     def _terminal_samples(start, goal, step_m: float) -> list[np.ndarray]:
@@ -378,25 +386,47 @@ class Place(BaseSkill):
         return value
 
     @staticmethod
-    def _native_candidate_mask(result, expected_count: int) -> list[bool]:
-        """Normalize one native-v2 success flag per requested candidate."""
+    def _candidate_mask(result, expected_count: int) -> list[bool]:
+        """Normalize one typed planner success flag per requested candidate."""
 
         try:
-            mask = result_success_mask(result)
-            if hasattr(mask, "detach"):
-                mask = mask.detach().cpu().numpy()
-            mask = np.asarray(mask, dtype=bool).reshape(-1)
+            if isinstance(result, BatchPlanResult):
+                mask = result.success_mask
+            elif isinstance(result, PlanResult):
+                mask = (result.success,)
+            else:
+                raise TypeError(
+                    "Place candidate evaluation expects a normalized PlanResult "
+                    "or BatchPlanResult"
+                )
+            mask = np.asarray(mask, dtype=bool)
+            mask = mask.reshape(-1)
         except (AttributeError, TypeError, ValueError, RuntimeError):
             return [False] * int(expected_count)
         if len(mask) != int(expected_count):
             return [False] * int(expected_count)
         return mask.tolist()
 
-    def _native_path_endpoint_position(self, path, fallback_position):
-        """Get the FK position at a native path endpoint when available."""
+    @staticmethod
+    def _result_paths(result) -> list:
+        """Return paths exposed by the typed planner result envelope."""
+
+        if isinstance(result, BatchPlanResult):
+            return list(result.trajectories)
+        if isinstance(result, PlanResult):
+            return [] if result.trajectory is None else [result.trajectory]
+        raise TypeError(
+            "Place path extraction expects a normalized PlanResult or "
+            "BatchPlanResult"
+        )
+
+    def _path_endpoint_position(self, path, fallback_position):
+        """Get the FK position at a typed path endpoint when available."""
 
         fallback = np.asarray(fallback_position, dtype=float).reshape(3)
-        joint_position = getattr(path, "position", None)
+        if path is None:
+            return fallback
+        joint_position = path.position
         if joint_position is None:
             return fallback
         try:
@@ -405,21 +435,18 @@ class Place(BaseSkill):
             # the seven active arm joints.  Reduce by the named contract
             # before the FK probe; positional slicing would be unsafe because
             # result ordering is not part of the native v2 API.
-            path_names = getattr(path, "joint_names", None)
-            active_names = list(getattr(self.controller, "raw_js_names", ()) or ())
-            reorder = getattr(path, "reorder", None)
+            path_names = path.joint_names
+            active_names = list(self.skill_runtime.raw_joint_names or ())
             if (
                 path_names is not None
                 and active_names
                 and set(active_names).issubset(set(path_names))
-                and callable(reorder)
+                and tuple(path_names) != tuple(active_names)
             ):
-                path = reorder(active_names)
-                joint_position = getattr(path, "position", None)
+                path = path.reorder(active_names)
+                joint_position = path.position
                 if joint_position is None:
                     return fallback
-            if hasattr(joint_position, "detach"):
-                joint_position = joint_position.detach().cpu().numpy()
             values = np.asarray(joint_position, dtype=float)
             if values.size == 0:
                 return fallback
@@ -427,10 +454,7 @@ class Place(BaseSkill):
                 endpoint = values
             else:
                 endpoint = values.reshape(-1, values.shape[-1])[-1]
-            fk = getattr(self.controller, "forward_kinematic", None)
-            if not callable(fk):
-                return fallback
-            position, _ = fk(endpoint)
+            position, _ = self.placement_planning.forward_kinematic(endpoint)
             position = np.asarray(position, dtype=float).reshape(-1)
             if position.shape == (3,) and np.all(np.isfinite(position)):
                 return position
@@ -438,7 +462,7 @@ class Place(BaseSkill):
             pass
         return fallback
 
-    def _set_native_selected_plan(
+    def _set_selected_plan(
         self,
         candidate_index: int,
         *,
@@ -446,35 +470,28 @@ class Place(BaseSkill):
         terminal_path=None,
         source: str,
     ):
-        """Retain the native paths belonging to one accepted candidate.
+        """Retain paths belonging to one accepted candidate.
 
-        ``sample_gripper_place_traj`` intentionally keeps its historical
-        ``[pre_pose, place_pose, ...]`` return shape for legacy callers.  The
-        native paths therefore live in this side-channel and are consumed
-        only by the physics-schema command builder.
+        ``sample_gripper_place_traj`` returns pose values for candidate
+        diagnostics; planner paths live in this side-channel and are consumed
+        only by the typed command builder.
         """
 
-        self._native_selected_plan = {
+        self._selected_plan = {
             "candidate_index": int(candidate_index),
             "preplace_path": preplace_path,
             "terminal_path": terminal_path,
             "source": str(source),
         }
 
-    def _physics_schema_generate_manip_cmds(self):
+    def _generate_manip_cmds(self):
         """Generate no-contact transit plus bounded placement-contact phases."""
 
-        manager = self.controller.collision_scene_manager
+        planning = self.placement_planning
         object_name = self.pick_obj.name
         support_name = self.place_obj.name
         pick_place_cfg = self.task.cfg.get("planning", {}).get("pick_place", {})
-        record = manager.records.get(object_name)
-        if record is None or record.state.value != "attached":
-            raise RuntimeError(
-                f"Place requires ATTACHED object state, got {getattr(record, 'state', None)} for {object_name}"
-            )
-        manager.sync_dynamic_poses(0, interval_steps=1, force=True)
-        self.controller.update_pose_cost_metric(None)
+        planning.prepare_world(object_name, support_name)
         self.failure_reason = ""
         try:
             result = self.sample_gripper_place_traj()
@@ -516,12 +533,12 @@ class Place(BaseSkill):
             "position_m": float(self.skill_cfg.get("t_eps", 0.005)),
             "orientation_rad": float(self.skill_cfg.get("o_eps", 0.05)),
         }
-        selected_plan = self._native_selected_plan
+        selected_plan = self._selected_plan
         transit_params = {}
         if selected_plan.get("preplace_path") is not None:
             transit_params = {
                 "preplanned_joint_path": selected_plan["preplace_path"],
-                "native_plan_source": selected_plan.get("source"),
+                "plan_source": selected_plan.get("source"),
             }
         commands = [
             MotionPhaseCommand(
@@ -573,7 +590,7 @@ class Place(BaseSkill):
             # keeps its historical per-point command sequence.
             if continuous_descent and selected_plan.get("terminal_path") is not None:
                 terminal_params["preplanned_joint_path"] = selected_plan["terminal_path"]
-                terminal_params["native_plan_source"] = selected_plan.get("source")
+                terminal_params["plan_source"] = selected_plan.get("source")
             commands.append(
                 MotionPhaseCommand(
                     MotionPhase.TERMINAL_PLACE_DESCENT,
@@ -639,91 +656,8 @@ class Place(BaseSkill):
         self.manip_list = commands
         self.place_ee_trans = place_position
 
-    def _legacy_simple_generate_manip_cmds(self):
-        """LEGACY_STAGE_SCAN: original tuple/substring Place implementation."""
-
-        # LEGACY_BEGIN: keyword-based collision world, retained for comparison
-        manip_list = []
-
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        cmd = (p_base_ee_cur, q_base_ee_cur, "update_pose_cost_metric", {"hold_vec_weight": None})
-        manip_list.append(cmd)
-
-        if self.skill_cfg.get("ignore_substring", []):
-            ignore_substring = deepcopy(self.controller.ignore_substring + self.skill_cfg.get("ignore_substring", []))
-            cmd = (
-                p_base_ee_cur,
-                q_base_ee_cur,
-                "update_specific",
-                {"ignore_substring": ignore_substring, "reference_prim_path": self.controller.reference_prim_path},
-            )
-            manip_list.append(cmd)
-
-        if self.skill_cfg.get("pre_place_hold_vec_weight", None) is not None:
-            cmd = (
-                p_base_ee_cur,
-                q_base_ee_cur,
-                "update_pose_cost_metric",
-                {"hold_vec_weight": self.skill_cfg.get("pre_place_hold_vec_weight", None)},
-            )
-            manip_list.append(cmd)
-
-        result = self.sample_gripper_place_traj()
-        if self._pending_target_intent is not None:
-            self.publish_target_intent(self._pending_target_intent)
-
-        cmd = (result[0][0], result[0][1], "close_gripper", {})
-        manip_list.append(cmd)
-
-        if self.skill_cfg.get("post_place_hold_vec_weight", None) is not None:
-            cmd = (
-                result[0][0],
-                result[0][1],
-                "update_pose_cost_metric",
-                {"hold_vec_weight": self.skill_cfg.get("post_place_hold_vec_weight", None)},
-            )
-            manip_list.append(cmd)
-
-        p_base_ee_place, q_base_ee_place = result[1][0], result[1][1]
-        cmd = (p_base_ee_place, q_base_ee_place, "close_gripper", {})
-        manip_list.append(cmd)
-        manip_list.extend([cmd] * self.skill_cfg.get("hesitate_steps", 0))
-
-        cmd = (p_base_ee_place, q_base_ee_place, "open_gripper", {})
-        manip_list.extend([cmd] * self.skill_cfg.get("gripper_change_steps", 10))
-
-        cmd = (p_base_ee_place, q_base_ee_place, "detach_obj", {})
-        manip_list.append(cmd)
-
-        ignore_substring = deepcopy(self.controller.ignore_substring)
-        cmd = (
-            p_base_ee_place,
-            q_base_ee_place,
-            "update_specific",
-            {"ignore_substring": ignore_substring, "reference_prim_path": self.controller.reference_prim_path},
-        )
-        manip_list.append(cmd)
-
-        # Postplace
-        if self.skill_cfg.get("post_place_vector", None):
-            ignore_substring = deepcopy(self.controller.ignore_substring)
-            ignore_substring.append(self.pick_obj.name)
-            cmd = (
-                p_base_ee_place,
-                q_base_ee_place,
-                "update_specific",
-                {"ignore_substring": ignore_substring, "reference_prim_path": self.controller.reference_prim_path},
-            )
-            manip_list.append(cmd)
-            cmd = (result[2][0], result[2][1], "open_gripper", {})
-            manip_list.append(cmd)
-
-        self.manip_list = manip_list
-        self.place_ee_trans = p_base_ee_place
-        # LEGACY_END
-
-    def _native_terminal_geometry(self, path, start_position, goal_position):
-        """Check a native terminal path against the continuous-place contract."""
+    def _terminal_geometry(self, path, start_position, goal_position):
+        """Check a planner terminal path against the continuous-place contract."""
 
         pick_place_cfg = self.task.cfg.get("planning", {}).get("pick_place", {})
         terminal_step = self._resolve_terminal_step(pick_place_cfg)
@@ -738,10 +672,10 @@ class Place(BaseSkill):
                 "valid": False,
                 "path_ratio": None,
                 "max_deviation_m": None,
-                "reason": "missing_native_terminal_path",
+                            "reason": "missing_terminal_path",
             }
         try:
-            path_ratio, path_deviation = self.controller.measure_cartesian_path(
+            path_ratio, path_deviation = self.placement_planning.measure_cartesian_path(
                 path,
                 start_position,
                 goal_position,
@@ -766,15 +700,14 @@ class Place(BaseSkill):
                 "valid": False,
                 "path_ratio": None,
                 "max_deviation_m": None,
-                "reason": f"native_terminal_geometry_error:{exc}",
+                            "reason": f"terminal_geometry_error:{exc}",
             }
 
     def sample_gripper_place_traj(self):
         pick_place_cfg = self.task.cfg.get("planning", {}).get("pick_place", {})
-        # Reset the side-channel on every sampling attempt.  In particular,
-        # never let a path from a previous retry escape when this attempt
-        # falls back to legacy/IK selection or fails native planning.
-        self._native_selected_plan = {
+        # Reset the side-channel on every sampling attempt so a retry cannot
+        # reuse a path from a previous candidate search.
+        self._selected_plan = {
             "candidate_index": None,
             "preplace_path": None,
             "terminal_path": None,
@@ -874,20 +807,6 @@ class Place(BaseSkill):
         else:
             raise NotImplementedError
 
-        physics_schema = (
-            getattr(self.controller, "collision_world_mode", "legacy_stage_scan")
-            == "physics_schema"
-        )
-        if not physics_schema:
-            # LEGACY_BEGIN: substring-based Place world update, retained for
-            # explicit legacy_stage_scan mode only.
-            self.controller.update_specific(
-                ignore_substring=self.controller.ignore_substring
-                + self.skill_cfg.get("ignore_substring", []),
-                reference_prim_path=self.controller.reference_prim_path,
-            )
-            # LEGACY_END
-
         p_base_ee_preplaces, q_base_ee_preplaces = poses_from_tf_matrices(T_base_ee_preplaces)
         p_base_ee_places, q_base_ee_places = poses_from_tf_matrices(T_base_ee_places)
 
@@ -906,70 +825,33 @@ class Place(BaseSkill):
             "candidates_considered": 0,
             "truncated": False,
         }
-        test_mode = resolve_skill_test_mode(
-            self.skill_cfg,
-            getattr(self.controller, "collision_world_mode", "legacy_stage_scan"),
-        )
         continuous_descent = self._use_continuous_terminal_descent(
             self.task.cfg.get("planning", {}).get("pick_place", {})
         )
 
-        # Keep the explicit legacy-stage batch selector intact.  Native v2
-        # path caching is only meaningful in physics-schema mode; changing
-        # this branch would alter the old candidate-priority behavior for
-        # callers that intentionally select legacy_stage_scan.
-        legacy_batch = bool(not physics_schema and self.controller.use_batch)
-        if legacy_batch:
-            if np.array_equal(p_base_ee_preplaces, p_base_ee_places) and np.array_equal(
-                q_base_ee_preplaces, q_base_ee_places
-            ):
-                result = self.controller.test_batch_forward(
-                    p_base_ee_places, q_base_ee_places
-                )
-                selected_index = select_index_by_priority_single(result)
-            else:
-                pre_result = self.controller.test_batch_forward(
-                    p_base_ee_preplaces, q_base_ee_preplaces
-                )
-                result = self.controller.test_batch_forward(
-                    p_base_ee_places, q_base_ee_places
-                )
-                selected_index = select_index_by_priority_dual(pre_result, result)
-
-        batch_pre_forward = (
-            not legacy_batch
-            and physics_schema
-            and test_mode == "forward"
-            and callable(getattr(self.controller, "test_batch_forward", None))
-            and callable(getattr(self.controller, "test_batch_forward_from_paths", None))
-            and getattr(self.controller, "batch_planner", None) is not None
-        )
-        if legacy_batch:
-            pass
-        elif batch_pre_forward:
+        planning = self.placement_planning
+        batch_candidate_planning = bool(planning.batch_capability)
+        if batch_candidate_planning:
             # One native batch query finds all collision-free preplace paths;
             # a second native batch query starts each terminal plan from its
             # corresponding preplace endpoint.
-            batch_attachment_error = None
-            sync_batch_attachment = getattr(
-                self.controller, "sync_native_batch_attachment", None
-            )
-            if callable(sync_batch_attachment):
-                try:
-                    sync_batch_attachment()
-                except Exception as exc:  # Evidence only; single fallback may still work.
-                    batch_attachment_error = repr(exc)
+            # Attachment synchronization is a scene transaction, not a
+            # candidate-planning miss.  Let its explicit rollback/error reach
+            # the Place supervisor; converting it into a single-planner
+            # fallback would hide an unsynchronized native batch world.
+            planning.sync_native_batch_attachment()
             try:
-                if batch_attachment_error is not None:
-                    raise RuntimeError(batch_attachment_error)
-                pre_result = self.controller.test_batch_forward(
+                pre_result = planning.plan_pose_batch(
                     p_base_ee_preplaces,
                     q_base_ee_preplaces,
+                    collision_policy=CollisionPolicy.ATTACHED_CARRY,
+                    active_target=object_name,
+                    support=support_name,
                 )
-                pre_success = self._native_candidate_mask(
+                pre_success = self._candidate_mask(
                     pre_result, T_base_ee_places.shape[0]
                 )
-                pre_paths = extract_result_paths(pre_result)
+                pre_paths = self._result_paths(pre_result)
             except Exception as exc:
                 pre_result = None
                 pre_success = [False] * int(T_base_ee_places.shape[0])
@@ -999,7 +881,7 @@ class Place(BaseSkill):
             ]
             if successful_indices and not continuous_descent:
                 selected_index = successful_indices[0]
-                self._set_native_selected_plan(
+                self._set_selected_plan(
                     selected_index,
                     preplace_path=pre_paths[selected_index],
                     source="native_batch_preplace",
@@ -1011,15 +893,18 @@ class Place(BaseSkill):
                     terminal_indices.append(index)
                     terminal_paths.append(pre_paths[index])
                 try:
-                    terminal_result = self.controller.test_batch_forward_from_paths(
+                    terminal_result = planning.plan_pose_batch(
                         p_base_ee_places[terminal_indices],
                         q_base_ee_places[terminal_indices],
-                        terminal_paths,
+                        start_paths=terminal_paths,
+                        collision_policy=CollisionPolicy.PLACEMENT_DESCENT,
+                        active_target=object_name,
+                        support=support_name,
                     )
-                    terminal_success = self._native_candidate_mask(
+                    terminal_success = self._candidate_mask(
                         terminal_result, len(terminal_indices)
                     )
-                    terminal_result_paths = extract_result_paths(terminal_result)
+                    terminal_result_paths = self._result_paths(terminal_result)
                 except Exception as exc:
                     terminal_success = [False] * len(terminal_indices)
                     terminal_result_paths = []
@@ -1041,12 +926,12 @@ class Place(BaseSkill):
                         else None
                     )
                     diagnostic["terminal_start_position_base"] = (
-                        self._native_path_endpoint_position(
+                        self._path_endpoint_position(
                             terminal_paths[local_index],
                             p_base_ee_preplaces[index],
                         )
                     )
-                    geometry = self._native_terminal_geometry(
+                    geometry = self._terminal_geometry(
                         terminal_path,
                         diagnostic["terminal_start_position_base"],
                         p_base_ee_places[index],
@@ -1054,7 +939,7 @@ class Place(BaseSkill):
                     diagnostic["terminal_geometry"] = geometry
                     if selected_index is None and geometry["valid"]:
                         selected_index = index
-                        self._set_native_selected_plan(
+                        self._set_selected_plan(
                             index,
                             preplace_path=terminal_paths[local_index],
                             terminal_path=terminal_path,
@@ -1075,9 +960,7 @@ class Place(BaseSkill):
             # execution.  Retry only the candidates that still need a
             # decision, preserving the native-v2 path and the strict
             # terminal geometry check.
-            if selected_index is None and callable(
-                getattr(self.controller, "test_single_forward_result", None)
-            ):
+            if selected_index is None:
                 single_fallback_debug["used"] = True
                 try:
                     configured_budget = int(
@@ -1107,12 +990,14 @@ class Place(BaseSkill):
                     single_fallback_debug["pre_queries"] += 1
                     single_fallback_debug["queries"] += 1
                     try:
-                        single_pre_result = self.controller.test_single_forward_result(
-                            p_base_ee_preplaces[index], q_base_ee_preplaces[index]
+                        single_pre_result = planning.plan_pose_result(
+                            p_base_ee_preplaces[index],
+                            q_base_ee_preplaces[index],
+                            collision_policy=CollisionPolicy.ATTACHED_CARRY,
+                            active_target=object_name,
+                            support=support_name,
                         )
-                        single_pre_success = bool(
-                            self._native_candidate_mask(single_pre_result, 1)[0]
-                        )
+                        single_pre_success = bool(self._candidate_mask(single_pre_result, 1)[0])
                     except Exception as exc:  # Evidence only; keep trying candidates.
                         diagnostic["single_pre_result"] = 0
                         diagnostic["single_pre_error"] = repr(exc)
@@ -1121,21 +1006,19 @@ class Place(BaseSkill):
                     diagnostic["single_pre_result"] = int(single_pre_success)
                     if not single_pre_success:
                         continue
-                    single_pre_paths = extract_result_paths(single_pre_result)
+                    single_pre_paths = self._result_paths(single_pre_result)
                     single_pre_path = (
                         single_pre_paths[0] if single_pre_paths else None
                     )
                     if not continuous_descent:
                         selected_index = index
-                        self._set_native_selected_plan(
+                        self._set_selected_plan(
                             index,
                             preplace_path=single_pre_path,
                             source="native_single_preplace_fallback",
                         )
                         break
-                    if single_pre_path is None or not callable(
-                        getattr(self.controller, "test_single_forward_from_path", None)
-                    ):
+                    if single_pre_path is None:
                         diagnostic["single_terminal_result"] = 0
                         diagnostic["single_terminal_geometry"] = {
                             "valid": False,
@@ -1154,14 +1037,15 @@ class Place(BaseSkill):
                     single_fallback_debug["terminal_queries"] += 1
                     single_fallback_debug["queries"] += 1
                     try:
-                        single_terminal_result = self.controller.test_single_forward_from_path(
+                        single_terminal_result = planning.plan_pose_from_path(
                             p_base_ee_places[index],
                             q_base_ee_places[index],
                             single_pre_path,
+                            collision_policy=CollisionPolicy.PLACEMENT_DESCENT,
+                            active_target=object_name,
+                            support=support_name,
                         )
-                        single_terminal_success = bool(
-                            self._native_candidate_mask(single_terminal_result, 1)[0]
-                        )
+                        single_terminal_success = bool(self._candidate_mask(single_terminal_result, 1)[0])
                     except Exception as exc:  # Evidence only; keep trying candidates.
                         diagnostic["single_terminal_result"] = 0
                         diagnostic["single_terminal_error"] = repr(exc)
@@ -1169,20 +1053,20 @@ class Place(BaseSkill):
 
                     diagnostic["single_terminal_result"] = int(single_terminal_success)
                     single_terminal_paths = (
-                        extract_result_paths(single_terminal_result)
+                        self._result_paths(single_terminal_result)
                         if single_terminal_success
                         else []
                     )
-                    geometry = self._native_terminal_geometry(
+                    geometry = self._terminal_geometry(
                         single_terminal_paths[0] if single_terminal_paths else None,
-                        self._native_path_endpoint_position(
+                        self._path_endpoint_position(
                             single_pre_path,
                             p_base_ee_preplaces[index],
                         ),
                         p_base_ee_places[index],
                     )
                     diagnostic["terminal_start_position_base"] = (
-                        self._native_path_endpoint_position(
+                        self._path_endpoint_position(
                             single_pre_path,
                             p_base_ee_preplaces[index],
                         )
@@ -1190,7 +1074,7 @@ class Place(BaseSkill):
                     diagnostic["single_terminal_geometry"] = geometry
                     if geometry["valid"]:
                         selected_index = index
-                        self._set_native_selected_plan(
+                        self._set_selected_plan(
                             index,
                             preplace_path=single_pre_path,
                             terminal_path=(
@@ -1208,35 +1092,21 @@ class Place(BaseSkill):
                     f"plan success candidate={selected_index}"
                 )
         else:
-            # Keep the explicit legacy/IK path unchanged.  Native physics
-            # controllers without a batch planner still validate a terminal
-            # plan from the successful preplace path before selecting it.
+            # Controllers without candidate batching use the same typed
+            # single-planner contract for each candidate.
             for index in range(T_base_ee_places.shape[0]):
                 p_base_ee_pregrasp = p_base_ee_preplaces[index]
                 q_base_ee_pregrasp = q_base_ee_preplaces[index]
                 p_base_ee_grasp = p_base_ee_places[index]
                 q_base_ee_grasp = q_base_ee_places[index]
-                native_pre_result = None
-                if test_mode == "forward":
-                    if physics_schema and callable(
-                        getattr(self.controller, "test_single_forward_result", None)
-                    ):
-                        native_pre_result = self.controller.test_single_forward_result(
-                            p_base_ee_pregrasp, q_base_ee_pregrasp
-                        )
-                        result_pre = int(
-                            bool(result_success_mask(native_pre_result).any().item())
-                        )
-                    else:
-                        result_pre = self.controller.test_single_forward(
-                            p_base_ee_pregrasp, q_base_ee_pregrasp
-                        )
-                elif test_mode == "ik":
-                    result_pre = self.controller.test_single_ik(
-                        p_base_ee_pregrasp, q_base_ee_pregrasp
-                    )
-                else:
-                    raise NotImplementedError
+                planner_result = planning.plan_pose(
+                    p_base_ee_pregrasp,
+                    q_base_ee_pregrasp,
+                    collision_policy=CollisionPolicy.ATTACHED_CARRY,
+                    active_target=object_name,
+                    support=support_name,
+                )
+                result_pre = int(bool(self._candidate_mask(planner_result, 1)[0]))
 
                 candidate_debug = {
                     "index": int(index),
@@ -1247,26 +1117,29 @@ class Place(BaseSkill):
                     "pre_result": int(result_pre),
                 }
 
-                if physics_schema and result_pre == 1:
-                    if continuous_descent and native_pre_result is not None:
-                        pre_paths = extract_result_paths(native_pre_result)
-                        pre_path = pre_paths[0] if pre_paths else None
-                        terminal_result = self.controller.test_single_forward_from_path(
+                if result_pre == 1:
+                    pre_paths = self._result_paths(planner_result)
+                    pre_path = pre_paths[0] if pre_paths else None
+                    if continuous_descent and pre_path is not None:
+                        terminal_result = planning.plan_pose_from_path(
                             p_base_ee_grasp,
                             q_base_ee_grasp,
                             pre_path,
-                        ) if pre_path is not None else None
+                            collision_policy=CollisionPolicy.PLACEMENT_DESCENT,
+                            active_target=object_name,
+                            support=support_name,
+                        )
                         terminal_success = bool(
                             terminal_result is not None
-                            and result_success_mask(terminal_result).any().item()
+                            and self._candidate_mask(terminal_result, 1)[0]
                         )
                         candidate_debug["terminal_result"] = int(terminal_success)
                         terminal_paths = (
-                            extract_result_paths(terminal_result)
+                            self._result_paths(terminal_result)
                             if terminal_success
                             else []
                         )
-                        geometry = self._native_terminal_geometry(
+                        geometry = self._terminal_geometry(
                             terminal_paths[0] if terminal_paths else None,
                             p_base_ee_pregrasp,
                             p_base_ee_grasp,
@@ -1274,25 +1147,20 @@ class Place(BaseSkill):
                         candidate_debug["terminal_geometry"] = geometry
                         if geometry["valid"]:
                             selected_index = index
-                            self._set_native_selected_plan(
+                            self._set_selected_plan(
                                 index,
                                 preplace_path=pre_path,
                                 terminal_path=(
                                     terminal_paths[0] if terminal_paths else None
                                 ),
-                                source="native_single_preplace_terminal",
+                                source="single_preplace_terminal",
                             )
                     else:
                         selected_index = index
-                        pre_paths = (
-                            extract_result_paths(native_pre_result)
-                            if native_pre_result is not None
-                            else []
-                        )
-                        self._set_native_selected_plan(
+                        self._set_selected_plan(
                             index,
-                            preplace_path=pre_paths[0] if pre_paths else None,
-                            source="native_single_preplace",
+                            preplace_path=pre_path,
+                            source="single_preplace",
                         )
                     candidate_diagnostics.append(candidate_debug)
                     if selected_index is not None:
@@ -1300,28 +1168,22 @@ class Place(BaseSkill):
                         break
                     continue
 
-                if self.skill_cfg.get("pre_grasp_offset", 0.1) > 0:
-                    if test_mode == "forward":
-                        result = self.controller.test_single_forward(
-                            p_base_ee_grasp, q_base_ee_grasp
-                        )
-                    elif test_mode == "ik":
-                        result = self.controller.test_single_ik(
-                            p_base_ee_grasp, q_base_ee_grasp
-                        )
-                    else:
-                        raise NotImplementedError
-                    candidate_debug["place_result"] = int(result)
-                    if result == 1 and result_pre == 1:
-                        selected_index = index
-                elif result_pre == 1:
-                    selected_index = index
                 candidate_diagnostics.append(candidate_debug)
+                if selected_index is None:
+                    # A valid pre-place plan is sufficient when continuous
+                    # terminal validation is disabled.
+                    selected_index = index if result_pre else None
+                    if selected_index is not None:
+                        self._set_selected_plan(
+                            index,
+                            preplace_path=pre_path,
+                            source="single_preplace",
+                        )
                 if selected_index is not None:
                     print("place plan success")
                     break
         plan_failure_reason = "NO_COLLISION_FREE_PREPLACE_PLAN"
-        if physics_schema and continuous_descent and any(
+        if continuous_descent and any(
             diagnostic.get("pre_result") == 1
             or diagnostic.get("single_pre_result") == 1
             for diagnostic in candidate_diagnostics
@@ -1329,33 +1191,28 @@ class Place(BaseSkill):
         ):
             plan_failure_reason = "NO_COLLISION_SAFE_CONTINUOUS_PLACE_PLAN"
         if selected_index is None:
-            if physics_schema:
+            native_start_collision = None
+            try:
+                native_start_collision = planning.diagnose_start_collision()
+            except (AttributeError, RuntimeError):
                 native_start_collision = None
-                diagnose_start = getattr(
-                    self.controller, "diagnose_native_start_collision", None
+            if not self._plan_failure_snapshot_written:
+                self._write_plan_failure_snapshot(
+                    candidate_diagnostics=candidate_diagnostics,
+                    native_start_collision=native_start_collision,
+                    single_fallback=single_fallback_debug,
+                    failure_reason=plan_failure_reason,
+                    bbox_min=b_min,
+                    bbox_max=b_max,
+                    ratio_ranges=ratio_ranges,
+                    pre_place_pos_w=pre_place_pos_w,
+                    place_pos_w=place_pos_w,
+                    pre_place_pos_b=pre_place_pos_b,
+                    place_pos_b=place_pos_b,
+                    pre_orientations=q_base_ee_preplaces,
+                    place_orientations=q_base_ee_places,
                 )
-                if callable(diagnose_start):
-                    native_start_collision = diagnose_start()
-                if not self._plan_failure_snapshot_written:
-                    self._write_plan_failure_snapshot(
-                        candidate_diagnostics=candidate_diagnostics,
-                        native_start_collision=native_start_collision,
-                        single_fallback=single_fallback_debug,
-                        failure_reason=plan_failure_reason,
-                        bbox_min=b_min,
-                        bbox_max=b_max,
-                        ratio_ranges=ratio_ranges,
-                        pre_place_pos_w=pre_place_pos_w,
-                        place_pos_w=place_pos_w,
-                        pre_place_pos_b=pre_place_pos_b,
-                        place_pos_b=place_pos_b,
-                        pre_orientations=q_base_ee_preplaces,
-                        place_orientations=q_base_ee_places,
-                    )
-                raise PlacePlanningError(plan_failure_reason)
-            # Preserve legacy-stage behavior: execution will report the final
-            # failed candidate through its normal controller path.
-            selected_index = max(0, T_base_ee_places.shape[0] - 1)
+            raise PlacePlanningError(plan_failure_reason)
         index = selected_index
 
         res_pre = list(pose_from_tf_matrix(T_base_ee_preplaces[index]))
@@ -1510,32 +1367,17 @@ class Place(BaseSkill):
             return valid_rot_mats[indices]
 
     def is_feasible(self, th=5):
-        feasible = self.controller.num_plan_failed <= th
+        feasible = self.skill_runtime.num_plan_failed <= th
         if not feasible and not self._runtime_failure_snapshot_written:
             self._write_runtime_failure_snapshot(th)
         return feasible
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        if isinstance(self.manip_list[0], MotionPhaseCommand):
-            return self.controller.is_phase_command_complete(self.manip_list[0])
-        return self._legacy_is_subtask_done(t_eps=t_eps, o_eps=o_eps)
-
-    def _legacy_is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
-        """LEGACY completion fallback retained only for tuple commands."""
-
-        # LEGACY_BEGIN: pose OR wait-count completion, retained for comparison
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        p_base_ee, q_base_ee, *_ = self.manip_list[0]
-        diff_trans = np.linalg.norm(p_base_ee_cur - p_base_ee)
-        diff_ori = 2 * np.arccos(min(abs(np.dot(q_base_ee_cur, q_base_ee)), 1.0))
-        pose_flag = np.logical_and(
-            diff_trans < t_eps,
-            diff_ori < o_eps,
-        )
-        self.plan_flag = self.controller.num_last_cmd > 10
-        return np.logical_or(pose_flag, self.plan_flag)
-        # LEGACY_END
+        command = self.manip_list[0]
+        if not isinstance(command, MotionPhaseCommand):
+            raise TypeError("Place emits MotionPhaseCommand values only")
+        return bool(self.skill_runtime.execution_status(command).complete)
 
     def is_done(self):
         if len(self.manip_list) == 0:

@@ -52,13 +52,15 @@ def _skill(arm="right"):
         fl_gripper_keypoints=keypoints,
         fr_gripper_keypoints=keypoints,
     )
-    controller = SimpleNamespace(
-        lr_name=arm,
-        robot_base_path=f"/World/task_0/split_aloha/{arm}/arm_base",
+    base_path = f"/World/task_0/split_aloha/{arm}/arm_base"
+    skill_runtime = SimpleNamespace(
+        robot=robot,
+        arm_name=arm,
+        robot_base_path=base_path,
     )
     return SimpleNamespace(
         robot=robot,
-        controller=controller,
+        skill_runtime=skill_runtime,
         _target_visualization_context={
             "robot": "split_aloha",
             "arm": arm,

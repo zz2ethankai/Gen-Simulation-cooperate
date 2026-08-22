@@ -2,6 +2,7 @@ import os
 from copy import deepcopy
 
 import numpy as np
+from core.planning.motion_command import MotionPhase
 from core.skills.base_skill import BaseSkill, register_skill
 from core.utils.asset_path_utils import resolve_asset_path
 from core.utils.usd_geom_utils import compute_bbox
@@ -23,10 +24,24 @@ from scipy.spatial.transform import Slerp
 # pylint: disable=unused-argument
 @register_skill
 class Dexplace(BaseSkill):
-    def __init__(self, robot: Robot, controller: BaseController, task: BaseTask, cfg: DictConfig, *args, **kwargs):
+    def __init__(
+        self,
+        robot: Robot,
+        skill_runtime,
+        task: BaseTask,
+        cfg: DictConfig,
+        *args,
+        placement_planning=None,
+        **kwargs,
+    ):
         super().__init__()
         self.robot = robot
-        self.controller = controller
+        self.bind_skill_runtime(
+            skill_runtime,
+            placement_planning=placement_planning,
+        )
+        self._require_skill_runtime()
+        self.placement_planning = self._require_placement_planning()
         self.task = task
         self.skill_cfg = cfg
         self.name = cfg["name"]
@@ -54,12 +69,12 @@ class Dexplace(BaseSkill):
         else:
             self.place_prim_path = self.place_obj.prim_path
         # Get left or right
-        if "left" in self.controller.robot_file:
-            self.robot_ee_path = self.robot.fl_ee_path
-            self.robot_base_path = self.robot.fl_base_path
-        elif "right" in self.controller.robot_file:
-            self.robot_ee_path = self.robot.fr_ee_path
-            self.robot_base_path = self.robot.fr_base_path
+        if self.placement_planning.lr_name == "left":
+            self.robot_ee_path = self.skill_runtime.robot_ee_path
+            self.robot_base_path = self.skill_runtime.robot_base_path
+        elif self.placement_planning.lr_name == "right":
+            self.robot_ee_path = self.skill_runtime.robot_ee_path
+            self.robot_base_path = self.skill_runtime.robot_base_path
         if kwargs:
             self.draw = kwargs["draw"]
         self.manip_list = []
@@ -88,27 +103,63 @@ class Dexplace(BaseSkill):
             # Having waypoints
             for waypoint in place_traj[:-1]:
                 p_base_ee_mid, q_base_ee_mid = waypoint[:3], waypoint[3:]
-                cmd = (p_base_ee_mid, q_base_ee_mid, "close_gripper", {})
-                manip_list.append(cmd)
+                manip_list.append(
+                    self.pose_command(
+                        MotionPhase.TRANSIT_PREPLACE,
+                        p_base_ee_mid,
+                        q_base_ee_mid,
+                        gripper_action="close_gripper",
+                        active_object=getattr(self.pick_obj, "name", None),
+                        support_object=getattr(self.place_obj, "name", None),
+                    )
+                )
 
         # The last waypoint
         p_base_ee_place, q_base_ee_place = place_traj[-1][:3], place_traj[-1][3:]
-        cmd = (p_base_ee_place, q_base_ee_place, "close_gripper", {})
-        manip_list.append(cmd)
-        cmd = (p_base_ee_place, q_base_ee_place, "open_gripper", {})
-        manip_list.extend([cmd] * self.skill_cfg.get("gripper_change_steps", 10))
+        manip_list.append(
+            self.pose_command(
+                MotionPhase.TERMINAL_PLACE_DESCENT,
+                p_base_ee_place,
+                q_base_ee_place,
+                gripper_action="close_gripper",
+                active_object=getattr(self.pick_obj, "name", None),
+                support_object=getattr(self.place_obj, "name", None),
+                allow_object_support_contact=True,
+            )
+        )
+        manip_list.append(
+            self.pose_command(
+                MotionPhase.GRIPPER_OPEN,
+                p_base_ee_place,
+                q_base_ee_place,
+                gripper_action="open_gripper",
+                active_object=getattr(self.pick_obj, "name", None),
+                support_object=getattr(self.place_obj, "name", None),
+                replan_allowed=False,
+                dwell_steps=int(self.skill_cfg.get("gripper_change_steps", 10)),
+            )
+        )
 
         # Adding a pose place pose to avoid collision when combining place skill and close skill
         T_base_ee_place = tf_matrix_from_pose(p_base_ee_place, q_base_ee_place)
         # Post place
         T_base_ee_postplace = deepcopy(T_base_ee_place)
         # Retreat for a bit along gripper axis
-        if "r5a" in self.controller.robot_file:
+        if "r5a" in self.placement_planning.robot_file:
             T_base_ee_postplace[0:3, 3] = T_base_ee_postplace[0:3, 3] - T_base_ee_postplace[0:3, 0] * post_place_level
         else:
             T_base_ee_postplace[0:3, 3] = T_base_ee_postplace[0:3, 3] - T_base_ee_postplace[0:3, 2] * post_place_level
-        cmd = (*pose_from_tf_matrix(T_base_ee_postplace), "open_gripper", {})
-        manip_list.append(cmd)
+        p_post, q_post = pose_from_tf_matrix(T_base_ee_postplace)
+        manip_list.append(
+            self.pose_command(
+                MotionPhase.TERMINAL_RETREAT,
+                p_post,
+                q_post,
+                gripper_action="open_gripper",
+                active_object=getattr(self.pick_obj, "name", None),
+                support_object=getattr(self.place_obj, "name", None),
+            )
+        )
         self.manip_list = manip_list
 
     def sample_gripper_place_traj(self):
@@ -145,7 +196,12 @@ class Dexplace(BaseSkill):
                 self.draw.draw_points([vertex], [(0, 0, 0, 1)], [7])  # black
 
         # 1. Obtaining ee_ori
-        p_world_ee_init = self.controller.T_world_ee_init[0:3, 3]  # getting initial ee position
+        initial_ee_pose = self.skill_runtime.initial_ee_pose()
+        if isinstance(initial_ee_pose, (tuple, list)) and len(initial_ee_pose) == 2:
+            initial_ee_tf = tf_matrix_from_pose(*initial_ee_pose)
+        else:
+            initial_ee_tf = np.asarray(initial_ee_pose, dtype=float)
+        p_world_ee_init = initial_ee_tf[0:3, 3]  # getting initial ee position
         container_position = np.array(self._get_object_world_tf(self.place_obj)[:3, 3], copy=True)
         container_position[1] += 0.0
         gripper_axis = container_position - p_world_ee_init  # gripper_axis is aligned with the container direction
@@ -212,20 +268,11 @@ class Dexplace(BaseSkill):
         return waypoint
 
     def is_feasible(self, th=10):
-        return self.controller.num_plan_failed <= th
+        return self.skill_runtime.num_plan_failed <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        p_base_ee, q_base_ee, *_ = self.manip_list[0]
-        diff_trans = np.linalg.norm(p_base_ee_cur - p_base_ee)
-        diff_ori = 2 * np.arccos(min(abs(np.dot(q_base_ee_cur, q_base_ee)), 1.0))
-        pose_flag = np.logical_and(
-            diff_trans < t_eps,
-            diff_ori < o_eps,
-        )
-        self.plan_flag = self.controller.num_last_cmd > 10
-        return np.logical_or(pose_flag, self.plan_flag)
+        return bool(self.skill_runtime.execution_status(self.manip_list[0]).complete)
 
     def is_done(self):
         if len(self.manip_list) == 0:
