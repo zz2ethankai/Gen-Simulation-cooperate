@@ -41,3 +41,10 @@
 - 根因收敛：当前 v2 `BatchMotionPlanner` 的 `success_ratio=1.0` 表示必须让整个候选 batch 全部成功，而 Pick/Place 的语义只需要一个可行候选；同时 batch graph seed 被错误地跟随 single-query 的默认关闭配置，历史 batch 路径使用 graph-assisted planning。
 - 修复：controller batch pose query 改为 `success_ratio=1/CUROBO_BATCH_SIZE`，并默认开启 batch graph seed；单 query 的 `enable_graph` 配置保持不变。Physics Schema、直接 `dummy_forward` 和 Pick/Place 候选职责不变。
 - 静态检查与 checkpoint：本阶段修改后执行 py_compile、`git diff --check`，再提交独立 checkpoint；随后运行 r6 严格闭环。
+
+## Stage 5 — expose the native batch failure boundary
+
+- r6 运行：`output/docker_runtime/grasp-plan-removal-20260823-r6/docker_runtime.isaac.log`。
+- 结果：仍在 Place 的 `place_preplace_batch` 失败；CuRobo graph 输出 `Start or End state in collision`。原有 Place 快照只记录末端误差和 success mask，不能说明失败来自起点碰撞、IK feasibility 还是 TrajOpt feasibility。
+- 修复：将 native result 的 `feasible/converged/valid_query/solve_time` 等摘要保留在 typed batch metrics；batch 全失败时由 controller runtime 记录一次 `[CuRoboBatchDebug]`，并调用已有 native 起点碰撞审计。诊断不改变 Physics Schema、障碍开关、候选生成或执行逻辑。
+- 目标：用 r7 日志定位真正的碰撞源，再实施最小 controller 修复；本阶段先独立 checkpoint，再做严格闭环。

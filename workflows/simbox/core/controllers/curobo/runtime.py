@@ -156,6 +156,7 @@ class RobotPort:
     collision_scene_manager: Any = None
     collision_world_mode: str = "physics_schema"
     obstacle_pose: Callable[[str], Any] | None = None
+    native_start_collision_diagnostic: Callable[[], Any] | None = None
     interpolation_dt: float = 0.01
     ik_solver: Any = None
     kin_model: Any = None
@@ -589,7 +590,7 @@ class MotionPlannerRuntime:
             default_profile=PlanningProfile.TRANSIT,
             attachment_runtime=getattr(self, "batch_attachment_runtime", None),
         )
-        return self.planner_runtime.plan_pose_batch(
+        result = self.planner_runtime.plan_pose_batch(
             BatchPosePlanRequest(
                 goals=goals,
                 start_state=start_state,
@@ -598,6 +599,54 @@ class MotionPlannerRuntime:
                 **common,
             )
         )
+        if not result.is_success:
+            self._log_batch_failure(result, phase_id=common.get("phase_id"))
+        return result
+
+    def _log_batch_failure(self, result: PlanResult, *, phase_id: str | None) -> None:
+        """Emit compact native diagnostics only after a batch is empty.
+
+        Place/Pick candidate code should only consume the typed success mask.
+        Keeping the failure audit here avoids duplicating native-result
+        inspection in each skill and makes a zero-candidate batch actionable
+        without changing the Physics Schema collision policy.
+        """
+
+        metrics = getattr(result, "metrics", {}) or {}
+        feasible = metrics.get("feasible")
+        converged = metrics.get("converged")
+        debug = metrics.get("debug_info", metrics.get("debug_info_keys"))
+
+        def count_true(value):
+            if isinstance(value, (list, tuple)):
+                return sum(count_true(item) for item in value)
+            return int(bool(value))
+
+        LOGGER.warning(
+            "[CuRoboBatchDebug] robot=%s arm=%s phase=%s status=%s "
+            "success=%d/%d feasible=%s converged=%s debug=%s",
+            self.robot_port.name,
+            self.robot_port.lr_name,
+            phase_id,
+            getattr(result, "status", None),
+            int(getattr(result, "success_count", 0)),
+            len(getattr(result, "success_mask", ()) or ()),
+            count_true(feasible) if feasible is not None else None,
+            count_true(converged) if converged is not None else None,
+            debug,
+        )
+        diagnostic = self.robot_port.native_start_collision_diagnostic
+        if callable(diagnostic):
+            try:
+                diagnostic()
+            except Exception as exc:  # diagnostics must not mask planning failure
+                LOGGER.warning(
+                    "[CuRoboBatchDebug] native start collision audit unavailable "
+                    "robot=%s arm=%s error=%r",
+                    self.robot_port.name,
+                    self.robot_port.lr_name,
+                    exc,
+                )
 
     def plan_cspace(
         self,

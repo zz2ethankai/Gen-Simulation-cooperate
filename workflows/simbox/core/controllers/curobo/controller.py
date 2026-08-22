@@ -198,6 +198,13 @@ class TemplateController(_TypedIsaacController):
         planning_world = self._setup._load_world()
         self._attachment.world_cfg = self._setup.world_cfg
         self.runtime = self._build_runtime(planning_world)
+        # A zero-candidate batch is a controller failure, not a skill-level
+        # planning concern.  Let the runtime reuse the native single-planner
+        # collision audit on that failure without exposing native objects to
+        # Pick/Place.
+        self.runtime.robot_port.native_start_collision_diagnostic = (
+            self._state_planning.diagnose_native_start_collision
+        )
         for component in (self._setup, self._state_planning, self._planning_queries,
                           self._phases, self._execution, self._attachment):
             component.runtime = self.runtime

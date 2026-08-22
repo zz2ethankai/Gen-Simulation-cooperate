@@ -428,10 +428,26 @@ def _native_result_metrics(raw: Any, success_mask: tuple[bool, ...]) -> Mapping[
         "score",
         "scores",
         "interpolated_last_tstep",
+        # Keep the native feasibility split visible when a candidate batch
+        # fails.  Pose error alone is not enough to tell an IK/TrajOpt
+        # collision failure from a goal-convergence failure.
+        "feasible",
+        "converged",
+        "goalset_index",
+        "solve_time",
+        "total_time",
+        "valid_query",
     ):
         value = _native_result_field(raw, key)
         if value is not None and key not in values:
             values[key] = value
+    debug_info = _native_result_field(raw, "debug_info")
+    if isinstance(debug_info, str) and debug_info:
+        values.setdefault("debug_info", debug_info)
+    elif isinstance(debug_info, Mapping):
+        # Solver traces can contain CUDA tensors and very large histories.
+        # Preserve only their top-level names at this boundary.
+        values.setdefault("debug_info_keys", tuple(str(key) for key in debug_info))
     values["success_count"] = int(sum(success_mask))
     values["candidate_count"] = len(success_mask)
     return _plain_mapping(values)
