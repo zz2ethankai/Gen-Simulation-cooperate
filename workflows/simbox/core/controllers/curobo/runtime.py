@@ -662,17 +662,16 @@ class MotionPlannerRuntime:
         )
         trajectories = [None] * count
         success = [False] * count
-        attempts = []
         batch_position = getattr(start_state, "position", None)
         if batch_position is None:
             return batch_result
         if len(getattr(batch_position, "shape", ())) == 1:
             batch_position = batch_position.unsqueeze(0)
+        from curobo.types import JointState
 
+        selected = None
         for index in indices:
             try:
-                from curobo.types import JointState
-
                 single_state = JointState.from_position(
                     batch_position[index : index + 1],
                     joint_names=self.planner_names,
@@ -690,16 +689,10 @@ class MotionPlannerRuntime:
                         **single_common,
                     )
                 )
-                attempts.append(
-                    {
-                        "candidate": int(index),
-                        "success": bool(single_result.is_success),
-                        "total_time": single_result.metrics.get("total_time"),
-                    }
-                )
                 if single_result.is_success and single_result.trajectory is not None:
                     success[index] = True
                     trajectories[index] = single_result.trajectory
+                    selected = index
                     LOGGER.info(
                         "[CuRoboBatchFallback] robot=%s arm=%s phase=%s "
                         "candidate=%d success total_time=%s",
@@ -711,13 +704,6 @@ class MotionPlannerRuntime:
                     )
                     break
             except Exception as exc:
-                attempts.append(
-                    {
-                        "candidate": int(index),
-                        "success": False,
-                        "error": f"{type(exc).__name__}: {exc}",
-                    }
-                )
                 LOGGER.warning(
                     "[CuRoboBatchFallback] robot=%s arm=%s phase=%s "
                     "candidate=%d error=%r",
@@ -728,20 +714,16 @@ class MotionPlannerRuntime:
                     exc,
                 )
 
+        if selected is None:
+            return batch_result
         metrics = dict(batch_result.metrics)
-        metrics["single_fallback"] = {
-            "candidates": attempts,
-            "success_count": int(sum(success)),
-        }
+        metrics["single_fallback_candidate"] = int(selected)
         return BatchPlanResult(
             success=success,
             trajectories=trajectories,
-            status="ok" if any(success) else batch_result.status,
-            error=None if any(success) else batch_result.error,
-            source="single_fallback" if any(success) else batch_result.source,
-            selected_candidate_index=next(
-                (index for index, ok in enumerate(success) if ok), None
-            ),
+            status="ok",
+            source="single_fallback",
+            selected_candidate_index=selected,
             metrics=metrics,
             phase_id=batch_result.phase_id,
             profile=batch_result.profile,
