@@ -20,6 +20,7 @@ from core.controllers.curobo.phase_execution import PhaseExecutor
 from core.controllers.curobo.phase_execution import ExecutionStatus
 from core.planning.domain_types import (
     AttachmentSpec,
+    BatchPlanResult,
     BatchPosePlanRequest,
     CollisionOptions,
     CollisionPolicy,
@@ -274,6 +275,16 @@ class MotionPlannerRuntime:
         except (TypeError, ValueError):
             batch_attempts = min(max_attempts, 4)
         try:
+            batch_single_fallback = max(
+                0,
+                min(
+                    CUROBO_BATCH_SIZE,
+                    int(pick_cfg.get("batch_single_fallback_candidates", 4)),
+                ),
+            )
+        except (TypeError, ValueError):
+            batch_single_fallback = 4
+        try:
             interpolation_dt = float(pick_cfg.get("interpolation_dt", 0.01))
             if not np.isfinite(interpolation_dt) or interpolation_dt <= 0:
                 raise ValueError
@@ -285,6 +296,7 @@ class MotionPlannerRuntime:
             warmup_iterations = 1
         self.max_plan_attempts = max_attempts
         self.batch_max_attempts = batch_attempts
+        self.batch_single_fallback_candidates = batch_single_fallback
         self.graph_enabled = graph_enabled
         self.single_graph_attempt = max(0, min(1, max_attempts - 1)) if graph_enabled else max_attempts
         self.batch_graph_enabled = batch_graph_enabled
@@ -608,9 +620,135 @@ class MotionPlannerRuntime:
                 **common,
             )
         )
+        if not result.is_success and self.batch_single_fallback_candidates:
+            result = self._single_fallback_for_batch(
+                result,
+                positions,
+                orientations,
+                start_state,
+                common,
+            )
         if not result.is_success:
             self._log_batch_failure(result, phase_id=common.get("phase_id"))
         return result
+
+    def _single_fallback_for_batch(
+        self,
+        batch_result: BatchPlanResult,
+        positions,
+        orientations,
+        start_state,
+        common: Mapping[str, Any],
+    ) -> BatchPlanResult:
+        """Retry a few failed candidates through the shared single planner.
+
+        Batch CuRobo is useful for candidate parallelism, but its result is
+        not a proof that every candidate can be solved by the normal single
+        planner.  Keep the fallback here, beside the native planning calls,
+        so skills only receive the same candidate mask/path contract.
+        """
+
+        count = len(positions)
+        limit = min(int(self.batch_single_fallback_candidates), count)
+        indices = tuple(range(limit))
+        LOGGER.warning(
+            "[CuRoboBatchFallback] robot=%s arm=%s phase=%s batch=0/%d "
+            "trying_single_candidates=%s",
+            self.robot_port.name,
+            self.robot_port.lr_name,
+            common.get("phase_id"),
+            count,
+            indices,
+        )
+        trajectories = [None] * count
+        success = [False] * count
+        attempts = []
+        batch_position = getattr(start_state, "position", None)
+        if batch_position is None:
+            return batch_result
+        if len(getattr(batch_position, "shape", ())) == 1:
+            batch_position = batch_position.unsqueeze(0)
+
+        for index in indices:
+            try:
+                from curobo.types import JointState
+
+                single_state = JointState.from_position(
+                    batch_position[index : index + 1],
+                    joint_names=self.planner_names,
+                )
+                metadata = dict(common.get("metadata", {}))
+                metadata["batch_fallback_candidate"] = int(index)
+                single_common = dict(common)
+                single_common["phase_id"] = f"{common.get('phase_id', 'phase')}.single_fallback"
+                single_common["metadata"] = metadata
+                single_result = self.planner_runtime.plan_pose(
+                    PosePlanRequest(
+                        goal=self._goal_tool_pose(positions[index], orientations[index]),
+                        start_state=single_state,
+                        kwargs=self._single_pose_native_kwargs(),
+                        **single_common,
+                    )
+                )
+                attempts.append(
+                    {
+                        "candidate": int(index),
+                        "success": bool(single_result.is_success),
+                        "total_time": single_result.metrics.get("total_time"),
+                    }
+                )
+                if single_result.is_success and single_result.trajectory is not None:
+                    success[index] = True
+                    trajectories[index] = single_result.trajectory
+                    LOGGER.info(
+                        "[CuRoboBatchFallback] robot=%s arm=%s phase=%s "
+                        "candidate=%d success total_time=%s",
+                        self.robot_port.name,
+                        self.robot_port.lr_name,
+                        common.get("phase_id"),
+                        index,
+                        single_result.metrics.get("total_time"),
+                    )
+                    break
+            except Exception as exc:
+                attempts.append(
+                    {
+                        "candidate": int(index),
+                        "success": False,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+                LOGGER.warning(
+                    "[CuRoboBatchFallback] robot=%s arm=%s phase=%s "
+                    "candidate=%d error=%r",
+                    self.robot_port.name,
+                    self.robot_port.lr_name,
+                    common.get("phase_id"),
+                    index,
+                    exc,
+                )
+
+        metrics = dict(batch_result.metrics)
+        metrics["single_fallback"] = {
+            "candidates": attempts,
+            "success_count": int(sum(success)),
+        }
+        return BatchPlanResult(
+            success=success,
+            trajectories=trajectories,
+            status="ok" if any(success) else batch_result.status,
+            error=None if any(success) else batch_result.error,
+            source="single_fallback" if any(success) else batch_result.source,
+            selected_candidate_index=next(
+                (index for index, ok in enumerate(success) if ok), None
+            ),
+            metrics=metrics,
+            phase_id=batch_result.phase_id,
+            profile=batch_result.profile,
+            collision_policy=batch_result.collision_policy,
+            world_revision=batch_result.world_revision,
+            candidate_indices=tuple(range(count)),
+        )
 
     def _log_batch_failure(self, result: PlanResult, *, phase_id: str | None) -> None:
         """Emit compact native diagnostics only after a batch is empty.

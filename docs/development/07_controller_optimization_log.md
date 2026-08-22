@@ -76,3 +76,10 @@
 - 约束：不改变碰撞世界、attachment、batch graph 或 `dummy_forward`；任务 YAML 无修改。
 - 静态检查：本阶段修改后执行 py_compile 与 `git diff --check`。
 - checkpoint：完成静态检查后提交本阶段独立 checkpoint，再运行 r12，确认先能稳定通过 Pick 并重新取得 Place 的约束诊断。
+
+## Stage 9 — keep batch search parallel, recover through the single controller path
+
+- r12 运行：Pick 已通过；Place 的 `place_preplace_batch` 仍为 `0/20`。快照显示 20 个候选的末端位置/姿态误差均接近 `1e-7`，native 起点碰撞审计为零，失败落在整段 Physics Schema 约束判定。诊断开关已经生效，但旧 reshape 把 `[candidate, seed, horizon, dof]` 展平成了 `[candidate*seed, horizon, dof]`，报告 `240 vs 20`，没有得到约束名称。
+- 修复：诊断现在只在失败 batch 且显式设置 `CUROBO_BATCH_DIAGNOSTICS=1` 时运行，并只取每个候选的首选 seed 重新计算 metrics；默认运行不增加 GPU rollout。controller 的 batch pose query 在 `0/N` 时最多把 4 个候选交给已有 single planner 重规划，成功后仍返回原有 `BatchPlanResult` 的候选 mask/path，不把规划逻辑重新放回 Pick/Place。
+- Physics Schema、attachment、碰撞策略和 `dummy_forward` 均保持不变；单候选 fallback 使用相同的 world revision、collision policy 和 attached geometry。
+- 静态检查：py_compile 与 `git diff --check` 通过；下一步运行 r13 官方闭环，记录 fallback 命中率、总耗时和严格成功 marker。

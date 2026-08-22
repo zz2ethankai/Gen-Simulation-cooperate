@@ -424,7 +424,13 @@ def _native_constraint_stats(value: Any) -> Mapping[str, Any]:
         return {"error": f"{type(exc).__name__}: {exc}"}
 
 
-def _native_recomputed_constraint_metrics(raw: Any, native: Any) -> Mapping[str, Any]:
+def _native_recomputed_constraint_metrics(
+    raw: Any,
+    native: Any,
+    *,
+    batch: bool,
+    failed: bool,
+) -> Mapping[str, Any]:
     """Expose native constraint reasons only for an opted-in failed query.
 
     CuRobo V2 clears ``metrics`` when it reduces a result to the requested
@@ -434,7 +440,7 @@ def _native_recomputed_constraint_metrics(raw: Any, native: Any) -> Mapping[str,
     result boundary.  It is opt-in because it performs an extra GPU rollout.
     """
 
-    if os.environ.get("CUROBO_BATCH_DIAGNOSTICS") != "1":
+    if os.environ.get("CUROBO_BATCH_DIAGNOSTICS") != "1" or not batch or not failed:
         return {}
     if native is None or getattr(raw, "success", None) is None:
         return {}
@@ -444,11 +450,17 @@ def _native_recomputed_constraint_metrics(raw: Any, native: Any) -> Mapping[str,
     compute = getattr(rollout, "compute_metrics_from_action", None)
     if not callable(compute) or solution is None:
         return {"native_constraint_diagnostic": "metrics rollout unavailable"}
-    shape = tuple(getattr(solution, "shape", ()))
-    if len(shape) < 3:
+    shape = tuple(int(size) for size in getattr(solution, "shape", ()))
+    if len(shape) == 4:
+        # CuRobo V2 returns [candidate, seed, horizon, dof].  The metrics
+        # rollout is batched by candidate, so retaining the seed axis here
+        # incorrectly turns B candidates into B*S metric problems.
+        action = solution[:, 0, :, :]
+    elif len(shape) == 3:
+        action = solution
+    else:
         return {"native_constraint_diagnostic": f"unexpected solution shape={shape}"}
     try:
-        action = solution.reshape(-1, int(shape[-2]), int(shape[-1]))
         metrics = compute(action)
         feasible = getattr(metrics, "feasible", None)
         summary: dict[str, Any] = {
@@ -485,6 +497,7 @@ def _native_result_metrics(
     success_mask: tuple[bool, ...],
     *,
     native: Any = None,
+    batch: bool = False,
 ) -> Mapping[str, Any]:
     """Copy ranking/error diagnostics needed by downstream candidate logic."""
 
@@ -537,7 +550,14 @@ def _native_result_metrics(
         # Solver traces can contain CUDA tensors and very large histories.
         # Preserve only their top-level names at this boundary.
         values.setdefault("debug_info_keys", tuple(str(key) for key in debug_info))
-    values.update(_native_recomputed_constraint_metrics(raw, native))
+    values.update(
+        _native_recomputed_constraint_metrics(
+            raw,
+            native,
+            batch=batch,
+            failed=not any(success_mask),
+        )
+    )
     values["success_count"] = int(sum(success_mask))
     values["candidate_count"] = len(success_mask)
     return _plain_mapping(values)
@@ -1177,7 +1197,7 @@ class PlannerRuntime:
         joint_names = _native_joint_names(native_path, request)
         request_metadata = getattr(request, "metadata", {}) or {}
         native_metrics = dict(
-            _native_result_metrics(raw, success_mask, native=native)
+            _native_result_metrics(raw, success_mask, native=native, batch=batch)
         )
         if isinstance(request_metadata, Mapping):
             # Request metadata can carry ranking context (for example the
