@@ -58,3 +58,12 @@
 - 修复：`batch_enable_graph` 默认改为 `false`。批量候选仍保留 Physics Schema、batch IK、12 个 TrajOpt seeds 和 `success_ratio=1/20`；只有任务显式设置 `planning.pick_place.batch_enable_graph: true` 时才启用 graph seed。这样去掉 v2 graph 的全批次失败传播，也减少不必要的 graph 构建/检查开销。
 - 约束：单目标规划的 `enable_graph` 语义不变；`dummy_forward` 和 Pick/Place 候选职责不变。
 - checkpoint：本阶段代码验证通过后提交独立 checkpoint，再进行 r9 官方闭环。
+
+## Stage 7 — expose the actual failed batch constraints
+
+- r9 运行：`output/docker_runtime/grasp-plan-removal-20260823-r9/docker_runtime.isaac.log`。
+- 证据：关闭 batch graph 后仍为 `0/20`，但没有再次出现 graph 的 `Start or End state in collision`；live native 起点审计仍为零。当前 v2 在返回 top-k seed 时清空 `metrics`，所以已有快照只能看到末端误差，不能看到真正拒绝轨迹的碰撞或关节约束。
+- 修复：在 `PlannerRuntime` 增加失败诊断开关 `CUROBO_BATCH_DIAGNOSTICS=1`。只在调用方显式开启且 batch 全失败时，使用 native solver 仍持有的 metrics rollout 对返回优化动作做一次只读摘要，记录约束名称、最大值、正值数量和 feasibility；默认关闭，不改变规划结果和正常运行速度。
+- Physics Schema、batch 规划、`dummy_forward` 以及 Pick/Place 的候选职责均未改变。
+- 静态检查：本阶段修改后执行 py_compile 与 `git diff --check`。
+- checkpoint：完成静态检查后提交本阶段独立 checkpoint，再以诊断开关运行 r10 官方闭环。

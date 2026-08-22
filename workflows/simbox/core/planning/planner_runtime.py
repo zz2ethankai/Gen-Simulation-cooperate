@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -396,7 +397,95 @@ def _native_batch_paths(
     return tuple(paths)
 
 
-def _native_result_metrics(raw: Any, success_mask: tuple[bool, ...]) -> Mapping[str, Any]:
+def _native_constraint_stats(value: Any) -> Mapping[str, Any]:
+    """Summarize one native constraint tensor without copying its history."""
+
+    tensor = value
+    detach = getattr(tensor, "detach", None)
+    if callable(detach):
+        tensor = detach()
+    reshape = getattr(tensor, "reshape", None)
+    if not callable(reshape):
+        return {"value": _plain_value(value)}
+    try:
+        flat = tensor.reshape(-1)
+        count = int(flat.numel()) if hasattr(flat, "numel") else None
+        maximum = float(flat.max().item())
+        minimum = float(flat.min().item())
+        positive = int((flat > 0.0).sum().item())
+        return {
+            "shape": tuple(int(size) for size in tensor.shape),
+            "min": minimum,
+            "max": maximum,
+            "positive_count": positive,
+            "count": count,
+        }
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def _native_recomputed_constraint_metrics(raw: Any, native: Any) -> Mapping[str, Any]:
+    """Expose native constraint reasons only for an opted-in failed query.
+
+    CuRobo V2 clears ``metrics`` when it reduces a result to the requested
+    return seed.  The owning solver still has the metrics rollout, so a
+    failure-only diagnostic can recompute the returned optimized actions and
+    report constraint names without leaking a native object through the typed
+    result boundary.  It is opt-in because it performs an extra GPU rollout.
+    """
+
+    if os.environ.get("CUROBO_BATCH_DIAGNOSTICS") != "1":
+        return {}
+    if native is None or getattr(raw, "success", None) is None:
+        return {}
+    solver = getattr(native, "trajopt_solver", None)
+    rollout = getattr(solver, "metrics_rollout", None)
+    solution = getattr(raw, "solution", None)
+    compute = getattr(rollout, "compute_metrics_from_action", None)
+    if not callable(compute) or solution is None:
+        return {"native_constraint_diagnostic": "metrics rollout unavailable"}
+    shape = tuple(getattr(solution, "shape", ()))
+    if len(shape) < 3:
+        return {"native_constraint_diagnostic": f"unexpected solution shape={shape}"}
+    try:
+        action = solution.reshape(-1, int(shape[-2]), int(shape[-1]))
+        metrics = compute(action)
+        feasible = getattr(metrics, "feasible", None)
+        summary: dict[str, Any] = {
+            "native_constraint_diagnostic": "metrics_rollout",
+            "native_metrics_feasible": _native_constraint_stats(feasible)
+            if feasible is not None
+            else None,
+            "native_constraints": {},
+            "native_hybrid_constraints": {},
+        }
+        costs = getattr(metrics, "costs_and_constraints", None)
+        for field, output_key in (
+            ("constraints", "native_constraints"),
+            ("hybrid_costs_constraints", "native_hybrid_constraints"),
+        ):
+            collection = getattr(costs, field, None)
+            names = list(getattr(collection, "names", ()) or ())
+            values = list(getattr(collection, "values", ()) or ())
+            summary[output_key] = {
+                str(name): _native_constraint_stats(value)
+                for name, value in zip(names, values)
+            }
+        return summary
+    except Exception as exc:
+        return {
+            "native_constraint_diagnostic": (
+                f"failed: {type(exc).__name__}: {exc}"
+            )
+        }
+
+
+def _native_result_metrics(
+    raw: Any,
+    success_mask: tuple[bool, ...],
+    *,
+    native: Any = None,
+) -> Mapping[str, Any]:
     """Copy ranking/error diagnostics needed by downstream candidate logic."""
 
     metrics = _native_result_field(raw, "metrics", "diagnostics", "metadata", default={})
@@ -448,6 +537,7 @@ def _native_result_metrics(raw: Any, success_mask: tuple[bool, ...]) -> Mapping[
         # Solver traces can contain CUDA tensors and very large histories.
         # Preserve only their top-level names at this boundary.
         values.setdefault("debug_info_keys", tuple(str(key) for key in debug_info))
+    values.update(_native_recomputed_constraint_metrics(raw, native))
     values["success_count"] = int(sum(success_mask))
     values["candidate_count"] = len(success_mask)
     return _plain_mapping(values)
@@ -1023,6 +1113,7 @@ class PlannerRuntime:
         revision: int,
         request: Any = None,
         batch: bool = False,
+        native: Any = None,
     ) -> PlanResult:
         """Normalize a native result without exposing it to callers.
 
@@ -1085,7 +1176,9 @@ class PlannerRuntime:
         native_path = _native_result_path(raw)
         joint_names = _native_joint_names(native_path, request)
         request_metadata = getattr(request, "metadata", {}) or {}
-        native_metrics = dict(_native_result_metrics(raw, success_mask))
+        native_metrics = dict(
+            _native_result_metrics(raw, success_mask, native=native)
+        )
         if isinstance(request_metadata, Mapping):
             # Request metadata can carry ranking context (for example the
             # expected pose-error labels); copy only values into the metrics
@@ -1183,6 +1276,7 @@ class PlannerRuntime:
                 revision=self._scene_revision,
                 request=request,
                 batch=batch,
+                native=native,
             )
             self._planning_count += 1
             self._status = PlannerStatus.READY
