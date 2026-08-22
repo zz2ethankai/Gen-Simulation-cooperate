@@ -1,8 +1,9 @@
 """Simulator-independent planning configuration contracts.
 
-The public SimBox planner is deliberately small: all manipulator planning is
-backed by the Physics-schema world and all non-operation Skills are a
-passthrough.  This module is kept free of Isaac/CuRobo imports so task
+The public SimBox planner is deliberately small: structured manipulator
+planning is backed by the Physics-schema world, while a Skill may explicitly
+choose the controller's execution-only ``dummy_forward`` interface for direct
+joint actions.  This module is kept free of Isaac/CuRobo imports so task
 compilation and configuration tests can run on an ordinary Python install.
 
 Older task files are still common in downloaded datasets.  Their planning
@@ -21,6 +22,9 @@ from typing import Any
 
 PHYSICS_SCHEMA_MODE = "physics_schema"
 PASSTHROUGH_MODE = "passthrough"
+# Execution-only Skill mode.  This is deliberately not a collision-world
+# selector: direct commands do not create or activate a planner world.
+DIRECT_EXECUTION_MODE = "direct_execution"
 
 PHYSICS_SCHEMA_SKILLS = {"pick", "place"}
 VALIDATION_ONLY_SKILLS = {"pick_plan_probe"}
@@ -230,7 +234,12 @@ def _canonical_task_mode(requested_mode: str | None, *, config_path: Any | None 
 def resolve_skill_collision_world_mode(
     skill_name: str, requested_mode: str | None = None, *, config_path: Any | None = None
 ) -> str:
-    """Return the only planner world or passthrough for a non-operation Skill."""
+    """Resolve planner-world metadata; direct commands bypass it at execution.
+
+    ``dummy_forward`` is a command-level execution interface rather than a
+    skill-name allowlist or a second collision-world mode.  A Skill can use it
+    without changing this resolver.
+    """
 
     if is_passthrough_skill(skill_name):
         return PASSTHROUGH_MODE

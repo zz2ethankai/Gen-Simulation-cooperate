@@ -14,13 +14,13 @@ SIMBOX_ROOT = ROOT / "workflows" / "simbox"
 if str(SIMBOX_ROOT) not in sys.path:
     sys.path.insert(0, str(SIMBOX_ROOT))
 
-from core.controllers.controller_execution import ControllerExecution  # noqa: E402
-from core.controllers.controller_component import ComponentPort  # noqa: E402
-from core.controllers.controller_planning_queries import (  # noqa: E402
+from core.controllers.curobo.execution import ControllerExecution  # noqa: E402
+from core.controllers.curobo.components import ComponentPort  # noqa: E402
+from core.controllers.curobo.planning_queries import (  # noqa: E402
     ControllerPlanningQueries,
 )
 from core.planning.domain_types import JointTrajectory  # noqa: E402
-import core.controllers.controller_execution as execution_module  # noqa: E402
+import core.controllers.curobo.execution as execution_module  # noqa: E402
 
 
 class _NamedPath:

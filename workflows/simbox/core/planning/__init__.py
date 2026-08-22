@@ -125,16 +125,4 @@ def __getattr__(name):
         from .motion_command import MotionPhase, MotionPhaseCommand
 
         return {"MotionPhase": MotionPhase, "MotionPhaseCommand": MotionPhaseCommand}[name]
-    if name in {"GraspPlanEvaluation", "GraspPlanEvaluator", "GraspPlanResult"}:
-        from .grasp_plan_evaluator import (
-            GraspPlanEvaluation,
-            GraspPlanEvaluator,
-            GraspPlanResult,
-        )
-
-        return {
-            "GraspPlanEvaluation": GraspPlanEvaluation,
-            "GraspPlanEvaluator": GraspPlanEvaluator,
-            "GraspPlanResult": GraspPlanResult,
-        }[name]
     raise AttributeError(name)

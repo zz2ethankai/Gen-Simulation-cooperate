@@ -8,7 +8,7 @@ from typing import List
 import numpy as np
 import torch
 from core.planning.domain_types import AttachmentSpec
-from core.controllers.controller_component import ComponentState
+from core.controllers.curobo.components import ComponentState
 
 LOGGER = logging.getLogger("de_logger")
 

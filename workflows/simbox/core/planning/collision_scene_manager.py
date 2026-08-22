@@ -1774,8 +1774,63 @@ class CollisionSceneManager:
         self.begin_placement_contact(entity_name, robot, arm)
         support = self.records[support_entity]
         owner = self._controller_key(robot, arm)
-        self._set_enabled(owner, support.collision_prim_paths, False)
-        self._temporary_disabled[owner].update(support.collision_prim_paths)
+        # Only remember paths changed by this placement transaction.  A
+        # support can also be disabled by a persistent planning exclusion;
+        # that state must not be re-enabled by candidate cleanup.
+        paths = tuple(
+            path
+            for path in support.collision_prim_paths
+            if self.controller_enabled[owner].get(path, True)
+        )
+        if paths:
+            self._set_enabled(owner, paths, False)
+            self._temporary_disabled[owner].update(paths)
+
+    def restore_placement_support(
+        self,
+        entity_name: str,
+        support_entity: str,
+        robot: str,
+        arm: str,
+    ) -> None:
+        """Restore support colliders after a candidate place query.
+
+        Candidate validation may temporarily disable the support in the
+        controller's planning world while the carried object enters its
+        placement volume.  This cleanup restores only paths changed by this
+        transaction and leaves the carried object in ``ATTACHED`` state;
+        execution will enter ``PLACEMENT_CONTACT`` again when the terminal
+        place phase actually begins.
+        """
+
+        entity = self.records.get(str(entity_name))
+        support = self.records.get(str(support_entity))
+        if entity is None:
+            raise CollisionSceneError(
+                f"unknown carried object during placement cleanup: {entity_name}"
+            )
+        if support is None:
+            raise CollisionSceneError(
+                f"unknown placement support during planning cleanup: {support_entity}"
+            )
+        owner = self._controller_key(robot, arm)
+        paths = tuple(
+            path
+            for path in support.collision_prim_paths
+            if path in self._temporary_disabled.get(owner, set())
+            and not self.controller_enabled[owner].get(path, True)
+        )
+        if paths:
+            self._set_enabled(owner, paths, True)
+            self._temporary_disabled[owner].difference_update(paths)
+        if entity.state == CollisionObjectState.PLACEMENT_CONTACT:
+            self._transition(
+                entity_name,
+                CollisionObjectState.ATTACHED,
+                robot,
+                arm,
+                "placement_query_cleanup",
+            )
 
     def begin_terminal_retreat(self, entity_name: str, robot: str, arm: str) -> None:
         record = self.records[entity_name]

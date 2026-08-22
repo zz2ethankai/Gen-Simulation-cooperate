@@ -15,7 +15,7 @@ from isaacsim.core.utils.transformations import (
 from isaacsim.core.utils.prims import get_prim_at_path
 from isaacsim.core.utils.xforms import get_world_pose
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand
-from core.controllers.controller_component import ComponentState
+from core.controllers.curobo.components import ComponentState
 
 LOGGER = logging.getLogger("de_logger")
 
@@ -24,12 +24,12 @@ class ControllerPhases(ComponentState):
     def forward(self, command, eps=5e-3):
         """Execute one typed motion command.
 
-        ``forward`` remains as the simulator-facing spelling used by the
-        workflow, but command decoding belongs to the runtime façade.  A
-        tuple or a reflected method name is deliberately rejected at this
-        boundary; skills must emit :class:`MotionPhaseCommand` instances.
-        ``eps`` is retained as a harmless call-site compatibility parameter
-        for workflow integrations that pass it positionally.
+        ``forward`` remains the simulator-facing spelling for structured
+        commands.  Skills that own direct joint interpolation use the
+        controller's explicit ``dummy_forward`` interface instead of this
+        phase builder.  ``eps`` is retained as a harmless call-site
+        compatibility parameter for workflow integrations that pass it
+        positionally.
         """
 
         del eps

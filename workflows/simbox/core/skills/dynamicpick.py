@@ -10,7 +10,6 @@ from core.utils.asset_path_utils import resolve_asset_path
 from core.utils.constants import CUROBO_BATCH_SIZE
 from core.utils.transformation_utils import poses_from_tf_matrices
 from omegaconf import DictConfig
-from isaacsim.core.api.controllers import BaseController
 from isaacsim.core.api.robots.robot import Robot
 from isaacsim.core.api.tasks import BaseTask
 from isaacsim.core.utils.transformations import tf_matrix_from_pose
@@ -28,13 +27,12 @@ class Dynamicpick(BaseSkill):
         task: BaseTask,
         cfg: DictConfig,
         *args,
-        pick_planning=None,
         **kwargs,
     ):
         super().__init__()
         self.robot = robot
-        self.bind_skill_runtime(skill_runtime, pick_planning=pick_planning)
-        self.planning = self._require_pick_planning()
+        self.bind_skill_runtime(skill_runtime)
+        self._require_skill_runtime()
         self.task = task
         self.skill_cfg = cfg
         object_name = self.skill_cfg["objects"][0]
@@ -49,11 +47,13 @@ class Dynamicpick(BaseSkill):
         usd_path = resolve_asset_path(self.task.asset_root, object_cfg)
         grasp_pose_path = usd_path.replace("Aligned_obj.usd", "Aligned_grasp_sparse.npy")
         sparse_grasp_poses = np.load(grasp_pose_path)
-        lr_arm = self.planning.lr_name
+        lr_arm = self.skill_runtime.lr_name
         self.T_obj_ee, self.scores = self.robot.pose_post_process_fn(
             sparse_grasp_poses, lr_arm=lr_arm, grasp_scale=self.grasp_scale, tcp_offset=self.tcp_offset
         )
-        self.robot_name = self.planning.robot_name
+        self.robot_name = getattr(
+            self.skill_runtime, "robot_name", getattr(self.skill_runtime, "name", robot.name)
+        )
         self.object_name = object_name
 
         # !!! keyposes should be generated after previous skill is done
@@ -67,7 +67,7 @@ class Dynamicpick(BaseSkill):
         self.obj_init_trans = deepcopy(self.pick_obj.get_local_pose()[0])
 
     def _get_armbase_world_tf(self):
-        return self.planning.arm_base_transform()
+        return self.skill_runtime.arm_base_transform()
 
     def _get_object_world_tf(self):
         if self.meet_pose_o2w is not None:
@@ -92,22 +92,26 @@ class Dynamicpick(BaseSkill):
     def _preview_pose(self, position, orientation, start_arm_positions=None, *, ds_ratio=1):
         """Preview a typed pose plan without executing a reflected command."""
 
-        success, end_positions, result = self.planning.plan_pose_from_joint_positions(
+        success, end_positions, result = self.skill_runtime.plan_pose_from_joint_positions(
             position,
             orientation,
             start_arm_positions=start_arm_positions,
             active_target=self.object_name,
         )
         if not success:
-            self.planning.set_plan_failure_count(1000)
+            setter = getattr(self.skill_runtime, "set_plan_failure_count", None)
+            if callable(setter):
+                setter(1000)
+            else:
+                self.skill_runtime.num_plan_failed = 1000
             return 0.0, start_arm_positions
         path = result.trajectory
         waypoints = len(path) if path is not None else 1
         stride = max(1, int(ds_ratio))
         duration = (
             waypoints
-            * self.planning.interpolation_dt
-            / self.planning.time_dilation_factor
+            * self.skill_runtime.interpolation_dt
+            / float(getattr(self.skill_runtime, "time_dilation_factor", 1.0))
             / stride
         )
         return duration, end_positions
@@ -119,7 +123,7 @@ class Dynamicpick(BaseSkill):
         self.cmd_time = 0.0
         manip_list = []
 
-        p_base_ee_cur, q_base_ee_cur = self.planning.ee_pose()
+        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.ee_pose()
 
         cmd_time, expected_js = self._preview_pose(p_base_ee_cur, q_base_ee_cur)
         self.cmd_time += cmd_time
@@ -148,7 +152,7 @@ class Dynamicpick(BaseSkill):
             T_base_ee_grasps[:, 2, 3] += pos_adjust_z
         T_base_ee_pregrasps = deepcopy(T_base_ee_grasps)
 
-        approach_axis = self.planning.grasp_approach_axis
+        approach_axis = getattr(self.skill_runtime, "grasp_approach_axis", 2)
         T_base_ee_pregrasps[:, :3, 3] -= (
             T_base_ee_pregrasps[:, :3, approach_axis]
             * self.skill_cfg.get("pre_grasp_offset", 0.1)
@@ -328,7 +332,7 @@ class Dynamicpick(BaseSkill):
             object_position, object_orientation = get_obj_world_pose()
         else:
             object_position, object_orientation = self.pick_obj.get_local_pose()
-        initial_position, initial_orientation = self.planning.initial_ee_pose()
+        initial_position, initial_orientation = self.skill_runtime.initial_ee_pose()
         T_world_ee_init = self._get_armbase_world_tf() @ tf_matrix_from_pose(
             initial_position, initial_orientation
         )
@@ -380,11 +384,17 @@ class Dynamicpick(BaseSkill):
         return contact, indices
 
     def is_feasible(self, th=10):
-        return self.planning.plan_failure_count <= th
+        return int(
+            getattr(
+                self.skill_runtime,
+                "plan_failure_count",
+                getattr(self.skill_runtime, "num_plan_failed", 0),
+            )
+        ) <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        return self.planning.phase_complete(self.manip_list[0])
+        return self.skill_runtime.phase_complete(self.manip_list[0])
 
     def is_done(self):
         if not self.is_ready():

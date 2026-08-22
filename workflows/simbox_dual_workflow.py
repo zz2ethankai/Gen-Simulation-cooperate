@@ -39,6 +39,7 @@ from core.execution.safety_monitor import (
 )
 from core.execution.execution_supervisor import ExecutionSupervisor
 from core.planning.config_contract import (
+    DIRECT_EXECUTION_MODE,
     PHYSICS_SCHEMA_MODE,
     PASSTHROUGH_MODE,
     canonicalize_planning_config,
@@ -55,6 +56,7 @@ from core.planning.collision_scene_manager import (
     CollisionSceneError,
     CollisionSceneManager,
 )
+from core.planning.direct_command import dummy_forward_params
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand
 from core.planning.skill_dag_compiler import compile_skill_dag_configs
 from core.loggers.utils import log_dual_obs
@@ -112,8 +114,6 @@ class _PassiveSkillController:
         # Keep the port slots explicit so the compiler never has to reflect
         # through a controller façade while constructing them.
         self.skill_runtime = None
-        self.pick_planning = None
-        self.placement_planning = None
 
     def reset(self):
         return None
@@ -123,154 +123,6 @@ class _PassiveSkillController:
             "joint_positions": np.array([], dtype=np.float32),
             "joint_indices": np.array([], dtype=np.int64),
         }
-
-
-def _construct_runtime_skill(
-    skill_cls,
-    robot,
-    task,
-    skill_cfg,
-    *,
-    skill_runtime,
-    pick_planning,
-    placement_planning,
-    world,
-    workflow,
-    draw,
-):
-    """Construct a registry Skill from explicit narrow ports.
-
-    The registry stores classes for historical YAML compatibility, but the
-    classes no longer receive a ``TemplateController``.  This explicit table
-    is the one compatibility boundary for constructor shape differences.
-    """
-
-    factory = _SKILL_CONSTRUCTOR_FACTORIES.get(skill_cls)
-    if factory is None:
-        raise TypeError(
-            f"Skill registry class {skill_cls.__name__!r} "
-            "has no typed constructor factory"
-        )
-    return factory(
-        skill_cls,
-        robot,
-        task,
-        skill_cfg,
-        skill_runtime=skill_runtime,
-        pick_planning=pick_planning,
-        placement_planning=placement_planning,
-        world=world,
-        workflow=workflow,
-        draw=draw,
-    )
-
-
-def _factory_runtime_only(
-    skill_cls,
-    robot,
-    task,
-    skill_cfg,
-    *,
-    skill_runtime,
-    pick_planning,
-    placement_planning,
-    world,
-    workflow,
-    draw,
-):
-    del pick_planning, placement_planning
-    return skill_cls(
-        robot,
-        skill_runtime,
-        task,
-        skill_cfg,
-        world=world,
-        workflow=workflow,
-        draw=draw,
-    )
-
-
-def _factory_pick(
-    skill_cls,
-    robot,
-    task,
-    skill_cfg,
-    *,
-    skill_runtime,
-    pick_planning,
-    placement_planning,
-    world,
-    workflow,
-    draw,
-):
-    del placement_planning
-    return skill_cls(
-        robot,
-        skill_runtime,
-        task,
-        skill_cfg,
-        pick_planning=pick_planning,
-        world=world,
-        workflow=workflow,
-        draw=draw,
-    )
-
-
-def _factory_place(
-    skill_cls,
-    robot,
-    task,
-    skill_cfg,
-    *,
-    skill_runtime,
-    pick_planning,
-    placement_planning,
-    world,
-    workflow,
-    draw,
-):
-    del pick_planning
-    return skill_cls(
-        robot,
-        skill_runtime,
-        task,
-        skill_cfg,
-        placement_planning=placement_planning,
-        world=world,
-        workflow=workflow,
-        draw=draw,
-    )
-
-
-_SKILL_CONSTRUCTOR_FACTORIES = {
-    Approach_Rotate: _factory_runtime_only,
-    Artpreplan: _factory_runtime_only,
-    Close: _factory_runtime_only,
-    Dexpick: _factory_pick,
-    Dexplace: _factory_place,
-    Dynamicpick: _factory_pick,
-    FailPick: _factory_pick,
-    Flip: _factory_runtime_only,
-    Goto_Pose: _factory_runtime_only,
-    Gripper_Action: _factory_runtime_only,
-    Heuristic_Skill: _factory_runtime_only,
-    Home: _factory_runtime_only,
-    Joint_Ctrl: _factory_runtime_only,
-    Manualpick: _factory_pick,
-    Move: _factory_runtime_only,
-    Navigate: _factory_runtime_only,
-    Open: _factory_runtime_only,
-    ObserveHold: _factory_runtime_only,
-    Pick: _factory_pick,
-    PickPlanProbe: _factory_pick,
-    Place: _factory_place,
-    Pour_Water_Succ: _factory_runtime_only,
-    Rotate: _factory_runtime_only,
-    Rotate_Obj: _factory_runtime_only,
-    Scan: _factory_runtime_only,
-    Track: _factory_runtime_only,
-    Wait: _factory_runtime_only,
-}
 
 
 # pylint: disable=unused-argument
@@ -978,7 +830,13 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         runtime = skill.skill_runtime
         previous_scope = runtime.push_timing_scope(scope) if runtime is not None else None
         try:
-            skill.simple_generate_manip_cmds()
+            planner = getattr(skill, "generate_manip_cmds", None)
+            if not callable(planner):
+                # Other legacy skills still expose the generic compatibility
+                # hook.  Pick and Place use the explicit current planner
+                # entrypoint above.
+                planner = skill.simple_generate_manip_cmds
+            planner()
         except Exception as exc:
             if phase is not None:
                 try:
@@ -1086,6 +944,10 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             skill_cfg.get("name", ""), PHYSICS_SCHEMA_MODE
         )
         setattr(skill, "collision_world_mode", mode)
+        if getattr(skill, "execution_mode", None) == DIRECT_EXECUTION_MODE:
+            # Direct Skills do not have a planner world, even though the DAG
+            # keeps the canonical operation metadata for scheduling.
+            setattr(skill, "effective_collision_world_mode", DIRECT_EXECUTION_MODE)
         return mode
 
     def _initialize_skill_dag(self, task, task_cfg, controllers, world, draw):
@@ -1108,14 +970,11 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             depends_on = list(compiled.depends_on)
 
             skill_cls = get_skill_cls(skill_cfg["name"])
-            skill = _construct_runtime_skill(
-                skill_cls,
+            skill = skill_cls(
                 robot,
+                controller_ports.skill_runtime,
                 task,
                 skill_cfg,
-                skill_runtime=controller_ports.skill_runtime,
-                pick_planning=controller_ports.pick_planning,
-                placement_planning=controller_ports.placement_planning,
                 world=world,
                 workflow=self,
                 draw=draw,
@@ -1137,6 +996,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 "robot_name": robot_name,
                 "controller_name": lr_name,
                 "collision_world_mode": skill_collision_mode,
+                "execution_mode": getattr(skill, "execution_mode", None),
                 "skill": skill,
                 "state": "pending",
             }
@@ -1774,7 +1634,8 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 continue
 
             skill = node["skill"]
-            self._activate_skill_collision_world(skill)
+            if node.get("execution_mode") != DIRECT_EXECUTION_MODE:
+                self._activate_skill_collision_world(skill)
             self._run_skill_planner(node["robot_name"], skill)
             if hasattr(skill, "visualize_target"):
                 skill.visualize_target(self.world)
@@ -1834,10 +1695,11 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                     )
                     node["state"] = "failed"
                     return {}, False, True
-                if not isinstance(skill.manip_list[0], MotionPhaseCommand):
+                command = skill.manip_list[0]
+                if not isinstance(command, MotionPhaseCommand) and dummy_forward_params(command) is None:
                     raise TypeError(
                         f"operation Skill {self._skill_display_name(skill)!r} must emit "
-                        "MotionPhaseCommand values"
+                        "MotionPhaseCommand or dummy_forward commands"
                     )
                 actions_by_robot[node["robot_name"]].append(self._forward_or_hold(skill))
 
@@ -1929,6 +1791,9 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         """
 
         mode = getattr(skill, "collision_world_mode", PASSTHROUGH_MODE)
+        if getattr(skill, "execution_mode", None) == DIRECT_EXECUTION_MODE:
+            setattr(skill, "effective_collision_world_mode", DIRECT_EXECUTION_MODE)
+            return DIRECT_EXECUTION_MODE
         if mode == PASSTHROUGH_MODE:
             setattr(skill, "effective_collision_world_mode", PASSTHROUGH_MODE)
             return mode
@@ -2189,7 +2054,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 and allowed_support_contact > 0.0
             ):
                 command.params["contact_complete"] = True
-                skill.placement_planning.complete_terminal_place_on_contact(command)
+                runtime.complete_contact_phase(command)
                 skill.manip_list[:] = [command] + [
                     later
                     for later in skill.manip_list[1:]
@@ -2303,9 +2168,14 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 continue
             command = skill.manip_list[0]
             if not isinstance(command, MotionPhaseCommand):
+                if dummy_forward_params(command) is not None:
+                    # Direct interpolation is intentionally outside the
+                    # Physics-schema safety/replan loop.  The command owns
+                    # the joint path and the controller only forwards it.
+                    continue
                 raise TypeError(
                     f"operation Skill {self._skill_display_name(skill)!r} must emit "
-                    "MotionPhaseCommand values"
+                    "MotionPhaseCommand or dummy_forward commands"
                 )
             runtime = skill.skill_runtime
             if runtime is None:
@@ -2391,18 +2261,23 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         runtime = skill.skill_runtime
         if runtime is None:
             raise RuntimeError("operation Skill requires a composed SkillRuntimePort")
-        self._activate_skill_collision_world(skill)
         command = skill.manip_list[0]
-        if not isinstance(command, MotionPhaseCommand):
+        direct_params = dummy_forward_params(command)
+        if direct_params is None:
+            self._activate_skill_collision_world(skill)
+        if not isinstance(command, MotionPhaseCommand) and direct_params is None:
             raise TypeError(
                 f"operation Skill {self._skill_display_name(skill)!r} must emit "
-                "MotionPhaseCommand values"
-        )
-        self._start_skill_motion_phase(skill, command)
+                "MotionPhaseCommand or dummy_forward commands"
+            )
+        if isinstance(command, MotionPhaseCommand):
+            self._start_skill_motion_phase(skill, command)
         scope = getattr(skill, "_timing_scope", None)
         previous_scope = runtime.push_timing_scope(scope)
         try:
             try:
+                if direct_params is not None:
+                    return runtime.dummy_forward(**direct_params)
                 return self.execution_supervisor.forward_or_hold(
                     runtime,
                     command,

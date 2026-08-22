@@ -1,6 +1,6 @@
 import numpy as np
-from core.planning.motion_command import MotionPhase, MotionPhaseCommand
-from core.skills.base_skill import BaseSkill, register_skill
+from core.skills.base_skill import BaseSkill, dummy_forward_params, register_skill
+from core.planning.config_contract import DIRECT_EXECUTION_MODE
 from omegaconf import DictConfig
 from isaacsim.core.api.controllers import BaseController
 from isaacsim.core.api.robots.robot import Robot
@@ -16,6 +16,9 @@ class Home(BaseSkill):
         self.bind_skill_runtime(skill_runtime)
         self.task = task
         self.skill_cfg = cfg
+        self.move_steps = int(self.skill_cfg.get("move_steps", 50))
+        if self.move_steps <= 0:
+            raise ValueError("home move_steps must be positive")
 
         self.lr_hand = self.skill_runtime.arm_name
         if self.lr_hand == "left":
@@ -35,42 +38,46 @@ class Home(BaseSkill):
 
         # !!! keyposes should be generated after previous skill is done
         self.manip_list = []
+        self.execution_mode = DIRECT_EXECUTION_MODE
 
     def simple_generate_manip_cmds(self):
+        """Build the legacy direct joint-space interpolation used by Home."""
+
         manip_list = []
         curr_ee_trans, curr_ee_ori = self.skill_runtime.ee_pose()
-        curr_joints = self.robot.get_joint_positions()[self._joint_indices]
-        home_joints = self._joint_home
+        curr_joints = np.asarray(self.robot.get_joint_positions(), dtype=float)[self._joint_indices]
+        home_joints = np.asarray(self._joint_home, dtype=float)
 
-        for k in range(0, 50):
-            arm_action = np.array(home_joints) * ((k + 1) / 40) + np.array(curr_joints) * (1 - (k + 1) / 40)
-            target_position, target_orientation = self.skill_runtime.compute_fk(
-                arm_action,
-                joint_names=self.skill_runtime.raw_joint_names,
-            )
-            cmd = MotionPhaseCommand(
-                MotionPhase.CARRY_HOME,
-                target_position,
-                target_orientation,
-                gripper_action=(
-                    "open_gripper" if float(self._gripper_state) >= 0.0 else "close_gripper"
-                ),
-                replan_allowed=False,
-                joint_target=np.asarray(arm_action, dtype=float),
+        for k in range(self.move_steps):
+            alpha = float(k + 1) / float(self.move_steps)
+            arm_action = home_joints * alpha + curr_joints * (1.0 - alpha)
+            cmd = (
+                curr_ee_trans,
+                curr_ee_ori,
+                "dummy_forward",
+                {
+                    "arm_action": np.asarray(arm_action, dtype=float),
+                    "gripper_state": self._gripper_state,
+                },
             )
             manip_list.append(cmd)
 
         self.manip_list = manip_list
 
     def is_feasible(self, th=5):
-        return self.skill_runtime.num_plan_failed <= th
+        # Home is direct joint interpolation and has no planner attempt to
+        # invalidate it.
+        return True
 
     def is_subtask_done(self, t_eps=0.088):
         assert len(self.manip_list) != 0
         command = self.manip_list[0]
-        if not isinstance(command, MotionPhaseCommand):
-            raise TypeError("Home emits MotionPhaseCommand values only")
-        return self.command_complete(command)
+        params = dummy_forward_params(command)
+        if params is None:
+            raise TypeError("Home emits dummy_forward commands only")
+        curr_joints = np.asarray(self.robot.get_joint_positions(), dtype=float)[self._joint_indices]
+        target_joints = np.asarray(params["arm_action"], dtype=float)
+        return bool(np.linalg.norm(curr_joints - target_joints) < t_eps)
 
     def is_done(self):
         if len(self.manip_list) == 0:

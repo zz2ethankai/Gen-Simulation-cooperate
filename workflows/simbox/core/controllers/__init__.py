@@ -7,13 +7,13 @@ when a caller requests a subclass or the registry.
 
 from importlib import import_module
 
-from core.controllers.base_controller import ArmSpec, CONTROLLER_DICT
-from core.controllers.phase_executor import ExecutionStatus
-from core.controllers.skill_runtime import SkillRuntimePort
+from core.controllers.controller_registry import ArmSpec, CONTROLLER_DICT
+from core.controllers.curobo.phase_execution import ExecutionStatus
+from core.controllers.curobo.skill_runtime import SkillRuntimePort
 from core.planning.domain_types import CommandStatus
 
 _LAZY_CONTROLLERS = {
-    "TemplateController": ("core.controllers.template_controller", "TemplateController"),
+    "TemplateController": ("core.controllers.curobo.controller", "TemplateController"),
     "FR3Controller": ("core.controllers.fr3_controller", "FR3Controller"),
     "FrankaRobotiq85Controller": (
         "core.controllers.frankarobotiq85_controller",

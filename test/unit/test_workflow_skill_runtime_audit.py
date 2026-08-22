@@ -11,8 +11,8 @@ if str(SIMBOX_ROOT) not in sys.path:
 
 import numpy as np
 
-from core.controllers.controller_component import MutableExecutionState
-from core.controllers.skill_runtime import (
+from core.controllers.curobo.components import MutableExecutionState
+from core.controllers.curobo.skill_runtime import (
     SkillRuntimePort,
     compose_skill_runtime_port,
 )
@@ -280,10 +280,10 @@ def test_composed_runtime_port_calls_each_explicit_owner_once():
 
 
 def test_skill_runtime_timing_callbacks_use_template_owner_not_setup_copy():
-    template_source = (ROOT / "workflows/simbox/core/controllers/template_controller.py").read_text(
+    template_source = (ROOT / "workflows/simbox/core/controllers/curobo/controller.py").read_text(
         encoding="utf-8"
     )
-    setup_source = (ROOT / "workflows/simbox/core/controllers/controller_setup.py").read_text(
+    setup_source = (ROOT / "workflows/simbox/core/controllers/curobo/scene_setup.py").read_text(
         encoding="utf-8"
     )
     assert "push_timing_scope=self.push_timing_scope" in template_source

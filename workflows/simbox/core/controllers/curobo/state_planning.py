@@ -8,8 +8,8 @@ from typing import Optional
 import numpy as np
 import torch
 from curobo.types import GoalToolPose, JointState
-from core.controllers.controller_component import ComponentState
-from core.controllers.trajectory_boundary import normalize_named_trajectory
+from core.controllers.curobo.components import ComponentState
+from core.controllers.curobo.trajectory import normalize_named_trajectory
 from core.planning.domain_types import BatchPlanResult, JointTrajectory, PlanResult
 
 LOGGER = logging.getLogger("de_logger")

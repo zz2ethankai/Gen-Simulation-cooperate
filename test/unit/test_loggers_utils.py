@@ -24,8 +24,8 @@ sys.modules.setdefault("lmdb", lmdb_stub)
 
 from core.loggers.utils import log_dual_obs  # noqa: E402
 from core.loggers.lmdb_logger import _filter_missing_image_frames  # noqa: E402
-from core.controllers.controller_component import MutableExecutionState  # noqa: E402
-from core.controllers.skill_runtime import SkillRuntimePort  # noqa: E402
+from core.controllers.curobo.components import MutableExecutionState  # noqa: E402
+from core.controllers.curobo.skill_runtime import SkillRuntimePort  # noqa: E402
 
 
 class _FakeLogger:

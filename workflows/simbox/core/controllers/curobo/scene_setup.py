@@ -18,12 +18,12 @@ from core.planning.native_bridge import SceneCfg, ToolPoseCriteria
 from isaacsim.core.utils.prims import get_prim_at_path
 from isaacsim.core.utils.transformations import get_relative_transform
 
-from core.controllers.base_controller import ArmSpec
-from core.controllers.controller_component import ComponentState
+from core.controllers.controller_registry import ArmSpec
+from core.controllers.curobo.components import ComponentState
 from core.planning.domain_types import BatchPlanResult, PlanResult
 from core.utils.joint_index_resolver import JointIndexResolutionError, resolve_joint_names
 from core.utils.json_utils import json_ready, joint_state_json_ready
-from core.controllers.trajectory_boundary import execution_trajectory_tensor
+from core.controllers.curobo.trajectory import execution_trajectory_tensor
 from core.visualization.curobo_trajectory import (
     CuroboTrajectoryPlannerAdapter,
     TrajectoryVisualizationFrame,

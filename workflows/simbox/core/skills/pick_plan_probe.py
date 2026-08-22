@@ -1,4 +1,4 @@
-"""Planning-only Pick probe that emits a structured CuRobo result."""
+"""Planning-only Pick probe that emits a structured planner result."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from core.skills.pick import Pick
 
 @register_skill
 class PickPlanProbe(Pick):
-    """Run Pick's shared grasp evaluator without executing any commands."""
+    """Run Pick's direct runtime planning path without executing commands."""
 
     @staticmethod
     def _yaw_deg(quaternion) -> float:
@@ -83,8 +83,8 @@ class PickPlanProbe(Pick):
         temporary.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         temporary.replace(result_path)
 
-    def simple_generate_manip_cmds(self):
-        planning = self._require_pick_planning()
+    def generate_manip_cmds(self):
+        runtime = self._require_skill_runtime()
         spawn_check = self._spawn_check()
         target_only = bool(self.skill_cfg.get("diagnostic_target_only_world", False))
         empty_world = bool(self.skill_cfg.get("diagnostic_empty_world", False))
@@ -92,8 +92,8 @@ class PickPlanProbe(Pick):
             # Probes always use the canonical Physics-schema world.  The old
             # diagnostic flags used temporary obstacle toggles and monkey
             # patched scene transitions; probes must not mutate that world.
-            super().simple_generate_manip_cmds()
-            result = self.plan_evaluation.result.to_dict() if self.plan_evaluation is not None else {
+            super().generate_manip_cmds()
+            result = self.plan_state["result"] if self.plan_state is not None else {
                 "feasible": False,
                 "failure_code": "PROBE_DID_NOT_RUN",
             }
@@ -103,7 +103,7 @@ class PickPlanProbe(Pick):
         else:
             result = {
                 "feasible": False,
-                "arm": planning.lr_name,
+                "arm": runtime.lr_name,
                 "grasp_count": 0,
                 "pregrasp_success_count": 0,
                 "grasp_success_count": 0,

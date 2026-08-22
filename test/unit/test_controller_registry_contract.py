@@ -19,7 +19,7 @@ def controller_contract():
         from core.controllers.panda_omron_virtual_controller import (
             PandaOmronVirtualController,
         )
-        from core.controllers.template_controller import TemplateController
+        from core.controllers.curobo.controller import TemplateController
 
         yield get_controller_dict(), PandaOmronVirtualController, TemplateController
     finally:

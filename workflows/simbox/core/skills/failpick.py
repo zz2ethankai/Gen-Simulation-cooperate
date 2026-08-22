@@ -7,7 +7,6 @@ from core.planning.motion_command import MotionPhase
 from core.skills.base_skill import BaseSkill, register_skill
 from core.utils.asset_path_utils import resolve_asset_path
 from omegaconf import DictConfig
-from isaacsim.core.api.controllers import BaseController
 from isaacsim.core.api.robots.robot import Robot
 from isaacsim.core.api.tasks import BaseTask
 from isaacsim.core.utils.transformations import pose_from_tf_matrix, tf_matrix_from_pose
@@ -23,13 +22,12 @@ class FailPick(BaseSkill):
         task: BaseTask,
         cfg: DictConfig,
         *args,
-        pick_planning=None,
         **kwargs,
     ):
         super().__init__()
         self.robot = robot
-        self.bind_skill_runtime(skill_runtime, pick_planning=pick_planning)
-        self.planning = self._require_pick_planning()
+        self.bind_skill_runtime(skill_runtime)
+        self._require_skill_runtime()
         self.task = task
         self.skill_cfg = cfg
         object_name = self.skill_cfg["objects"][0]
@@ -40,7 +38,7 @@ class FailPick(BaseSkill):
         usd_path = resolve_asset_path(self.task.asset_root, object_cfg)
         grasp_pose_path = usd_path.replace("Aligned_obj.usd", "Aligned_grasp_sparse.npy")
         sparse_grasp_poses = np.load(grasp_pose_path)
-        lr_arm = self.planning.lr_name
+        lr_arm = self.skill_runtime.lr_name
         self.T_ee2o, self.scores = self.robot.pose_post_process_fn(sparse_grasp_poses, lr_arm=lr_arm)
 
         # !!! keyposes should be generated after previous skill is done
@@ -49,7 +47,7 @@ class FailPick(BaseSkill):
         self.obj_init_trans = deepcopy(self.object.get_local_pose()[0])
 
     def _get_armbase_world_tf(self):
-        return self.planning.arm_base_transform()
+        return self.skill_runtime.arm_base_transform()
 
     def _get_object_world_tf(self):
         get_obj_world_pose = getattr(self.object, "get_world_pose", None)
@@ -214,7 +212,7 @@ class FailPick(BaseSkill):
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        return self.planning.phase_complete(self.manip_list[0])
+        return self.skill_runtime.phase_complete(self.manip_list[0])
 
     def is_record(self):
         return len(self.manip_list) < (1 * self.skill_cfg.get("gripper_change_steps", 10) + 2)
@@ -231,4 +229,10 @@ class FailPick(BaseSkill):
         return len(self.manip_list) == 0
 
     def is_feasible(self, th=5):
-        return self.planning.plan_failure_count <= th
+        return int(
+            getattr(
+                self.skill_runtime,
+                "plan_failure_count",
+                getattr(self.skill_runtime, "num_plan_failed", 0),
+            )
+        ) <= th

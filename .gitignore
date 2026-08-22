@@ -10,6 +10,10 @@ output
 .cursor
 assets
 curobo
+# The shared SimBox CuRobo controller package is source code, not a vendored
+# CuRobo checkout and must remain visible to version control.
+!workflows/simbox/core/controllers/curobo/
+!workflows/simbox/core/controllers/curobo/**
 panda_drake
 tests/*.log
 tests/*.txt
@@ -25,3 +29,4 @@ tmp
 generator
 download
 example
+*.pyc

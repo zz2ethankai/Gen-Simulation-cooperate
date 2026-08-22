@@ -6,7 +6,6 @@ from core.planning.motion_command import MotionPhase
 from core.skills.base_skill import BaseSkill, register_skill
 from core.utils.asset_path_utils import resolve_asset_path
 from omegaconf import DictConfig, OmegaConf
-from isaacsim.core.api.controllers import BaseController
 from isaacsim.core.api.robots.robot import Robot
 from isaacsim.core.api.tasks import BaseTask
 from isaacsim.core.utils.transformations import (
@@ -25,15 +24,14 @@ class Dexpick(BaseSkill):
         task: BaseTask,
         cfg: DictConfig,
         *args,
-        pick_planning=None,
         **kwargs,
     ):
         super().__init__()
         self.robot = robot
-        self.bind_skill_runtime(skill_runtime, pick_planning=pick_planning)
-        self.planning = self._require_pick_planning()
+        self.bind_skill_runtime(skill_runtime)
+        self._require_skill_runtime()
         self.task = task
-        if kwargs:
+        if "world" in kwargs:
             self.world = kwargs["world"]
         self.skill_cfg = cfg
         object_name = self.skill_cfg["objects"][0]
@@ -54,13 +52,13 @@ class Dexpick(BaseSkill):
             self.pick_pose_idx = cfg.get("pick_pose_idx", 0)
             self.pose_ee2o = self.pick_poses[self.pick_pose_idx]
         self.manip_list = []
-        lr_arm = self.planning.lr_name
+        lr_arm = self.skill_runtime.lr_name
         self.pickcontact_view = task.pickcontact_views[robot.name][lr_arm][object_name]
         self.process_valid = True
         self.obj_init_trans = deepcopy(self.object.get_local_pose()[0])
 
     def _get_armbase_world_tf(self):
-        return self.planning.arm_base_transform()
+        return self.skill_runtime.arm_base_transform()
 
     def _get_object_world_tf(self):
         get_obj_world_pose = getattr(self.object, "get_world_pose", None)
@@ -84,7 +82,7 @@ class Dexpick(BaseSkill):
         pre_grasp_offset = self.skill_cfg.get("pre_grasp_offset", 0.1)
         if pre_grasp_offset:
             T_base_ee_pregrasp = T_base_ee_grasp.copy()
-            approach_axis = self.planning.grasp_approach_axis
+            approach_axis = getattr(self.skill_runtime, "grasp_approach_axis", 2)
             T_base_ee_pregrasp[0:3, 3] -= (
                 T_base_ee_pregrasp[0:3, approach_axis] * pre_grasp_offset
             )
@@ -149,11 +147,17 @@ class Dexpick(BaseSkill):
         return contact, indices
 
     def is_feasible(self, th=10):
-        return self.planning.plan_failure_count <= th
+        return int(
+            getattr(
+                self.skill_runtime,
+                "plan_failure_count",
+                getattr(self.skill_runtime, "num_plan_failed", 0),
+            )
+        ) <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        return self.planning.phase_complete(self.manip_list[0])
+        return self.skill_runtime.phase_complete(self.manip_list[0])
 
     def is_done(self):
         if len(self.manip_list) == 0:

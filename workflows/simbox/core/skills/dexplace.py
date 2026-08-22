@@ -7,7 +7,6 @@ from core.skills.base_skill import BaseSkill, register_skill
 from core.utils.asset_path_utils import resolve_asset_path
 from core.utils.usd_geom_utils import compute_bbox
 from omegaconf import DictConfig, OmegaConf
-from isaacsim.core.api.controllers import BaseController
 from isaacsim.core.api.robots.robot import Robot
 from isaacsim.core.api.tasks import BaseTask
 from isaacsim.core.utils.prims import get_prim_at_path
@@ -31,17 +30,12 @@ class Dexplace(BaseSkill):
         task: BaseTask,
         cfg: DictConfig,
         *args,
-        placement_planning=None,
         **kwargs,
     ):
         super().__init__()
         self.robot = robot
-        self.bind_skill_runtime(
-            skill_runtime,
-            placement_planning=placement_planning,
-        )
+        self.bind_skill_runtime(skill_runtime)
         self._require_skill_runtime()
-        self.placement_planning = self._require_placement_planning()
         self.task = task
         self.skill_cfg = cfg
         self.name = cfg["name"]
@@ -68,13 +62,8 @@ class Dexplace(BaseSkill):
             self.place_prim_path = f"{self.place_obj.prim_path}/{self.place_part_prim_path}"
         else:
             self.place_prim_path = self.place_obj.prim_path
-        # Get left or right
-        if self.placement_planning.lr_name == "left":
-            self.robot_ee_path = self.skill_runtime.robot_ee_path
-            self.robot_base_path = self.skill_runtime.robot_base_path
-        elif self.placement_planning.lr_name == "right":
-            self.robot_ee_path = self.skill_runtime.robot_ee_path
-            self.robot_base_path = self.skill_runtime.robot_base_path
+        self.robot_ee_path = self.skill_runtime.robot_ee_path
+        self.robot_base_path = self.skill_runtime.robot_base_path
         if kwargs:
             self.draw = kwargs["draw"]
         self.manip_list = []
@@ -145,7 +134,7 @@ class Dexplace(BaseSkill):
         # Post place
         T_base_ee_postplace = deepcopy(T_base_ee_place)
         # Retreat for a bit along gripper axis
-        if "r5a" in self.placement_planning.robot_file:
+        if "r5a" in self.skill_runtime.robot_file:
             T_base_ee_postplace[0:3, 3] = T_base_ee_postplace[0:3, 3] - T_base_ee_postplace[0:3, 0] * post_place_level
         else:
             T_base_ee_postplace[0:3, 3] = T_base_ee_postplace[0:3, 3] - T_base_ee_postplace[0:3, 2] * post_place_level
@@ -272,7 +261,7 @@ class Dexplace(BaseSkill):
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        return bool(self.skill_runtime.execution_status(self.manip_list[0]).complete)
+        return bool(self.skill_runtime.phase_complete(self.manip_list[0]))
 
     def is_done(self):
         if len(self.manip_list) == 0:

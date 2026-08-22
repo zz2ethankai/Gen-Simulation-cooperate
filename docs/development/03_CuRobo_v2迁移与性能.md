@@ -14,9 +14,9 @@
 
 ## 当前调用契约
 
-契约全部落在 workflows/simbox/core/controllers/template_controller.py 与 workflows/simbox/core/planning/collision_scene_manager.py，代码位置如下：
+契约全部落在 workflows/simbox/core/controllers/curobo/controller.py 与 workflows/simbox/core/planning/collision_scene_manager.py，代码位置如下：
 
-- **native MotionPlanner（单目标）**：_init_native_planners()（template_controller.py:540）构造 self.planner = MotionPlanner（:597，batch_size=1、trajopt_seeds=12），update_world（:600）后 warmup（:602）。普通 transit、place、home 与单目标 pick 执行走 plan()（:1182）→ planner.plan_pose()（:1188）；joint 目标走 plan_joint_positions()（:1197）→ plan_cspace()（:1224）。
+- **native MotionPlanner（单目标）**：_init_native_planners()（curobo/controller.py:540）构造 self.planner = MotionPlanner（:597，batch_size=1、trajopt_seeds=12），update_world（:600）后 warmup（:602）。普通 transit、place、home 与单目标 pick 执行走 plan()（:1182）→ planner.plan_pose()（:1188）；joint 目标走 plan_joint_positions()（:1197）→ plan_cspace()（:1224）。
 - **native BatchMotionPlanner（候选批量）**：use_batch 时构造 self.batch_planner = BatchMotionPlanner（:611，batch_size=CUROBO_BATCH_SIZE=20、trajopt_seeds=1，workflows/simbox/core/utils/constants.py:331）。plan_batch()（:1142）校验实际候选数在 1..batch_size（:1161-1165）后按实际维度构造状态与目标，→ batch_planner.plan_pose()（:1172）。抓取候选评估入口在 grasp_plan_evaluator.py:230（grasp-only）与 :250（pregrasp→terminal 两段，test_batch_forward_from_paths）。
 - **GoalToolPose 5D 形状**：_goal_tool_pose()（:1099）把位姿 reshape 成 `[B,H,L,G,3/4]`——batch_size==1 时 (1,1,1,1,3)/(1,1,1,1,4)（:1103-1104），否则 (batch_size,1,1,1,3/4)（:1106-1107），再构造 GoalToolPose（:1108，tool_frames 取 planner.tool_frames[0]）。
 - **attachment_manager**：attach_objects()（:1920）输入显式 attach_collision_prim_paths + native mesh：_native_attachment_geometry()（:1841）把全部 collider mesh 在首个 collider 当前帧合并为 __native_attached_object__，经 self.planner.attachment_manager.attach()（:1945，link_name=attached_object、SphereFitType.VOXEL、world_objects_pose_offset、disable_obstacle_names=paths）。detach_obj()（:2084）→ attachment_manager.detach()（:2086）；reset 清理走 _clear_attached_object_state()（:976）；attach 后校验走 has_attached_collision_spheres()（:2090）。legacy 兼容入口 attach_obj()（:2021）与 test_attached_forward_from_joint_positions()（:1961，评估期瞬时 attach/detach）仍存在，物理路径不经过它们。
@@ -43,7 +43,7 @@
 
 | 慢点（原行为） | 改动 | 收益 |
 |----------------|------|------|
-| 普通单目标查询也走 v1 批量语义/兼容 API | 移除 v1 batch 语义扩散，single 查询用 controller.planner 持有的 native MotionPlanner（template_controller.py:597），候选评估才用 batch_planner 持有的 native BatchMotionPlanner（:611） | 单目标路径不再承担 batch 开销，plan()/plan_batch() 职责分离 |
+| 普通单目标查询也走 v1 批量语义/兼容 API | 移除 v1 batch 语义扩散，single 查询用 controller.planner 持有的 native MotionPlanner（curobo/controller.py:597），候选评估才用 batch_planner 持有的 native BatchMotionPlanner（:611） | 单目标路径不再承担 batch 开销，plan()/plan_batch() 职责分离 |
 | 重复目标 padding，复制目标凑固定容量 | batch 传递实际候选数（plan_batch :1161-1165 按 1..batch_size 校验并构造），不再复制目标凑容量 | 去掉无效候选的 IK/优化浪费，结果按真实候选索引对齐 |
 | 每次 world/attachment 变化都清空重建 | 改 native update_world()（_update_world_if_changed :858-872，按 world 签名变化触发）原地更新 SceneData；attachment 用 attachment_manager 的 attach/detach（:1945/:2086） | 不再重建 planner 与 CUDA graph，world 更新只在签名变化时发生 |
 | 移动参考系下每帧刷新全部 obstacle pose | activate_collision_world_mode 不再每步刷新（:905-909 注释），改由计划前 _refresh_reference_world_for_planning()（:944）→ refresh_controller_reference_world()（collision_scene_manager.py:790）一次同步 | 每帧全量（约 230 物体）pose 更新降为每次 CuRobo 查询前一次 |
@@ -51,7 +51,7 @@
 | native batch graph seed 按最大 batch reshape 实际请求状态 | graph seed 改用实际 batch 维度 reshape 请求状态 | CUDA graph 输入尺寸与实际批一致，非满 batch 下正确 |
 | 失败候选无路径被伪成功继续执行 | 按 native 结果 success [B,S] 逐候选掩码（pick.py:33 _candidate_success_mask、grasp_plan_evaluator.py:254-283），trajectory 为 None 明确视为无路径 | 失败候选不再进入执行或影响路径选择 |
 
-相关路径包括 `workflows/simbox/core/controllers/template_controller.py` 和 `workflows/simbox/core/planning/collision_scene_manager.py`。这些修改不改变当前“Isaac 源码保持不变、CuRobo fork 单独维护”的边界。
+相关路径包括 `workflows/simbox/core/controllers/curobo/controller.py` 和 `workflows/simbox/core/planning/collision_scene_manager.py`。这些修改不改变当前“Isaac 源码保持不变、CuRobo fork 单独维护”的边界。
 
 ### 本轮 CuRobo fork 修改（2026-08-13）
 

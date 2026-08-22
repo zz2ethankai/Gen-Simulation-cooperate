@@ -14,6 +14,7 @@ if str(SIMBOX_ROOT) not in sys.path:
 
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand  # noqa: E402
 from core.planning.domain_types import CollisionPolicy, PlanningProfile  # noqa: E402
+from core.planning.direct_command import dummy_forward_params  # noqa: E402
 
 
 def test_motion_phase_command_validates_pose_and_exposes_semantics():
@@ -99,3 +100,18 @@ def test_joint_target_is_planner_input_and_direct_payload_requires_hold():
             phase=MotionPhase.CARRY_HOME,
             params={"direct_joint_action": np.array([0.1, 0.2])},
         )
+
+
+def test_dummy_forward_command_is_a_skill_level_direct_execution_boundary():
+    command = (
+        np.zeros(3),
+        np.array([1.0, 0.0, 0.0, 0.0]),
+        "dummy_forward",
+        {"arm_action": np.array([0.1, 0.2]), "gripper_state": 1.0},
+    )
+
+    params = dummy_forward_params(command)
+
+    assert params["gripper_state"] == 1.0
+    np.testing.assert_allclose(params["arm_action"], [0.1, 0.2])
+    assert dummy_forward_params(("not", "a", "typed", "command")) is None

@@ -11,7 +11,11 @@ SIMBOX_ROOT = ROOT / "workflows" / "simbox"
 if str(SIMBOX_ROOT) not in sys.path:
     sys.path.insert(0, str(SIMBOX_ROOT))
 
-from core.planning.config_contract import PASSTHROUGH_MODE, PHYSICS_SCHEMA_MODE  # noqa: E402
+from core.planning.config_contract import (  # noqa: E402
+    DIRECT_EXECUTION_MODE,
+    PASSTHROUGH_MODE,
+    PHYSICS_SCHEMA_MODE,
+)
 
 
 _WORKFLOW_PATH = ROOT / "workflows/simbox_dual_workflow.py"
@@ -33,6 +37,7 @@ def _load_activation_method():
     namespace = {
         "PASSTHROUGH_MODE": PASSTHROUGH_MODE,
         "PHYSICS_SCHEMA_MODE": PHYSICS_SCHEMA_MODE,
+        "DIRECT_EXECUTION_MODE": DIRECT_EXECUTION_MODE,
     }
     module = ast.fix_missing_locations(ast.Module(body=[method_node], type_ignores=[]))
     exec(compile(module, _WORKFLOW_PATH, "exec"), namespace)
@@ -52,25 +57,39 @@ class _Workflow:
         return skill.skill_cfg["name"]
 
 
-class _Controller:
+class _Runtime:
     def __init__(self):
         self.name = "robot"
-        self.lr_name = "left"
-        self.activations = []
+        self.arm_name = "left"
 
 
-def test_operation_skill_reuses_physics_world_without_activation_switch():
+def test_direct_home_does_not_bind_a_physics_attachment():
     workflow = _Workflow("apple")
     skill = SimpleNamespace(
         collision_world_mode=PHYSICS_SCHEMA_MODE,
         skill_cfg={"name": "heuristic__skill", "mode": "home"},
-        controller=_Controller(),
+        execution_mode=DIRECT_EXECUTION_MODE,
+        skill_runtime=None,
+    )
+
+    mode = workflow._activate_skill_collision_world(skill)
+
+    assert mode == DIRECT_EXECUTION_MODE
+    assert not hasattr(skill, "_physics_schema_active_object")
+    assert skill.effective_collision_world_mode == DIRECT_EXECUTION_MODE
+
+
+def test_planned_operation_skill_reuses_physics_world_without_switching():
+    workflow = _Workflow("apple")
+    skill = SimpleNamespace(
+        collision_world_mode=PHYSICS_SCHEMA_MODE,
+        skill_cfg={"name": "pick"},
+        skill_runtime=_Runtime(),
     )
 
     mode = workflow._activate_skill_collision_world(skill)
 
     assert mode == PHYSICS_SCHEMA_MODE
-    assert skill.controller.activations == []
     assert skill._physics_schema_active_object == "apple"
     assert skill.effective_collision_world_mode == PHYSICS_SCHEMA_MODE
 

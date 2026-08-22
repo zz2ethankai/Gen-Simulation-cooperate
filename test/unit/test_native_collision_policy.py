@@ -13,7 +13,7 @@ SIMBOX_ROOT = ROOT / "workflows" / "simbox"
 if str(SIMBOX_ROOT) not in sys.path:
     sys.path.insert(0, str(SIMBOX_ROOT))
 
-from core.controllers.runtime import MotionPlannerRuntime  # noqa: E402
+from core.controllers.curobo.runtime import MotionPlannerRuntime  # noqa: E402
 from core.planning.domain_types import (  # noqa: E402
     CollisionOptions,
     CollisionPolicy,

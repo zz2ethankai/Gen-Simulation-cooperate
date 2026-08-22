@@ -189,12 +189,12 @@ def wire_controller_components(port_factory, *, prepare_setup=None) -> Controlle
     here leaves ``TemplateController`` focused on lifecycle orchestration.
     """
 
-    from core.controllers.controller_attachment import ControllerAttachment
-    from core.controllers.controller_execution import ControllerExecution
-    from core.controllers.controller_phases import ControllerPhases
-    from core.controllers.controller_planning_queries import ControllerPlanningQueries
-    from core.controllers.controller_setup import ControllerSetup
-    from core.controllers.controller_state_planning import ControllerStatePlanning
+    from core.controllers.curobo.attachments import ControllerAttachment
+    from core.controllers.curobo.execution import ControllerExecution
+    from core.controllers.curobo.motion_phases import ControllerPhases
+    from core.controllers.curobo.planning_queries import ControllerPlanningQueries
+    from core.controllers.curobo.scene_setup import ControllerSetup
+    from core.controllers.curobo.state_planning import ControllerStatePlanning
 
     setup = ControllerSetup(
         port_factory(

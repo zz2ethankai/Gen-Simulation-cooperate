@@ -1,8 +1,8 @@
 """PandaOmron controller - template-based Panda arm controller."""
 
 import numpy as np
-from core.controllers.base_controller import ArmSpec, register_controller
-from core.controllers.template_controller import TemplateController
+from core.controllers.controller_registry import ArmSpec, register_controller
+from core.controllers.curobo.controller import TemplateController
 
 
 # pylint: disable=unused-argument

@@ -49,15 +49,15 @@ from core.planning.native_scene_adapter import (  # noqa: E402
 )
 from core.planning.scene_runtime import SceneRuntime  # noqa: E402
 from core.runtime import ArmSpec, JointOrderError, RobotRuntime  # noqa: E402
-from core.controllers.controller_component import (  # noqa: E402
+from core.controllers.curobo.components import (  # noqa: E402
     ComponentPort,
     ComponentState,
     MutableExecutionState,
     PlanningConfig,
 )
-from core.controllers.controller_execution import ControllerExecution  # noqa: E402
-from core.controllers.phase_executor import PhaseExecutor  # noqa: E402
-from core.controllers.runtime import MotionPlannerRuntime  # noqa: E402
+from core.controllers.curobo.execution import ControllerExecution  # noqa: E402
+from core.controllers.curobo.phase_execution import PhaseExecutor  # noqa: E402
+from core.controllers.curobo.runtime import MotionPlannerRuntime  # noqa: E402
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand  # noqa: E402
 
 
@@ -347,7 +347,7 @@ def test_attachment_failure_restores_previous_manager_state():
 
 
 def test_controller_attachment_batch_sync_audits_target_and_rolls_back():
-    from core.controllers.controller_attachment import ControllerAttachment
+    from core.controllers.curobo.attachments import ControllerAttachment
 
     class BatchAttachmentManager:
         def __init__(self):
@@ -424,7 +424,7 @@ def test_controller_attachment_batch_sync_audits_target_and_rolls_back():
 def test_controller_attachment_batch_sync_requires_registered_target_adapter():
     """Batch attachment must not synthesize an unregistered native adapter."""
 
-    from core.controllers.controller_attachment import ControllerAttachment
+    from core.controllers.curobo.attachments import ControllerAttachment
 
     batch = types.SimpleNamespace(
         attachment_manager=types.SimpleNamespace(detach=lambda: None)
@@ -743,9 +743,16 @@ def test_controller_runtime_propagates_phase_metadata_into_native_requests(monke
     runtime.planner_runtime = _Planner()
 
     class _JointState:
+        def __init__(self, positions, joint_names):
+            self.position = positions
+            self.joint_names = tuple(joint_names)
+
         @classmethod
         def from_position(cls, positions, joint_names):
-            return (positions, tuple(joint_names))
+            return cls(positions, joint_names)
+
+        def unsqueeze(self, dim):
+            return type(self)(np.expand_dims(self.position, dim), self.joint_names)
 
     fake_curobo_types = types.ModuleType("curobo.types")
     fake_curobo_types.JointState = _JointState
@@ -796,6 +803,56 @@ def test_controller_runtime_propagates_phase_metadata_into_native_requests(monke
     assert cspace_request.collision_policy is CollisionPolicy.WORLD_TRANSIT
     assert cspace_request.completion_policy == "joint_tolerance"
     assert cspace_request.replan_policy == "forbidden"
+
+
+def test_motion_runtime_batches_single_cspace_goal_and_live_start(monkeypatch):
+    class _JointState:
+        def __init__(self, positions, joint_names):
+            self.position = np.asarray(positions)
+            self.joint_names = tuple(joint_names)
+
+        @classmethod
+        def from_position(cls, positions, joint_names):
+            return cls(positions, joint_names)
+
+        def unsqueeze(self, dim):
+            return type(self)(np.expand_dims(self.position, dim), self.joint_names)
+
+    class _Planner:
+        scene_revision = 0
+        joint_names = ["joint_0"]
+
+        def __init__(self):
+            self.request = None
+
+        def ensure_planner(self):
+            return self
+
+        def plan_cspace(self, request):
+            self.request = request
+            return request
+
+    fake_curobo_types = types.ModuleType("curobo.types")
+    fake_curobo_types.JointState = _JointState
+    monkeypatch.setitem(sys.modules, "curobo.types", fake_curobo_types)
+
+    planner = _Planner()
+    runtime = object.__new__(MotionPlannerRuntime)
+    runtime.max_plan_attempts = 4
+    runtime.single_graph_attempt = 4
+    runtime.robot_port = types.SimpleNamespace(
+        robot=types.SimpleNamespace(get_joints_state=lambda: "sim-state"),
+        tensor_args=types.SimpleNamespace(
+            to_device=lambda value: np.asarray(value, dtype=float)
+        ),
+    )
+    runtime.arm_joint_state = lambda _state: _JointState([0.1], ["joint_0"])
+    runtime.planner_runtime = planner
+
+    request = runtime.plan_cspace([0.2])
+
+    assert request.goal_positions.position.shape == (1, 1)
+    assert request.start_state.position.shape == (1, 1)
 
 
 def test_motion_runtime_maps_single_and_batch_kwargs_to_curobo_v2(monkeypatch):
@@ -885,9 +942,16 @@ def test_motion_runtime_maps_single_and_batch_kwargs_to_curobo_v2(monkeypatch):
     runtime.planner_runtime = planner_runtime
 
     class _JointState:
+        def __init__(self, positions, joint_names):
+            self.position = positions
+            self.joint_names = tuple(joint_names)
+
         @classmethod
         def from_position(cls, positions, joint_names):
-            return types.SimpleNamespace(position=positions, joint_names=joint_names)
+            return cls(positions, joint_names)
+
+        def unsqueeze(self, dim):
+            return type(self)(np.expand_dims(self.position, dim), self.joint_names)
 
     fake_curobo_types = types.ModuleType("curobo.types")
     fake_curobo_types.JointState = _JointState

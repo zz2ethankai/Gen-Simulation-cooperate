@@ -1,6 +1,6 @@
 """Skills module initialization."""
 
-from core.skills.base_skill import SKILL_DICT, SkillBindings, SkillExecutorPort
+from core.skills.base_skill import SKILL_DICT
 
 from .approach_rotate import Approach_Rotate
 from .artpreplan import Artpreplan
@@ -59,8 +59,6 @@ __all__ = [
     "Scan",
     "Track",
     "Wait",
-    "SkillBindings",
-    "SkillExecutorPort",
     "get_skill_cls",
     "get_skill_dict",
 ]

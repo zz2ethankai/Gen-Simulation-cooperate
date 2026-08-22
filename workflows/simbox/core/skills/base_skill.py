@@ -1,48 +1,18 @@
 import logging
 import re
 from abc import ABC
-from dataclasses import dataclass
-from typing import Any, Protocol, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 import numpy as np
 
+from core.planning.direct_command import dummy_forward_params
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand
 
 if TYPE_CHECKING:
-    from core.controllers.pick_planning import PickPlanningPort
-    from core.controllers.placement_planning import PlacementPlanningPort
-    from core.controllers.skill_runtime import SkillRuntimePort
+    from core.controllers.curobo.skill_runtime import SkillRuntimePort
 
 SKILL_DICT = {}
 LOGGER = logging.getLogger("de_logger")
-
-
-class SkillExecutorPort(Protocol):
-    """Typed execution surface available to a manipulation Skill.
-
-    ``SkillRuntimePort`` implements this protocol.  Keeping the protocol
-    separate makes it possible for host-side tests to provide a tiny executor
-    without constructing a simulator controller.
-    """
-
-    def execute(self, command: Any) -> Any: ...
-
-    def execution_status(self, command: Any = None) -> Any: ...
-
-
-@dataclass(frozen=True)
-class SkillBindings:
-    """The narrow ports a Skill may consume.
-
-    This is deliberately not a controller/context object.  It carries only
-    the immutable runtime view and the operation-specific planning ports.  A
-    controller façade is never stored here (or on a Skill).
-    """
-
-    skill_runtime: "SkillRuntimePort"
-    pick_planning: "PickPlanningPort | None" = None
-    placement_planning: "PlacementPlanningPort | None" = None
-    executor: SkillExecutorPort | None = None
 
 
 def register_skill(target_class):
@@ -54,37 +24,17 @@ def register_skill(target_class):
 
 
 class BaseSkill(ABC):
-    def __init__(self, bindings: SkillBindings | None = None):
+    def __init__(self):
         self.plan_flag = False
         self._target_visualizer = None
         self._target_visualization_context = {}
         self._target_visualization_handle = None
         self.skill_runtime = None
-        self.pick_planning = None
-        self.placement_planning = None
-        self.executor = None
-        if bindings is not None:
-            self.bind_skill_runtime(
-                bindings.skill_runtime,
-                pick_planning=bindings.pick_planning,
-                placement_planning=bindings.placement_planning,
-                executor=bindings.executor,
-            )
 
-    def bind_skill_runtime(
-        self,
-        skill_runtime: "SkillRuntimePort",
-        *,
-        pick_planning: "PickPlanningPort | None" = None,
-        placement_planning: "PlacementPlanningPort | None" = None,
-        executor: SkillExecutorPort | None = None,
-    ):
-        """Bind explicit typed ports without retaining a controller façade."""
+    def bind_skill_runtime(self, skill_runtime: "SkillRuntimePort"):
+        """Bind the single generic runtime contract used by this Skill."""
 
         self.skill_runtime = skill_runtime
-        self.pick_planning = pick_planning
-        self.placement_planning = placement_planning
-        self.executor = executor if executor is not None else skill_runtime
         return skill_runtime
 
     def _require_skill_runtime(self):
@@ -95,26 +45,17 @@ class BaseSkill(ABC):
             )
         return runtime
 
-    def _require_pick_planning(self):
-        planning = self.pick_planning
-        if planning is None:
-            raise RuntimeError(
-                f"{self.__class__.__name__} requires a composed PickPlanningPort"
-            )
-        return planning
-
-    def _require_placement_planning(self):
-        planning = self.placement_planning
-        if planning is None:
-            raise RuntimeError(
-                f"{self.__class__.__name__} requires a composed PlacementPlanningPort"
-            )
-        return planning
-
     def execute(self, command):
         """Execute a typed command through the narrow runtime port."""
 
         return self._require_skill_runtime().execute(command)
+
+    def dummy_forward(self, arm_action, gripper_state, *args, **kwargs):
+        """Send a direct joint action through the controller compatibility API."""
+
+        return self._require_skill_runtime().dummy_forward(
+            arm_action, gripper_state, *args, **kwargs
+        )
 
     def bind_target_visualizer(self, visualizer, **context):
         """Bind optional observational target rendering without changing Skill APIs."""
@@ -273,10 +214,28 @@ class BaseSkill(ABC):
         )
 
     def command_complete(self, command):
-        """Read completion from the typed controller status boundary."""
+        """Read completion from either the typed or direct command boundary."""
+
+        legacy_params = dummy_forward_params(command)
+        if legacy_params is not None:
+            runtime = self._require_skill_runtime()
+            target = np.asarray(legacy_params["arm_action"], dtype=float).reshape(-1)
+            state_getter = getattr(self.robot, "get_joints_state", None)
+            if not callable(state_getter):
+                return False
+            positions = getattr(state_getter(), "positions", None)
+            if hasattr(positions, "detach"):
+                positions = positions.detach().cpu().numpy()
+            if positions is None:
+                return False
+            current = np.asarray(positions, dtype=float)[runtime.arm_indices]
+            tolerance = float(legacy_params.get("t_eps", 5e-3))
+            return bool(np.linalg.norm(current - target) < tolerance)
 
         if not isinstance(command, MotionPhaseCommand):
-            raise TypeError(f"{self.__class__.__name__} emits typed motion commands only")
+            raise TypeError(
+                f"{self.__class__.__name__} emits MotionPhaseCommand or dummy_forward commands"
+            )
         runtime = self._require_skill_runtime()
         status = runtime.execution_status(command)
         if isinstance(status, dict):

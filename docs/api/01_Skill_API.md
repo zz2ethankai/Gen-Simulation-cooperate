@@ -928,10 +928,6 @@ horizontal + `position_constraint: gripper` 不读取 `pre_place_align/place_ali
 | `move_steps` | `int` | 否 | `50` | 必须 `> 0`，否则除零。 |
 | `t_eps` | `float` | 否 | `0.088` | 关节向量范数阈值。 |
 | `gripper_state` | `float` | 否 | 机器人当前值 | 建议 `1/-1`。 |
-| `physics_t_eps` | `float` | 否 | `0.01` | physics-schema 携带物体回 home 的位置容差（heuristic_skill.py:301）。 |
-| `physics_o_eps` | `float` | 否 | `0.05` | 对应姿态角距离容差，rad（heuristic_skill.py:303）。 |
-| `grasp_contact_threshold_n` | `float` | 否 | `0.0` | 携带物体回 home 时的夹爪接触力阈值（heuristic_skill.py:375）。 |
-| `physics_home_progress_candidates` | `list[float]` | 否 | `[1.0, 0.75, 0.5, 0.25, 0.125]` | 携带物体回 home 时按 `current + progress * (home - current)` 生成候选关节目标，取首个可解者；取值必须在 `(0, 1]`（heuristic_skill.py:240-257）。 |
 
 | mode | `value` 语义 | 缺省值 |
 | --- | --- | --- |
@@ -940,8 +936,8 @@ horizontal + `position_constraint: gripper` 不读取 `pre_place_align/place_ali
 | `rel_qpos` | 名称虽表示相对关节，但当前没有加当前关节值，实际直接把 `value` 当绝对目标。 | 全零绝对目标 |
 | `rel_ee` | 当前计算 `T_target = value @ T_current`，再通过 controller plan 求关节。 | 单位阵 |
 
-`rel_ee` 不支持 batch controller。插值系数被乘以 1.25，因此轨迹会越过目标，成功时再提前清空命令。
-physics-schema 的 `home` 模式要求物体保持 attach 且夹爪闭合（`gripper_state >= 0` 会抛 `RuntimeError`）。
+`rel_ee` 不支持 batch controller。`home`、`abs_qpos` 和 `rel_qpos` 都直接生成关节空间线性插值；`home` 的最后一个
+路点严格等于 home joints。`home` 不读取 attached object/contact，也不调用 Physics-schema c-space planner。
 
 ```yaml
 # 来源：configs/tasks/mobile_manipulation/split_aloha/navigate_pick_place_boxed_beverage.yaml
@@ -955,10 +951,26 @@ physics-schema 的 `home` 模式要求物体保持 attach 且夹爪闭合（`gri
 
 | 字段 | 类型 | 必填 | 默认值 | 有效范围与语义 |
 | --- | --- | --- | --- | --- |
-| `gripper_state` | `float` | 否 | 机器人当前值 | 建议 `1/-1`。 |
+| `gripper_state` | `float` | 否 | 机器人当前值 | 只能使用 `1/-1`；分别表示 open/close。 |
+| `move_steps` | `int` | 否 | `50` | 直接关节插值步数，必须 `> 0`。 |
 
-其余行为不可配置：固定生成 50 步，分母为 40，完成阈值固定 `0.088`。因此同样存在 25% 越过目标的轨迹，
-且当前 Task YAML 未使用它（无真实片段可引用）。
+该 Skill 通过 controller 的 `dummy_forward` 接口逐步下发关节空间线性插值，默认生成 50 步，最后一步正好到达
+配置的 home joints；完成阈值为关节向量范数 `0.088`。它不创建或激活 Physics-schema 碰撞规划上下文。
+
+`dummy_forward` 是命令级的执行接口，不是 skill 名单限制。任意需要自己生成关节轨迹的 Skill 都可以返回：
+
+```python
+(
+    ee_position,
+    ee_orientation,
+    "dummy_forward",
+    {"arm_action": arm_joints, "gripper_state": 1.0},
+)
+```
+
+controller 的 `dummy_forward(arm_action, gripper_state, *args, **kwargs)` 只负责把当前关节向量和夹爪状态
+转换成 articulation action；插值、路点完成判定由 Skill 负责。该路径不经过 Physics-schema 碰撞规划、自动
+replan 或执行安全 precheck，因此只应在调用方已经确定动作路径可直接执行时使用。
 
 ### 7.8 按关节索引直接设置或增量控制：`joint__ctrl`
 
@@ -1363,7 +1375,7 @@ articulated info 和 planner 实现一致。
 | `flip.ee_axis` | 不读取。 |
 | `pour__water__succ.gripper` | 不读取。 |
 | `approach__rotate.dummy_forward` | 已弃用；参数会被忽略并发出弃用提示。 |
-| `home` | 固定步数且过冲；优先用 `heuristic__skill mode: home`，但后者也有 1.25 插值系数。 |
+| `home` | 直接关节插值，最后一步精确到 home joints；`heuristic__skill mode: home` 同样走 `dummy_forward`，不使用 Physics-schema carry-home。 |
 | `rotate` | 已注册但当前 Task YAML 无使用样例，需资产级 runtime 验证。 |
 | `place` 无合法姿态候选 | 会回退到未过滤随机姿态，不会因过滤为空自动失败。 |
 | `goto__pose` / `track` / `artpreplan` | 成功判定使用位置或姿态任一满足，而不是同时满足。 |

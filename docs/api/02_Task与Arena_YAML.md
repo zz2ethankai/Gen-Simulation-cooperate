@@ -164,17 +164,16 @@ fluid: <Fluid>                             # optional
 
 | 字段 | 类型 | 默认值 | 语义 |
 | --- | --- | --- | --- |
-| `mode` | `str` | `physics_schema` | 碰撞世界模式，候选见下。skill 级解析由 `resolve_skill_collision_world_mode` 完成：`navigate`、`observe_hold` 等非操作 skill 固定解析为 `passthrough`；`pick`、`place`、`pick_plan_probe` 固定为 `physics_schema`；其余 skill 默认 `legacy_stage_scan`（显式请求 `legacy_stage_scan` 时也保持）。task 级由 `resolve_collision_world_mode` 决定：`auto` 时无物理操作 skill → `legacy_stage_scan`，全为物理 skill → `physics_schema`，混用 → `hybrid`。`simbox_dual_workflow.py:414-451` 消费：仅 `physics_schema`（含 `hybrid` 的物理子集）创建 `CollisionSceneManager`，`legacy_stage_scan` 为 `None`，其余抛 `ValueError`。 |
+| `mode` | `str` | `physics_schema` | 操作类规划唯一使用 Physics schema；旧 `legacy_stage_scan` / `hybrid` 值只产生弃用警告并被规范化为 `physics_schema`。skill 级解析由 `resolve_skill_collision_world_mode` 完成：`navigate`、`observe_hold` 等非操作 skill 为 `passthrough`，其他操作 skill 为 `physics_schema`。`home` Skill 与 `heuristic__skill(mode: home)` 另走 `direct_execution`，不创建或切换碰撞规划世界。 |
 | `strict` | `bool` | `true` | `CollisionSceneManager` 读取（`collision_scene_manager.py:132`）。`true` 时遇到缺失/不支持碰撞体直接报错；`false` 时记入 `schema_exclusions` 降级。 |
 | `exact_exclusions` | `list[dict]` | `[]` | 精确排除项，每项必须含 `prim_path` 与 `reason`；路径必须是完整绝对 Prim 路径、`reason` 非空、不可重复（`validate_exact_exclusions`，`collision_scene_manager.py:99`）。 |
 
-`mode` 候选值：
+`mode` 说明：
 
 | 值 | 语义 |
 | --- | --- |
-| `physics_schema` | 按 Physics 刚体精确映射 CuRobo 世界；仅 `pick` / `place` / `pick_plan_probe` 已迁移。 |
-| `legacy_stage_scan` | 旧 stage 扫描碰撞世界，无 `CollisionSceneManager`。 |
-| `hybrid` | `physics_schema` + 非迁移 skill 逐 skill 回落 `legacy_stage_scan`。 |
+| `physics_schema` | 按 Physics 刚体精确映射 CuRobo 世界；`pick` / `place` / `pick_plan_probe` 使用该规划契约。 |
+| `legacy_stage_scan` / `hybrid` | 已废弃；不会选择旧运行时世界，规范化时仅产生弃用警告。 |
 | `passthrough` | 仅用于 skill 级解析（导航/观测类），不是 task 级模式。 |
 
 #### `pick_place`
@@ -197,7 +196,7 @@ fluid: <Fluid>                             # optional
 | 字段 | 类型 | 默认值 | 语义 |
 | --- | --- | --- | --- |
 | `enabled` | `bool` | `true` | 预检总开关；缺省时等于 `task_uses_physics_schema(mode)`。 |
-| `max_waypoint_stride` | `int` | `2` | 计划路点最大步长（`template_controller.py:372`）。 |
+| `max_waypoint_stride` | `int` | `2` | 计划路点最大步长（`curobo/controller.py`）。 |
 | `max_replans_per_phase` | `int` | `2` | 每个 phase 允许的重规划次数上限（`execution_supervisor.py:20`）。 |
 | `hold_steps_before_replan` | `int` | `5` | 重规划前保持步数（`execution_supervisor.py:21`）。 |
 | `dynamic_sync_interval_steps` | `int` | `5` | 动态障碍物位姿同步间隔（`sync_dynamic_poses`，`simbox_dual_workflow.py:1909`）。 |
@@ -211,9 +210,9 @@ fluid: <Fluid>                             # optional
 | `PHYSICS_SCHEMA_SKILLS` | `{pick, place}` | pick 要求恰好 1 个 object，place 恰好 2 个。 |
 | `VALIDATION_ONLY_SKILLS` | `{pick_plan_probe}` | 仅校验/探测；要求 `metadata.workspace_probe` 且恰好 1 个 object。 |
 | `NON_MANIPULATION_SKILLS` | `{navigate, observe_hold}` | 不参与操作类校验，skill 级模式固定 `passthrough`。 |
-| `ATTACHED_PHYSICS_SCHEMA_SKILL_MODES` | `{("heuristic__skill", "home")}` | 携带物体时 home 仍留在物理世界。 |
+| `DIRECT_EXECUTION_MODE` | `direct_execution` | `home` 类 Skill 的直接关节动作模式；不创建或切换碰撞规划世界。 |
 
-`validate_planning_contract` 拒绝：非法 mode、未迁移 skill 进入 `physics_schema`/`hybrid`（hybrid 允许 legacy 回落）、同一 phase 双臂并发操作（`UNSUPPORTED_CONCURRENT_MANIPULATION`）。
+`validate_planning_contract` 校验 Physics-schema 操作的对象数量和 DAG 约束；`direct_execution` 是 Skill 的执行模式，不属于 collision-world mode。
 
 ---
 

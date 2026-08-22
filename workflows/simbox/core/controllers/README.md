@@ -2,6 +2,74 @@
 
 Template-based arm controllers for CuRobo motion planning. All arm controllers inherit from `TemplateController` and customize behavior via overrides.
 
+## Directory layout
+
+The controller package separates shared CuRobo implementation from robot
+adapters:
+
+- `core/controllers/curobo/` contains `TemplateController` and the shared
+  execution, scene setup, planning-query, attachment, phase, trajectory, and
+  runtime modules.
+- `core/controllers/*_controller.py` contains the registered robot-specific
+  subclasses (`FR3Controller`, `PandaOmronController`, `Lift2Controller`, and
+  so on).
+- `core/controllers/controller_registry.py` contains `ArmSpec` and controller
+  registration. Skill-facing ports remain in the CuRobo package because they
+  are composed by the shared controller runtime.
+
+The shared modules are named by responsibility rather than by repeating the
+`controller_` prefix: for example, `curobo/execution.py`,
+`curobo/scene_setup.py`, `curobo/motion_phases.py`, and
+`curobo/phase_execution.py`. Import `TemplateController` from
+`core.controllers.curobo.controller`; the parent package keeps its lazy
+`core.controllers.TemplateController` export for callers that use the public
+registry API.
+
+| Former module | Responsibility module |
+|---|---|
+| `controller_component.py` | `curobo/components.py` |
+| `controller_execution.py` | `curobo/execution.py` |
+| `controller_setup.py` | `curobo/scene_setup.py` |
+| `controller_phases.py` | `curobo/motion_phases.py` |
+| `controller_state_planning.py` | `curobo/state_planning.py` |
+| `controller_planning_queries.py` | `curobo/planning_queries.py` |
+| `controller_attachment.py` | `curobo/attachments.py` |
+| `phase_executor.py` | `curobo/phase_execution.py` |
+| `trajectory_boundary.py` | `curobo/trajectory.py` |
+| `template_controller.py` | `curobo/controller.py` |
+| `runtime.py` | `curobo/runtime.py` |
+| `skill_runtime.py` | `curobo/skill_runtime.py` |
+| `base_controller.py` | `controller_registry.py` |
+
+## Direct joint execution
+
+Structured manipulation uses `execute(MotionPhaseCommand)` and the Physics-schema
+planner. Skills that own a direct joint interpolation may instead call
+`dummy_forward(arm_action, gripper_state, *args, **kwargs)` on the controller
+(or the corresponding `SkillRuntimePort` method). It returns the normal
+articulation action and does not invoke c-space planning. The Skill is
+responsible for generating interpolation points and deciding when each point is
+complete. The workflow accepts the legacy command form
+`(ee_position, ee_orientation, "dummy_forward", params)` as well, where
+`params` contains `arm_action` and `gripper_state`.
+
+This interface is available to any Skill; it is not selected by a skill-name
+allowlist. It bypasses Physics-schema collision planning, automatic replanning,
+and the Physics-schema execution-safety precheck, so callers must only use it
+for paths whose safety has already been established.
+
+## Pick/Place responsibility boundary
+
+Pick and Place keep the task semantics: they sample and rank grasp/place
+candidate poses, apply task-specific geometry constraints, and emit the
+pre-grasp, post-grasp, pre-place, post-place, and gripper phases.  Both use the
+same `SkillRuntimePort` for the generic `plan_pose*` queries, FK/path metrics,
+and attachment synchronization; the runtime is the sole owner of collision-
+world transitions.  There is no
+controller façade split by operation type: the controller owns the generic
+CuRobo/scene primitives, while the Skills own operation-specific candidate and
+phase semantics.
+
 ## Available controllers
 
 | Controller | Robot | Notes |

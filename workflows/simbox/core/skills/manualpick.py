@@ -10,7 +10,6 @@ from core.utils.asset_path_utils import resolve_asset_path
 from core.utils.constants import CUROBO_BATCH_SIZE
 from core.utils.transformation_utils import poses_from_tf_matrices
 from omegaconf import DictConfig
-from isaacsim.core.api.controllers import BaseController
 from isaacsim.core.api.robots.robot import Robot
 from isaacsim.core.api.tasks import BaseTask
 from isaacsim.core.utils.transformations import tf_matrix_from_pose
@@ -25,13 +24,12 @@ class Manualpick(BaseSkill):
         task: BaseTask,
         cfg: DictConfig,
         *args,
-        pick_planning=None,
         **kwargs,
     ):
         super().__init__()
         self.robot = robot
-        self.bind_skill_runtime(skill_runtime, pick_planning=pick_planning)
-        self.planning = self._require_pick_planning()
+        self.bind_skill_runtime(skill_runtime)
+        self._require_skill_runtime()
         self.task = task
         self.skill_cfg = cfg
         object_name = self.skill_cfg["objects"][0]
@@ -45,7 +43,7 @@ class Manualpick(BaseSkill):
         )
         sparse_grasp_poses = np.load(grasp_pose_path)
         grasp_scale = self.skill_cfg.get("grasp_scale", 1)
-        lr_arm = self.planning.lr_name
+        lr_arm = self.skill_runtime.lr_name
         self.T_obj_ee, self.scores = self.robot.pose_post_process_fn(
             sparse_grasp_poses, lr_arm=lr_arm, grasp_scale=grasp_scale
         )
@@ -67,7 +65,7 @@ class Manualpick(BaseSkill):
             raise ValueError(f"final_gripper_state must be 1 or -1, got {final_gripper_state}")
 
     def _get_armbase_world_tf(self):
-        return self.planning.arm_base_transform()
+        return self.skill_runtime.arm_base_transform()
 
     def _get_object_world_tf(self):
         get_obj_world_pose = getattr(self.pick_obj, "get_world_pose", None)
@@ -88,7 +86,7 @@ class Manualpick(BaseSkill):
             axis_index = {"x": 0, "y": 1, "z": 2}
             rotate_axis = self.skill_cfg.get("adjust_rotate_axis", "x")
 
-            if self.planning.orientation_adjustment_enabled:
+            if getattr(self.skill_runtime, "orientation_adjustment_enabled", True):
                 num_poses = T_base_ee_grasps.shape[0]
                 adjust_angle_list_cfg = self.skill_cfg.get("adjust_angle_list_cfg", [-15, 15, 7])
                 adjust_angle_list = np.linspace(
@@ -191,7 +189,7 @@ class Manualpick(BaseSkill):
         adjust_trans_offset = self.skill_cfg.get("adjust_trans_offset", [0, 0, 0])
         T_base_ee_grasps[:, :3, 3] += adjust_trans_offset
         T_base_ee_pregrasps = deepcopy(T_base_ee_grasps)
-        approach_axis = self.planning.grasp_approach_axis
+        approach_axis = getattr(self.skill_runtime, "grasp_approach_axis", 2)
         T_base_ee_pregrasps[:, :3, 3] -= (
             T_base_ee_pregrasps[:, :3, approach_axis]
             * self.skill_cfg.get("pre_grasp_offset", 0.1)
@@ -369,11 +367,17 @@ class Manualpick(BaseSkill):
         return contact, indices
 
     def is_feasible(self, th=5):
-        return self.planning.plan_failure_count <= th
+        return int(
+            getattr(
+                self.skill_runtime,
+                "plan_failure_count",
+                getattr(self.skill_runtime, "num_plan_failed", 0),
+            )
+        ) <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        return self.planning.phase_complete(self.manip_list[0])
+        return self.skill_runtime.phase_complete(self.manip_list[0])
 
     def is_done(self):
         if len(self.manip_list) == 0:

@@ -12,7 +12,7 @@ SIMBOX_ROOT = ROOT / "workflows" / "simbox"
 if str(SIMBOX_ROOT) not in sys.path:
     sys.path.insert(0, str(SIMBOX_ROOT))
 
-from core.controllers.placement_planning import PlacementPlanningPort  # noqa: E402
+from core.controllers.curobo.placement_planning import PlacementPlanningPort  # noqa: E402
 from core.planning.collision_scene_manager import PlannerScenePort  # noqa: E402
 from core.planning.domain_types import CollisionPolicy  # noqa: E402
 

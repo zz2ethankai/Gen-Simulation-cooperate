@@ -2,7 +2,7 @@
 
 > 覆盖时间：2026-06-10 ~ 2026-08-06
 > 涉及提交：36d7f46, 6f99314, 98e558a, d5b563e（c8095b8 为 d5b563e 在 isaac-sim-6-curobo-v2 分支上的同一 hash）
-> 涉及代码：workflows/simbox/core/skills/pick.py, workflows/simbox/core/skills/place.py, workflows/simbox/core/controllers/template_controller.py, workflows/simbox/core/utils/constants.py, workflows/simbox/core/configs/robots/panda_omron_virtual.yaml, agent/config.yaml, scripts/visualize_place_orientation_filters.py
+> 涉及代码：workflows/simbox/core/skills/pick.py, workflows/simbox/core/skills/place.py, workflows/simbox/core/controllers/curobo/controller.py, workflows/simbox/core/utils/constants.py, workflows/simbox/core/configs/robots/panda_omron_virtual.yaml, agent/config.yaml, scripts/visualize_place_orientation_filters.py
 
 ## 背景
 
@@ -46,9 +46,9 @@ Pick 失败要区分两个阶段：候选生成阶段看 pick_plan_snapshot.json
 ### 2026-08-06
 
 #### 2026-08-06 · place 连续下降执行闭环（d5b563e）
-- 改动：agent/config.yaml 的 planning.pick_place 新增 place_continuous_descent: true、place_terminal_step_m: 0.01、place_terminal_tolerance_m: 0.005、place_terminal_max_path_length_ratio: 1.5、place_terminal_max_path_deviation_m: 0.01；template_controller.py 新增 _validate_continuous_place_plan()，对 TERMINAL_PLACE_DESCENT 的候选计划做 FK 检查（路径长度比、按 ds_ratio 抽样的最大步长、直线最大偏离），不达标即拒绝并计入 num_plan_failed；TERMINAL_PLACE_DESCENT 携带 contact_complete 时停止剩余下降并直接完成，新增 complete_terminal_place_on_contact()；place.py 新增 _resolve_terminal_step()/ _resolve_terminal_tolerance()，tolerance 超过 terminal step 时报错。
+- 改动：agent/config.yaml 的 planning.pick_place 新增 place_continuous_descent: true、place_terminal_step_m: 0.01、place_terminal_tolerance_m: 0.005、place_terminal_max_path_length_ratio: 1.5、place_terminal_max_path_deviation_m: 0.01；curobo/controller.py 新增 _validate_continuous_place_plan()，对 TERMINAL_PLACE_DESCENT 的候选计划做 FK 检查（路径长度比、按 ds_ratio 抽样的最大步长、直线最大偏离），不达标即拒绝并计入 num_plan_failed；TERMINAL_PLACE_DESCENT 携带 contact_complete 时停止剩余下降并直接完成，新增 complete_terminal_place_on_contact()；place.py 新增 _resolve_terminal_step()/ _resolve_terminal_tolerance()，tolerance 超过 terminal step 时报错。
 - 原因：快速下降计划可能绕远或单帧推进过大；5 mm 目标把完成容差当 plan 触发容差会导致无 plan 无完成，形成无限 hold。
-- 文件：agent/config.yaml, workflows/simbox/core/controllers/template_controller.py, workflows/simbox/core/skills/place.py
+- 文件：agent/config.yaml, workflows/simbox/core/controllers/curobo/controller.py, workflows/simbox/core/skills/place.py
 - 验证：新增 test/unit/test_place_continuous_descent.py、test/unit/test_place_terminal_speed.py。
 
 ## 调参经验（来自 PANDA_OMRON_PLACE_ORIENTATION_FILTER_GUIDE，无提交日期）

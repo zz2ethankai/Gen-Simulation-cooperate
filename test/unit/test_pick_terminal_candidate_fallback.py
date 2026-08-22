@@ -30,7 +30,7 @@ from core.planning.domain_types import (  # noqa: E402
     CollisionPolicy,
     PlanResult,
 )
-from core.controllers.pick_planning import PickPlanningPort  # noqa: E402
+from core.controllers.curobo.pick_planning import PickPlanningPort  # noqa: E402
 from core.planning.collision_scene_manager import PlannerScenePort  # noqa: E402
 from core.planning.grasp_plan_evaluator import (  # noqa: E402
     GraspPlanEvaluation,

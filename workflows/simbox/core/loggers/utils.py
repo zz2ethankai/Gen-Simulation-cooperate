@@ -8,7 +8,7 @@ from core.utils.transformation_utils import get_fk_solution, pose_to_6d
 from .lmdb_logger import LmdbLogger
 
 if TYPE_CHECKING:
-    from core.controllers.skill_runtime import SkillRuntimePort
+    from core.controllers.curobo.skill_runtime import SkillRuntimePort
 
 
 class _LoggingBaseBridge(Protocol):

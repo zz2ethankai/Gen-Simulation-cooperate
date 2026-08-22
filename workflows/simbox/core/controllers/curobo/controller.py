@@ -13,19 +13,17 @@ from isaacsim.core.api import World
 from isaacsim.core.api.controllers import BaseController
 from isaacsim.core.api.tasks import BaseTask
 
-from core.controllers.base_controller import ArmSpec
-from core.controllers.controller_component import (
+from core.controllers.controller_registry import ArmSpec
+from core.controllers.curobo.components import (
     ComponentPort,
     MutableExecutionState,
     PlanningConfig,
     _state_property,
     wire_controller_components,
 )
-from core.controllers.phase_executor import PhaseExecutor
-from core.controllers.pick_planning import compose_pick_planning_port
-from core.controllers.placement_planning import compose_placement_planning_port
-from core.controllers.runtime import ExecutionPort, MotionPlannerRuntime, RobotPort
-from core.controllers.skill_runtime import compose_skill_runtime_port
+from core.controllers.curobo.phase_execution import PhaseExecutor
+from core.controllers.curobo.runtime import ExecutionPort, MotionPlannerRuntime, RobotPort
+from core.controllers.curobo.skill_runtime import compose_skill_runtime_port
 from core.planning.motion_command import MotionPhaseCommand
 from core.planning.native_planner_factory import PlannerBuildConfig
 from core.planning.collision_scene_manager import PlannerScenePort
@@ -36,11 +34,11 @@ class _TypedIsaacController(BaseController):
     """Bridge Isaac's lifecycle hook to the typed SimBox command contract.
 
     Isaac's ``BaseController`` requires ``forward`` for its articulation
-    controller interface.  SimBox no longer accepts the historical tuple or
-    string-dispatch payloads there; its public operation is ``execute`` with
-    a :class:`MotionPhaseCommand`.  Keeping this adapter private lets robot
-    subclasses remain configuration-only while still producing concrete
-    classes for Isaac's ABC.
+    controller interface.  The structured operation is ``execute`` with a
+    :class:`MotionPhaseCommand`; the separate public ``dummy_forward`` method
+    is retained for Skills that own direct joint interpolation.  Keeping this
+    adapter private lets robot subclasses remain configuration-only while
+    still producing concrete classes for Isaac's ABC.
     """
 
     @abstractmethod
@@ -48,7 +46,7 @@ class _TypedIsaacController(BaseController):
         """Execute one typed motion command."""
 
     def forward(self, command: MotionPhaseCommand):
-        """Adapt Isaac's hook without reintroducing legacy dispatch."""
+        """Adapt Isaac's hook for structured commands."""
 
         return self.execute(command)
 
@@ -190,8 +188,6 @@ class TemplateController(_TypedIsaacController):
         self._phases = components.phases
         self._execution = components.execution
         self._attachment = components.attachment
-        self.pick_planning = None
-        self.placement_planning = None
         for name in (
             "raw_js_names", "cmd_js_names", "arm_indices", "gripper_indices",
             "reference_prim_path", "robot_base_path", "robot_ee_path", "lr_name",
@@ -240,26 +236,6 @@ class TemplateController(_TypedIsaacController):
             self.runtime.robot_port.obstacle_pose = lambda path: self.collision_scene_manager._port_obstacle_pose(self._scene_port, path)
             self._setup.scene_port = self._phases.scene_port = self._scene_port
             self.collision_scene_manager.bind_scene_port(self._scene_port)
-            self.pick_planning = compose_pick_planning_port(
-                self._scene_port, self.collision_scene_manager, self._setup,
-                self._phases, self._execution, self.robot_file,
-                self.batch_capability, self.runtime.plan_pose_batch,
-                self._planning_queries.plan_pose_result,
-                self._planning_queries.plan_pose_from_path,
-                self._planning_queries.measure_cartesian_path,
-            )
-            self.placement_planning = compose_placement_planning_port(
-                self._scene_port,
-                self.collision_scene_manager,
-                execution=self._execution,
-                attachment=self._attachment,
-                runtime=self.runtime,
-                planning_queries=self._planning_queries,
-                arm_base_transform=self._phases.get_pick_armbase_transform,
-                setup=self._setup,
-                robot_file=self.robot_file,
-                batch_capability=self.batch_capability,
-            )
         # Skills receive one narrow, immutable runtime view after scene binding.
         self.skill_runtime = compose_skill_runtime_port(
             robot=self.robot, runtime=self.runtime, execution_state=self.execution_state,
@@ -273,9 +249,24 @@ class TemplateController(_TypedIsaacController):
             arm_base_pose=self._execution.get_armbase_pose,
             compute_fk=getattr(self.runtime, "compute_fk", None),
             initial_ee_pose=lambda: getattr(self._setup, "T_world_ee_init", None),
+            plan_pose=self.runtime.plan_pose,
+            plan_pose_batch=self.runtime.plan_pose_batch,
+            plan_pose_result=self._planning_queries.plan_pose_result,
+            plan_pose_from_path=self._planning_queries.plan_pose_from_path,
+            plan_pose_from_joint_positions=(
+                self._planning_queries.plan_pose_from_joint_positions
+            ),
+            measure_cartesian_path=self._planning_queries.measure_cartesian_path,
+            forward_kinematic=self._execution.forward_kinematic,
+            arm_base_transform=self._phases.get_pick_armbase_transform,
+            phase_complete=self._execution.is_phase_command_complete,
+            sync_native_batch_attachment=self._attachment.sync_native_batch_attachment,
+            update_pose_cost_metric=self._setup.update_pose_cost_metric,
+            complete_contact_phase=self._execution.complete_terminal_place_on_contact,
             execution_status=self._execution.execution_status,
             command_status=self._execution._command_status,
             execute=getattr(self.runtime, "execute", None),
+            dummy_forward=getattr(self.runtime, "dummy_forward", None),
             hold=getattr(self.runtime, "hold", None),
             clear_plan_and_hold=self._execution.clear_plan_and_hold,
             push_timing_scope=self.push_timing_scope,
@@ -351,6 +342,7 @@ class TemplateController(_TypedIsaacController):
             ),
             ExecutionPort(
                 forward_phase_command=self._execution.forward_phase_command,
+                dummy_forward=self._execution.dummy_forward,
                 execution_status=self._execution.execution_status,
                 hold_action=self._execution.hold_action,
             ),
@@ -363,6 +355,10 @@ class TemplateController(_TypedIsaacController):
         if not isinstance(command, MotionPhaseCommand):
             raise TypeError("TemplateController.execute accepts MotionPhaseCommand only")
         return self.runtime.execute(command)
+    def dummy_forward(self, arm_action, gripper_state, *args, **kwargs):
+        """Public direct-joint compatibility interface for interpolation Skills."""
+
+        return self.runtime.dummy_forward(arm_action, gripper_state, *args, **kwargs)
     def command_status(self, command: Any = None):
         return self.runtime.command_status(command)
     def execution_status(self, command: Any = None):

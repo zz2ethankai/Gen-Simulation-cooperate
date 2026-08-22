@@ -7,11 +7,11 @@ from typing import Any, Optional
 
 import numpy as np
 import torch
-from core.controllers.phase_executor import ExecutionStatus
-from core.controllers.trajectory_boundary import execution_trajectory_tensor
+from core.controllers.curobo.phase_execution import ExecutionStatus
+from core.controllers.curobo.trajectory import execution_trajectory_tensor
 from core.planning.domain_types import CollisionPolicy, CommandStatus
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand
-from core.controllers.controller_component import ControllerComponent
+from core.controllers.curobo.components import ControllerComponent
 
 LOGGER = logging.getLogger("de_logger")
 
@@ -38,14 +38,53 @@ class ControllerExecution(ControllerComponent):
             raise ValueError(f"unsupported typed gripper action: {action!r}") from exc
         handler()
 
+    def dummy_forward(self, arm_action, gripper_state, *args, **kwargs):
+        """Return one direct articulation action without invoking the planner.
+
+        This is the compatibility execution boundary used by legacy
+        interpolation Skills.  The caller owns interpolation and completion;
+        this method only applies the requested arm vector and gripper state.
+        Extra positional/keyword arguments are accepted for old Skill call
+        sites and intentionally ignored.
+        """
+
+        del args, kwargs
+        arm_action = np.asarray(arm_action, dtype=float).copy()
+        clear = getattr(self.phase_executor, "clear", None)
+        if callable(clear):
+            clear()
+        self._active_phase_command = None
+        self._phase_bookkeeping_done = True
+        self._phase_plan_started = False
+        self._phase_plan_finished = True
+        self._phase_tracking_failed = False
+        self._phase_plan_failed = False
+        self._last_command_name = "dummy_forward"
+        self._last_arm_action = arm_action.copy()
+        self._last_commanded_arm_position = arm_action.copy()
+        self.num_last_cmd += 1
+
+        gripper_state = float(gripper_state)
+        if gripper_state == 1.0:
+            self.open_gripper()
+        elif gripper_state == -1.0:
+            self.close_gripper()
+        else:
+            raise NotImplementedError(
+                "dummy_forward gripper_state must be exactly 1.0 or -1.0"
+            )
+        return self._make_action(arm_action, self.get_gripper_action())
+
     def forward_phase_command(self, command: MotionPhaseCommand):
         """Execute one structured motion phase.
 
         The normal phases are planner-backed and use the exact collision
         scene manager.  A typed ``joint_target`` follows the same phase
-        executor through a native c-space request.  Direct arm vectors are
-        accepted only for an explicitly marked measured-state passthrough
-        hold; ordinary Home/joint/articulation motion cannot bypass planning.
+        executor through a native c-space request.  The separate
+        ``dummy_forward`` method is the explicit execution-only boundary for
+        Skills such as Home that own a direct interpolation; this typed phase
+        method still reserves ``direct_joint_action`` for measured-state
+        passthrough holds.
         """
 
         first_step = self._begin_phase_command(command)

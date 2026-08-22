@@ -134,9 +134,17 @@ if [ -n "${ISAAC_CPUS}" ] && \
   exit 2
 fi
 
+if [[ "${COMPOSE_FILE}" != /* ]]; then
+  COMPOSE_FILE="${REPO_ROOT}/${COMPOSE_FILE}"
+fi
+if [ ! -f "${COMPOSE_FILE}" ]; then
+  printf 'Compose file not found: %s\n' "${COMPOSE_FILE}" >&2
+  exit 2
+fi
+
 sanitize_id() {
   local value="$1"
-  value="$(printf '%s' "${value}" | tr -cs '[:alnum:]_.-' '-')"
+  value="$(printf '%s' "${value}" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr -cs '[:alnum:]_-' '-')"
   value="${value#-}"
   value="${value%-}"
   printf '%s' "${value:-default}"
@@ -146,6 +154,11 @@ safe_stack_id="$(sanitize_id "${STACK_ID}")"
 compose_project="${INTERNDATA_DEV_COMPOSE_PROJECT:-simbox-isaac-dev-${safe_stack_id}}"
 container_name="${INTERNDATA_DEV_CONTAINER_NAME:-isaac-dev-${safe_stack_id}}"
 dev_cache_root="${INTERNDATA_DEV_CACHE_ROOT:-${REPO_ROOT}/output/isaac-dev/${safe_stack_id}}"
+
+[[ "${compose_project}" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || {
+  printf 'Invalid Docker Compose project name: %s\n' "${compose_project}" >&2
+  exit 2
+}
 
 # Keep the development stack independent from task-generation stacks while
 # preserving the same image, source checkout, assets, and Isaac runtime.

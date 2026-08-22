@@ -2,7 +2,7 @@
 
 > 覆盖时间：2026-06-07 ~ 2026-08-08
 > 涉及提交：0643d0c, 46ae176, 48f1c44, baa37d2, b2c943f
-> 涉及代码：workflows/simbox/core/utils/attach_collision_utils.py, workflows/simbox/core/objects/rigid_object.py, workflows/simbox/core/planning/collision_scene_manager.py, workflows/simbox/core/controllers/template_controller.py, workflows/simbox/core/execution/safety_monitor.py, InternDataAssets/
+> 涉及代码：workflows/simbox/core/utils/attach_collision_utils.py, workflows/simbox/core/objects/rigid_object.py, workflows/simbox/core/planning/collision_scene_manager.py, workflows/simbox/core/controllers/curobo/controller.py, workflows/simbox/core/execution/safety_monitor.py, InternDataAssets/
 
 ## 背景
 
@@ -50,9 +50,9 @@
 - 验证：checkpoint 提交。
 
 #### 2026-06-08 · fix curobo attach path resolution（46ae176）
-- 改动：template_controller.py 新增 _get_curobo_world_object_names()、_select_attach_descendants()、_resolve_attach_object_names()；attach_obj() 先把请求路径映射到 CuRobo world 中实际注册的 object name（候选按 /visual、/collisions/、原列表的顺序选择），再传给 attach_objects_to_robot，并 disable 同实体其余 descendant obstacle。
+- 改动：curobo/controller.py 新增 _get_curobo_world_object_names()、_select_attach_descendants()、_resolve_attach_object_names()；attach_obj() 先把请求路径映射到 CuRobo world 中实际注册的 object name（候选按 /visual、/collisions/、原列表的顺序选择），再传给 attach_objects_to_robot，并 disable 同实体其余 descendant obstacle。
 - 原因：请求的 Prim path（如 /Aligned/Normalize）未在 CuRobo world 注册，需要解析到实际注册的碰撞 descendant。
-- 文件：workflows/simbox/core/controllers/template_controller.py
+- 文件：workflows/simbox/core/controllers/curobo/controller.py
 - 验证：盐瓶 A/B 实验：同候选点 annulus_004 左右臂轨迹数保持 14/17 不变，attach_prim_valid 从 false 变 true，结果变 feasible。
 
 ### 2026-07-27

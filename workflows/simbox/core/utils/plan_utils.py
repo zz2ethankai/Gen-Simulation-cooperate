@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import torch
 
-from core.controllers.trajectory_boundary import normalize_named_trajectory
+from core.controllers.curobo.trajectory import normalize_named_trajectory
 
 
 class _TorchTensorArgs:

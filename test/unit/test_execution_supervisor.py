@@ -18,9 +18,9 @@ from core.execution.safety_monitor import (  # noqa: E402
     SafetyMeasurements,
     SafetyMonitor,
 )
-from core.controllers.phase_executor import ExecutionStatus  # noqa: E402
-from core.controllers.controller_component import MutableExecutionState  # noqa: E402
-from core.controllers.skill_runtime import SkillRuntimePort  # noqa: E402
+from core.controllers.curobo.phase_execution import ExecutionStatus  # noqa: E402
+from core.controllers.curobo.components import MutableExecutionState  # noqa: E402
+from core.controllers.curobo.skill_runtime import SkillRuntimePort  # noqa: E402
 from core.planning.domain_types import CommandStatus  # noqa: E402
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand  # noqa: E402
 

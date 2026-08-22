@@ -19,9 +19,9 @@ def simulation_app():
 def test_robot_ee_path_is_resolved_before_runtime_and_scene_ports(
     simulation_app, monkeypatch
 ):
-    from core.controllers.base_controller import ArmSpec
-    from core.controllers.template_controller import TemplateController
-    import core.controllers.template_controller as template_module
+    from core.controllers.controller_registry import ArmSpec
+    from core.controllers.curobo.controller import TemplateController
+    import core.controllers.curobo.controller as template_module
 
     expected_base = "/World/robot/fl_base"
     expected_ee = "/World/robot/fl_ee"

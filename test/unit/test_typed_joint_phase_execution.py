@@ -10,9 +10,9 @@ import numpy as np
 import pytest
 import torch
 
-from core.controllers.controller_component import ComponentPort
-from core.controllers.controller_execution import ControllerExecution
-from core.controllers.phase_executor import PhaseExecutor
+from core.controllers.curobo.components import ComponentPort, MutableExecutionState
+from core.controllers.curobo.execution import ControllerExecution
+from core.controllers.curobo.phase_execution import PhaseExecutor
 from core.planning.domain_types import (
     CollisionPolicy,
     JointTrajectory,
@@ -112,6 +112,36 @@ def test_joint_phase_executes_native_cspace_path_and_propagates_metadata():
     assert executor.is_phase_command_complete(command)
 
 
+def test_dummy_forward_emits_direct_joint_action_without_native_planning():
+    state = MutableExecutionState()
+    executor = ControllerExecution(
+        ComponentPort(
+            {
+                "execution_state": state,
+                "phase_executor": PhaseExecutor(),
+                "arm_indices": np.asarray([0, 1]),
+                "gripper_indices": np.asarray([2]),
+                "arm_spec": SimpleNamespace(
+                    gripper_invert=False,
+                    gripper_scale=1.0,
+                    gripper_clip_max=0.04,
+                ),
+                "lr_name": "left",
+            }
+        )
+    )
+    executor._gripper_joint_position = np.asarray([0.04])
+
+    action = executor.dummy_forward([0.2, -0.1], -1.0)
+
+    np.testing.assert_allclose(action["arm_action"], [0.2, -0.1])
+    np.testing.assert_allclose(action["gripper_action"], [0.0])
+    np.testing.assert_allclose(action["joint_positions"], [0.2, -0.1, 0.0])
+    assert executor.phase_executor.current is None
+    assert state.phase_plan_finished is True
+    np.testing.assert_allclose(state.last_commanded_arm_position, [0.2, -0.1])
+
+
 def test_plan_utils_sorts_named_list_trajectories_at_tensor_boundary():
     paths = [
         JointTrajectory(
@@ -150,7 +180,7 @@ def test_state_planning_native_fallback_returns_public_named_trajectory(monkeypa
     fake_curobo_types.JointState = _JointState
     monkeypatch.setitem(sys.modules, "curobo", fake_curobo)
     monkeypatch.setitem(sys.modules, "curobo.types", fake_curobo_types)
-    from core.controllers.controller_state_planning import ControllerStatePlanning
+    from core.controllers.curobo.state_planning import ControllerStatePlanning
 
     class _NativeTrajectory:
         def __init__(self, positions, joint_names):

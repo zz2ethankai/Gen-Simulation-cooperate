@@ -15,8 +15,8 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping
 import numpy as np
 
 from core.planning.attachment_runtime import AttachmentRuntime
-from core.controllers.phase_executor import PhaseExecutor
-from core.controllers.phase_executor import ExecutionStatus
+from core.controllers.curobo.phase_execution import PhaseExecutor
+from core.controllers.curobo.phase_execution import ExecutionStatus
 from core.planning.domain_types import (
     AttachmentSpec,
     BatchPosePlanRequest,
@@ -33,7 +33,7 @@ from core.planning.native_scene_adapter import NativeSceneAdapter
 from core.planning.planner_runtime import PlannerRuntime
 from core.planning.scene_runtime import SceneRuntime
 from core.utils.constants import CUROBO_BATCH_SIZE
-from core.controllers.trajectory_boundary import normalize_named_trajectory
+from core.controllers.curobo.trajectory import normalize_named_trajectory
 
 if TYPE_CHECKING:
     from core.planning.native_planner_factory import PlannerBuildConfig
@@ -166,6 +166,7 @@ class ExecutionPort:
     """Execution callbacks kept separate from planner/runtime state."""
 
     forward_phase_command: Callable[[Any], Any]
+    dummy_forward: Callable[..., Any]
     execution_status: Callable[[Any], ExecutionStatus]
     hold_action: Callable[[], Any]
 
@@ -603,9 +604,11 @@ class MotionPlannerRuntime:
         goal = JointState.from_position(
             self.robot_port.tensor_args.to_device(goal_positions),
             joint_names=self.planner_names,
-        )
+        ).unsqueeze(0)
         if start_state is None:
-            start_state = self.arm_joint_state(self.robot_port.robot.get_joints_state())
+            start_state = self.arm_joint_state(
+                self.robot_port.robot.get_joints_state()
+            ).unsqueeze(0)
         common = self._request_common_kwargs(
             request_metadata,
             default_profile=PlanningProfile.CSPACE,
@@ -798,6 +801,13 @@ class MotionPlannerRuntime:
 
     def execute(self, command):
         return self.execution_port.forward_phase_command(command)
+
+    def dummy_forward(self, arm_action, gripper_state, *args, **kwargs):
+        """Forward one legacy direct joint action to the articulation owner."""
+
+        return self.execution_port.dummy_forward(
+            arm_action, gripper_state, *args, **kwargs
+        )
 
     def execution_status(self, command=None) -> ExecutionStatus:
         """Expose detailed execution state without leaking planner storage."""

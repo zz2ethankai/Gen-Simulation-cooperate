@@ -14,8 +14,8 @@ import sys
 if str(SIMBOX_ROOT) not in sys.path:
     sys.path.insert(0, str(SIMBOX_ROOT))
 
-from core.controllers.pick_planning import PickPlanningPort  # noqa: E402
-from core.controllers.runtime import MotionPlannerRuntime  # noqa: E402
+from core.controllers.curobo.pick_planning import PickPlanningPort  # noqa: E402
+from core.controllers.curobo.runtime import MotionPlannerRuntime  # noqa: E402
 from core.planning.collision_scene_manager import PlannerScenePort  # noqa: E402
 from core.planning.domain_types import (  # noqa: E402
     BatchPosePlanRequest,
@@ -314,7 +314,15 @@ def test_pick_port_typed_runtime_callbacks_preserve_world_revision():
 def test_template_composes_pick_placement_and_skill_runtime_ports():
     """Template composition keeps all typed operation ports together."""
 
-    path = ROOT / "workflows" / "simbox" / "core" / "controllers" / "template_controller.py"
+    path = (
+        ROOT
+        / "workflows"
+        / "simbox"
+        / "core"
+        / "controllers"
+        / "curobo"
+        / "controller.py"
+    )
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source)
     controller = next(

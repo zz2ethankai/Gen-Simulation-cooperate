@@ -1,7 +1,13 @@
+"""Candidate-driven Place skill.
+
+Place owns only placement-target generation and the release/settle protocol.
+All collision-aware motion queries go through ``SkillRuntimePort``; the
+controller owns the CuRobo/native execution details.
+"""
+
+from copy import deepcopy
 import json
 import os
-import time
-from copy import deepcopy
 
 import numpy as np
 from core.planning.domain_types import BatchPlanResult, CollisionPolicy, PlanResult
@@ -13,8 +19,6 @@ from core.utils.iou import IoU
 from core.utils.transformation_utils import create_pose_matrices, poses_from_tf_matrices
 from core.utils.usd_geom_utils import compute_bbox
 from core.visualization.skill_target_math import ratio_box_corners
-from omegaconf import DictConfig, ListConfig, OmegaConf
-from isaacsim.core.api.controllers import BaseController
 from isaacsim.core.api.robots.robot import Robot
 from isaacsim.core.api.tasks import BaseTask
 from isaacsim.core.utils.prims import get_prim_at_path
@@ -24,16 +28,18 @@ from isaacsim.core.utils.transformations import (
     tf_matrix_from_pose,
 )
 from isaacsim.core.utils.xforms import get_world_pose
+from omegaconf import DictConfig, ListConfig, OmegaConf
 from scipy.spatial.transform import Rotation as R
 
 
-class PlacePlanningError(RuntimeError):
-    """A collision-safe Place target could not be selected."""
+class PlaceCandidateError(RuntimeError):
+    """Raised when none of the generated placement targets can be planned."""
 
 
-# pylint: disable=consider-using-generator,too-many-public-methods,unused-argument
 @register_skill
 class Place(BaseSkill):
+    """Generate placement candidates, query CuRobo, and emit Place phases."""
+
     def __init__(
         self,
         robot: Robot,
@@ -41,505 +47,430 @@ class Place(BaseSkill):
         task: BaseTask,
         cfg: DictConfig,
         *args,
-        placement_planning=None,
         **kwargs,
     ):
+        del args, kwargs
         super().__init__()
         self.robot = robot
-        self.bind_skill_runtime(
-            skill_runtime,
-            placement_planning=placement_planning,
-        )
+        self.bind_skill_runtime(skill_runtime)
         self._require_skill_runtime()
-        self.placement_planning = self._require_placement_planning()
         self.task = task
+        self.skill_cfg = cfg
 
         self.name = cfg["name"]
         self.pick_obj = task._task_objects[cfg["objects"][0]]
         self.place_obj = task._task_objects[cfg["objects"][1]]
-        self.place_align_axis = cfg.get("place_align_axis", None)
-        self.pick_align_axis = cfg.get("pick_align_axis", None)
+        self.place_part_prim_path = cfg.get("place_part_prim_path")
+        self.place_prim_path = (
+            f"{self.place_obj.prim_path}/{self.place_part_prim_path}"
+            if self.place_part_prim_path
+            else self.place_obj.prim_path
+        )
+        self.place_align_axis = cfg.get("place_align_axis")
+        self.pick_align_axis = cfg.get("pick_align_axis")
         self.constraint_gripper_x = cfg.get("constraint_gripper_x", False)
-        self.place_part_prim_path = cfg.get("place_part_prim_path", None)
-        if self.place_part_prim_path:
-            self.place_prim_path = f"{self.place_obj.prim_path}/{self.place_part_prim_path}"
-        else:
-            self.place_prim_path = self.place_obj.prim_path
-        self.manip_list = []
-        self.robot_ee_path = self.placement_planning.scene_port.robot_ee_path
-        self.robot_base_path = self.placement_planning.scene_port.reference_prim_path
+        self.align_pick_obj_axis = cfg.get("align_pick_obj_axis")
+        self.align_place_obj_axis = cfg.get("align_place_obj_axis")
+        self.align_obj_tol = cfg.get("align_obj_tol")
+        self.robot_ee_path = self.skill_runtime.robot_ee_path
+        self.robot_base_path = self.skill_runtime.reference_prim_path
 
-        self.skill_cfg = cfg
-        self.align_pick_obj_axis = self.skill_cfg.get("align_pick_obj_axis", None)
-        self.align_place_obj_axis = self.skill_cfg.get("align_place_obj_axis", None)
-        self.align_plane_x_axis = self.skill_cfg.get("align_plane_x_axis", None)
-        self.align_plane_y_axis = self.skill_cfg.get("align_plane_y_axis", None)
-        self.align_obj_tol = self.skill_cfg.get("align_obj_tol", None)
-        self.output_root = str(self.skill_cfg.get("output_root", "output/local_navigation/skills"))
-        self.debug_tag = f"{robot.name}_place_{self.pick_obj.name}_to_{self.place_obj.name}_{int(time.time() * 1000)}"
-        self.debug_dir = os.path.join(self.output_root, self.debug_tag)
-        self._success_check_debug_path = None
-        self._success_check_snapshot_written = False
-        self._last_success_check_debug = {}
-        self._runtime_failure_debug_path = None
-        self._runtime_failure_snapshot_written = False
-        self._plan_failure_debug_path = None
-        self._plan_failure_snapshot_written = False
-        self._pending_target_intent = None
-        # Typed candidate evaluation returns paths separately from the
-        # selected Cartesian poses.  Keep the selected paths alongside the
-        # pose result so the physics-schema command builder can reuse the
-        # exact batch plan instead of planning the same phase again.
-        self._selected_plan = {
-            "candidate_index": None,
-            "preplace_path": None,
-            "terminal_path": None,
-            "source": None,
-        }
+        self.manip_list = []
+        self.place_ee_trans = None
         self.failure_reason = ""
         self.error_message = ""
+        self._selected_plan = {}
+        self._target_intent = None
+        self._success_snapshot_written = False
+        output_root = str(cfg.get("output_root", "output/local_navigation/skills"))
+        self._debug_dir = os.path.join(
+            output_root,
+            f"{robot.name}_place_{self.pick_obj.name}_to_"
+            f"{self.place_obj.name}",
+        )
+
+    @property
+    def _pick_place_cfg(self):
+        return self.task.cfg.get("planning", {}).get("pick_place", {})
 
     @staticmethod
-    def _get_world_pose_from_path(prim_path):
-        return get_world_pose(prim_path)
-
-    def _get_armbase_world_tf(self):
-        try:
-            return self.placement_planning.arm_base_transform()
-        except (AttributeError, RuntimeError):
-            armbase_tf_getter = getattr(self.robot, "get_armbase_world_transform", None)
-            if callable(armbase_tf_getter):
-                return armbase_tf_getter()
-        armbase_t, armbase_q = self._get_world_pose_from_path(self.robot_base_path)
-        return tf_matrix_from_pose(armbase_t, armbase_q)
-
-    def _get_ee_world_tf(self):
-        ee_t, ee_q = self._get_world_pose_from_path(self.robot_ee_path)
-        return tf_matrix_from_pose(ee_t, ee_q)
+    def _plan_mask(result, count):
+        if isinstance(result, BatchPlanResult):
+            values = result.success_mask
+        elif isinstance(result, PlanResult):
+            values = (result.success,)
+        else:
+            return np.zeros(int(count), dtype=bool)
+        values = np.asarray(values, dtype=bool).reshape(-1)
+        return values if len(values) == int(count) else np.zeros(int(count), dtype=bool)
 
     @staticmethod
-    def _get_object_world_tf(obj):
-        get_obj_world_pose = getattr(obj, "get_world_pose", None)
-        if callable(get_obj_world_pose):
-            return tf_matrix_from_pose(*get_obj_world_pose())
-        return tf_matrix_from_pose(*obj.get_local_pose())
+    def _plan_paths(result):
+        if isinstance(result, BatchPlanResult):
+            return list(result.trajectories)
+        if isinstance(result, PlanResult):
+            return [] if result.trajectory is None else [result.trajectory]
+        return []
 
-    def _json_ready(self, value):
+    @staticmethod
+    def _json_ready(value):
         if isinstance(value, np.ndarray):
             return value.tolist()
         if isinstance(value, (np.floating, np.integer, np.bool_)):
             return value.item()
         if isinstance(value, (DictConfig, ListConfig)):
-            return self._json_ready(OmegaConf.to_container(value, resolve=True))
+            return Place._json_ready(OmegaConf.to_container(value, resolve=True))
         if type(value).__module__.startswith("pxr") and type(value).__name__.startswith("Vec"):
-            return [self._json_ready(v) for v in value]
+            return [Place._json_ready(item) for item in value]
         if isinstance(value, (list, tuple)):
-            return [self._json_ready(v) for v in value]
+            return [Place._json_ready(item) for item in value]
         if isinstance(value, dict):
-            return {str(k): self._json_ready(v) for k, v in value.items()}
+            return {str(key): Place._json_ready(item) for key, item in value.items()}
         return value
 
-    def _write_debug_artifact(self, filename: str, payload: dict):
-        os.makedirs(self.debug_dir, exist_ok=True)
-        output_path = os.path.join(self.debug_dir, filename)
-        with open(output_path, "w", encoding="utf-8") as handle:
-            json.dump(self._json_ready(payload), handle, indent=2, ensure_ascii=False)
-        return output_path
-
-    def _manip_cmd_to_debug(self, manip_cmd):
-        if not isinstance(manip_cmd, MotionPhaseCommand):
-            raise TypeError("Place emits MotionPhaseCommand values only")
-        return {
-            "phase": manip_cmd.phase.value,
-            "target_position": manip_cmd.target_position,
-            "target_orientation": manip_cmd.target_orientation,
-            "gripper_action": manip_cmd.gripper_action,
-            "active_object": manip_cmd.active_object,
-            "support_object": manip_cmd.support_object,
-            "replan_allowed": manip_cmd.replan_allowed,
-        }
-
-    def _write_runtime_failure_snapshot(self, th: int):
-        """Best-effort evidence for a Place planning failure before release."""
-        current_cmd = self.manip_list[0] if self.manip_list else None
-        command_status = (
-            self.skill_runtime.execution_status(current_cmd)
-            if current_cmd is not None
-            else None
-        )
-        payload = {
-            "robot": self.robot.name,
-            "skill": self.name,
-            "pick_object": self.pick_obj.name,
-            "place_object": self.place_obj.name,
-            "collision_policy": self.placement_planning.collision_policy.value,
-            "num_plan_failed": int(self.skill_runtime.num_plan_failed),
-            "failure_threshold": int(th),
-            "failure_reason": self.failure_reason,
-            "error_message": self.error_message,
-            "controller_last_command": (
-                command_status.phase if command_status is not None else None
-            ),
-            "controller_command_status": (
-                self.command_status_debug(command_status)
-            ),
-            "controller_num_last_cmd": self.skill_runtime.num_last_cmd,
-            "controller_gripper_state": (
-                current_cmd.gripper_action if current_cmd is not None else None
-            ),
-            "current_command": self._manip_cmd_to_debug(current_cmd) if current_cmd is not None else None,
-            "selected_place_target": self._pending_target_intent,
-            "constraints": {
-                key: self.skill_cfg[key]
-                for key in (
-                    "position_constraint", "place_direction", "filter_x_dir",
-                    "filter_y_dir", "filter_z_dir", "x_ratio_range", "y_ratio_range",
-                    "z_ratio_range", "pre_place_z_offset", "place_z_offset",
-                )
-                if key in self.skill_cfg
-            },
-        }
-        try:
-            payload["armbase_world_pose"] = self._get_world_pose_from_path(self.robot_base_path)
-            payload["ee_world_pose"] = self._get_world_pose_from_path(self.robot_ee_path)
-            payload["ee_armbase_pose"] = self.placement_planning.ee_pose()
-            payload["pick_object_world_pose"] = self.pick_obj.get_world_pose()
-            payload["place_object_world_pose"] = self.place_obj.get_world_pose()
-            record = self.placement_planning.collision_record(self.pick_obj.name)
-            payload["pick_collision_record"] = record.to_dict() if record else None
-        except Exception as exc:  # Debug capture must not change episode outcome.
-            payload["runtime_state_capture_error"] = repr(exc)
-
-        try:
-            self._runtime_failure_debug_path = self._write_debug_artifact(
-                "place_runtime_failure_snapshot.json", payload
-            )
-            print(f"[place-debug] Wrote place runtime failure snapshot: {self._runtime_failure_debug_path}")
-        except Exception as exc:  # Debug capture must not change episode outcome.
-            print(f"[place-debug] Failed to write place runtime failure snapshot: {exc!r}")
-        finally:
-            self._runtime_failure_snapshot_written = True
-
-    def _write_plan_failure_snapshot(
-        self,
-        *,
-        candidate_diagnostics: list[dict],
-        native_start_collision: dict | None,
-        single_fallback: dict | None = None,
-        failure_reason: str = "NO_COLLISION_FREE_PREPLACE_PLAN",
-        bbox_min: np.ndarray,
-        bbox_max: np.ndarray,
-        ratio_ranges: tuple[tuple[float, ...], ...],
-        pre_place_pos_w: np.ndarray,
-        place_pos_w: np.ndarray,
-        pre_place_pos_b: np.ndarray,
-        place_pos_b: np.ndarray,
-        pre_orientations: np.ndarray,
-        place_orientations: np.ndarray,
-    ):
-        """Persist native-v2 Place candidate evidence without masking failure."""
-
-        payload = {
-            "robot": self.robot.name,
-            "skill": self.name,
-            "pick_object": self.pick_obj.name,
-            "place_object": self.place_obj.name,
-            "failure_reason": failure_reason,
-            "collision_policy": self.placement_planning.collision_policy.value,
-            "constraints": {
-                key: self.skill_cfg[key]
-                for key in (
-                    "position_constraint",
-                    "place_direction",
-                    "filter_x_dir",
-                    "filter_y_dir",
-                    "filter_z_dir",
-                    "x_ratio_range",
-                    "y_ratio_range",
-                    "z_ratio_range",
-                    "pre_place_z_offset",
-                    "place_z_offset",
-                    "pre_place_align",
-                    "place_align",
-                    "pre_place_offset",
-                    "place_offset",
-                    "preserve_attached_orientation",
-                )
-                if key in self.skill_cfg
-            },
-            "bbox_world": {"min": bbox_min, "max": bbox_max},
-            "ratio_ranges": ratio_ranges,
-            "candidate_diagnostics": candidate_diagnostics,
-            "native_single_fallback": single_fallback,
-            "pre_place_position_world": pre_place_pos_w,
-            "place_position_world": place_pos_w,
-            "pre_place_position_base": pre_place_pos_b,
-            "place_position_base": place_pos_b,
-            "pre_place_orientations_base": pre_orientations,
-            "place_orientations_base": place_orientations,
-            "native_start_collision": native_start_collision,
-        }
-        try:
-            payload["armbase_world_pose"] = self._get_world_pose_from_path(self.robot_base_path)
-            payload["ee_world_pose"] = self._get_world_pose_from_path(self.robot_ee_path)
-            payload["pick_object_world_pose"] = self.pick_obj.get_world_pose()
-            payload["place_object_world_pose"] = self.place_obj.get_world_pose()
-            payload["T_world_obj"] = getattr(self, "T_world_obj", None)
-            payload["T_world_ee"] = getattr(self, "T_world_ee", None)
-            payload["T_obj_ee"] = getattr(self, "T_obj_ee", None)
-            payload["T_base_world"] = getattr(self, "T_base_world", None)
-            payload["T_world_container"] = getattr(self, "T_world_container", None)
-            manager = self.placement_planning
-            record = manager.collision_record(self.pick_obj.name)
-            payload["pick_collision_record"] = record.to_dict() if record else None
-            if manager is not None and record is not None:
-                slip_getter = getattr(manager, "attached_object_slip", None)
-                if callable(slip_getter):
-                    payload["attached_object_slip"] = slip_getter(self.pick_obj.name)
-        except Exception as exc:  # Debug capture must not change episode outcome.
-            payload["runtime_state_capture_error"] = repr(exc)
-
-        try:
-            self._plan_failure_debug_path = self._write_debug_artifact(
-                "place_plan_failure_snapshot.json", payload
-            )
-            print(f"[place-debug] Wrote place plan failure snapshot: {self._plan_failure_debug_path}")
-        except Exception as exc:  # Debug capture must not change episode outcome.
-            print(f"[place-debug] Failed to write place plan failure snapshot: {exc!r}")
-        finally:
-            self._plan_failure_snapshot_written = True
-
-    def _record_success_check_debug(self, *, success: bool, failure_reasons: list[str], details: dict):
-        self._last_success_check_debug = {
-            "robot": self.robot.name,
-            "skill": self.name,
-            "pick_object": self.pick_obj.name,
-            "place_object": self.place_obj.name,
-            "place_prim_path": self.place_prim_path,
-            "success_mode": self.skill_cfg.get("success_mode", "3diou"),
-            "success": bool(success),
-            "failure_reasons": failure_reasons,
-            "details": details,
-        }
-        if success:
+    def _record_success_failure(self, reasons, details):
+        self.failure_reason = "place_success_check_failed:" + ",".join(reasons)
+        self.error_message = "Place completed but the success check failed."
+        if self._success_snapshot_written:
             return
-        self.failure_reason = "place_success_check_failed:" + ",".join(failure_reasons)
-        self.error_message = "Place completed but success check failed."
-        if not self._success_check_snapshot_written:
-            self._success_check_debug_path = self._write_debug_artifact(
-                "place_success_check_snapshot.json",
-                self._last_success_check_debug,
-            )
-            self._success_check_snapshot_written = True
-            print(f"[place-debug] Wrote place success check snapshot: {self._success_check_debug_path}")
-
-    def simple_generate_manip_cmds(self):
-        # Place is always emitted as the typed exact-world phase sequence.
-        # Legacy dispatch branches were retired with the MotionPlanner API
-        # migration.
-        return self._generate_manip_cmds()
+        try:
+            os.makedirs(self._debug_dir, exist_ok=True)
+            path = os.path.join(self._debug_dir, "place_success_check_snapshot.json")
+            payload = {
+                "robot": self.robot.name,
+                "skill": self.name,
+                "pick_object": self.pick_obj.name,
+                "place_object": self.place_obj.name,
+                "place_prim_path": self.place_prim_path,
+                "success_mode": self.skill_cfg.get("success_mode", "3diou"),
+                "success": False,
+                "failure_reasons": reasons,
+                "details": details,
+            }
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(self._json_ready(payload), handle, indent=2, ensure_ascii=False)
+        except Exception:  # Diagnostics must never change task behavior.
+            pass
+        finally:
+            self._success_snapshot_written = True
 
     @staticmethod
-    def _terminal_samples(start, goal, step_m: float) -> list[np.ndarray]:
+    def _world_pose(obj):
+        getter = getattr(obj, "get_world_pose", None)
+        return getter() if callable(getter) else obj.get_local_pose()
+
+    def _object_world_tf(self, obj):
+        return tf_matrix_from_pose(*self._world_pose(obj))
+
+    def _arm_base_world_tf(self):
+        try:
+            pose = self.skill_runtime.arm_base_pose()
+            if isinstance(pose, (tuple, list)) and len(pose) == 2:
+                return tf_matrix_from_pose(*pose)
+            matrix = np.asarray(pose, dtype=float)
+            if matrix.shape == (4, 4):
+                return matrix
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            pass
+        return tf_matrix_from_pose(*get_world_pose(self.robot_base_path))
+
+    def _terminal_options(self):
+        cfg = self._pick_place_cfg
+        step = float(cfg.get("place_terminal_step_m", cfg.get("terminal_step_m", 0.01)))
+        tolerance = float(cfg.get("place_terminal_tolerance_m", min(0.005, step)))
+        if not np.isfinite(step) or step <= 0.0:
+            raise ValueError("Place terminal step must be positive and finite")
+        if not np.isfinite(tolerance) or tolerance <= 0.0 or tolerance > step:
+            raise ValueError("Place terminal tolerance must be in (0, step]")
+        continuous = cfg.get("place_continuous_descent", True)
+        if not isinstance(continuous, bool):
+            raise ValueError("place_continuous_descent must be a boolean")
+        return {
+            "step": step,
+            "tolerance": tolerance,
+            "continuous": continuous,
+            "max_ratio": float(cfg.get("place_terminal_max_path_length_ratio", 1.5)),
+            "max_deviation": float(cfg.get("place_terminal_max_path_deviation_m", step)),
+        }
+
+    @staticmethod
+    def _terminal_samples(start, goal, step):
         start = np.asarray(start, dtype=float)
         goal = np.asarray(goal, dtype=float)
-        distance = float(np.linalg.norm(goal - start))
-        count = max(1, int(np.ceil(distance / float(step_m) - 1e-9)))
+        count = max(1, int(np.ceil(np.linalg.norm(goal - start) / step - 1e-9)))
         return [start + (goal - start) * (index / count) for index in range(1, count + 1)]
 
-    @staticmethod
-    def _resolve_terminal_step(pick_place_cfg: dict) -> float:
-        value = pick_place_cfg.get(
-            "place_terminal_step_m",
-            pick_place_cfg.get("terminal_step_m", 0.01),
-        )
-        try:
-            step_m = float(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("Place terminal step must be a positive finite number") from exc
-        if not np.isfinite(step_m) or step_m <= 0.0:
-            raise ValueError("Place terminal step must be a positive finite number")
-        return step_m
-
-    @staticmethod
-    def _resolve_terminal_tolerance(pick_place_cfg: dict, step_m: float) -> float:
-        value = pick_place_cfg.get(
-            "place_terminal_tolerance_m", min(0.005, step_m)
-        )
-        try:
-            tolerance_m = float(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "Place terminal tolerance must be a positive finite number"
-            ) from exc
-        if not np.isfinite(tolerance_m) or tolerance_m <= 0.0:
-            raise ValueError("Place terminal tolerance must be a positive finite number")
-        if tolerance_m > step_m:
-            raise ValueError("Place terminal tolerance must not exceed the terminal step")
-        return tolerance_m
-
-    @staticmethod
-    def _use_continuous_terminal_descent(pick_place_cfg: dict) -> bool:
-        value = pick_place_cfg.get("place_continuous_descent", True)
-        if not isinstance(value, bool):
-            raise ValueError("place_continuous_descent must be a boolean")
-        return value
-
-    @staticmethod
-    def _candidate_mask(result, expected_count: int) -> list[bool]:
-        """Normalize one typed planner success flag per requested candidate."""
-
-        try:
-            if isinstance(result, BatchPlanResult):
-                mask = result.success_mask
-            elif isinstance(result, PlanResult):
-                mask = (result.success,)
-            else:
-                raise TypeError(
-                    "Place candidate evaluation expects a normalized PlanResult "
-                    "or BatchPlanResult"
-                )
-            mask = np.asarray(mask, dtype=bool)
-            mask = mask.reshape(-1)
-        except (AttributeError, TypeError, ValueError, RuntimeError):
-            return [False] * int(expected_count)
-        if len(mask) != int(expected_count):
-            return [False] * int(expected_count)
-        return mask.tolist()
-
-    @staticmethod
-    def _result_paths(result) -> list:
-        """Return paths exposed by the typed planner result envelope."""
-
-        if isinstance(result, BatchPlanResult):
-            return list(result.trajectories)
-        if isinstance(result, PlanResult):
-            return [] if result.trajectory is None else [result.trajectory]
-        raise TypeError(
-            "Place path extraction expects a normalized PlanResult or "
-            "BatchPlanResult"
-        )
-
-    def _path_endpoint_position(self, path, fallback_position):
-        """Get the FK position at a typed path endpoint when available."""
-
-        fallback = np.asarray(fallback_position, dtype=float).reshape(3)
+    def _terminal_path_ok(self, path, start, goal, options):
         if path is None:
-            return fallback
-        joint_position = path.position
-        if joint_position is None:
-            return fallback
+            return True
         try:
-            # Native CuRobo result trajectories may retain locked finger
-            # joints (9 values) even though the kinematics model accepts only
-            # the seven active arm joints.  Reduce by the named contract
-            # before the FK probe; positional slicing would be unsafe because
-            # result ordering is not part of the native v2 API.
-            path_names = path.joint_names
-            active_names = list(self.skill_runtime.raw_joint_names or ())
-            if (
-                path_names is not None
-                and active_names
-                and set(active_names).issubset(set(path_names))
-                and tuple(path_names) != tuple(active_names)
-            ):
-                path = path.reorder(active_names)
-                joint_position = path.position
-                if joint_position is None:
-                    return fallback
-            values = np.asarray(joint_position, dtype=float)
-            if values.size == 0:
-                return fallback
-            if values.ndim == 1:
-                endpoint = values
-            else:
-                endpoint = values.reshape(-1, values.shape[-1])[-1]
-            position, _ = self.placement_planning.forward_kinematic(endpoint)
-            position = np.asarray(position, dtype=float).reshape(-1)
-            if position.shape == (3,) and np.all(np.isfinite(position)):
-                return position
-        except (AttributeError, TypeError, ValueError, RuntimeError):
-            pass
-        return fallback
+            ratio, deviation = self.skill_runtime.measure_cartesian_path(path, start, goal)
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return True
+        return bool(
+            np.isfinite(ratio)
+            and np.isfinite(deviation)
+            and float(ratio) <= options["max_ratio"] + 1e-6
+            and float(deviation) <= options["max_deviation"] + 1e-6
+        )
 
-    def _set_selected_plan(
-        self,
-        candidate_index: int,
-        *,
-        preplace_path=None,
-        terminal_path=None,
-        source: str,
-    ):
-        """Retain paths belonging to one accepted candidate.
-
-        ``sample_gripper_place_traj`` returns pose values for candidate
-        diagnostics; planner paths live in this side-channel and are consumed
-        only by the typed command builder.
-        """
-
-        self._selected_plan = {
-            "candidate_index": int(candidate_index),
-            "preplace_path": preplace_path,
-            "terminal_path": terminal_path,
-            "source": str(source),
+    def _place_request(self, policy, phase_id):
+        return {
+            "phase_id": phase_id,
+            "collision_policy": policy,
+            "active_target": self.pick_obj.name,
+            "support": self.place_obj.name,
         }
 
-    def _generate_manip_cmds(self):
-        """Generate no-contact transit plus bounded placement-contact phases."""
+    def _candidate_geometry(self):
+        self.T_world_obj = self._object_world_tf(self.pick_obj)
+        self.T_world_ee = tf_matrix_from_pose(*get_world_pose(self.robot_ee_path))
+        self.T_base_world = np.linalg.inv(self._arm_base_world_tf())
+        self.T_obj_ee = np.linalg.inv(self.T_world_obj) @ self.T_world_ee
+        self.T_world_container = self._object_world_tf(self.place_obj)
 
-        planning = self.placement_planning
-        object_name = self.pick_obj.name
-        support_name = self.place_obj.name
-        pick_place_cfg = self.task.cfg.get("planning", {}).get("pick_place", {})
-        planning.prepare_world(object_name, support_name)
-        self.failure_reason = ""
-        try:
-            result = self.sample_gripper_place_traj()
-        except PlacePlanningError as exc:
-            self.failure_reason = str(exc)
-            print(
-                f"[PlaceDebug] preplace-plan object={object_name} "
-                f"support={support_name} selected_index=None "
-                f"failure={self.failure_reason}"
-            )
-            self.publish_target_intent(
-                {
-                    "kind": "place",
-                    "objects": list(self.skill_cfg["objects"]),
-                    "has_target": False,
-                    "failure_reason": self.failure_reason,
-                }
-            )
-            self.manip_list = []
-            return
-        if self._pending_target_intent is not None:
-            self.publish_target_intent(self._pending_target_intent)
+        bbox = compute_bbox(get_prim_at_path(self.place_prim_path))
+        b_min = np.asarray(bbox.min, dtype=float)
+        b_max = np.asarray(bbox.max, dtype=float)
+        defaults = (("x_ratio_range", (0.4, 0.6)), ("y_ratio_range", (0.4, 0.6)), ("z_ratio_range", (0.4, 0.6)))
 
-        pre_position, pre_orientation = np.asarray(result[0][0]), np.asarray(result[0][1])
-        place_position, place_orientation = np.asarray(result[1][0]), np.asarray(result[1][1])
-        terminal_step = self._resolve_terminal_step(pick_place_cfg)
-        terminal_tolerance = self._resolve_terminal_tolerance(
-            pick_place_cfg, terminal_step
+        def ratios(key, default):
+            bounds = self.skill_cfg.get(key, default)
+            return np.random.uniform(float(bounds[0]), float(bounds[1]), CUROBO_BATCH_SIZE)
+
+        x_ratio = ratios("x_ratio_range", (0.4, 0.6))
+        y_ratio = ratios("y_ratio_range", (0.4, 0.6))
+        z_ratio = ratios("z_ratio_range", (0.4, 0.6))
+        direction = self.skill_cfg.get("place_direction", "vertical")
+        constraint = self.skill_cfg.get("position_constraint", "gripper")
+        pre_offset = float(self.skill_cfg.get("pre_place_z_offset", 0.2))
+        place_offset = float(self.skill_cfg.get("place_z_offset", 0.1))
+
+        if direction == "vertical":
+            x = b_min[0] + x_ratio * (b_max[0] - b_min[0])
+            y = b_min[1] + y_ratio * (b_max[1] - b_min[1])
+            pre_world = np.column_stack((x, y, np.full(CUROBO_BATCH_SIZE, b_max[2] + pre_offset)))
+            place_world = np.column_stack((x, y, np.full(CUROBO_BATCH_SIZE, b_max[2] + place_offset)))
+            region = ratio_box_corners(
+                b_min, b_max,
+                tuple(tuple(float(value) for value in self.skill_cfg.get(key, default)) for key, default in defaults),
+            )
+            region[:, 2] = b_max[2] + place_offset
+            normal = np.array([0.0, 0.0, 1.0])
+            tangent = np.array([1.0, 0.0, 0.0])
+        elif direction == "horizontal":
+            align = self.T_world_container[:3, :3] @ np.asarray(self.skill_cfg["align_place_obj_axis"], dtype=float)
+            offset = self.T_world_container[:3, :3] @ np.asarray(self.skill_cfg["offset_place_obj_axis"], dtype=float)
+            points = b_min + np.column_stack((x_ratio, y_ratio, z_ratio)) * (b_max - b_min)
+            if constraint == "object":
+                pre_world = points + align * float(self.skill_cfg.get("pre_place_align", 0.2)) + offset * float(self.skill_cfg.get("pre_place_offset", 0.2))
+                place_world = points + align * float(self.skill_cfg.get("place_align", 0.1)) + offset * float(self.skill_cfg.get("place_offset", 0.1))
+                region = ratio_box_corners(b_min, b_max, tuple(tuple(float(value) for value in self.skill_cfg.get(key, default)) for key, default in defaults))
+                region += align * float(self.skill_cfg.get("place_align", 0.1)) + offset * float(self.skill_cfg.get("place_offset", 0.1))
+            else:
+                distance = float(np.linalg.norm(self.T_obj_ee[:3, 3]))
+                pre_world = points - align * (pre_offset + distance)
+                place_world = points - align * (place_offset + distance)
+                region = ratio_box_corners(b_min, b_max, tuple(tuple(float(value) for value in self.skill_cfg.get(key, default)) for key, default in defaults))
+                region -= align * (place_offset + distance)
+            normal, tangent = np.asarray(align), np.asarray(offset)
+        else:
+            raise NotImplementedError(f"unsupported place_direction: {direction}")
+
+        base_rotation = self.T_base_world[:3, :3]
+        pre_base = (base_rotation @ pre_world.T).T + self.T_base_world[:3, 3]
+        place_base = (base_rotation @ place_world.T).T + self.T_base_world[:3, 3]
+        target_rotations = self.generate_constrained_rotation_batch()
+        if constraint == "object":
+            ee_from_object = np.linalg.inv(self.T_obj_ee)[:3, :3]
+            object_rotations = target_rotations @ ee_from_object
+            pre_tf = create_pose_matrices(pre_base, object_rotations) @ self.T_obj_ee
+            place_tf = create_pose_matrices(place_base, object_rotations) @ self.T_obj_ee
+        elif constraint == "gripper":
+            pre_tf = create_pose_matrices(pre_base, target_rotations)
+            place_tf = create_pose_matrices(place_base, target_rotations)
+        else:
+            raise NotImplementedError(f"unsupported position_constraint: {constraint}")
+
+        pre_positions, pre_orientations = poses_from_tf_matrices(pre_tf)
+        place_positions, place_orientations = poses_from_tf_matrices(place_tf)
+        return {
+            "pre_positions": pre_positions,
+            "pre_orientations": pre_orientations,
+            "place_positions": place_positions,
+            "place_orientations": place_orientations,
+            "pre_world": pre_world,
+            "place_world": place_world,
+            "bbox_min": b_min,
+            "bbox_max": b_max,
+            "region": region,
+            "normal": normal,
+            "tangent": tangent,
+            "direction": direction,
+            "constraint": constraint,
+        }
+
+    def _plan_candidates(self, geometry, options):
+        runtime = self.skill_runtime
+        object_name, support_name = self.pick_obj.name, self.place_obj.name
+        pre = np.asarray(geometry["pre_positions"])
+        place = np.asarray(geometry["place_positions"])
+        pre_q = np.asarray(geometry["pre_orientations"])
+        place_q = np.asarray(geometry["place_orientations"])
+        count = len(place)
+        pre_paths, terminal_paths = [None] * count, [None] * count
+        pre_ok = np.zeros(count, dtype=bool)
+        terminal_ok = np.zeros(count, dtype=bool)
+
+        if runtime.batch_capability:
+            runtime.sync_native_batch_attachment()
+            runtime.transition_target(object_name, support_name, collision_policy=CollisionPolicy.ATTACHED_CARRY)
+            pre_result = runtime.plan_pose_batch(
+                pre, pre_q,
+                collision_policy=CollisionPolicy.ATTACHED_CARRY,
+                active_target=object_name,
+                support=support_name,
+                phase_id="place_preplace_batch",
+                request_metadata=self._place_request(CollisionPolicy.ATTACHED_CARRY, "place_preplace_batch"),
+            )
+            pre_ok = self._plan_mask(pre_result, count)
+            values = self._plan_paths(pre_result)
+            pre_paths[: len(values)] = values[:count]
+            if options["continuous"]:
+                valid = np.flatnonzero(pre_ok & np.asarray([path is not None for path in pre_paths]))
+                if len(valid):
+                    same_target = np.allclose(place[valid], pre[valid]) and np.allclose(place_q[valid], pre_q[valid])
+                    if same_target:
+                        terminal_ok[valid] = True
+                        for index in valid:
+                            terminal_paths[index] = pre_paths[index]
+                    else:
+                        runtime.transition_target(object_name, support_name, collision_policy=CollisionPolicy.PLACEMENT_DESCENT)
+                        terminal_result = runtime.plan_pose_batch(
+                            place[valid], place_q[valid],
+                            start_paths=[pre_paths[index] for index in valid],
+                            collision_policy=CollisionPolicy.PLACEMENT_DESCENT,
+                            active_target=object_name,
+                            support=support_name,
+                            phase_id="place_terminal_batch",
+                            request_metadata=self._place_request(CollisionPolicy.PLACEMENT_DESCENT, "place_terminal_batch"),
+                        )
+                        terminal_values = self._plan_paths(terminal_result)
+                        terminal_flags = self._plan_mask(terminal_result, len(valid))
+                        for local, index in enumerate(valid):
+                            path = terminal_values[local] if local < len(terminal_values) else None
+                            if terminal_flags[local] and self._terminal_path_ok(path, pre[index], place[index], options):
+                                terminal_ok[index] = True
+                                terminal_paths[index] = path
+            else:
+                terminal_ok = pre_ok.copy()
+        else:
+            for index in range(count):
+                runtime.transition_target(object_name, support_name, collision_policy=CollisionPolicy.ATTACHED_CARRY)
+                result = runtime.plan_pose_result(
+                    pre[index], pre_q[index],
+                    collision_policy=CollisionPolicy.ATTACHED_CARRY,
+                    active_target=object_name,
+                    support=support_name,
+                    phase_id="place_preplace",
+                    request_metadata=self._place_request(CollisionPolicy.ATTACHED_CARRY, "place_preplace"),
+                )
+                pre_ok[index] = bool(self._plan_mask(result, 1)[0])
+                paths = self._plan_paths(result)
+                pre_paths[index] = paths[0] if paths else None
+                if not pre_ok[index]:
+                    continue
+                if not options["continuous"]:
+                    terminal_ok[index] = True
+                    break
+                if pre_paths[index] is None:
+                    continue
+                if np.allclose(pre[index], place[index]) and np.allclose(pre_q[index], place_q[index]):
+                    terminal_ok[index] = True
+                    terminal_paths[index] = pre_paths[index]
+                    break
+                runtime.transition_target(object_name, support_name, collision_policy=CollisionPolicy.PLACEMENT_DESCENT)
+                result = runtime.plan_pose_from_path(
+                    place[index], place_q[index], pre_paths[index],
+                    collision_policy=CollisionPolicy.PLACEMENT_DESCENT,
+                    active_target=object_name,
+                    support=support_name,
+                    phase_id="place_terminal",
+                    request_metadata=self._place_request(CollisionPolicy.PLACEMENT_DESCENT, "place_terminal"),
+                )
+                terminal_ok[index] = bool(self._plan_mask(result, 1)[0])
+                paths = self._plan_paths(result)
+                terminal_paths[index] = paths[0] if paths else None
+                if terminal_ok[index] and not self._terminal_path_ok(terminal_paths[index], pre[index], place[index], options):
+                    terminal_ok[index] = False
+                if terminal_ok[index]:
+                    break
+
+        # Candidate validation may have entered PLACEMENT_CONTACT.  Leave the
+        # scene in ATTACHED carry state for execution; RESTORE_WORLD is only
+        # emitted after the detach/settle phase.
+        runtime.transition_target(
+            object_name,
+            support_name,
+            collision_policy=CollisionPolicy.ATTACHED_CARRY,
         )
-        continuous_descent = self._use_continuous_terminal_descent(pick_place_cfg)
-        max_terminal = float(pick_place_cfg.get("max_terminal_distance_m", 0.10))
-        settle_steps = int(pick_place_cfg.get("place_settle_steps", 10))
-        distance = float(np.linalg.norm(place_position - pre_position))
-        if distance > max_terminal + 1e-5:
-            raise RuntimeError(
-                f"terminal Place distance {distance:.4f}m exceeds {max_terminal:.4f}m"
+        valid = np.flatnonzero(pre_ok & terminal_ok)
+        if len(valid) == 0:
+            raise PlaceCandidateError(
+                "NO_COLLISION_SAFE_CONTINUOUS_PLACE_PLAN"
+                if options["continuous"]
+                else "NO_COLLISION_FREE_PREPLACE_PLAN"
             )
+        index = int(valid[0])
+        self._selected_plan = {
+            "candidate_index": index,
+            "preplace_path": pre_paths[index],
+            "terminal_path": terminal_paths[index],
+        }
+        return index
+
+    def sample_gripper_place_traj(self):
+        geometry = self._candidate_geometry()
+        options = self._terminal_options()
+        index = self._plan_candidates(geometry, options)
+        pre = [geometry["pre_positions"][index], geometry["pre_orientations"][index]]
+        place = [geometry["place_positions"][index], geometry["place_orientations"][index]]
+        self.place_ee_trans = np.asarray(place[0], dtype=float)
+        self._target_intent = {
+            "kind": "place",
+            "objects": list(self.skill_cfg["objects"]),
+            "selected_index": index,
+            "place_direction": str(geometry["direction"]),
+            "position_constraint": str(geometry["constraint"]),
+            "bbox_world": np.concatenate((geometry["bbox_min"], geometry["bbox_max"])),
+            "region_points_world": geometry["region"],
+            "region_normal_world": geometry["normal"],
+            "region_tangent_hint_world": geometry["tangent"],
+            "selected_reference_world": geometry["place_world"][index],
+            "preplace_position": pre[0],
+            "preplace_orientation": pre[1],
+            "place_position": place[0],
+            "place_orientation": place[1],
+        }
+        result = [pre, place]
+        if self.skill_cfg.get("post_place_vector"):
+            post_tf = tf_matrix_from_pose(*place)
+            post_tf[:3, 3] += post_tf[:3, :3] @ np.asarray(self.skill_cfg["post_place_vector"], dtype=float)
+            result.append(list(pose_from_tf_matrix(post_tf)))
+        return result
+
+    def _build_commands(self, result):
+        object_name, support_name = self.pick_obj.name, self.place_obj.name
+        pre_position, pre_orientation = map(np.asarray, result[0])
+        place_position, place_orientation = map(np.asarray, result[1])
+        options = self._terminal_options()
         tolerance = {
             "position_m": float(self.skill_cfg.get("t_eps", 0.005)),
             "orientation_rad": float(self.skill_cfg.get("o_eps", 0.05)),
         }
-        selected_plan = self._selected_plan
-        transit_params = {}
-        if selected_plan.get("preplace_path") is not None:
-            transit_params = {
-                "preplanned_joint_path": selected_plan["preplace_path"],
-                "plan_source": selected_plan.get("source"),
-            }
+        pre_params = {}
+        if self._selected_plan.get("preplace_path") is not None:
+            pre_params["preplanned_joint_path"] = self._selected_plan["preplace_path"]
         commands = [
             MotionPhaseCommand(
                 MotionPhase.TRANSIT_PREPLACE,
@@ -550,62 +481,39 @@ class Place(BaseSkill):
                 support_object=support_name,
                 allow_target_finger_contact=True,
                 completion_tolerance=tolerance,
-                params=transit_params,
+                params=pre_params,
             )
         ]
-        # A continuous native trajectory avoids paying its minimum trajectory
-        # duration once per centimeter. Contact is still checked every physics
-        # frame, and terminal_step remains the maximum accepted Cartesian
-        # advance between two executed actions.
-        terminal_points = (
-            [place_position]
-            if continuous_descent
-            else self._terminal_samples(pre_position, place_position, terminal_step)
-        )
-        for point_index, point in enumerate(terminal_points):
-            ratio = (point_index + 1) / len(terminal_points)
-            quat = (1.0 - ratio) * pre_orientation + ratio * place_orientation
-            quat = quat / np.linalg.norm(quat)
-            terminal_params = (
-                {
-                    "continuous_descent": True,
-                    "max_cartesian_step_m": terminal_step,
-                    "max_path_length_ratio": float(
-                        pick_place_cfg.get(
-                            "place_terminal_max_path_length_ratio", 1.5
-                        )
-                    ),
-                    "max_path_deviation_m": float(
-                        pick_place_cfg.get(
-                            "place_terminal_max_path_deviation_m",
-                            terminal_step,
-                        )
-                    ),
-                }
-                if continuous_descent
-                else {}
-            )
-            # The terminal path is meaningful only for the single continuous
-            # descent target it was validated against.  Discrete descent
-            # keeps its historical per-point command sequence.
-            if continuous_descent and selected_plan.get("terminal_path") is not None:
-                terminal_params["preplanned_joint_path"] = selected_plan["terminal_path"]
-                terminal_params["plan_source"] = selected_plan.get("source")
+        points = [place_position] if options["continuous"] else self._terminal_samples(pre_position, place_position, options["step"])
+        for point_index, point in enumerate(points):
+            ratio = (point_index + 1) / len(points)
+            orientation = (1.0 - ratio) * pre_orientation + ratio * place_orientation
+            orientation /= max(float(np.linalg.norm(orientation)), 1e-12)
+            params = {}
+            if options["continuous"]:
+                params.update(
+                    continuous_descent=True,
+                    max_cartesian_step_m=options["step"],
+                    max_path_length_ratio=options["max_ratio"],
+                    max_path_deviation_m=options["max_deviation"],
+                )
+                if self._selected_plan.get("terminal_path") is not None:
+                    params["preplanned_joint_path"] = self._selected_plan["terminal_path"]
             commands.append(
                 MotionPhaseCommand(
                     MotionPhase.TERMINAL_PLACE_DESCENT,
                     point,
-                    quat,
+                    orientation,
                     gripper_action="close_gripper",
                     active_object=object_name,
                     support_object=support_name,
                     allow_target_finger_contact=True,
                     allow_object_support_contact=True,
                     completion_tolerance={
-                        "position_m": terminal_tolerance,
+                        "position_m": options["tolerance"],
                         "orientation_rad": tolerance["orientation_rad"],
                     },
-                    params=terminal_params,
+                    params=params,
                 )
             )
         commands.extend(
@@ -629,11 +537,11 @@ class Place(BaseSkill):
                     allow_target_robot_contact=True,
                     allow_object_support_contact=True,
                     replan_allowed=False,
-                    dwell_steps=settle_steps,
+                    dwell_steps=int(self._pick_place_cfg.get("place_settle_steps", 10)),
                 ),
             ]
         )
-        if self.skill_cfg.get("post_place_vector", None):
+        if len(result) > 2:
             commands.append(
                 MotionPhaseCommand(
                     MotionPhase.TERMINAL_RETREAT,
@@ -645,949 +553,133 @@ class Place(BaseSkill):
                     completion_tolerance=tolerance,
                 )
             )
-        commands.append(
-            MotionPhaseCommand(
-                MotionPhase.RESTORE_WORLD,
-                active_object=object_name,
-                support_object=support_name,
-                replan_allowed=False,
-            )
-        )
-        self.manip_list = commands
-        self.place_ee_trans = place_position
+        commands.append(MotionPhaseCommand(MotionPhase.RESTORE_WORLD, active_object=object_name, support_object=support_name, replan_allowed=False))
+        return commands
 
-    def _terminal_geometry(self, path, start_position, goal_position):
-        """Check a planner terminal path against the continuous-place contract."""
-
-        pick_place_cfg = self.task.cfg.get("planning", {}).get("pick_place", {})
-        terminal_step = self._resolve_terminal_step(pick_place_cfg)
-        max_ratio = float(
-            pick_place_cfg.get("place_terminal_max_path_length_ratio", 1.5)
-        )
-        max_deviation = float(
-            pick_place_cfg.get("place_terminal_max_path_deviation_m", terminal_step)
-        )
-        if path is None:
-            return {
-                "valid": False,
-                "path_ratio": None,
-                "max_deviation_m": None,
-                            "reason": "missing_terminal_path",
-            }
+    def generate_manip_cmds(self):
+        self.failure_reason = ""
+        object_name, support_name = self.pick_obj.name, self.place_obj.name
+        self.skill_runtime.assert_attached_owner(object_name)
+        self.skill_runtime.transition_target(object_name, support_name, collision_policy=CollisionPolicy.ATTACHED_CARRY)
         try:
-            path_ratio, path_deviation = self.placement_planning.measure_cartesian_path(
-                path,
-                start_position,
-                goal_position,
-            )
-            path_ratio = float(path_ratio)
-            path_deviation = float(path_deviation)
-            valid = bool(
-                np.isfinite(path_ratio)
-                and np.isfinite(path_deviation)
-                and path_ratio <= max_ratio + 1e-6
-                and path_deviation <= max_deviation + 1e-6
-            )
-            return {
-                "valid": valid,
-                "path_ratio": path_ratio,
-                "max_deviation_m": path_deviation,
-                "max_path_length_ratio": max_ratio,
-                "max_path_deviation_m": max_deviation,
-            }
-        except Exception as exc:  # Evidence only; caller keeps the safe failure.
-            return {
-                "valid": False,
-                "path_ratio": None,
-                "max_deviation_m": None,
-                            "reason": f"terminal_geometry_error:{exc}",
-            }
-
-    def sample_gripper_place_traj(self):
-        pick_place_cfg = self.task.cfg.get("planning", {}).get("pick_place", {})
-        # Reset the side-channel on every sampling attempt so a retry cannot
-        # reuse a path from a previous candidate search.
-        self._selected_plan = {
-            "candidate_index": None,
-            "preplace_path": None,
-            "terminal_path": None,
-            "source": None,
-        }
-        self.T_world_obj = self._get_object_world_tf(self.pick_obj)
-        self.T_world_ee = self._get_ee_world_tf()
-        self.T_base_world = np.linalg.inv(self._get_armbase_world_tf())
-        self.T_obj_ee = np.linalg.inv(self.T_world_obj) @ self.T_world_ee
-        ee2o_distance = np.linalg.norm(self.T_obj_ee[0:3, 3])
-        self.T_world_container = self._get_object_world_tf(self.place_obj)
-
-        bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
-        b_min = np.asarray(bbox_place_obj.min, dtype=float)
-        b_max = np.asarray(bbox_place_obj.max, dtype=float)
-
-        def get_range(key, default):
-            r = self.skill_cfg.get(key, default)
-            return np.random.uniform(r[0], r[1], size=CUROBO_BATCH_SIZE)
-
-        x_ratios = get_range("x_ratio_range", (0.4, 0.6))
-        y_ratios = get_range("y_ratio_range", (0.4, 0.6))
-        z_ratios = get_range("z_ratio_range", (0.4, 0.6))
-        ratio_ranges = tuple(
-            tuple(float(value) for value in self.skill_cfg.get(key, default))
-            for key, default in (
-                ("x_ratio_range", (0.4, 0.6)),
-                ("y_ratio_range", (0.4, 0.6)),
-                ("z_ratio_range", (0.4, 0.6)),
-            )
-        )
-        direction = self.skill_cfg.get("place_direction", "vertical")
-        pos_constraint = self.skill_cfg.get("position_constraint", "gripper")
-        pre_z_off = self.skill_cfg.get("pre_place_z_offset", 0.2)
-        plt_z_off = self.skill_cfg.get("place_z_offset", 0.1)
-
-        if direction == "vertical":
-            x = b_min[0] + x_ratios * (b_max[0] - b_min[0])
-            y = b_min[1] + y_ratios * (b_max[1] - b_min[1])
-            pre_place_pos_w = np.stack([x, y, np.full(CUROBO_BATCH_SIZE, b_max[2] + pre_z_off)], axis=-1)
-            place_pos_w = np.stack([x, y, np.full(CUROBO_BATCH_SIZE, b_max[2] + plt_z_off)], axis=-1)
-            ratio_corners = ratio_box_corners(b_min, b_max, ratio_ranges)
-            region_points_w = ratio_corners.copy()
-            region_points_w[:, 2] = b_max[2] + plt_z_off
-            region_normal_w = np.array([0.0, 0.0, 1.0])
-            region_tangent_hint_w = np.array([1.0, 0.0, 0.0])
-
-        elif direction == "horizontal":
-            align_axis = self.T_world_container[:3, :3] @ np.array(self.skill_cfg["align_place_obj_axis"])
-            offset_axis = self.T_world_container[:3, :3] @ np.array(self.skill_cfg["offset_place_obj_axis"])
-
-            tmp_pos_w = b_min + np.stack([x_ratios, y_ratios, z_ratios], axis=-1) * (b_max - b_min)
-
-            if pos_constraint == "object":
-                pre_align = self.skill_cfg.get("pre_place_align", 0.2)
-                pre_offset = self.skill_cfg.get("pre_place_offset", 0.2)
-                plt_align = self.skill_cfg.get("place_align", 0.1)
-                plt_offset = self.skill_cfg.get("place_offset", 0.1)
-
-                pre_place_pos_w = tmp_pos_w + align_axis * pre_align + offset_axis * pre_offset
-                place_pos_w = tmp_pos_w + align_axis * plt_align + offset_axis * plt_offset
-                region_points_w = ratio_box_corners(b_min, b_max, ratio_ranges)
-                region_points_w = (
-                    region_points_w
-                    + align_axis * plt_align
-                    + offset_axis * plt_offset
-                )
-            else:
-                pre_place_pos_w = tmp_pos_w - align_axis * (pre_z_off + ee2o_distance)
-                place_pos_w = tmp_pos_w - align_axis * (plt_z_off + ee2o_distance)
-                region_points_w = ratio_box_corners(b_min, b_max, ratio_ranges)
-                region_points_w = region_points_w - align_axis * (
-                    plt_z_off + ee2o_distance
-                )
-            region_normal_w = np.asarray(align_axis, dtype=float)
-            region_tangent_hint_w = np.asarray(offset_axis, dtype=float)
-        else:
-            raise NotImplementedError
-
-        pre_place_pos_b = (self.T_base_world[:3, :3] @ pre_place_pos_w.T).T + self.T_base_world[:3, 3]
-        place_pos_b = (self.T_base_world[:3, :3] @ place_pos_w.T).T + self.T_base_world[:3, 3]
-
-        R_tgts = self.generate_constrained_rotation_batch()
-
-        if pos_constraint == "object":
-            R_ee_obj = np.linalg.inv(self.T_obj_ee)[:3, :3]
-            R_base_obj_tgts = R_tgts @ R_ee_obj
-
-            T_base_obj_pre_tgt = create_pose_matrices(pre_place_pos_b, R_base_obj_tgts)
-            T_base_obj_plt_tgt = create_pose_matrices(place_pos_b, R_base_obj_tgts)
-
-            T_base_ee_preplaces = T_base_obj_pre_tgt @ self.T_obj_ee
-            T_base_ee_places = T_base_obj_plt_tgt @ self.T_obj_ee
-        elif pos_constraint == "gripper":
-            T_base_ee_preplaces = create_pose_matrices(pre_place_pos_b, R_tgts)
-            T_base_ee_places = create_pose_matrices(place_pos_b, R_tgts)
-        else:
-            raise NotImplementedError
-
-        p_base_ee_preplaces, q_base_ee_preplaces = poses_from_tf_matrices(T_base_ee_preplaces)
-        p_base_ee_places, q_base_ee_places = poses_from_tf_matrices(T_base_ee_places)
-
-        # Native v2 Place selection validates the complete preplace -> terminal
-        # chain before execution.  A preplace-only success is insufficient:
-        # the terminal planner can legally route around the support and the
-        # continuous-descent safety validator must reject that path later.
-        selected_index = None
-        candidate_diagnostics = []
-        single_fallback_debug = {
-            "used": False,
-            "query_budget": int(2 * CUROBO_BATCH_SIZE),
-            "queries": 0,
-            "pre_queries": 0,
-            "terminal_queries": 0,
-            "candidates_considered": 0,
-            "truncated": False,
-        }
-        continuous_descent = self._use_continuous_terminal_descent(
-            self.task.cfg.get("planning", {}).get("pick_place", {})
-        )
-
-        planning = self.placement_planning
-        batch_candidate_planning = bool(planning.batch_capability)
-        if batch_candidate_planning:
-            # One native batch query finds all collision-free preplace paths;
-            # a second native batch query starts each terminal plan from its
-            # corresponding preplace endpoint.
-            # Attachment synchronization is a scene transaction, not a
-            # candidate-planning miss.  Let its explicit rollback/error reach
-            # the Place supervisor; converting it into a single-planner
-            # fallback would hide an unsynchronized native batch world.
-            planning.sync_native_batch_attachment()
-            try:
-                pre_result = planning.plan_pose_batch(
-                    p_base_ee_preplaces,
-                    q_base_ee_preplaces,
-                    collision_policy=CollisionPolicy.ATTACHED_CARRY,
-                    active_target=object_name,
-                    support=support_name,
-                )
-                pre_success = self._candidate_mask(
-                    pre_result, T_base_ee_places.shape[0]
-                )
-                pre_paths = self._result_paths(pre_result)
-            except Exception as exc:
-                pre_result = None
-                pre_success = [False] * int(T_base_ee_places.shape[0])
-                pre_paths = []
-                batch_pre_error = repr(exc)
-            else:
-                batch_pre_error = None
-
-            for index in range(T_base_ee_places.shape[0]):
-                candidate_diagnostics.append(
-                    {
-                        "index": int(index),
-                        "pre_position_base": np.asarray(p_base_ee_preplaces[index]),
-                        "pre_orientation_base": np.asarray(q_base_ee_preplaces[index]),
-                        "place_position_base": np.asarray(p_base_ee_places[index]),
-                        "place_orientation_base": np.asarray(q_base_ee_places[index]),
-                        "pre_result": int(bool(pre_success[index])) if index < len(pre_success) else 0,
-                    }
-                )
-            if batch_pre_error is not None and candidate_diagnostics:
-                candidate_diagnostics[0]["native_batch_preplace_error"] = batch_pre_error
-
-            successful_indices = [
-                index
-                for index, success in enumerate(pre_success)
-                if success and index < len(pre_paths) and pre_paths[index] is not None
-            ]
-            if successful_indices and not continuous_descent:
-                selected_index = successful_indices[0]
-                self._set_selected_plan(
-                    selected_index,
-                    preplace_path=pre_paths[selected_index],
-                    source="native_batch_preplace",
-                )
-            elif successful_indices:
-                terminal_indices = []
-                terminal_paths = []
-                for index in successful_indices:
-                    terminal_indices.append(index)
-                    terminal_paths.append(pre_paths[index])
-                try:
-                    terminal_result = planning.plan_pose_batch(
-                        p_base_ee_places[terminal_indices],
-                        q_base_ee_places[terminal_indices],
-                        start_paths=terminal_paths,
-                        collision_policy=CollisionPolicy.PLACEMENT_DESCENT,
-                        active_target=object_name,
-                        support=support_name,
-                    )
-                    terminal_success = self._candidate_mask(
-                        terminal_result, len(terminal_indices)
-                    )
-                    terminal_result_paths = self._result_paths(terminal_result)
-                except Exception as exc:
-                    terminal_success = [False] * len(terminal_indices)
-                    terminal_result_paths = []
-                    for index in terminal_indices:
-                        candidate_diagnostics[index]["terminal_error"] = repr(exc)
-
-                for local_index, index in enumerate(terminal_indices):
-                    diagnostic = candidate_diagnostics[index]
-                    success = bool(
-                        local_index < len(terminal_success)
-                        and terminal_success[local_index]
-                    )
-                    diagnostic["terminal_result"] = int(success)
-                    if not success:
-                        continue
-                    terminal_path = (
-                        terminal_result_paths[local_index]
-                        if local_index < len(terminal_result_paths)
-                        else None
-                    )
-                    diagnostic["terminal_start_position_base"] = (
-                        self._path_endpoint_position(
-                            terminal_paths[local_index],
-                            p_base_ee_preplaces[index],
-                        )
-                    )
-                    geometry = self._terminal_geometry(
-                        terminal_path,
-                        diagnostic["terminal_start_position_base"],
-                        p_base_ee_places[index],
-                    )
-                    diagnostic["terminal_geometry"] = geometry
-                    if selected_index is None and geometry["valid"]:
-                        selected_index = index
-                        self._set_selected_plan(
-                            index,
-                            preplace_path=terminal_paths[local_index],
-                            terminal_path=terminal_path,
-                            source="native_batch_preplace_terminal",
-                        )
-
-            if selected_index is not None:
-                print(
-                    "native-v2 pre-place and continuous terminal plan success "
-                    f"candidate={selected_index}"
-                )
-
-            # The batch planner is deliberately configured with one
-            # trajopt seed so that the normal 20-candidate query stays
-            # bounded.  A complete batch IK/TrajOpt miss is not evidence
-            # that every target is unreachable: the single native planner
-            # has the full seed budget and graph retry policy used by
-            # execution.  Retry only the candidates that still need a
-            # decision, preserving the native-v2 path and the strict
-            # terminal geometry check.
-            if selected_index is None:
-                single_fallback_debug["used"] = True
-                try:
-                    configured_budget = int(
-                        pick_place_cfg.get(
-                            "place_native_single_fallback_query_budget",
-                            2 * CUROBO_BATCH_SIZE,
-                        )
-                    )
-                except (TypeError, ValueError):
-                    configured_budget = 2 * CUROBO_BATCH_SIZE
-                single_fallback_debug["query_budget"] = max(1, configured_budget)
-                if successful_indices:
-                    fallback_indices = list(successful_indices)
-                else:
-                    fallback_indices = list(range(T_base_ee_places.shape[0]))
-                    print(
-                        "native-v2 batch pre-place produced no candidates; "
-                        "falling back to single native planner"
-                    )
-
-                for index in fallback_indices:
-                    if single_fallback_debug["queries"] >= single_fallback_debug["query_budget"]:
-                        single_fallback_debug["truncated"] = True
-                        break
-                    single_fallback_debug["candidates_considered"] += 1
-                    diagnostic = candidate_diagnostics[index]
-                    single_fallback_debug["pre_queries"] += 1
-                    single_fallback_debug["queries"] += 1
-                    try:
-                        single_pre_result = planning.plan_pose_result(
-                            p_base_ee_preplaces[index],
-                            q_base_ee_preplaces[index],
-                            collision_policy=CollisionPolicy.ATTACHED_CARRY,
-                            active_target=object_name,
-                            support=support_name,
-                        )
-                        single_pre_success = bool(self._candidate_mask(single_pre_result, 1)[0])
-                    except Exception as exc:  # Evidence only; keep trying candidates.
-                        diagnostic["single_pre_result"] = 0
-                        diagnostic["single_pre_error"] = repr(exc)
-                        continue
-
-                    diagnostic["single_pre_result"] = int(single_pre_success)
-                    if not single_pre_success:
-                        continue
-                    single_pre_paths = self._result_paths(single_pre_result)
-                    single_pre_path = (
-                        single_pre_paths[0] if single_pre_paths else None
-                    )
-                    if not continuous_descent:
-                        selected_index = index
-                        self._set_selected_plan(
-                            index,
-                            preplace_path=single_pre_path,
-                            source="native_single_preplace_fallback",
-                        )
-                        break
-                    if single_pre_path is None:
-                        diagnostic["single_terminal_result"] = 0
-                        diagnostic["single_terminal_geometry"] = {
-                            "valid": False,
-                            "reason": "missing_native_single_preplace_path_or_planner",
-                        }
-                        continue
-
-                    if single_fallback_debug["queries"] >= single_fallback_debug["query_budget"]:
-                        single_fallback_debug["truncated"] = True
-                        diagnostic["single_terminal_result"] = 0
-                        diagnostic["single_terminal_geometry"] = {
-                            "valid": False,
-                            "reason": "native_single_fallback_query_budget_exhausted",
-                        }
-                        break
-                    single_fallback_debug["terminal_queries"] += 1
-                    single_fallback_debug["queries"] += 1
-                    try:
-                        single_terminal_result = planning.plan_pose_from_path(
-                            p_base_ee_places[index],
-                            q_base_ee_places[index],
-                            single_pre_path,
-                            collision_policy=CollisionPolicy.PLACEMENT_DESCENT,
-                            active_target=object_name,
-                            support=support_name,
-                        )
-                        single_terminal_success = bool(self._candidate_mask(single_terminal_result, 1)[0])
-                    except Exception as exc:  # Evidence only; keep trying candidates.
-                        diagnostic["single_terminal_result"] = 0
-                        diagnostic["single_terminal_error"] = repr(exc)
-                        continue
-
-                    diagnostic["single_terminal_result"] = int(single_terminal_success)
-                    single_terminal_paths = (
-                        self._result_paths(single_terminal_result)
-                        if single_terminal_success
-                        else []
-                    )
-                    geometry = self._terminal_geometry(
-                        single_terminal_paths[0] if single_terminal_paths else None,
-                        self._path_endpoint_position(
-                            single_pre_path,
-                            p_base_ee_preplaces[index],
-                        ),
-                        p_base_ee_places[index],
-                    )
-                    diagnostic["terminal_start_position_base"] = (
-                        self._path_endpoint_position(
-                            single_pre_path,
-                            p_base_ee_preplaces[index],
-                        )
-                    )
-                    diagnostic["single_terminal_geometry"] = geometry
-                    if geometry["valid"]:
-                        selected_index = index
-                        self._set_selected_plan(
-                            index,
-                            preplace_path=single_pre_path,
-                            terminal_path=(
-                                single_terminal_paths[0]
-                                if single_terminal_paths
-                                else None
-                            ),
-                            source="native_single_preplace_terminal_fallback",
-                        )
-                        break
-
-            if selected_index is not None and not successful_indices:
-                print(
-                    "native-v2 single fallback pre-place and continuous terminal "
-                    f"plan success candidate={selected_index}"
-                )
-        else:
-            # Controllers without candidate batching use the same typed
-            # single-planner contract for each candidate.
-            for index in range(T_base_ee_places.shape[0]):
-                p_base_ee_pregrasp = p_base_ee_preplaces[index]
-                q_base_ee_pregrasp = q_base_ee_preplaces[index]
-                p_base_ee_grasp = p_base_ee_places[index]
-                q_base_ee_grasp = q_base_ee_places[index]
-                planner_result = planning.plan_pose(
-                    p_base_ee_pregrasp,
-                    q_base_ee_pregrasp,
-                    collision_policy=CollisionPolicy.ATTACHED_CARRY,
-                    active_target=object_name,
-                    support=support_name,
-                )
-                result_pre = int(bool(self._candidate_mask(planner_result, 1)[0]))
-
-                candidate_debug = {
-                    "index": int(index),
-                    "pre_position_base": np.asarray(p_base_ee_pregrasp),
-                    "pre_orientation_base": np.asarray(q_base_ee_pregrasp),
-                    "place_position_base": np.asarray(p_base_ee_grasp),
-                    "place_orientation_base": np.asarray(q_base_ee_grasp),
-                    "pre_result": int(result_pre),
-                }
-
-                if result_pre == 1:
-                    pre_paths = self._result_paths(planner_result)
-                    pre_path = pre_paths[0] if pre_paths else None
-                    if continuous_descent and pre_path is not None:
-                        terminal_result = planning.plan_pose_from_path(
-                            p_base_ee_grasp,
-                            q_base_ee_grasp,
-                            pre_path,
-                            collision_policy=CollisionPolicy.PLACEMENT_DESCENT,
-                            active_target=object_name,
-                            support=support_name,
-                        )
-                        terminal_success = bool(
-                            terminal_result is not None
-                            and self._candidate_mask(terminal_result, 1)[0]
-                        )
-                        candidate_debug["terminal_result"] = int(terminal_success)
-                        terminal_paths = (
-                            self._result_paths(terminal_result)
-                            if terminal_success
-                            else []
-                        )
-                        geometry = self._terminal_geometry(
-                            terminal_paths[0] if terminal_paths else None,
-                            p_base_ee_pregrasp,
-                            p_base_ee_grasp,
-                        )
-                        candidate_debug["terminal_geometry"] = geometry
-                        if geometry["valid"]:
-                            selected_index = index
-                            self._set_selected_plan(
-                                index,
-                                preplace_path=pre_path,
-                                terminal_path=(
-                                    terminal_paths[0] if terminal_paths else None
-                                ),
-                                source="single_preplace_terminal",
-                            )
-                    else:
-                        selected_index = index
-                        self._set_selected_plan(
-                            index,
-                            preplace_path=pre_path,
-                            source="single_preplace",
-                        )
-                    candidate_diagnostics.append(candidate_debug)
-                    if selected_index is not None:
-                        print("pre-place and terminal plan success")
-                        break
-                    continue
-
-                candidate_diagnostics.append(candidate_debug)
-                if selected_index is None:
-                    # A valid pre-place plan is sufficient when continuous
-                    # terminal validation is disabled.
-                    selected_index = index if result_pre else None
-                    if selected_index is not None:
-                        self._set_selected_plan(
-                            index,
-                            preplace_path=pre_path,
-                            source="single_preplace",
-                        )
-                if selected_index is not None:
-                    print("place plan success")
-                    break
-        plan_failure_reason = "NO_COLLISION_FREE_PREPLACE_PLAN"
-        if continuous_descent and any(
-            diagnostic.get("pre_result") == 1
-            or diagnostic.get("single_pre_result") == 1
-            for diagnostic in candidate_diagnostics
-            if isinstance(diagnostic, dict)
-        ):
-            plan_failure_reason = "NO_COLLISION_SAFE_CONTINUOUS_PLACE_PLAN"
-        if selected_index is None:
-            native_start_collision = None
-            try:
-                native_start_collision = planning.diagnose_start_collision()
-            except (AttributeError, RuntimeError):
-                native_start_collision = None
-            if not self._plan_failure_snapshot_written:
-                self._write_plan_failure_snapshot(
-                    candidate_diagnostics=candidate_diagnostics,
-                    native_start_collision=native_start_collision,
-                    single_fallback=single_fallback_debug,
-                    failure_reason=plan_failure_reason,
-                    bbox_min=b_min,
-                    bbox_max=b_max,
-                    ratio_ranges=ratio_ranges,
-                    pre_place_pos_w=pre_place_pos_w,
-                    place_pos_w=place_pos_w,
-                    pre_place_pos_b=pre_place_pos_b,
-                    place_pos_b=place_pos_b,
-                    pre_orientations=q_base_ee_preplaces,
-                    place_orientations=q_base_ee_places,
-                )
-            raise PlacePlanningError(plan_failure_reason)
-        index = selected_index
-
-        res_pre = list(pose_from_tf_matrix(T_base_ee_preplaces[index]))
-        res_plt = list(pose_from_tf_matrix(T_base_ee_places[index]))
-        print(
-            f"[PlaceDebug] preplace-plan object={self.pick_obj.name} "
-            f"support={self.place_obj.name} selected_index={int(index)} failure=None"
-        )
-        self._pending_target_intent = {
-            "kind": "place",
-            "objects": list(self.skill_cfg["objects"]),
-            "selected_index": int(index),
-            "place_direction": str(direction),
-            "position_constraint": str(pos_constraint),
-            "constraints": {
-                key: self.skill_cfg[key]
-                for key in (
-                    "align_pick_obj_axis",
-                    "align_place_obj_axis",
-                    "offset_place_obj_axis",
-                    "align_obj_tol",
-                    "filter_x_dir",
-                    "filter_y_dir",
-                    "filter_z_dir",
-                    "place_direction",
-                    "position_constraint",
-                    "preserve_attached_orientation",
-                    "pre_place_z_offset",
-                    "place_z_offset",
-                    "pre_place_align",
-                    "place_align",
-                    "pre_place_offset",
-                    "place_offset",
-                )
-                if key in self.skill_cfg
-            },
-            "bbox_world": np.concatenate([b_min, b_max]),
-            "ratio_ranges": np.asarray(ratio_ranges, dtype=float),
-            "region_points_world": np.asarray(region_points_w, dtype=float),
-            "region_normal_world": np.asarray(region_normal_w, dtype=float),
-            "region_tangent_hint_world": np.asarray(
-                region_tangent_hint_w, dtype=float
-            ),
-            "selected_reference_world": np.asarray(place_pos_w[index], dtype=float),
-            "preplace_position": np.asarray(res_pre[0], dtype=float),
-            "preplace_orientation": np.asarray(res_pre[1], dtype=float),
-            "place_position": np.asarray(res_plt[0], dtype=float),
-            "place_orientation": np.asarray(res_plt[1], dtype=float),
-        }
-
-        if self.skill_cfg.get("post_place_vector", None):
-            post_vec = np.array(self.skill_cfg["post_place_vector"])
-            T_base_ee_postplace = deepcopy(T_base_ee_places[index])
-            T_base_ee_postplace[:3, 3] = T_base_ee_places[index][:3, :3] @ post_vec + T_base_ee_places[index][:3, 3]
-            res_post = list(pose_from_tf_matrix(T_base_ee_postplace))
-            return [res_pre, res_plt, res_post]
-
-        return [res_pre, res_plt]
+            result = self.sample_gripper_place_traj()
+            self.manip_list = self._build_commands(result)
+            self.publish_target_intent(self._target_intent)
+        except PlaceCandidateError as exc:
+            self.failure_reason = str(exc)
+            self.manip_list = []
+            self.publish_target_intent({"kind": "place", "objects": list(self.skill_cfg["objects"]), "has_target": False, "failure_reason": self.failure_reason})
 
     def generate_constrained_rotation_batch(self, batch_size=3000):
         if self.skill_cfg.get("preserve_attached_orientation", False):
-            # Local Place validation should exercise carried-object planning,
-            # contact, detach and settle without injecting an unrelated random
-            # reorientation.  T_base_world and T_world_ee are refreshed by
-            # sample_gripper_place_traj immediately before this method.
-            current_base_ee = (self.T_base_world @ self.T_world_ee)[:3, :3]
-            return np.repeat(
-                current_base_ee[np.newaxis, :, :], CUROBO_BATCH_SIZE, axis=0
-            )
+            rotation = (self.T_base_world @ self.T_world_ee)[:3, :3]
+            return np.repeat(rotation[None], CUROBO_BATCH_SIZE, axis=0)
 
-        filter_conditions = {
-            "x": {
-                "forward": (0, 0, 1),  # (row, col, direction)
-                "backward": (0, 0, -1),
-                "leftward": (1, 0, 1),
-                "rightward": (1, 0, -1),
-                "upward": (2, 0, 1),
-                "downward": (2, 0, -1),
-            },
-            "y": {
-                "forward": (0, 1, 1),
-                "backward": (0, 1, -1),
-                "leftward": (1, 1, 1),
-                "rightward": (1, 1, -1),
-                "upward": (2, 1, 1),
-                "downward": (2, 1, -1),
-            },
-            "z": {
-                "forward": (0, 2, 1),
-                "backward": (0, 2, -1),
-                "leftward": (1, 2, 1),
-                "rightward": (1, 2, -1),
-                "upward": (2, 2, 1),
-                "downward": (2, 2, -1),
-            },
+        conditions = {
+            "x": {"forward": (0, 0, 1), "backward": (0, 0, -1), "leftward": (1, 0, 1), "rightward": (1, 0, -1), "upward": (2, 0, 1), "downward": (2, 0, -1)},
+            "y": {"forward": (0, 1, 1), "backward": (0, 1, -1), "leftward": (1, 1, 1), "rightward": (1, 1, -1), "upward": (2, 1, 1), "downward": (2, 1, -1)},
+            "z": {"forward": (0, 2, 1), "backward": (0, 2, -1), "leftward": (1, 2, 1), "rightward": (1, 2, -1), "upward": (2, 2, 1), "downward": (2, 2, -1)},
         }
-        rot_mats = R.random(batch_size).as_matrix()
-        valid_mask = np.ones(batch_size, dtype=bool)
+        rotations = R.random(batch_size).as_matrix()
+        valid = np.ones(batch_size, dtype=bool)
+        for axis, values in conditions.items():
+            spec = self.skill_cfg.get(f"filter_{axis}_dir")
+            if spec is None:
+                continue
+            row, column, sign = values[spec[0]]
+            elements = rotations[:, row, column]
+            limits = [np.cos(np.deg2rad(float(value))) for value in spec[1:]]
+            if len(limits) == 1:
+                valid &= elements >= limits[0] if sign > 0 else elements <= limits[0]
+            elif sign > 0:
+                valid &= (elements >= limits[0]) & (elements <= limits[1])
+            else:
+                valid &= (elements <= limits[0]) & (elements >= limits[1])
 
-        for axis in ["x", "y", "z"]:
-            filter_list = self.skill_cfg.get(f"filter_{axis}_dir", None)
-            if filter_list is not None:
-                direction = filter_list[0]
-                row, col, sign = filter_conditions[axis][direction]
-                elements = rot_mats[:, row, col]
-                if len(filter_list) == 2:
-                    value = filter_list[1]
-                    cos_val = np.cos(np.deg2rad(value))
-                    if sign > 0:
-                        valid_mask &= elements >= cos_val
-                    else:
-                        valid_mask &= elements <= cos_val
-                elif len(filter_list) == 3:
-                    value1, value2 = filter_list[1:]
-                    cos_val1 = np.cos(np.deg2rad(value1))
-                    cos_val2 = np.cos(np.deg2rad(value2))
-                    if sign > 0:
-                        valid_mask &= (elements >= cos_val1) & (elements <= cos_val2)
-                    else:
-                        valid_mask &= (elements <= cos_val1) & (elements >= cos_val2)
+        if self.align_pick_obj_axis is not None and self.align_place_obj_axis is not None and self.align_obj_tol is not None:
+            pick_axis = np.asarray(self.align_pick_obj_axis, dtype=float)
+            place_axis = (self.T_base_world @ self.T_world_container)[:3, :3] @ np.asarray(self.align_place_obj_axis, dtype=float)
+            object_rotations = rotations @ np.linalg.inv(self.T_obj_ee)[:3, :3]
+            pick_vectors = np.einsum("ijk,k->ij", object_rotations, pick_axis)
+            cosine = np.sum(pick_vectors * place_axis, axis=1) / np.maximum(np.linalg.norm(pick_vectors, axis=1) * np.linalg.norm(place_axis), 1e-12)
+            valid &= np.arccos(np.clip(cosine, -1.0, 1.0)) < np.deg2rad(float(self.align_obj_tol))
 
-        if (
-            self.align_pick_obj_axis is not None
-            and self.align_place_obj_axis is not None
-            and self.align_obj_tol is not None
-        ):
-
-            align_pick_obj_axis = np.array(self.align_pick_obj_axis)
-            align_place_obj_axis = np.array(self.align_place_obj_axis)
-            R_ee_obj = np.linalg.inv(self.T_obj_ee)[:3, :3]
-            R_base_container_tgt = (self.T_base_world @ self.T_world_container)[:3, :3]
-
-            R_base_obj_tgts = rot_mats @ R_ee_obj  # (N, 3, 3)
-            pick_vecs_tgt = np.einsum("ijk,k->ij", R_base_obj_tgts, align_pick_obj_axis)  # (N, 3)
-            place_vec_tgt = R_base_container_tgt @ align_place_obj_axis
-
-            dot_products = np.dot(pick_vecs_tgt, place_vec_tgt)
-            norms = np.linalg.norm(pick_vecs_tgt, axis=1) * np.linalg.norm(place_vec_tgt)
-            radians = np.arccos(np.clip(dot_products / norms, -1.0, 1.0))
-
-            valid_mask &= radians < np.deg2rad(self.align_obj_tol)
-
-        valid_rot_mats = rot_mats[valid_mask]
-
-        print("length of valid place rots :", len(valid_rot_mats))
-
-        if len(valid_rot_mats) == 0:
-            print("Warning: No matrix satisfies constraints")
-            return rot_mats[:CUROBO_BATCH_SIZE]
-        else:
-            indices = np.random.choice(len(valid_rot_mats), CUROBO_BATCH_SIZE)
-            return valid_rot_mats[indices]
+        choices = rotations[valid]
+        if len(choices) == 0:
+            choices = rotations
+        indices = np.random.choice(len(choices), CUROBO_BATCH_SIZE, replace=len(choices) < CUROBO_BATCH_SIZE)
+        return choices[indices]
 
     def is_feasible(self, th=5):
-        feasible = self.skill_runtime.num_plan_failed <= th
-        if not feasible and not self._runtime_failure_snapshot_written:
-            self._write_runtime_failure_snapshot(th)
-        return feasible
+        return bool(self.skill_runtime.num_plan_failed <= th and not self.failure_reason)
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
-        assert len(self.manip_list) != 0
-        command = self.manip_list[0]
-        if not isinstance(command, MotionPhaseCommand):
-            raise TypeError("Place emits MotionPhaseCommand values only")
-        return bool(self.skill_runtime.execution_status(command).complete)
+        del t_eps, o_eps
+        if not self.manip_list:
+            return True
+        return bool(self.skill_runtime.phase_complete(self.manip_list[0]))
 
     def is_done(self):
-        if len(self.manip_list) == 0:
-            return True
-        if self.is_subtask_done(t_eps=self.skill_cfg.get("t_eps", 1e-3), o_eps=self.skill_cfg.get("o_eps", 5e-3)):
+        if self.manip_list and self.is_subtask_done(
+            t_eps=self.skill_cfg.get("t_eps", 1e-3),
+            o_eps=self.skill_cfg.get("o_eps", 5e-3),
+        ):
             self.manip_list.pop(0)
-        # if self.is_success():
-        #     self.manip_list.clear()
-        #     print("Rotate Done")
-        return len(self.manip_list) == 0
+        return not self.manip_list
 
     def is_success(self, th=0.0):
-        success_mode = self.skill_cfg.get("success_mode", "3diou")
-        if success_mode == "3diou":
-            bbox_pick_obj = compute_bbox(self.pick_obj.prim)
-            bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
-            iou = IoU(
-                Box(get_bbox_center_and_corners(bbox_pick_obj)), Box(get_bbox_center_and_corners(bbox_place_obj))
-            ).iou()
-            print(iou)
-            success = bool(iou > th)
-            self._record_success_check_debug(
-                success=success,
-                failure_reasons=[] if success else ["iou_below_threshold"],
-                details={
-                    "iou": float(iou),
-                    "threshold": float(th),
-                    "pick_bbox_min": bbox_pick_obj.min,
-                    "pick_bbox_max": bbox_pick_obj.max,
-                    "place_bbox_min": bbox_place_obj.min,
-                    "place_bbox_max": bbox_place_obj.max,
-                },
-            )
-            return success
-        elif success_mode == "height":
-            T_o2r = get_relative_transform(
-                get_prim_at_path(self.pick_obj.prim_path), get_prim_at_path(self.robot_base_path)
-            )
-            T_o2r_trans = T_o2r[:3, 3]
+        mode = self.skill_cfg.get("success_mode", "3diou")
+        pick_bbox = compute_bbox(self.pick_obj.prim)
+        place_bbox = compute_bbox(get_prim_at_path(self.place_prim_path))
+        pick_pose = self._world_pose(self.pick_obj)[0]
+        reasons, details = [], {}
+
+        if mode == "3diou":
+            value = IoU(Box(get_bbox_center_and_corners(pick_bbox)), Box(get_bbox_center_and_corners(place_bbox))).iou()
+            success = bool(value > th)
+            details = {"iou": float(value), "threshold": float(th)}
+            if not success:
+                reasons.append("iou_below_threshold")
+        elif mode == "height":
+            relative = get_relative_transform(get_prim_at_path(self.pick_obj.prim_path), get_prim_at_path(self.robot_base_path))[:3, 3]
             threshold = float(self.place_ee_trans[2] - 0.4)
-            success = bool(T_o2r_trans[2] < threshold)
-            self._record_success_check_debug(
-                success=success,
-                failure_reasons=[] if success else ["height_not_below_threshold"],
-                details={
-                    "object_to_robot_translation": T_o2r_trans,
-                    "z": float(T_o2r_trans[2]),
-                    "threshold": threshold,
-                    "place_ee_trans": self.place_ee_trans,
-                },
-            )
-            return success
-        elif success_mode == "xybbox":
-            bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
-            # ``compute_bbox`` is a world-space USD query.  Compare it with
-            # the native v2 world pose as well; the old local-pose comparison
-            # only worked while every rigid-body parent happened to be at the
-            # world origin.
-            pick_world_pose = self.pick_obj.get_world_pose()[0]
-            pick_x, pick_y = [float(value) for value in pick_world_pose[:2]]
-            place_xy_min = np.asarray(bbox_place_obj.min[:2], dtype=float)
-            place_xy_max = np.asarray(bbox_place_obj.max[:2], dtype=float)
+            success = bool(relative[2] < threshold)
+            details = {"z": float(relative[2]), "threshold": threshold}
+            if not success:
+                reasons.append("height_not_below_threshold")
+        elif mode == "xybbox":
             margin = float(self.skill_cfg.get("success_xy_margin", 0.015))
-            valid_min = place_xy_min + margin
-            valid_max = place_xy_max - margin
-            x_valid = bool(valid_min[0] < pick_x < valid_max[0])
-            y_valid = bool(valid_min[1] < pick_y < valid_max[1])
-            success = bool(x_valid and y_valid)
-            failure_reasons = []
-            if not x_valid:
-                failure_reasons.append("x_outside_place_bbox")
-            if not y_valid:
-                failure_reasons.append("y_outside_place_bbox")
-            self._record_success_check_debug(
-                success=success,
-                failure_reasons=failure_reasons,
-                details={
-                    "pick_xy": [float(pick_x), float(pick_y)],
-                    "place_xy_min": place_xy_min,
-                    "place_xy_max": place_xy_max,
-                    "margin": margin,
-                    "valid_xy_min": valid_min,
-                    "valid_xy_max": valid_max,
-                    "x_valid": x_valid,
-                    "y_valid": y_valid,
-                    "distance_to_valid_min": [float(pick_x - valid_min[0]), float(pick_y - valid_min[1])],
-                    "distance_to_valid_max": [float(valid_max[0] - pick_x), float(valid_max[1] - pick_y)],
-                    "pick_world_pose": pick_world_pose,
-                    "place_bbox_min": bbox_place_obj.min,
-                    "place_bbox_max": bbox_place_obj.max,
-                },
-            )
-            return success
-        elif success_mode == "left":
-            bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
-            pick_x, pick_y = self.pick_obj.get_world_pose()[0][:2]
-            place_xy_min = bbox_place_obj.min[:2]
-            place_xy_max = bbox_place_obj.max[:2]
+            minimum = np.asarray(place_bbox.min[:2], dtype=float) + margin
+            maximum = np.asarray(place_bbox.max[:2], dtype=float) - margin
+            xy = np.asarray(pick_pose[:2], dtype=float)
+            success = bool(np.all(xy > minimum) and np.all(xy < maximum))
+            details = {"pick_xy": xy, "valid_xy_min": minimum, "valid_xy_max": maximum}
+            if not success:
+                reasons.append("pick_center_outside_place_bbox")
+        elif mode in {"left", "right"}:
             threshold = float(self.skill_cfg.get("threshold", 0.03))
-            limit = float(place_xy_min[0] - threshold)
-            success = bool(pick_x < limit)
-            self._record_success_check_debug(
-                success=success,
-                failure_reasons=[] if success else ["x_not_left_of_place_bbox"],
-                details={
-                    "pick_xy": [float(pick_x), float(pick_y)],
-                    "place_xy_min": place_xy_min,
-                    "place_xy_max": place_xy_max,
-                    "threshold": threshold,
-                    "x_limit": limit,
-                },
-            )
-            return success
-        elif success_mode == "right":
-            bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
-            pick_x, pick_y = self.pick_obj.get_world_pose()[0][:2]
-            place_xy_min = bbox_place_obj.min[:2]
-            place_xy_max = bbox_place_obj.max[:2]
-            threshold = float(self.skill_cfg.get("threshold", 0.03))
-            limit = float(place_xy_max[0] + threshold)
-            success = bool(pick_x > limit)
-            self._record_success_check_debug(
-                success=success,
-                failure_reasons=[] if success else ["x_not_right_of_place_bbox"],
-                details={
-                    "pick_xy": [float(pick_x), float(pick_y)],
-                    "place_xy_min": place_xy_min,
-                    "place_xy_max": place_xy_max,
-                    "threshold": threshold,
-                    "x_limit": limit,
-                },
-            )
-            return success
-        elif success_mode == "flower":
-            bbox_pick_obj = compute_bbox(self.pick_obj.prim)
-            bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
-            iou = IoU(
-                Box(get_bbox_center_and_corners(bbox_pick_obj)), Box(get_bbox_center_and_corners(bbox_place_obj))
-            ).iou()
-            print("iou", iou)
-            th = self.skill_cfg.get("success_th", 0.0)
-            middle = self.pick_obj.get_world_pose()[0]
-            x_min, y_min, _ = bbox_place_obj.min
-            x_max, y_max, _ = bbox_place_obj.max
-            x_middle, y_middle, _ = middle[0], middle[1], middle[2]
-            center_valid = bool(x_min < x_middle < x_max and y_min < y_middle < y_max)
-            iou_valid = bool(iou > th)
-            success = bool(center_valid and iou_valid)
-            failure_reasons = []
-            if not center_valid:
-                failure_reasons.append("center_outside_place_bbox")
-            if not iou_valid:
-                failure_reasons.append("iou_below_threshold")
-            self._record_success_check_debug(
-                success=success,
-                failure_reasons=failure_reasons,
-                details={
-                    "iou": float(iou),
-                    "threshold": float(th),
-                    "center": middle,
-                    "center_valid": center_valid,
-                    "place_bbox_min": bbox_place_obj.min,
-                    "place_bbox_max": bbox_place_obj.max,
-                    "pick_bbox_min": bbox_pick_obj.min,
-                    "pick_bbox_max": bbox_pick_obj.max,
-                },
-            )
-            return success
-        elif success_mode == "cup":
-            bbox_pick_obj = compute_bbox(self.pick_obj.prim)
-            bbox_place_obj = compute_bbox(get_prim_at_path(self.place_prim_path))
-            iou = IoU(
-                Box(get_bbox_center_and_corners(bbox_pick_obj)), Box(get_bbox_center_and_corners(bbox_place_obj))
-            ).iou()
-            x_cup, y_cup, z_cup = bbox_pick_obj.min
-            x_shelf, y_shelf, z_shelf = bbox_place_obj.min
-
-            print("iou", iou)
-            print("x_cup, y_cup, z_cup", x_cup, y_cup, z_cup)
-            print("x_shelf, y_shelf, z_shelf", x_shelf, y_shelf, z_shelf)
-
-            z_valid = bool(z_cup > z_shelf + 0.05)
+            x = float(pick_pose[0])
+            limit = float(place_bbox.min[0] - threshold if mode == "left" else place_bbox.max[0] + threshold)
+            success = x < limit if mode == "left" else x > limit
+            details = {"pick_x": x, "limit": limit}
+            if not success:
+                reasons.append(f"x_not_{mode}_of_place_bbox")
+        elif mode in {"flower", "cup"}:
+            iou = IoU(Box(get_bbox_center_and_corners(pick_bbox)), Box(get_bbox_center_and_corners(place_bbox))).iou()
             threshold = float(self.skill_cfg.get("success_th", 0.0))
-            iou_valid = bool(iou > threshold)
-            success = bool(z_valid and iou_valid)
-            failure_reasons = []
-            if not z_valid:
-                failure_reasons.append("cup_z_below_shelf_threshold")
-            if not iou_valid:
-                failure_reasons.append("iou_below_threshold")
-            self._record_success_check_debug(
-                success=success,
-                failure_reasons=failure_reasons,
-                details={
-                    "iou": float(iou),
-                    "threshold": threshold,
-                    "z_cup": float(z_cup),
-                    "z_shelf": float(z_shelf),
-                    "z_threshold": float(z_shelf + 0.05),
-                    "pick_bbox_min": bbox_pick_obj.min,
-                    "pick_bbox_max": bbox_pick_obj.max,
-                    "place_bbox_min": bbox_place_obj.min,
-                    "place_bbox_max": bbox_place_obj.max,
-                },
-            )
-            return success
+            center = bool(place_bbox.min[0] < pick_pose[0] < place_bbox.max[0] and place_bbox.min[1] < pick_pose[1] < place_bbox.max[1])
+            if mode == "flower":
+                success = center and iou > threshold
+            else:
+                success = float(pick_bbox.min[2]) > float(place_bbox.min[2]) + 0.05 and iou > threshold
+            details = {"iou": float(iou), "threshold": threshold, "center_valid": center}
+            if not success:
+                reasons.append("placement_geometry_invalid")
+        else:
+            success = False
+            reasons.append("unsupported_success_mode")
+            details = {"success_mode": mode}
 
-        self._record_success_check_debug(
-            success=False,
-            failure_reasons=["unsupported_success_mode"],
-            details={"success_mode": success_mode},
-        )
-        return False
+        if not success:
+            self._record_success_failure(reasons, details)
+        return bool(success)

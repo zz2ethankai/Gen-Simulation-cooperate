@@ -36,8 +36,8 @@ _CONTROLLERS_ROOT = (
     / "core"
     / "controllers"
 )
-_STATE_PLANNING_PATH = _CONTROLLERS_ROOT / "controller_state_planning.py"
-_PHASES_PATH = _CONTROLLERS_ROOT / "controller_phases.py"
+_STATE_PLANNING_PATH = _CONTROLLERS_ROOT / "curobo" / "state_planning.py"
+_PHASES_PATH = _CONTROLLERS_ROOT / "curobo" / "motion_phases.py"
 
 
 def _load_derivative_helper():
@@ -179,13 +179,13 @@ def test_real_controller_phases_retarget_non_identity_object_pose(_simulation_ap
     """Exercise the composed phase component's real geometry imports."""
 
     del _simulation_app
-    from core.controllers.controller_component import (  # noqa: PLC0415
+    from core.controllers.curobo.components import (  # noqa: PLC0415
         MutableExecutionState,
         PhasesPort,
     )
-    from core.controllers.controller_phases import ControllerPhases
-    from core.controllers.pick_planning import PickPlanningPort
-    from core.controllers.skill_runtime import SkillRuntimePort
+    from core.controllers.curobo.motion_phases import ControllerPhases
+    from core.controllers.curobo.pick_planning import PickPlanningPort
+    from core.controllers.curobo.skill_runtime import SkillRuntimePort
     from core.planning.collision_scene_manager import PlannerScenePort
 
     old_translation = np.array([1.7, -0.8, 0.6])
