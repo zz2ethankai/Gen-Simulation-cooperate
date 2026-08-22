@@ -47,4 +47,6 @@
 - r6 运行：`output/docker_runtime/grasp-plan-removal-20260823-r6/docker_runtime.isaac.log`。
 - 结果：仍在 Place 的 `place_preplace_batch` 失败；CuRobo graph 输出 `Start or End state in collision`。原有 Place 快照只记录末端误差和 success mask，不能说明失败来自起点碰撞、IK feasibility 还是 TrajOpt feasibility。
 - 修复：将 native result 的 `feasible/converged/valid_query/solve_time` 等摘要保留在 typed batch metrics；batch 全失败时由 controller runtime 记录一次 `[CuRoboBatchDebug]`，并调用已有 native 起点碰撞审计。诊断不改变 Physics Schema、障碍开关、候选生成或执行逻辑。
-- 目标：用 r7 日志定位真正的碰撞源，再实施最小 controller 修复；本阶段先独立 checkpoint，再做严格闭环。
+- r7 运行：batch planner 仍输出 `Start or End state in collision`，但新增诊断路径因 `runtime.py` 漏定义 `LOGGER` 在写日志时中断；该轮不计入规划成功率。
+- 修复：补齐 controller runtime logger，保证诊断失败不会改变 episode 行为；重新以 r8 运行取得有效碰撞证据。
+- 目标：用 r8 日志定位真正的碰撞源，再实施最小 controller 修复；本阶段先独立 checkpoint，再做严格闭环。

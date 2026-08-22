@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
@@ -34,6 +35,8 @@ from core.planning.planner_runtime import PlannerRuntime
 from core.planning.scene_runtime import SceneRuntime
 from core.utils.constants import CUROBO_BATCH_SIZE
 from core.controllers.curobo.trajectory import normalize_named_trajectory
+
+LOGGER = logging.getLogger("de_logger")
 
 if TYPE_CHECKING:
     from core.planning.native_planner_factory import PlannerBuildConfig
