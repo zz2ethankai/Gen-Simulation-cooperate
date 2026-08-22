@@ -370,8 +370,12 @@ class Place(BaseSkill):
                     if same_target:
                         same_target_count = int(len(candidate_indices))
                         terminal_ok[candidate_indices] = True
+                        # The pre-place path starts at the pre-grasp state.  It
+                        # cannot be replayed after TRANSIT_PREPLACE has already
+                        # consumed it; for a coincident target the old PnP
+                        # protocol is simply hold-at-place, then release.
                         for index in candidate_indices:
-                            terminal_paths[index] = pre_paths[index]
+                            terminal_paths[index] = None
                     else:
                         valid = np.asarray(
                             [index for index in candidate_indices if pre_paths[index] is not None],
@@ -418,7 +422,10 @@ class Place(BaseSkill):
                     break
                 if np.allclose(pre[index], place[index]) and np.allclose(pre_q[index], place_q[index]):
                     terminal_ok[index] = True
-                    terminal_paths[index] = pre_paths[index]
+                    # Do not replay the pre-place path from its original
+                    # start.  A coincident terminal target needs no second
+                    # motion plan before the release phase.
+                    terminal_paths[index] = None
                     same_target_count += 1
                     break
                 if pre_paths[index] is None:

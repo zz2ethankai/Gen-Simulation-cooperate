@@ -2036,7 +2036,15 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             CollisionObjectState.ATTACHED,
             CollisionObjectState.PLACEMENT_CONTACT,
         }:
-            if command.phase != MotionPhase.DETACH_AND_SETTLE:
+            if command.phase not in {
+                MotionPhase.GRIPPER_OPEN,
+                MotionPhase.DETACH_AND_SETTLE,
+            }:
+                # Opening the gripper is the release boundary.  The target
+                # can rotate or translate as finger contact is removed; that
+                # expected motion must not be evaluated as attached-carry
+                # slip before DETACH_AND_SETTLE transfers ownership to the
+                # support/world state.
                 attached_slip_translation, attached_slip_rotation = (
                     self.collision_scene_manager.get_attached_object_slip(command.active_object)
                 )

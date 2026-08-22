@@ -90,3 +90,12 @@
 - 根因：Pick 的 `POST_GRASP_LIFT` 已设置 `allow_target_robot_contact=True`，Place 的 `TRANSIT_PREPLACE` 却只设置了 `allow_target_finger_contact=True`。持物经过手腕/hand 的接触被安全监控当成环境碰撞，和 attached-carry 的 Physics Schema 语义不一致。
 - 修复：仅为 Place 的 `TRANSIT_PREPLACE` 补齐 `allow_target_robot_contact=True`；不关闭任何 Physics Schema collider，不改变 planner 的碰撞约束。
 - checkpoint：本阶段静态检查后提交独立 checkpoint，再运行 r14 验证是否越过 pre-place transit。
+
+## Stage 11 — keep coincident placement targets on the old release path
+
+- r14 运行：`transit_preplace` 已通过，说明 attached-object 与 robot-link 的接触声明修正有效；但 terminal phase 记录 `continuous-place-plan valid=false`，随后在 `gripper_open` 因 `attached_object_rotation_slip=17.37°` 中止。检查发现本任务的 `pre_place_z_offset` 和 `place_z_offset` 都是 `0.1`，前后目标重合；新逻辑把完整的 pre-place 轨迹重复挂到了 terminal phase，而 Physics Schema 的 release 帧又被当作 attached-carry slip 监控。
+- 修复：
+  - pre-place/place 目标重合时只保留 `terminal_ok`，不再把 pre-place path 填入 terminal path；执行语义回到旧 PnP 的“到位后保持并开夹”；
+  - `GRIPPER_OPEN` 阶段跳过 attached-carry slip 计算，仍保留碰撞、非法状态、掉落和放置支撑接触检查；`DETACH_AND_SETTLE` 后恢复完整的 world/placement 语义。
+- 约束：不修改 YAML，不关闭 Physics Schema，不改变 `dummy_forward`；这是 controller/执行边界的最小修正。
+- 静态检查与 checkpoint：本阶段修改后执行 py_compile、`git diff --check`，提交独立 checkpoint，再运行 r15 严格闭环。
