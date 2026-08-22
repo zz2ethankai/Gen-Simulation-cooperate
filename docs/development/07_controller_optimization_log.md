@@ -50,3 +50,11 @@
 - r7 运行：batch planner 仍输出 `Start or End state in collision`，但新增诊断路径因 `runtime.py` 漏定义 `LOGGER` 在写日志时中断；该轮不计入规划成功率。
 - 修复：补齐 controller runtime logger，保证诊断失败不会改变 episode 行为；重新以 r8 运行取得有效碰撞证据。
 - 目标：用 r8 日志定位真正的碰撞源，再实施最小 controller 修复；本阶段先独立 checkpoint，再做严格闭环。
+
+## Stage 6 — avoid poisoned batch graph seeds
+
+- r8 运行：`output/docker_runtime/grasp-plan-removal-20260823-r8/docker_runtime.isaac.log`。
+- 证据：Place 的 batch 仍为 `0/20`，CuRobo 输出 `Start or End state in collision`；同一时刻 native 起点碰撞审计为 `collision_cost_sum=0`、`collision_spheres=0`。候选末端误差大多为 `1e-7` 量级，说明当前失败边界不是 live start state，而是 batch graph 汇总检查中的某个 IK goal。
+- 修复：`batch_enable_graph` 默认改为 `false`。批量候选仍保留 Physics Schema、batch IK、12 个 TrajOpt seeds 和 `success_ratio=1/20`；只有任务显式设置 `planning.pick_place.batch_enable_graph: true` 时才启用 graph seed。这样去掉 v2 graph 的全批次失败传播，也减少不必要的 graph 构建/检查开销。
+- 约束：单目标规划的 `enable_graph` 语义不变；`dummy_forward` 和 Pick/Place 候选职责不变。
+- checkpoint：本阶段代码验证通过后提交独立 checkpoint，再进行 r9 官方闭环。

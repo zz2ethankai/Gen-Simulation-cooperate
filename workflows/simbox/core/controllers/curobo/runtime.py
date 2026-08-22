@@ -255,10 +255,12 @@ class MotionPlannerRuntime:
         pick_cfg = dict(port.task_cfg).get("planning", {}).get("pick_place", {})
         graph_enabled = bool(pick_cfg.get("enable_graph", False))
         # Candidate batches need one viable path, not a proof that every
-        # sampled pose is solvable.  Keep the batch graph seed available by
-        # default; the old controller used graph-assisted batch planning even
-        # when the single-query path did not.
-        batch_graph_enabled = bool(pick_cfg.get("batch_enable_graph", True))
+        # sampled pose is solvable.  CuRobo v2's batch graph seed checks all
+        # start/goal nodes as one graph; one colliding IK goal can therefore
+        # poison every candidate.  Keep it as an explicit opt-in for tasks
+        # that need it, while the normal batch path stays on independent
+        # IK/TrajOpt attempts.
+        batch_graph_enabled = bool(pick_cfg.get("batch_enable_graph", False))
         try:
             max_attempts = max(1, int(pick_cfg.get("max_plan_attempts", 4)))
         except (TypeError, ValueError):
