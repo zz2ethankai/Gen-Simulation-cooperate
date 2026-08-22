@@ -99,3 +99,12 @@
   - `GRIPPER_OPEN` 阶段跳过 attached-carry slip 计算，仍保留碰撞、非法状态、掉落和放置支撑接触检查；`DETACH_AND_SETTLE` 后恢复完整的 world/placement 语义。
 - 约束：不修改 YAML，不关闭 Physics Schema，不改变 `dummy_forward`；这是 controller/执行边界的最小修正。
 - 静态检查与 checkpoint：本阶段修改后执行 py_compile、`git diff --check`，提交独立 checkpoint，再运行 r15 严格闭环。
+
+- r15 结果：严格成功，日志出现 `[LmdbLogger] Task is successful, mode=plan_with_render`，无 `[LmdbLogger] Episode failed`；`final_step=741`，总耗时约 `355s`。Pick 的两次 post-grasp replan 后恢复，Place batch 仍由 controller 的 single fallback 在前 4 个候选内恢复；transit、terminal release、detach/settle 全部通过。
+
+## Stage 12 — remove temporary batch constraint diagnostics after root cause closure
+
+- 背景：Stage 7–10 的 `CUROBO_BATCH_DIAGNOSTICS` 只用于确认 CuRobo v2 batch 的失败边界，已经完成定位；它会额外执行一次 GPU metrics rollout，且不参与候选选择或执行。
+- 修复：删除临时诊断函数、native solver 对象向结果归一化层的透传，以及 compose 中的诊断环境变量；保留 typed batch failure summary、single fallback 和 Physics Schema。正常 controller 路径不再为诊断保留额外分支。
+- 目标：在 r16 关闭诊断开关跑同一任务，确认成功率不下降并观察耗时是否回落。
+- checkpoint：本阶段静态检查后提交独立 checkpoint，再运行 r16 严格闭环。
