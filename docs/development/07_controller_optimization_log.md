@@ -118,3 +118,5 @@
 - 修复：fallback 只保留成功候选、轨迹和必要的阶段日志；失败候选继续按原顺序尝试并记录 warning，失败时原样返回 batch result。保留相同的 start state、collision policy、attached geometry、world revision 和 typed `BatchPlanResult`，不改变 Physics Schema。
 - 目标：r18 使用同一 seed 做闭环回归，确认 fallback 命中和严格成功不变，同时比较 controller 代码规模。
 - checkpoint：本阶段静态检查后提交独立 checkpoint，再运行 r18。
+- r18 结果：严格成功，`[LmdbLogger] Task is successful, mode=plan_with_render`，无 `[LmdbLogger] Episode failed`；`output/grasp-plan-removal-20260823-r18/de_time_profile_20260823_031818_144797.log` 的 `EnvPlanWithRender` 为 `315.808s`。fallback 命中，Home 保持 `direct interpolation`。Stage 13 删除 27 行 helper bookkeeping，r15–r18 共 4/4 成功（seed 0、seed 1）。
+- 结论：controller 保留 Physics Schema 规划、attachment/collision policy、batch candidate + single fallback 和 typed phase execution；home 继续走 direct interpolation，`dummy_forward` 接口未受限。临时 batch diagnostics 已删除，复杂度和运行速度均已收敛到当前可接受范围。
