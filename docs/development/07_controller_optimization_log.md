@@ -63,7 +63,8 @@
 
 - r9 运行：`output/docker_runtime/grasp-plan-removal-20260823-r9/docker_runtime.isaac.log`。
 - 证据：关闭 batch graph 后仍为 `0/20`，但没有再次出现 graph 的 `Start or End state in collision`；live native 起点审计仍为零。当前 v2 在返回 top-k seed 时清空 `metrics`，所以已有快照只能看到末端误差，不能看到真正拒绝轨迹的碰撞或关节约束。
-- 修复：在 `PlannerRuntime` 增加失败诊断开关 `CUROBO_BATCH_DIAGNOSTICS=1`。只在调用方显式开启且 batch 全失败时，使用 native solver 仍持有的 metrics rollout 对返回优化动作做一次只读摘要，记录约束名称、最大值、正值数量和 feasibility；默认关闭，不改变规划结果和正常运行速度。
+- 修复：在 `PlannerRuntime` 增加失败诊断开关 `CUROBO_BATCH_DIAGNOSTICS=1`，并由官方 Isaac compose 透传。只在调用方显式开启且 batch 全失败时，使用 native solver 仍持有的 metrics rollout 对返回优化动作做一次只读摘要，记录约束名称、最大值、正值数量和 feasibility；默认关闭，不改变规划结果和正常运行速度。
 - Physics Schema、batch 规划、`dummy_forward` 以及 Pick/Place 的候选职责均未改变。
 - 静态检查：本阶段修改后执行 py_compile 与 `git diff --check`。
-- checkpoint：完成静态检查后提交本阶段独立 checkpoint，再以诊断开关运行 r10 官方闭环。
+- r10 运行：官方 wrapper 已完成，但由于 compose 尚未透传该开关，未产生原生约束摘要；任务仍以 `place_preplace_batch 0/20` 失败，不能把本轮当作诊断闭环。
+- checkpoint：完成静态检查后提交本阶段独立 checkpoint，再以诊断开关运行 r11 官方闭环。
