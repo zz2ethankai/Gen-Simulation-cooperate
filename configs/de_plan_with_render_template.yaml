@@ -55,7 +55,7 @@ plan_with_render_stage:
   plan_with_render:                        # Plan and render in a single stage
     type: plan_with_render
     args:
-      emit_obs_on_failure: true          # Video diagnostic runs retain frames when planning fails
+      emit_obs_on_failure: false         # Strict validation must not hide retry/reset failures
       failure_obs_length: 1
 store_stage:
   writer:                                  # Data writer

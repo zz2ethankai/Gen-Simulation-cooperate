@@ -5,7 +5,6 @@ All collision-aware motion queries go through ``SkillRuntimePort``; the
 controller owns the CuRobo/native execution details.
 """
 
-from copy import deepcopy
 import json
 import os
 
@@ -153,6 +152,31 @@ class Place(BaseSkill):
             pass
         finally:
             self._success_snapshot_written = True
+
+    @staticmethod
+    def _plan_summary(result):
+        if result is None:
+            return None
+        mask = getattr(result, "success_mask", None)
+        return {
+            "type": type(result).__name__,
+            "status": str(getattr(result, "status", "")),
+            "error": None if getattr(result, "error", None) is None else str(result.error),
+            "success_count": None if mask is None else int(np.count_nonzero(mask)),
+            "candidate_count": None if mask is None else int(len(mask)),
+            "metrics": getattr(result, "metrics", {}),
+        }
+
+    def _write_plan_snapshot(self, payload):
+        """Write candidate accounting; diagnostics must never affect planning."""
+
+        try:
+            os.makedirs(self._debug_dir, exist_ok=True)
+            path = os.path.join(self._debug_dir, "place_plan_snapshot.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(self._json_ready(payload), handle, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
 
     @staticmethod
     def _world_pose(obj):
@@ -321,6 +345,9 @@ class Place(BaseSkill):
         pre_paths, terminal_paths = [None] * count, [None] * count
         pre_ok = np.zeros(count, dtype=bool)
         terminal_ok = np.zeros(count, dtype=bool)
+        pre_result = None
+        terminal_result = None
+        same_target_count = 0
 
         if runtime.batch_capability:
             runtime.sync_native_batch_attachment()
@@ -337,14 +364,20 @@ class Place(BaseSkill):
             values = self._plan_paths(pre_result)
             pre_paths[: len(values)] = values[:count]
             if options["continuous"]:
-                valid = np.flatnonzero(pre_ok & np.asarray([path is not None for path in pre_paths]))
-                if len(valid):
-                    same_target = np.allclose(place[valid], pre[valid]) and np.allclose(place_q[valid], pre_q[valid])
+                candidate_indices = np.flatnonzero(pre_ok)
+                if len(candidate_indices):
+                    same_target = np.allclose(place[candidate_indices], pre[candidate_indices]) and np.allclose(place_q[candidate_indices], pre_q[candidate_indices])
                     if same_target:
-                        terminal_ok[valid] = True
-                        for index in valid:
+                        same_target_count = int(len(candidate_indices))
+                        terminal_ok[candidate_indices] = True
+                        for index in candidate_indices:
                             terminal_paths[index] = pre_paths[index]
                     else:
+                        valid = np.asarray(
+                            [index for index in candidate_indices if pre_paths[index] is not None],
+                            dtype=int,
+                        )
+                    if not same_target and len(valid):
                         runtime.transition_target(object_name, support_name, collision_policy=CollisionPolicy.PLACEMENT_DESCENT)
                         terminal_result = runtime.plan_pose_batch(
                             place[valid], place_q[valid],
@@ -383,12 +416,13 @@ class Place(BaseSkill):
                 if not options["continuous"]:
                     terminal_ok[index] = True
                     break
-                if pre_paths[index] is None:
-                    continue
                 if np.allclose(pre[index], place[index]) and np.allclose(pre_q[index], place_q[index]):
                     terminal_ok[index] = True
                     terminal_paths[index] = pre_paths[index]
+                    same_target_count += 1
                     break
+                if pre_paths[index] is None:
+                    continue
                 runtime.transition_target(object_name, support_name, collision_policy=CollisionPolicy.PLACEMENT_DESCENT)
                 result = runtime.plan_pose_from_path(
                     place[index], place_q[index], pre_paths[index],
@@ -416,6 +450,23 @@ class Place(BaseSkill):
         )
         valid = np.flatnonzero(pre_ok & terminal_ok)
         if len(valid) == 0:
+            self._write_plan_snapshot(
+                {
+                    "robot": self.robot.name,
+                    "skill": self.name,
+                    "pick_object": object_name,
+                    "place_object": support_name,
+                    "candidate_count": int(count),
+                    "preplace_success_count": int(np.count_nonzero(pre_ok)),
+                    "preplace_path_count": int(sum(path is not None for path in pre_paths)),
+                    "terminal_success_count": int(np.count_nonzero(terminal_ok)),
+                    "terminal_path_count": int(sum(path is not None for path in terminal_paths)),
+                    "same_target_count": int(same_target_count),
+                    "continuous": bool(options["continuous"]),
+                    "pre_result": self._plan_summary(pre_result),
+                    "terminal_result": self._plan_summary(terminal_result),
+                }
+            )
             raise PlaceCandidateError(
                 "NO_COLLISION_SAFE_CONTINUOUS_PLACE_PLAN"
                 if options["continuous"]

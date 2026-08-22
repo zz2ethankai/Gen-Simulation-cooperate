@@ -16,3 +16,12 @@
 - checkpoint：本阶段提交记录见 git commit `checkpoint: simplify direct pick place runtime`。
 
 后续闭环统一记录官方 wrapper 的 metadata、Isaac 日志和最终 marker：`Task is successful, mode=plan_with_render`，并检查没有 `[LmdbLogger] Episode failed`。
+
+## Stage 2 — candidate accounting and strict validation
+
+- r3 运行：`output/docker_runtime/grasp-plan-removal-20260823-r3/docker_runtime.isaac.log`
+- 结果：仍失败。Pick 的 `post_grasp_lift` 规划两次 replan 均未收敛；Place 随后报告 `NO_COLLISION_SAFE_CONTINUOUS_PLACE_PLAN`。
+- 修复：Place 不再要求候选 success mask 同时必须带有缓存 trajectory；当 pre-place 与 place 目标重合时，允许 controller 在执行阶段从实测状态规划；新增轻量 `place_plan_snapshot.json` 记录 mask/path 数量和 native 结果摘要。
+- 严格配置：`configs/de_plan_with_render_template.yaml` 的 `emit_obs_on_failure` 已设为 `false`。
+- 静态检查：py_compile 与 `git diff --check` 通过。
+- checkpoint：待提交 `checkpoint: improve placement candidate accounting`。
