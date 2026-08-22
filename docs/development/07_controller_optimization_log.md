@@ -110,3 +110,11 @@
 - checkpoint：本阶段静态检查后提交独立 checkpoint，再运行 r16 严格闭环。
 - r16 结果：严格成功，`[LmdbLogger] Task is successful, mode=plan_with_render`，无 `[LmdbLogger] Episode failed`；`output/grasp-plan-removal-20260823-r16/de_time_profile_20260823_030244_872407.log` 的 `EnvPlanWithRender` 为 `317.915s`。日志确认 Place fallback 命中、`detach_and_settle` 完成，Home 仍为 `direct interpolation`。
 - 下一步：以 `RANDOM_SEED=1` 运行 r17，检查候选随机性下的成功率和 controller 速度。
+- r17 结果：随机 seed=1 仍严格成功，`[LmdbLogger] Task is successful, mode=plan_with_render`，无 `[LmdbLogger] Episode failed`；`output/grasp-plan-removal-20260823-r17/de_time_profile_20260823_030952_034626.log` 的 `EnvPlanWithRender` 为 `321.306s`。r15–r17 共 3/3 成功，Place fallback、detach/settle 与 home direct interpolation 均通过。
+
+## Stage 13 — compact the batch fallback bookkeeping
+
+- 观察：batch 失败后的 single fallback 是当前必要的成功路径，但 helper 还保存每个尝试的完整 `attempts` 列表，并把失败原因复制到结果 metrics；Pick/Place 只消费 success mask 和 trajectory，这部分记录增加 controller 行数却不参与规划。
+- 修复：fallback 只保留成功候选、轨迹和必要的阶段日志；失败候选继续按原顺序尝试并记录 warning，失败时原样返回 batch result。保留相同的 start state、collision policy、attached geometry、world revision 和 typed `BatchPlanResult`，不改变 Physics Schema。
+- 目标：r18 使用同一 seed 做闭环回归，确认 fallback 命中和严格成功不变，同时比较 controller 代码规模。
+- checkpoint：本阶段静态检查后提交独立 checkpoint，再运行 r18。
