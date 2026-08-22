@@ -250,6 +250,11 @@ class MotionPlannerRuntime:
         port = self.robot_port
         pick_cfg = dict(port.task_cfg).get("planning", {}).get("pick_place", {})
         graph_enabled = bool(pick_cfg.get("enable_graph", False))
+        # Candidate batches need one viable path, not a proof that every
+        # sampled pose is solvable.  Keep the batch graph seed available by
+        # default; the old controller used graph-assisted batch planning even
+        # when the single-query path did not.
+        batch_graph_enabled = bool(pick_cfg.get("batch_enable_graph", True))
         try:
             max_attempts = max(1, int(pick_cfg.get("max_plan_attempts", 4)))
         except (TypeError, ValueError):
@@ -272,7 +277,8 @@ class MotionPlannerRuntime:
         self.batch_max_attempts = batch_attempts
         self.graph_enabled = graph_enabled
         self.single_graph_attempt = max(0, min(1, max_attempts - 1)) if graph_enabled else max_attempts
-        self.batch_graph_attempt = max(0, min(3, batch_attempts - 1)) if graph_enabled else batch_attempts
+        self.batch_graph_enabled = batch_graph_enabled
+        self.batch_graph_attempt = max(0, min(3, batch_attempts - 1)) if batch_graph_enabled else batch_attempts
 
         factory = NativePlannerFactory(
             self.planner_build_config,
@@ -292,7 +298,7 @@ class MotionPlannerRuntime:
                 max_batch_size=CUROBO_BATCH_SIZE,
                 lazy_batch=True,
                 warmup_config={
-                    "enable_graph": graph_enabled,
+                    "enable_graph": graph_enabled or batch_graph_enabled,
                     "num_warmup_iterations": warmup_iterations,
                 },
             ),
@@ -518,7 +524,10 @@ class MotionPlannerRuntime:
         return {
             "use_implicit_goal": True,
             "max_attempts": self.batch_max_attempts,
-            "success_ratio": 1.0,
+            # Pick/Place batches are candidate searches.  Requiring all
+            # sampled candidates to converge makes one bad sample invalidate
+            # otherwise usable paths and needlessly burns every retry.
+            "success_ratio": 1.0 / float(CUROBO_BATCH_SIZE),
             "enable_graph_attempt": self.batch_graph_attempt,
         }
 

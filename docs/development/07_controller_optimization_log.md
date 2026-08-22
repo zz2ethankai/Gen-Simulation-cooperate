@@ -33,3 +33,11 @@
 - 修复：保留 batch 并行和 Physics Schema，只将 `NativePlannerFactory` 的 batch TrajOpt seed 从 1 恢复为 12，给每个候选保留可行的碰撞分支搜索预算；`dummy_forward` 未改变。
 - 静态检查：修改后执行 py_compile 与 `git diff --check`。
 - checkpoint：本阶段提交 `checkpoint: restore batch candidate planning budget`，随后运行 r5 严格闭环。
+
+## Stage 4 — restore candidate-batch semantics in the controller
+
+- r5 运行：`output/docker_runtime/grasp-plan-removal-20260823-r5/docker_runtime.isaac.log`。
+- 结果：Pick 成功；`post_grasp_lift` 在第 3 次 controller replan 成功。Place 仍失败，严格错误为 `NO_COLLISION_SAFE_CONTINUOUS_PLACE_PLAN`。`place_plan_snapshot.json` 显示 20 个候选的末端误差大多为 `1e-7` 量级，但 batch mask 全部失败；单次闭环耗时约 307.8 秒。
+- 根因收敛：当前 v2 `BatchMotionPlanner` 的 `success_ratio=1.0` 表示必须让整个候选 batch 全部成功，而 Pick/Place 的语义只需要一个可行候选；同时 batch graph seed 被错误地跟随 single-query 的默认关闭配置，历史 batch 路径使用 graph-assisted planning。
+- 修复：controller batch pose query 改为 `success_ratio=1/CUROBO_BATCH_SIZE`，并默认开启 batch graph seed；单 query 的 `enable_graph` 配置保持不变。Physics Schema、直接 `dummy_forward` 和 Pick/Place 候选职责不变。
+- 静态检查与 checkpoint：本阶段修改后执行 py_compile、`git diff --check`，再提交独立 checkpoint；随后运行 r6 严格闭环。
