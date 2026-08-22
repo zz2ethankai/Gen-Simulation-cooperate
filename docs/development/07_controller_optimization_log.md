@@ -24,4 +24,12 @@
 - 修复：Place 不再要求候选 success mask 同时必须带有缓存 trajectory；当 pre-place 与 place 目标重合时，允许 controller 在执行阶段从实测状态规划；新增轻量 `place_plan_snapshot.json` 记录 mask/path 数量和 native 结果摘要。
 - 严格配置：`configs/de_plan_with_render_template.yaml` 的 `emit_obs_on_failure` 已设为 `false`。
 - 静态检查：py_compile 与 `git diff --check` 通过。
-- checkpoint：待提交 `checkpoint: improve placement candidate accounting`。
+- checkpoint：`d669511 checkpoint: improve placement candidate accounting`。
+
+## Stage 3 — restore batch candidate planning budget
+
+- r4 运行：`output/docker_runtime/grasp-plan-removal-20260823-r4/docker_runtime.isaac.log`。
+- 证据：Place 的 20 个 pre-place 候选 native mask 全部为 `success=false`，但大多数位置/姿态误差已经接近 0；问题不是候选路径缓存，而是 batch planner 每个候选只有 1 个 TrajOpt seed。历史 controller 使用 12 个 seed 和 graph-assisted batch planning。
+- 修复：保留 batch 并行和 Physics Schema，只将 `NativePlannerFactory` 的 batch TrajOpt seed 从 1 恢复为 12，给每个候选保留可行的碰撞分支搜索预算；`dummy_forward` 未改变。
+- 静态检查：修改后执行 py_compile 与 `git diff --check`。
+- checkpoint：本阶段提交 `checkpoint: restore batch candidate planning budget`，随后运行 r5 严格闭环。

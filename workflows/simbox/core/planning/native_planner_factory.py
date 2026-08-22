@@ -85,7 +85,12 @@ class NativePlannerFactory:
             self._planner_cfg(
                 self._robot_cfg(),
                 batch_size=CUROBO_BATCH_SIZE,
-                trajopt_seeds=1,
+                # Candidate batches still need the same local-optimization
+                # budget as the historical CuRobo path.  One seed can reach
+                # a pose while remaining infeasible because of the attached
+                # object; keep the batch parallelism, but do not trade away
+                # the alternate collision-free solutions.
+                trajopt_seeds=12,
             )
         )
         self.pose_criteria(planner, None)
