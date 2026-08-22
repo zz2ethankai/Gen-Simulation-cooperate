@@ -108,3 +108,5 @@
 - 修复：删除临时诊断函数、native solver 对象向结果归一化层的透传，以及 compose 中的诊断环境变量；保留 typed batch failure summary、single fallback 和 Physics Schema。正常 controller 路径不再为诊断保留额外分支。
 - 目标：在 r16 关闭诊断开关跑同一任务，确认成功率不下降并观察耗时是否回落。
 - checkpoint：本阶段静态检查后提交独立 checkpoint，再运行 r16 严格闭环。
+- r16 结果：严格成功，`[LmdbLogger] Task is successful, mode=plan_with_render`，无 `[LmdbLogger] Episode failed`；`output/grasp-plan-removal-20260823-r16/de_time_profile_20260823_030244_872407.log` 的 `EnvPlanWithRender` 为 `317.915s`。日志确认 Place fallback 命中、`detach_and_settle` 完成，Home 仍为 `direct interpolation`。
+- 下一步：以 `RANDOM_SEED=1` 运行 r17，检查候选随机性下的成功率和 controller 速度。
