@@ -531,6 +531,7 @@ class Place(BaseSkill):
                 active_object=object_name,
                 support_object=support_name,
                 allow_target_finger_contact=True,
+                allow_target_robot_contact=True,
                 completion_tolerance=tolerance,
                 params=pre_params,
             )
