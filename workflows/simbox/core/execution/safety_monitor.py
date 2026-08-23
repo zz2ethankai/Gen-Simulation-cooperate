@@ -280,8 +280,15 @@ class SafetyMonitor:
 def quaternion_angle(q0, q1) -> float:
     """Shortest angular distance for scalar-first quaternions."""
 
-    first = np.asarray(q0, dtype=float)
-    second = np.asarray(q1, dtype=float)
+    # FK and simulator pose APIs may return a singleton batch dimension
+    # (1, 4), while the safety calculation is defined for one quaternion.
+    first = np.asarray(q0, dtype=float).reshape(-1)
+    second = np.asarray(q1, dtype=float).reshape(-1)
+    if first.size != 4 or second.size != 4:
+        raise ValueError(
+            "quaternion_angle expects two quaternions with four components, "
+            f"got shapes {np.asarray(q0).shape} and {np.asarray(q1).shape}"
+        )
     denominator = np.linalg.norm(first) * np.linalg.norm(second)
     if denominator <= 0.0:
         return float("inf")
