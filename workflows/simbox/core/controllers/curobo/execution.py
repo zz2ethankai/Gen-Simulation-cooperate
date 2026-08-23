@@ -136,6 +136,7 @@ class ControllerExecution:
                 dtype=float,
             ).reshape(-1)
         self._action = None
+
     def _begin_phase_command(self, command: MotionPhaseCommand) -> bool:
         """Reset execution bookkeeping when a new typed command starts."""
 

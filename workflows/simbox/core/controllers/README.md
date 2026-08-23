@@ -59,7 +59,7 @@ An execution-only command uses the explicit field
 joint planner target, is automatically assigned
 `CollisionPolicy.PASSTHROUGH`, and may carry `gripper_action` or
 `gripper_state` (`1.0` open, `-1.0` closed). It never creates a Physics-schema
-planning request. Home and heuristic home use this typed form.
+planning request. Home and heuristic joint interpolation use this typed form.
 
 Any Skill may also call the direct primitive:
 

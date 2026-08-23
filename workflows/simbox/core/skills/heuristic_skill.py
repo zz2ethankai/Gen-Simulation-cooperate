@@ -122,9 +122,9 @@ class Heuristic_Skill(BaseSkill):
 
         ``mode: home`` is intentionally execution-only.  It must not inspect
         attachments, contacts, or call a collision-aware planner; each
-        command is forwarded directly to execution. The other joint modes use
-        c-space planning, while ``rel_ee`` also uses the runtime planner to
-        solve its requested EE target.
+        command is forwarded directly to execution. ``rel_ee`` uses the
+        runtime planner once to solve its requested EE endpoint; every
+        interpolated sample then stays on the direct legacy lane.
         """
 
         self.manip_list = []

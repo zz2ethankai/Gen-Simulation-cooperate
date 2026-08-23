@@ -278,6 +278,7 @@ class TemplateController(_TypedIsaacController):
             execution_state=self.execution_state,
             setup=self._setup,
         )
+
     def reset(self):
         return self._setup.reset()
 
@@ -410,11 +411,14 @@ class TemplateController(_TypedIsaacController):
         if not isinstance(command, MotionPhaseCommand):
             raise TypeError("TemplateController.execute accepts MotionPhaseCommand only")
         return self._execution.forward_phase_command(command)
+
     def dummy_forward(self, arm_action, gripper_state):
         """Public direct-joint interface for Skills that own interpolation."""
 
         return self._execution.dummy_forward(arm_action, gripper_state)
+
     def execution_status(self, command: Any = None):
         return self._execution.execution_status(command)
+
     def hold(self):
         return self._execution.hold_action()
