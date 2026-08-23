@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from core.planning.direct_command import dummy_forward_params
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand
 
 if TYPE_CHECKING:
@@ -154,20 +153,18 @@ class BaseSkill(ABC):
         joints,
         *,
         gripper_action=None,
+        gripper_state=None,
         phase=MotionPhase.CARRY_HOME,
         direct=False,
         **kwargs,
     ):
         params = dict(kwargs.pop("params", {}) or {})
         if direct:
-            if not params.get("passthrough", False):
-                raise ValueError(
-                    "direct joint commands require explicit passthrough/hold metadata"
-                )
-            params["direct_joint_action"] = np.asarray(joints, dtype=float).copy()
             return MotionPhaseCommand(
                 phase=phase,
                 gripper_action=gripper_action,
+                gripper_state=gripper_state,
+                direct_joint_action=np.asarray(joints, dtype=float).copy(),
                 params=params,
                 **kwargs,
             )
@@ -208,33 +205,16 @@ class BaseSkill(ABC):
             gripper_action=gripper_action,
             phase=phase,
             replan_allowed=False,
-            params={"passthrough": True},
             direct=True,
             **kwargs,
         )
 
     def command_complete(self, command):
-        """Read completion from either the typed or direct command boundary."""
-
-        legacy_params = dummy_forward_params(command)
-        if legacy_params is not None:
-            runtime = self._require_skill_runtime()
-            target = np.asarray(legacy_params["arm_action"], dtype=float).reshape(-1)
-            state_getter = getattr(self.robot, "get_joints_state", None)
-            if not callable(state_getter):
-                return False
-            positions = getattr(state_getter(), "positions", None)
-            if hasattr(positions, "detach"):
-                positions = positions.detach().cpu().numpy()
-            if positions is None:
-                return False
-            current = np.asarray(positions, dtype=float)[runtime.arm_indices]
-            tolerance = float(legacy_params.get("t_eps", 5e-3))
-            return bool(np.linalg.norm(current - target) < tolerance)
+        """Read completion from the typed command boundary."""
 
         if not isinstance(command, MotionPhaseCommand):
             raise TypeError(
-                f"{self.__class__.__name__} emits MotionPhaseCommand or dummy_forward commands"
+                f"{self.__class__.__name__} emits MotionPhaseCommand values only"
             )
         runtime = self._require_skill_runtime()
         status = runtime.execution_status(command)
@@ -242,7 +222,7 @@ class BaseSkill(ABC):
             return bool(status.get("complete", False))
         if hasattr(status, "complete"):
             return bool(status.complete)
-        direct = command.params.get("direct_joint_action")
+        direct = command.direct_joint_action
         if direct is not None:
             state_getter = getattr(self.robot, "get_joints_state", None)
             if callable(state_getter):

@@ -110,6 +110,12 @@ class MotionPhaseCommand:
     # A joint target is a planner request, not an articulation action.  The
     # latter is reserved for explicit measured-state hold commands.
     joint_target: np.ndarray | None = None
+    # An explicit articulation action is execution-only. It must never be
+    # interpreted as a planner goal or smuggled through ``params``.
+    direct_joint_action: np.ndarray | None = None
+    # Direct callers may preserve the numeric gripper contract instead of
+    # translating it to an open/close verb.
+    gripper_state: float | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.phase, MotionPhase):
@@ -144,6 +150,7 @@ class MotionPhaseCommand:
         )
         self.support_object = self.support
 
+        requested_collision_policy = self.collision_policy
         if self.collision_policy is None:
             default_policy = _PHASE_COLLISION_POLICIES.get(
                 self.phase, CollisionPolicy.WORLD_TRANSIT
@@ -207,16 +214,49 @@ class MotionPhaseCommand:
             raise TypeError("MotionPhaseCommand metadata must be a mapping")
         self.metadata = dict(self.metadata)
 
+        if self.gripper_state is not None:
+            self.gripper_state = float(self.gripper_state)
+            if not np.isfinite(self.gripper_state) or self.gripper_state not in {
+                -1.0,
+                1.0,
+            }:
+                raise ValueError("gripper_state must be exactly -1.0 or 1.0")
+            if self.gripper_action is not None:
+                raise ValueError("use gripper_action or gripper_state, not both")
+
         if self.joint_target is not None:
             self.joint_target = np.asarray(self.joint_target, dtype=float).reshape(-1)
             if self.joint_target.size == 0 or not np.all(np.isfinite(self.joint_target)):
                 raise ValueError("joint_target must contain finite joint positions")
-        direct_joint_action = self.params.get("direct_joint_action")
-        if direct_joint_action is not None and not self.params.get("passthrough", False):
-            raise ValueError(
-                "direct_joint_action is reserved for explicit passthrough/hold commands; "
-                "arm motion must use joint_target and cspace planning"
+        if self.direct_joint_action is not None:
+            if requested_collision_policy is not None and self.collision_policy is not CollisionPolicy.PASSTHROUGH:
+                raise ValueError(
+                    "direct_joint_action requires CollisionPolicy.PASSTHROUGH"
+                )
+            if self.joint_target is not None:
+                raise ValueError("direct_joint_action cannot be combined with joint_target")
+            if self.target_position is not None or self.target_orientation is not None:
+                raise ValueError(
+                    "direct_joint_action cannot be combined with an EE target"
+                )
+            self.direct_joint_action = np.asarray(
+                self.direct_joint_action, dtype=float
+            ).reshape(-1)
+            if self.direct_joint_action.size == 0 or not np.all(
+                np.isfinite(self.direct_joint_action)
+            ):
+                raise ValueError("direct_joint_action must contain finite joint positions")
+            # Direct actions are never planner requests. This assignment is
+            # intentionally automatic so every producer gets the same policy.
+            self.collision_policy = CollisionPolicy.PASSTHROUGH
+            option_mapping = self.collision_options.to_dict()
+            option_mapping["policy"] = CollisionPolicy.PASSTHROUGH.value
+            self.collision_options = CollisionOptions.from_mapping(
+                option_mapping,
+                default_policy=CollisionPolicy.PASSTHROUGH,
             )
+        elif self.gripper_state is not None:
+            raise ValueError("gripper_state is only valid with direct_joint_action")
         if self.target_position is not None:
             self.target_position = np.asarray(self.target_position, dtype=float)
             if self.target_position.shape != (3,):
@@ -235,6 +275,12 @@ class MotionPhaseCommand:
         """Typed c-space target consumed by the controller runtime."""
 
         return self.joint_target
+
+    @property
+    def is_direct(self) -> bool:
+        """Whether this command is an execution-only articulation action."""
+
+        return self.direct_joint_action is not None
 
     @property
     def planning_request_metadata(self) -> dict[str, Any]:

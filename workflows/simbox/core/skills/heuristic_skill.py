@@ -2,6 +2,7 @@ import logging
 
 import numpy as np
 from core.planning.config_contract import DIRECT_EXECUTION_MODE
+from core.planning.motion_command import MotionPhase
 from core.skills.base_skill import BaseSkill, register_skill
 from omegaconf import DictConfig
 from isaacsim.core.api.robots.robot import Robot
@@ -95,9 +96,9 @@ class Heuristic_Skill(BaseSkill):
         return goal_arm_joints
 
     def _build_joint_traj(self, curr_joints, goal_joints, p_base_ee_cur, q_base_ee_cur):
-        """Build legacy direct joint-space interpolation commands.
+        """Build typed direct joint-space interpolation commands.
 
-        Home deliberately owns this path.  It sends one ``dummy_forward``
+        Home deliberately owns this path.  It sends one execution-only typed
         command per interpolation point; no EE target or Physics-schema
         planner request is created.  The final point is exactly the configured
         home posture.
@@ -107,15 +108,12 @@ class Heuristic_Skill(BaseSkill):
         for k in range(self.move_steps):
             alpha = float(k + 1) / float(self.move_steps)
             arm_action = goal_joints * alpha + curr_joints * (1.0 - alpha)
-            cmd = (
-                p_base_ee_cur,
-                q_base_ee_cur,
-                "dummy_forward",
-                {
-                    "arm_action": np.asarray(arm_action, dtype=float),
-                    "gripper_state": self._gripper_state,
-                    "t_eps": self.t_eps,
-                },
+            cmd = self.joint_command(
+                arm_action,
+                gripper_state=self._gripper_state,
+                phase=MotionPhase.CARRY_HOME,
+                direct=True,
+                replan_allowed=False,
             )
             manip_list.append(cmd)
         return manip_list

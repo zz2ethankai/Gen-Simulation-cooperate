@@ -56,7 +56,6 @@ from core.planning.collision_scene_manager import (
     CollisionSceneError,
     CollisionSceneManager,
 )
-from core.planning.direct_command import dummy_forward_params
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand
 from core.planning.skill_dag_compiler import compile_skill_dag_configs
 from core.loggers.utils import log_dual_obs
@@ -1696,10 +1695,10 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                     node["state"] = "failed"
                     return {}, False, True
                 command = skill.manip_list[0]
-                if not isinstance(command, MotionPhaseCommand) and dummy_forward_params(command) is None:
+                if not isinstance(command, MotionPhaseCommand):
                     raise TypeError(
                         f"operation Skill {self._skill_display_name(skill)!r} must emit "
-                        "MotionPhaseCommand or dummy_forward commands"
+                        "MotionPhaseCommand values"
                     )
                 actions_by_robot[node["robot_name"]].append(self._forward_or_hold(skill))
 
@@ -2176,15 +2175,15 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 continue
             command = skill.manip_list[0]
             if not isinstance(command, MotionPhaseCommand):
-                if dummy_forward_params(command) is not None:
-                    # Direct interpolation is intentionally outside the
-                    # Physics-schema safety/replan loop.  The command owns
-                    # the joint path and the controller only forwards it.
-                    continue
                 raise TypeError(
                     f"operation Skill {self._skill_display_name(skill)!r} must emit "
-                    "MotionPhaseCommand or dummy_forward commands"
+                    "MotionPhaseCommand values"
                 )
+            if command.is_direct:
+                # Direct interpolation is intentionally outside the Physics
+                # schema safety/replan loop. The typed command owns the joint
+                # path and the controller only forwards it.
+                continue
             runtime = skill.skill_runtime
             if runtime is None:
                 raise RuntimeError("execution safety requires a composed SkillRuntimePort")
@@ -2270,22 +2269,18 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         if runtime is None:
             raise RuntimeError("operation Skill requires a composed SkillRuntimePort")
         command = skill.manip_list[0]
-        direct_params = dummy_forward_params(command)
-        if direct_params is None:
-            self._activate_skill_collision_world(skill)
-        if not isinstance(command, MotionPhaseCommand) and direct_params is None:
+        if not isinstance(command, MotionPhaseCommand):
             raise TypeError(
                 f"operation Skill {self._skill_display_name(skill)!r} must emit "
-                "MotionPhaseCommand or dummy_forward commands"
+                "MotionPhaseCommand values"
             )
-        if isinstance(command, MotionPhaseCommand):
-            self._start_skill_motion_phase(skill, command)
+        if not command.is_direct:
+            self._activate_skill_collision_world(skill)
+        self._start_skill_motion_phase(skill, command)
         scope = getattr(skill, "_timing_scope", None)
         previous_scope = runtime.push_timing_scope(scope)
         try:
             try:
-                if direct_params is not None:
-                    return runtime.dummy_forward(**direct_params)
                 return self.execution_supervisor.forward_or_hold(
                     runtime,
                     command,

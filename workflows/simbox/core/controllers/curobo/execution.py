@@ -38,6 +38,18 @@ class ControllerExecution(ControllerComponent):
             raise ValueError(f"unsupported typed gripper action: {action!r}") from exc
         handler()
 
+    def _apply_gripper_state(self, state: float | None) -> None:
+        """Apply the numeric gripper contract carried by direct commands."""
+
+        if state is None:
+            return
+        if float(state) == 1.0:
+            self.open_gripper()
+        elif float(state) == -1.0:
+            self.close_gripper()
+        else:  # MotionPhaseCommand validates this; keep the execution guard too.
+            raise ValueError("direct gripper_state must be exactly 1.0 or -1.0")
+
     def dummy_forward(self, arm_action, gripper_state, *args, **kwargs):
         """Return one direct articulation action without invoking the planner.
 
@@ -88,16 +100,17 @@ class ControllerExecution(ControllerComponent):
         """
 
         first_step = self._begin_phase_command(command)
-        direct_joint_action = command.params.get("direct_joint_action")
+        direct_joint_action = command.direct_joint_action
         if direct_joint_action is not None:
-            if not command.params.get("passthrough", False) or command.collision_policy != CollisionPolicy.PASSTHROUGH:
+            if command.collision_policy != CollisionPolicy.PASSTHROUGH:
                 raise ValueError(
-                    "direct_joint_action is reserved for CollisionPolicy.PASSTHROUGH holds"
+                    "direct_joint_action is reserved for CollisionPolicy.PASSTHROUGH"
                 )
             if first_step:
                 self._phase_bookkeeping_done = True
                 self._phase_plan_finished = True
             self._apply_gripper_action(command.gripper_action)
+            self._apply_gripper_state(command.gripper_state)
             self._last_command_name = command.phase.value
             self._last_arm_action = np.asarray(direct_joint_action, dtype=float).copy()
             return self._make_action(
@@ -450,7 +463,7 @@ class ControllerExecution(ControllerComponent):
             return False
         if command.joint_target is not None:
             return bool(self._phase_plan_finished and self.phase_executor.current is None)
-        if command.params.get("direct_joint_action") is not None:
+        if command.direct_joint_action is not None:
             return bool(self._phase_plan_finished)
         if command.is_bookkeeping:
             if (

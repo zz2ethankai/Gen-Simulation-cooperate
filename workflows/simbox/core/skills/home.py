@@ -1,6 +1,7 @@
 import numpy as np
-from core.skills.base_skill import BaseSkill, dummy_forward_params, register_skill
+from core.skills.base_skill import BaseSkill, register_skill
 from core.planning.config_contract import DIRECT_EXECUTION_MODE
+from core.planning.motion_command import MotionPhase, MotionPhaseCommand
 from omegaconf import DictConfig
 from isaacsim.core.api.controllers import BaseController
 from isaacsim.core.api.robots.robot import Robot
@@ -41,7 +42,7 @@ class Home(BaseSkill):
         self.execution_mode = DIRECT_EXECUTION_MODE
 
     def simple_generate_manip_cmds(self):
-        """Build the legacy direct joint-space interpolation used by Home."""
+        """Build typed execution-only joint interpolation used by Home."""
 
         manip_list = []
         curr_ee_trans, curr_ee_ori = self.skill_runtime.ee_pose()
@@ -51,14 +52,12 @@ class Home(BaseSkill):
         for k in range(self.move_steps):
             alpha = float(k + 1) / float(self.move_steps)
             arm_action = home_joints * alpha + curr_joints * (1.0 - alpha)
-            cmd = (
-                curr_ee_trans,
-                curr_ee_ori,
-                "dummy_forward",
-                {
-                    "arm_action": np.asarray(arm_action, dtype=float),
-                    "gripper_state": self._gripper_state,
-                },
+            cmd = self.joint_command(
+                arm_action,
+                gripper_state=self._gripper_state,
+                phase=MotionPhase.CARRY_HOME,
+                direct=True,
+                replan_allowed=False,
             )
             manip_list.append(cmd)
 
@@ -72,11 +71,10 @@ class Home(BaseSkill):
     def is_subtask_done(self, t_eps=0.088):
         assert len(self.manip_list) != 0
         command = self.manip_list[0]
-        params = dummy_forward_params(command)
-        if params is None:
-            raise TypeError("Home emits dummy_forward commands only")
+        if not isinstance(command, MotionPhaseCommand) or not command.is_direct:
+            raise TypeError("Home emits direct MotionPhaseCommand values only")
         curr_joints = np.asarray(self.robot.get_joint_positions(), dtype=float)[self._joint_indices]
-        target_joints = np.asarray(params["arm_action"], dtype=float)
+        target_joints = np.asarray(command.direct_joint_action, dtype=float)
         return bool(np.linalg.norm(curr_joints - target_joints) < t_eps)
 
     def is_done(self):

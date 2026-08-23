@@ -51,12 +51,12 @@ class Rotate_Obj(BaseSkill):
             interp_js_list = linear_interpolation(curr_js, target_js, direct_cfg.get("num_steps", 10))
             for js in interp_js_list:
                 gripper_state = direct_cfg.get("gripper_state", 1.0)
-                cmd = MotionPhaseCommand(
+                cmd = self.joint_command(
+                    js,
                     phase=MotionPhase.CARRY_HOME,
-                    joint_target=np.asarray(js, dtype=float),
-                    gripper_action=(
-                        "close_gripper" if gripper_state < 0 else "open_gripper"
-                    ),
+                    direct=True,
+                    gripper_state=gripper_state,
+                    replan_allowed=False,
                 )
                 manip_list.append(cmd)
 
