@@ -213,6 +213,7 @@ def wire_controller_components(port_factory, *, prepare_setup=None) -> Controlle
                 "planning_config", "execution_state", "batch_capability", "batch_enabled",
                 "setup",
             ),
+            port_type=ComponentPort,
             setup=setup,
         )
     )
