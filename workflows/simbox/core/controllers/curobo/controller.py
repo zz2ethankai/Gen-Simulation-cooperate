@@ -194,7 +194,6 @@ class TemplateController(_TypedIsaacController):
             arm_name=self.lr_name,
             batch_capability=self.batch_capability,
             interpolation_dt=self.interpolation_dt,
-            collision_scene_manager=self.collision_scene_manager,
             timing_owner=self,
         )
 

@@ -204,7 +204,6 @@ def wire_controller_components(port_factory, *, prepare_setup=None) -> Controlle
             (
                 "name", "lr_name", "robot", "task", "arm_spec", "tensor_args",
                 "arm_indices", "gripper_indices", "phase_executor", "runtime",
-                "collision_scene_manager",
                 "robot_base_path", "robot_ee_path", "task_root_prim_path",
                 "reference_prim_path", "_pick_mobile_base_prim_path",
                 "_pick_cached_mobile_to_armbase_tf",

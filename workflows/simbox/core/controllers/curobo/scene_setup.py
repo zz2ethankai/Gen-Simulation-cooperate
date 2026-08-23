@@ -460,4 +460,3 @@ class ControllerSetup(ComponentState):
         self._ee_trans, self._ee_ori = self._get_ee_pose()
         self._ee_trans = self.tensor_args.to_device(self._ee_trans)
         self._ee_ori = self.tensor_args.to_device(self._ee_ori)
-        self.runtime.update_pose_cost_metric()

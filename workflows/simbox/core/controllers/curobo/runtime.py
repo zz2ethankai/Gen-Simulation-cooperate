@@ -33,6 +33,7 @@ from core.planning.domain_types import (
 from core.planning.native_scene_adapter import NativeSceneAdapter
 from core.planning.planner_runtime import PlannerRuntime
 from core.planning.scene_runtime import SceneRuntime
+from core.planning.motion_command import MotionPhase
 from core.utils.constants import CUROBO_BATCH_SIZE
 from core.controllers.curobo.trajectory import normalize_named_trajectory
 
@@ -182,8 +183,6 @@ class MotionPlannerRuntime:
         self.setup = setup
         self.scene_runtime = SceneRuntime(world)
         self.phase_executor = phase_executor or PhaseExecutor()
-        self._pending_pose_criteria = None
-        self.world_update_signature = None
         self._configure_native_runtime()
         self.attachment_runtime = AttachmentRuntime(
             manager=_NativeAttachmentAdapter(self), strict=False
@@ -329,36 +328,6 @@ class MotionPlannerRuntime:
         port.ik_solver = self.native_planner.ik_solver
         port.kin_model = self.native_planner.kinematics
         port.interpolation_dt = float(self.native_planner.trajopt_solver.config.interpolation_dt)
-        self.world_update_signature = self._world_signature(self.scene_runtime.world)
-
-    @staticmethod
-    def _world_signature(world):
-        """Return a stable, native-independent signature for a scene config."""
-
-        def value(item):
-            if item is None or isinstance(item, (str, bool, int, float)):
-                return item
-            if isinstance(item, np.ndarray):
-                return tuple(np.asarray(item).reshape(-1).tolist())
-            if isinstance(item, (list, tuple)):
-                return tuple(value(entry) for entry in item)
-            return str(item)
-
-        objects = getattr(world, "objects", None) or []
-        return tuple(
-            (
-                type(obj).__name__,
-                getattr(obj, "name", None),
-                value(getattr(obj, "pose", None)),
-                value(getattr(obj, "dims", None)),
-                value(getattr(obj, "scale", None)),
-                getattr(obj, "file_path", None),
-                value(getattr(obj, "vertices", None)),
-                value(getattr(obj, "faces", None)),
-            )
-            for obj in objects
-        )
-
     def _collision_cache(self):
         spec = getattr(self.robot_port, "arm_spec", None)
         cache = getattr(spec, "collision_cache", None)
@@ -397,7 +366,6 @@ class MotionPlannerRuntime:
                 device_cfg=port.tensor_args,
             )
         planner.update_tool_pose_criteria({frame: criteria.clone() for frame in planner.tool_frames})
-        self._pending_pose_criteria = criteria
 
     def ensure_batch_planner(self):
         batch = self.planner_runtime.ensure_batch_planner()
@@ -408,37 +376,13 @@ class MotionPlannerRuntime:
         return batch
 
     def update_world(self, world):
-        update = self.scene_runtime.update_world(world)
-        if update.changed:
-            self.world_update_signature = self._world_signature(self.scene_runtime.world)
-        return update
+        return self.scene_runtime.update_world(world)
 
     def update_obstacle_poses(self, poses, *, force: bool = False):
         """Publish dynamic collider poses with the shared scene revision."""
 
         update = self.scene_runtime.update_poses(poses, force=force)
         return update
-
-    def update_pose_cost_metric(self, hold_vec_weight=None) -> None:
-        """Apply the active pose criterion to single and materialized batch planners."""
-
-        from core.planning.native_bridge import ToolPoseCriteria
-
-        if hold_vec_weight is None:
-            criteria = ToolPoseCriteria(device_cfg=self.robot_port.tensor_args)
-        else:
-            if len(hold_vec_weight) != 6:
-                raise ValueError("hold_vec_weight must contain six [r, r, r, p, p, p] weights")
-            native_weights = [hold_vec_weight[index] for index in (3, 4, 5, 0, 1, 2)]
-            criteria = ToolPoseCriteria(
-                terminal_pose_axes_weight_factor=[1.0] * 6,
-                non_terminal_pose_axes_weight_factor=native_weights,
-                device_cfg=self.robot_port.tensor_args,
-            )
-        self._pending_pose_criteria = criteria
-        self._set_pose_criteria(self.native_planner, criteria)
-        if self.batch_planner is not None:
-            self._set_pose_criteria(self.batch_planner, criteria)
 
     def check_current_start_state(self):
         """Validate the live articulation arm state against native joint limits."""
@@ -454,6 +398,130 @@ class MotionPlannerRuntime:
             and (position <= limits.position_upper_limits).all().item()
         )
         return valid, "valid" if valid else "joint_limit_or_non_finite"
+
+    # ------------------------------------------------------------------
+    # Pick/place scene transitions
+    # ------------------------------------------------------------------
+    def transition_target(
+        self,
+        object_name: str,
+        support_name: str | None = None,
+        *,
+        collision_policy: CollisionPolicy | str | None = None,
+    ):
+        """Apply one typed collision transition to the shared scene manager."""
+
+        manager = self.robot_port.collision_scene_manager
+        policy = collision_policy or CollisionPolicy.WORLD_TRANSIT
+        if not isinstance(policy, CollisionPolicy):
+            policy = CollisionPolicy(str(policy).lower())
+        object_name = str(object_name)
+        support_name = None if support_name is None else str(support_name)
+        if manager is None:
+            if policy is CollisionPolicy.PASSTHROUGH:
+                return self.scene_revision
+            raise RuntimeError("MotionPlannerRuntime scene transition is unavailable")
+
+        robot, arm = self.name, self.arm_name
+        if policy is CollisionPolicy.WORLD_TRANSIT:
+            manager.begin_target_transit(object_name, robot, arm)
+        elif policy is CollisionPolicy.TARGET_APPROACH:
+            manager.begin_target_approach(object_name, robot, arm)
+        elif policy is CollisionPolicy.ATTACHED_CARRY:
+            record = getattr(manager, "records", {}).get(object_name)
+            state = getattr(getattr(record, "state", None), "value", None)
+            if state == "placement_contact" and support_name:
+                cleanup = getattr(manager, "restore_placement_support", None)
+                if not callable(cleanup):
+                    raise RuntimeError(
+                        "placement query cleanup is unavailable for attached carry"
+                    )
+                cleanup(object_name, support_name, robot, arm)
+            manager.assert_attached_owner(object_name, robot, arm)
+        elif policy is CollisionPolicy.PLACEMENT_DESCENT:
+            if not support_name:
+                raise ValueError("PLACEMENT_DESCENT requires a support entity")
+            manager.begin_placement_descent(object_name, support_name, robot, arm)
+        elif policy is CollisionPolicy.RETREAT:
+            manager.begin_terminal_retreat(object_name, robot, arm)
+        elif policy is not CollisionPolicy.PASSTHROUGH:
+            raise ValueError(f"unsupported collision policy: {policy!r}")
+        return self.scene_revision
+
+    def restore_world(self, object_name: str):
+        manager = self.robot_port.collision_scene_manager
+        if manager is None:
+            raise RuntimeError("MotionPlannerRuntime world restore is unavailable")
+        manager.restore_world(str(object_name))
+        return self.scene_revision
+
+    def source_support(self, object_name: str):
+        manager = self.robot_port.collision_scene_manager
+        if manager is None:
+            raise RuntimeError("MotionPlannerRuntime source-support lookup is unavailable")
+        return manager.get_source_support_entity(str(object_name))
+
+    def assert_attached_owner(self, entity_name: str):
+        manager = self.robot_port.collision_scene_manager
+        if manager is None:
+            raise RuntimeError("MotionPlannerRuntime attachment ownership is unavailable")
+        return manager.assert_attached_owner(str(entity_name), self.name, self.arm_name)
+
+    def finalize_detach_target(self, entity_name: str):
+        manager = self.robot_port.collision_scene_manager
+        if manager is None:
+            raise RuntimeError("MotionPlannerRuntime detach finalization is unavailable")
+        return manager.finalize_detach_target(str(entity_name), self.name, self.arm_name)
+
+    def prepare_phase(self, command: Any):
+        """Apply phase-owned scene bookkeeping before execution consumes a path.
+
+        Pick and Place still construct typed phase commands, but execution no
+        longer contains a second copy of the collision-scene state machine.
+        This method returns a cached path, if the phase supplied one, for the
+        execution component to install.
+        """
+
+        manager = self.robot_port.collision_scene_manager
+        if manager is None:
+            raise RuntimeError("MotionPhaseCommand requires CollisionSceneManager")
+        object_name = command.active_object
+        support_name = command.support_object
+        robot, arm = self.name, self.arm_name
+        phase = command.phase
+        if phase is MotionPhase.SYNC_WORLD:
+            manager.sync_dynamic_poses(
+                getattr(self.execution_state, "step_idx", 0),
+                interval_steps=1,
+                force=True,
+            )
+            if object_name:
+                self.transition_target(object_name, collision_policy=CollisionPolicy.WORLD_TRANSIT)
+            return None
+        if phase is MotionPhase.TRANSIT_PREGRASP:
+            self.transition_target(object_name, collision_policy=CollisionPolicy.WORLD_TRANSIT)
+        elif phase is MotionPhase.TERMINAL_GRASP_APPROACH:
+            self.transition_target(object_name, collision_policy=CollisionPolicy.TARGET_APPROACH)
+        elif phase is MotionPhase.TRANSIT_PREPLACE:
+            self.assert_attached_owner(object_name)
+        elif phase is MotionPhase.ATTACH:
+            verify_contact = command.params.get("verify_grasp_contact")
+            if not callable(verify_contact) or not bool(verify_contact()):
+                raise RuntimeError(
+                    "ATTACH requires a verified target-finger contact from GRIPPER_CLOSE"
+                )
+            manager.attach_target(object_name, robot, arm)
+        elif phase is MotionPhase.CARRY_HOME:
+            self.assert_attached_owner(object_name)
+        elif phase is MotionPhase.TERMINAL_PLACE_DESCENT:
+            manager.begin_placement_descent(object_name, support_name, robot, arm)
+        elif phase is MotionPhase.DETACH_AND_SETTLE:
+            manager.detach_target(object_name, robot, arm)
+        elif phase is MotionPhase.TERMINAL_RETREAT:
+            self.transition_target(object_name, collision_policy=CollisionPolicy.RETREAT)
+        elif phase is MotionPhase.RESTORE_WORLD:
+            self.restore_world(object_name)
+        return command.params.get("preplanned_joint_path")
 
     # ------------------------------------------------------------------
     # State conversion and candidate/query operations

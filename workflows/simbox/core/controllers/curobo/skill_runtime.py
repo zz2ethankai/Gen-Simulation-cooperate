@@ -40,7 +40,6 @@ class SkillRuntimePort:
         "_batch_capability",
         "_interpolation_dt",
         "_initial_ee_pose",
-        "_collision_scene_manager",
         "_timing_owner",
     )
 
@@ -63,7 +62,6 @@ class SkillRuntimePort:
         batch_capability: bool,
         interpolation_dt: float,
         initial_ee_pose: Any = None,
-        collision_scene_manager: Any = None,
         timing_owner: Any = None,
     ) -> None:
         if runtime is None:
@@ -94,7 +92,6 @@ class SkillRuntimePort:
         object.__setattr__(self, "_batch_capability", bool(batch_capability))
         object.__setattr__(self, "_interpolation_dt", float(interpolation_dt))
         object.__setattr__(self, "_initial_ee_pose", initial_ee_pose)
-        object.__setattr__(self, "_collision_scene_manager", collision_scene_manager)
         object.__setattr__(self, "_timing_owner", timing_owner)
         object.__setattr__(self, "_sealed", True)
 
@@ -255,6 +252,38 @@ class SkillRuntimePort:
             )
         return metadata
 
+    def _plan(
+        self,
+        method_name: str,
+        position: Any,
+        orientation: Any,
+        args: tuple[Any, ...] = (),
+        *,
+        phase_id: str,
+        collision_policy: CollisionPolicy | str | None,
+        active_target: str | None,
+        support: str | None,
+        request_metadata: Mapping[str, Any] | None,
+        collision_options: CollisionOptions | Mapping[str, Any] | None,
+        kwargs: Mapping[str, Any] | None = None,
+    ):
+        metadata = self._request_metadata(
+            phase_id=phase_id,
+            collision_policy=collision_policy,
+            active_target=active_target,
+            support=support,
+            request_metadata=request_metadata,
+            collision_options=collision_options,
+        )
+        call_kwargs = dict(kwargs or {})
+        call_kwargs["request_metadata"] = metadata
+        return getattr(self._runtime, method_name)(
+            position,
+            orientation,
+            *args,
+            **call_kwargs,
+        )
+
     def plan_pose(
         self,
         position: Any,
@@ -268,20 +297,18 @@ class SkillRuntimePort:
         collision_options: CollisionOptions | Mapping[str, Any] | None = None,
         **kwargs: Any,
     ):
-        metadata = self._request_metadata(
+        return self._plan(
+            "plan_pose",
+            position,
+            orientation,
+            args,
             phase_id=phase_id,
             collision_policy=collision_policy,
             active_target=active_target,
             support=support,
             request_metadata=request_metadata,
             collision_options=collision_options,
-        )
-        return self._runtime.plan_pose(
-            position,
-            orientation,
-            *args,
-            request_metadata=metadata,
-            **kwargs,
+            kwargs=kwargs,
         )
 
     def plan_pose_batch(
@@ -299,24 +326,23 @@ class SkillRuntimePort:
         collision_options: CollisionOptions | Mapping[str, Any] | None = None,
         **kwargs: Any,
     ):
-        metadata = self._request_metadata(
+        call_kwargs = dict(kwargs)
+        if start_paths is not None:
+            call_kwargs["start_paths"] = start_paths
+        if batch_size is not None:
+            call_kwargs["batch_size"] = batch_size
+        return self._plan(
+            "plan_pose_batch",
+            positions,
+            orientations,
+            args,
             phase_id=phase_id,
             collision_policy=collision_policy,
             active_target=active_target,
             support=support,
             request_metadata=request_metadata,
             collision_options=collision_options,
-        )
-        if start_paths is not None:
-            kwargs["start_paths"] = start_paths
-        if batch_size is not None:
-            kwargs["batch_size"] = batch_size
-        return self._runtime.plan_pose_batch(
-            positions,
-            orientations,
-            *args,
-            request_metadata=metadata,
-            **kwargs,
+            kwargs=call_kwargs,
         )
 
     def plan_pose_result(
@@ -332,20 +358,18 @@ class SkillRuntimePort:
         collision_options: CollisionOptions | Mapping[str, Any] | None = None,
         **kwargs: Any,
     ):
-        metadata = self._request_metadata(
+        return self._plan(
+            "plan_pose_result",
+            position,
+            orientation,
+            args,
             phase_id=phase_id,
             collision_policy=collision_policy,
             active_target=active_target,
             support=support,
             request_metadata=request_metadata,
             collision_options=collision_options,
-        )
-        return self._runtime.plan_pose_result(
-            position,
-            orientation,
-            *args,
-            request_metadata=metadata,
-            **kwargs,
+            kwargs=kwargs,
         )
 
     def plan_pose_from_path(
@@ -362,21 +386,18 @@ class SkillRuntimePort:
         collision_options: CollisionOptions | Mapping[str, Any] | None = None,
         **kwargs: Any,
     ):
-        metadata = self._request_metadata(
+        return self._plan(
+            "plan_pose_from_path",
+            position,
+            orientation,
+            (start_path, *args),
             phase_id=phase_id,
             collision_policy=collision_policy,
             active_target=active_target,
             support=support,
             request_metadata=request_metadata,
             collision_options=collision_options,
-        )
-        return self._runtime.plan_pose_from_path(
-            position,
-            orientation,
-            start_path,
-            *args,
-            request_metadata=metadata,
-            **kwargs,
+            kwargs=kwargs,
         )
 
     def plan_pose_from_joint_positions(
@@ -393,21 +414,20 @@ class SkillRuntimePort:
         collision_options: CollisionOptions | Mapping[str, Any] | None = None,
         **kwargs: Any,
     ):
-        metadata = self._request_metadata(
+        call_kwargs = dict(kwargs)
+        call_kwargs["start_arm_positions"] = start_arm_positions
+        return self._plan(
+            "plan_pose_from_joint_positions",
+            position,
+            orientation,
+            args,
             phase_id=phase_id,
             collision_policy=collision_policy,
             active_target=active_target,
             support=support,
             request_metadata=request_metadata,
             collision_options=collision_options,
-        )
-        kwargs["start_arm_positions"] = start_arm_positions
-        return self._runtime.plan_pose_from_joint_positions(
-            position,
-            orientation,
-            *args,
-            request_metadata=metadata,
-            **kwargs,
+            kwargs=call_kwargs,
         )
 
     def measure_cartesian_path(self, path: Any, start: Any, goal: Any):
@@ -463,60 +483,20 @@ class SkillRuntimePort:
         *,
         collision_policy: CollisionPolicy | str | None = None,
     ):
-        manager = self._collision_scene_manager
-        policy = self._coerce_policy(collision_policy) or CollisionPolicy.WORLD_TRANSIT
-        object_name = str(object_name)
-        support_name = None if support_name is None else str(support_name)
-        if manager is None:
-            if policy is CollisionPolicy.PASSTHROUGH:
-                return self._runtime.scene_revision
-            raise RuntimeError("SkillRuntimePort world transition is unavailable")
-
-        if policy is CollisionPolicy.WORLD_TRANSIT:
-            manager.begin_target_transit(object_name, self.name, self.arm_name)
-        elif policy is CollisionPolicy.TARGET_APPROACH:
-            manager.begin_target_approach(object_name, self.name, self.arm_name)
-        elif policy is CollisionPolicy.ATTACHED_CARRY:
-            record = getattr(manager, "records", {}).get(object_name)
-            state = getattr(getattr(record, "state", None), "value", None)
-            if state == "placement_contact" and support_name:
-                cleanup = getattr(manager, "restore_placement_support", None)
-                if not callable(cleanup):
-                    raise RuntimeError(
-                        "placement query cleanup is unavailable for attached carry"
-                    )
-                cleanup(object_name, support_name, self.name, self.arm_name)
-            manager.assert_attached_owner(object_name, self.name, self.arm_name)
-        elif policy is CollisionPolicy.PLACEMENT_DESCENT:
-            if not support_name:
-                raise ValueError("PLACEMENT_DESCENT requires a support entity")
-            manager.begin_placement_descent(
-                object_name, support_name, self.name, self.arm_name
-            )
-        elif policy is CollisionPolicy.RETREAT:
-            manager.begin_terminal_retreat(object_name, self.name, self.arm_name)
-        elif policy is not CollisionPolicy.PASSTHROUGH:
-            raise ValueError(f"unsupported collision policy: {policy!r}")
-        return self._runtime.scene_revision
+        return self._runtime.transition_target(
+            object_name,
+            support_name,
+            collision_policy=self._coerce_policy(collision_policy),
+        )
 
     def restore_world(self, object_name: str):
-        manager = self._collision_scene_manager
-        if manager is None:
-            raise RuntimeError("SkillRuntimePort world restore is unavailable")
-        manager.restore_world(str(object_name))
-        return self._runtime.scene_revision
+        return self._runtime.restore_world(object_name)
 
     def source_support(self, object_name: str):
-        manager = self._collision_scene_manager
-        if manager is None:
-            raise RuntimeError("SkillRuntimePort source-support lookup is unavailable")
-        return manager.get_source_support_entity(str(object_name))
+        return self._runtime.source_support(object_name)
 
     def assert_attached_owner(self, entity_name: str):
-        manager = self._collision_scene_manager
-        if manager is None:
-            raise RuntimeError("SkillRuntimePort attachment ownership is unavailable")
-        return manager.assert_attached_owner(str(entity_name), self.name, self.arm_name)
+        return self._runtime.assert_attached_owner(entity_name)
 
     def sync_native_batch_attachment(self, *args: Any, **kwargs: Any) -> bool:
         return bool(self._runtime.sync_native_batch_attachment(*args, **kwargs))

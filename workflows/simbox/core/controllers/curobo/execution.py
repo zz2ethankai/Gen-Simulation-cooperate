@@ -170,79 +170,27 @@ class ControllerExecution(ComponentState):
         if command.joint_target is not None:
             return self._forward_joint_target(command, first_step)
 
-        manager = self.collision_scene_manager
-        if manager is None:
-            raise RuntimeError("MotionPhaseCommand requires CollisionSceneManager")
-        robot, arm = self.name, self.lr_name
         if first_step:
-            if command.phase == MotionPhase.SYNC_WORLD:
-                manager.sync_dynamic_poses(self._step_idx, interval_steps=1, force=True)
-                if command.active_object:
-                    manager.begin_target_transit(command.active_object, robot, arm)
+            cached_path = self.runtime.prepare_phase(command)
+            if command.is_bookkeeping:
                 self._phase_bookkeeping_done = True
-            elif command.phase == MotionPhase.TRANSIT_PREGRASP:
-                manager.begin_target_transit(command.active_object, robot, arm)
-                if command.params.get("preplanned_joint_path") is not None:
-                    self._install_preplanned_phase_path(command)
-            elif command.phase == MotionPhase.TERMINAL_GRASP_APPROACH:
-                manager.begin_target_approach(command.active_object, robot, arm)
-                preplanned_path = command.params.get("preplanned_joint_path")
-                if preplanned_path is not None:
-                    self._install_preplanned_phase_path(command)
-            elif command.phase == MotionPhase.TRANSIT_PREPLACE:
-                manager.assert_attached_owner(command.active_object, robot, arm)
-                self._install_preplanned_phase_path(command)
-            elif command.phase == MotionPhase.ATTACH:
-                verify_contact = command.params.get("verify_grasp_contact")
-                if not callable(verify_contact) or not bool(verify_contact()):
-                    raise RuntimeError(
-                        "ATTACH requires a verified target-finger contact from GRIPPER_CLOSE"
+            if cached_path is not None:
+                if (
+                    command.phase.value == "terminal_place_descent"
+                    and command.params.get("continuous_descent", False)
+                    and not self._validate_continuous_place_plan(
+                        command, self.runtime._command_path(cached_path)
                     )
-                manager.attach_target(command.active_object, robot, arm)
-                self._phase_bookkeeping_done = True
-            elif command.phase == MotionPhase.CARRY_HOME:
-                manager.assert_attached_owner(command.active_object, robot, arm)
-                preplanned_path = command.params.get("preplanned_joint_path")
-                if preplanned_path is None:
-                    raise RuntimeError("CARRY_HOME requires a preplanned joint path")
-                self._install_preplanned_phase_path(command)
-            elif command.phase == MotionPhase.TERMINAL_PLACE_DESCENT:
-                manager.begin_placement_descent(
-                    command.active_object, command.support_object, robot, arm
-                )
-                if command.params.get("preplanned_joint_path") is not None:
-                    cached_plan = self.runtime._command_path(
-                        command.params["preplanned_joint_path"]
+                ):
+                    command.params.pop("preplanned_joint_path", None)
+                    LOGGER.warning(
+                        "[PhaseDebug] cached-place-plan rejected robot=%s arm=%s; "
+                        "falling back to native-v2 replanning",
+                        self.name,
+                        self.lr_name,
                     )
-                    if command.params.get("continuous_descent", False):
-                        cached_valid = self._validate_continuous_place_plan(
-                            command, cached_plan
-                        )
-                    else:
-                        cached_valid = True
-                    if cached_valid:
-                        self._install_preplanned_phase_path(command)
-                    else:
-                        # A cached path can be invalidated by a safety hold or
-                        # a small attached-object slip between evaluation and
-                        # execution.  Fall back to a fresh single-plan query
-                        # from the measured state instead of failing the phase
-                        # on stale candidate data.
-                        command.params.pop("preplanned_joint_path", None)
-                        LOGGER.warning(
-                            "[PhaseDebug] cached-place-plan rejected robot=%s arm=%s; "
-                            "falling back to native-v2 replanning",
-                            self.name,
-                            self.lr_name,
-                        )
-            elif command.phase == MotionPhase.DETACH_AND_SETTLE:
-                manager.detach_target(command.active_object, robot, arm)
-                self._phase_bookkeeping_done = True
-            elif command.phase == MotionPhase.TERMINAL_RETREAT:
-                manager.begin_terminal_retreat(command.active_object, robot, arm)
-            elif command.phase == MotionPhase.RESTORE_WORLD:
-                manager.restore_world(command.active_object)
-                self._phase_bookkeeping_done = True
+                else:
+                    self._install_preplanned_phase_path(command)
 
         if (
             command.phase == MotionPhase.TERMINAL_PLACE_DESCENT
@@ -283,15 +231,8 @@ class ControllerExecution(ComponentState):
         """Plan and execute one typed joint target through native c-space."""
 
         if first_step:
-            manager = self.collision_scene_manager
             if command.active_object is not None:
-                if manager is None:
-                    raise RuntimeError(
-                        "attached joint command requires CollisionSceneManager"
-                    )
-                manager.assert_attached_owner(
-                    command.active_object, self.name, self.lr_name
-                )
+                self.runtime.assert_attached_owner(command.active_object)
 
             cached_path = command.params.get("preplanned_joint_path")
             if cached_path is not None:
@@ -520,9 +461,7 @@ class ControllerExecution(ComponentState):
                 and self._phase_dwell_count >= max(1, command.dwell_steps)
                 and not command.params.get("settle_finalized", False)
             ):
-                self.collision_scene_manager.finalize_detach_target(
-                    command.active_object, self.name, self.lr_name
-                )
+                self.runtime.finalize_detach_target(command.active_object)
                 command.params["settle_finalized"] = True
             return self._phase_bookkeeping_done and self._phase_dwell_count >= max(1, command.dwell_steps)
         if command.phase in {MotionPhase.GRIPPER_CLOSE, MotionPhase.GRIPPER_OPEN}:
