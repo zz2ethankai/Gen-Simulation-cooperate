@@ -1,13 +1,17 @@
 # Arm Controllers
 
-CuRobo arm controllers use one typed command path and four responsibility
-layers:
+CuRobo arm controllers keep two intentionally separate execution lanes. The
+legacy lane preserves the original controller contract for non-Pick/Place
+Skills; the Physics-schema lane is reserved for Pick and Place.
+
+The concrete owners are:
 
 | Layer | Responsibility |
 |---|---|
-| `TemplateController` | Isaac lifecycle and component assembly |
+| `TemplateController` | Isaac lifecycle and the legacy tuple dispatcher |
 | `MotionPlannerRuntime` | CuRobo planning, scene revisions, and attachments |
-| `ControllerExecution` | trajectory consumption, status, gripper, hold, and direct actions |
+| `ControllerSetup` | frame/joint setup, scene synchronization, reset, and compact diagnostics |
+| `ControllerExecution` | trajectory consumption, legacy `ee_forward`, typed phases, status, gripper, and hold |
 | `SkillRuntimePort` | the only controller API visible to Skills |
 
 `ArmSpec` in `controller_registry.py` contains robot differences such as
@@ -19,8 +23,7 @@ Robot-specific controllers should normally only register an `ArmSpec`.
 The active CuRobo implementation is intentionally small:
 
 - `curobo/controller.py` — `TemplateController` and Isaac lifecycle bridge.
-- `curobo/components.py` — shared mutable execution state, planning config,
-  and setup/execution wiring.
+- `curobo/components.py` — shared mutable execution state and planning config.
 - `curobo/scene_setup.py` — robot/frame resolution, world construction, reset,
   dynamic scene synchronization, and plan diagnostics.
 - `curobo/runtime.py` — state conversion, pose/c-space planning, FK/path
@@ -30,15 +33,26 @@ The active CuRobo implementation is intentionally small:
 - `curobo/phase_execution.py` and `curobo/trajectory.py` — trajectory cursor
   and named trajectory boundaries.
 
-Pick and Place own candidate generation, ranking, and manipulation phase
-construction. They call the shared `plan_pose*` methods and attachment sync;
-the controller does not construct Pick/Place business phases.
+Pick and Place own candidate generation, ranking, command construction, and
+attachment synchronization. They call the shared `plan_pose*` methods and
+typed phase executor; the controller does not construct Pick/Place business
+phases.
 
 ## Typed commands and direct actions
 
-Normal motion is represented by `MotionPhaseCommand` and is consumed through
-`execute(command)`. A planner-backed command may contain an EE target or a
-`joint_target`.
+Pick/Place motion is represented by `MotionPhaseCommand` and is consumed
+through the Physics-schema `execute(command)` path. A planner-backed command
+may contain an EE target or a `joint_target`.
+
+Non-Pick/Place legacy motion continues to use the original public boundary:
+
+```python
+action = controller.forward((ee_position, ee_orientation, method, params))
+```
+
+Tuple decoding exists only in `TemplateController.forward`. The dispatcher
+routes `ee_forward`, `pre_forward`, scene update hooks, mobile/wrist actions,
+and `dummy_forward` to the single `ControllerExecution` owner.
 
 An execution-only command uses the explicit field
 `direct_joint_action: np.ndarray | None`. It is valid only without an EE or
@@ -47,14 +61,16 @@ joint planner target, is automatically assigned
 `gripper_state` (`1.0` open, `-1.0` closed). It never creates a Physics-schema
 planning request. Home and heuristic home use this typed form.
 
-Any Skill may also call:
+Any Skill may also call the direct primitive:
 
 ```python
 action = skill_runtime.dummy_forward(arm_action, gripper_state)
 ```
 
 This sends one direct arm action through `ControllerExecution`; the caller
-owns interpolation and completion. No tuple-form command parsing remains.
+owns interpolation and completion. Home, heuristic joint interpolation, and
+joint-control commands use this lane. Typed direct commands preserve a
+completed execution status for Skills that consume the shared status API.
 
 ## SkillRuntimePort API
 

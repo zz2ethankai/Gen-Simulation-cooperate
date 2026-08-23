@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import torch
@@ -11,7 +11,11 @@ from core.controllers.curobo.phase_execution import ExecutionStatus
 from core.controllers.curobo.trajectory import execution_trajectory_tensor
 from core.planning.domain_types import CollisionPolicy, CommandStatus
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand
-from core.controllers.curobo.components import ComponentState
+from core.controllers.curobo.components import (
+    MutableExecutionState,
+    PlanningConfig,
+    _state_property,
+)
 from isaacsim.core.utils.prims import get_prim_at_path
 from isaacsim.core.utils.transformations import (
     get_relative_transform,
@@ -29,7 +33,109 @@ JointState = None
 ArticulationAction = None
 
 
-class ControllerExecution(ComponentState):
+class ControllerExecution:
+    """Consume trajectories and produce articulation actions.
+
+    Pick/Place enters through :meth:`forward_phase_command`.  The small
+    legacy helpers below are kept on this same execution owner so the old
+    tuple dispatcher can continue to use ``ee_forward`` without introducing a
+    second planner or a second trajectory consumer.
+    """
+
+    _active_phase_command = _state_property("active_phase_command")
+    _last_command_name = _state_property("last_command_name")
+    _phase_base_position = _state_property("phase_base_position")
+    _phase_base_orientation = _state_property("phase_base_orientation")
+    _phase_bookkeeping_done = _state_property("phase_bookkeeping_done")
+    _phase_dwell_count = _state_property("phase_dwell_count")
+    _phase_plan_started = _state_property("phase_plan_started")
+    _phase_plan_finished = _state_property("phase_plan_finished")
+    _phase_tracking_failed = _state_property("phase_tracking_failed")
+    _phase_plan_failed = _state_property("phase_plan_failed")
+    _phase_completion_logged = _state_property("phase_completion_logged")
+    _step_idx = _state_property("step_idx")
+    num_last_cmd = _state_property("num_last_cmd")
+    num_plan_failed = _state_property("num_plan_failed")
+    _last_arm_action = _state_property("last_arm_action")
+    _last_commanded_arm_position = _state_property("last_commanded_arm_position")
+    idx_list = _state_property("idx_list")
+    _ee_trans = _state_property("ee_trans")
+    _ee_ori = _state_property("ee_ori")
+    _gripper_state = _state_property("gripper_state")
+    _gripper_joint_position = _state_property("gripper_joint_position")
+
+    @property
+    def ds_ratio(self) -> int:
+        return int(self.planning_config.ds_ratio)
+
+    @ds_ratio.setter
+    def ds_ratio(self, value: int) -> None:
+        self.planning_config.ds_ratio = max(1, int(value))
+
+    def __init__(
+        self,
+        *,
+        name: str = "unknown",
+        lr_name: str | None = None,
+        robot: Any = None,
+        arm_spec: Any = None,
+        tensor_args: Any = None,
+        raw_js_names: Any = None,
+        arm_indices: Any = None,
+        gripper_indices: Any = None,
+        phase_executor: Any = None,
+        runtime: Any = None,
+        setup: Any = None,
+        robot_base_path: str | None = None,
+        robot_ee_path: str | None = None,
+        task_root_prim_path: str | None = None,
+        reference_prim_path: str | None = None,
+        pick_mobile_base_prim_path: str | None = None,
+        pick_cached_mobile_to_armbase_tf: Any = None,
+        pick_configured_mobile_to_armbase_translation: Any = None,
+        pick_configured_mobile_to_armbase_orientation: Any = None,
+        execution_state: MutableExecutionState | None = None,
+        planning_config: PlanningConfig | None = None,
+    ) -> None:
+        self.name = name
+        self.lr_name = lr_name
+        self.robot = robot
+        self.arm_spec = arm_spec
+        self.tensor_args = tensor_args
+        self.raw_js_names = tuple(str(name) for name in (raw_js_names or ()))
+        self.arm_indices = np.asarray(
+            [] if arm_indices is None else arm_indices, dtype=np.int64
+        )
+        self.gripper_indices = np.asarray(
+            [] if gripper_indices is None else gripper_indices, dtype=np.int64
+        )
+        self.phase_executor = phase_executor
+        self.runtime = runtime
+        self.setup = setup
+        self.robot_base_path = robot_base_path
+        self.robot_ee_path = robot_ee_path
+        self.task_root_prim_path = task_root_prim_path
+        self.reference_prim_path = reference_prim_path
+        self._pick_mobile_base_prim_path = pick_mobile_base_prim_path
+        self._pick_cached_mobile_to_armbase_tf = pick_cached_mobile_to_armbase_tf
+        self._pick_configured_mobile_to_armbase_translation = (
+            np.asarray(pick_configured_mobile_to_armbase_translation, dtype=np.float32)
+            if pick_configured_mobile_to_armbase_translation is not None
+            else np.asarray([], dtype=np.float32)
+        )
+        self._pick_configured_mobile_to_armbase_orientation = (
+            np.asarray(pick_configured_mobile_to_armbase_orientation, dtype=np.float32)
+            if pick_configured_mobile_to_armbase_orientation is not None
+            else np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        )
+        self.execution_state = execution_state or MutableExecutionState()
+        self.planning_config = planning_config or PlanningConfig()
+        if self.execution_state.gripper_joint_position is None:
+            self.execution_state.gripper_joint_position = np.asarray(
+                getattr(self.arm_spec, "gripper_home", (1.0,)),
+                dtype=float,
+            ).reshape(-1)
+        self._action = None
     def _begin_phase_command(self, command: MotionPhaseCommand) -> bool:
         """Reset execution bookkeeping when a new typed command starts."""
 
@@ -134,6 +240,121 @@ class ControllerExecution(ComponentState):
                 "dummy_forward gripper_state must be exactly 1.0 or -1.0"
             )
         return self._make_action(arm_action, self.get_gripper_action())
+
+    def forward_legacy_command(self, command: MotionPhaseCommand):
+        """Run a non-Pick/Place typed command on the legacy execution lane.
+
+        Older Skills used ``controller.forward((pose, pose, method, params))``.
+        The workflow now represents the same small payload as a
+        ``MotionPhaseCommand`` before it reaches the runtime port, but it must
+        still avoid Physics-schema scene transitions.  This method therefore
+        reuses the original EE planner/trajectory consumer and never calls
+        ``MotionPlannerRuntime.prepare_phase``.
+        """
+
+        if command.is_direct:
+            gripper_state = command.gripper_state
+            if gripper_state is None:
+                if command.gripper_action == "open_gripper":
+                    gripper_state = 1.0
+                elif command.gripper_action == "close_gripper":
+                    gripper_state = -1.0
+                else:
+                    gripper_state = float(self._gripper_state)
+            action = self.dummy_forward(command.direct_joint_action, gripper_state)
+            # ``dummy_forward`` is also the public tuple-lane primitive and
+            # clears the previous typed phase.  Re-install the current direct
+            # command here so Skills that use ``command_complete`` (not only
+            # physical endpoint checks) receive a completed execution status.
+            self._active_phase_command = command
+            self._last_command_name = command.phase.value
+            self._phase_bookkeeping_done = True
+            self._phase_plan_finished = True
+            return action
+
+        first_step = self._begin_phase_command(command)
+
+        self._apply_gripper_action(command.gripper_action)
+        if command.joint_target is not None:
+            return self._forward_joint_target(command, first_step=True)
+
+        position = command.target_position
+        orientation = command.target_orientation
+        skip_plan = position is None or orientation is None
+        if skip_plan:
+            position, orientation = self.get_ee_pose()
+        return self.ee_forward(
+            position,
+            orientation,
+            eps=command.planning_epsilon,
+            skip_plan=skip_plan,
+        )
+
+    def in_plane_rotation(self, target_rotate: Any):
+        """Apply the small legacy wrist rotation action without replanning."""
+
+        base_action = self._action
+        if base_action is None:
+            base_action = self.hold_action()
+        action = {
+            key: value.copy() if hasattr(value, "copy") else value
+            for key, value in base_action.items()
+        }
+        delta = float(np.asarray(target_rotate, dtype=float).reshape(-1)[0])
+        if len(self.arm_indices) == 0:
+            raise ValueError("in_plane_rotation requires at least one arm joint")
+        last_arm = len(self.arm_indices) - 1
+        action["joint_positions"][last_arm] -= delta
+        action["arm_action"][last_arm] -= delta
+        self._last_arm_action = np.asarray(action["arm_action"], dtype=float).copy()
+        self._last_commanded_arm_position = self._last_arm_action.copy()
+        self._action = action
+        return action
+
+    @staticmethod
+    def mobile_move(
+        target: Any,
+        joint_indices: Any = None,
+        initial_position: Any = None,
+    ):
+        """Build the legacy whole-base action used by mobile Skills."""
+
+        if joint_indices is None or initial_position is None:
+            raise ValueError("mobile_move requires joint_indices and initial_position")
+        return {
+            "joint_positions": np.asarray(initial_position, dtype=float)
+            + np.asarray(target, dtype=float),
+            "joint_indices": np.asarray(joint_indices),
+            "lr_name": "whole",
+        }
+
+    def pre_forward(
+        self,
+        ee_trans: Any,
+        ee_ori: Any,
+        expected_js: Any = None,
+        ds_ratio: int = 1,
+    ):
+        """Plan one legacy pose and return its duration and joint endpoint."""
+
+        if self.runtime is None:
+            raise RuntimeError("pre_forward requires a bound MotionPlannerRuntime")
+        success, endpoint, result = self.runtime.plan_pose_from_joint_positions(
+            ee_trans,
+            ee_ori,
+            start_arm_positions=expected_js,
+            request_metadata={"phase_id": "legacy.pre_forward"},
+        )
+        if success:
+            self.ds_ratio = ds_ratio
+            duration = (
+                len(self.runtime._command_path(self.runtime._result_path(result)))
+                * float(self.runtime.robot_port.interpolation_dt)
+                / self.ds_ratio
+            )
+            return duration, np.asarray(endpoint, dtype=float)
+        self.num_plan_failed = 1000
+        return 0, expected_js
 
     def forward_phase_command(self, command: MotionPhaseCommand):
         """Execute one structured motion phase.
@@ -624,6 +845,37 @@ class ControllerExecution(ComponentState):
             joint_positions[:arm_count], joint_positions[arm_count:]
         )
 
+    def legacy_ee_forward(
+        self,
+        ee_trans: torch.Tensor | np.ndarray,
+        ee_ori: torch.Tensor | np.ndarray,
+        eps=1e-4,
+        skip_plan=False,
+        gripper_action=None,
+        plan_validator=None,
+        *,
+        command_name: str = "legacy.ee_forward",
+    ):
+        """Enter the old EE lane without retaining a typed phase owner.
+
+        A tuple command may follow a completed Pick/Place phase.  Drop that
+        phase's cursor once at the lane boundary so a stale typed trajectory
+        cannot be replayed; subsequent legacy calls continue to consume the
+        one EE trajectory through :meth:`ee_forward`.
+        """
+
+        if self._active_phase_command is not None:
+            self.clear_plan_and_hold()
+        self._last_command_name = str(command_name)
+        return self.ee_forward(
+            ee_trans,
+            ee_ori,
+            eps=eps,
+            skip_plan=skip_plan,
+            gripper_action=gripper_action,
+            plan_validator=plan_validator,
+        )
+
     def ee_forward(
         self,
         ee_trans: torch.Tensor | np.ndarray,
@@ -679,22 +931,27 @@ class ControllerExecution(ComponentState):
                             phase_name=self._last_command_name,
                             cached=False,
                         )
-                        getattr(self.runtime.setup, "_write_curobo_plan_debug")(
-                            result=result,
-                            sim_js=sim_js,
-                            js_names=js_names,
-                            ee_trans=ee_trans,
-                            ee_ori=ee_ori,
-                            raw_plan=raw_plan,
-                            ordered_trajectory=self.phase_executor.current,
-                            branch="single",
-                            selected_path_index=0,
-                            selected_path_source="native result interpolated_trajectory",
+                        debug_writer = getattr(
+                            getattr(self.runtime, "setup", None),
+                            "_write_curobo_plan_debug",
+                            None,
                         )
+                        if callable(debug_writer):
+                            debug_writer(
+                                result=result,
+                                sim_js=sim_js,
+                                js_names=js_names,
+                                ee_trans=ee_trans,
+                                ee_ori=ee_ori,
+                                raw_plan=raw_plan,
+                                ordered_trajectory=self.phase_executor.current,
+                                branch="single",
+                                selected_path_index=0,
+                                selected_path_source="native result interpolated_trajectory",
+                            )
                         self.num_plan_failed = 0
                         new_plan_created = True
                 if not new_plan_created:
-                    print("Plan did not converge to a solution.")
                     self._phase_plan_failed = True
                     self.num_plan_failed += 1
                     LOGGER.warning(

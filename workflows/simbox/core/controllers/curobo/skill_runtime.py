@@ -1,10 +1,8 @@
 """The only CuRobo runtime boundary visible to manipulation Skills.
 
-The port binds the two controller components that implement the contract:
-``MotionPlannerRuntime`` owns planning, scene state, and attachments, while
-``ControllerExecution`` owns trajectory consumption and articulation actions.
-It intentionally does not expose the TemplateController, native CuRobo
-objects, or compatibility callback aliases.
+The port holds the concrete ``MotionPlannerRuntime`` and
+``ControllerExecution`` owners. It intentionally does not expose the
+TemplateController, native CuRobo objects, or compatibility callback aliases.
 """
 
 from __future__ import annotations
@@ -17,10 +15,11 @@ import numpy as np
 
 from core.controllers.curobo.components import MutableExecutionState
 from core.planning.domain_types import CollisionOptions, CollisionPolicy
+from core.planning.motion_command import MotionPhaseCommand
 
 
 class SkillRuntimePort:
-    """Immutable, component-backed runtime contract for one manipulation Skill."""
+    """Immutable runtime contract for one manipulation Skill."""
 
     __slots__ = (
         "_sealed",
@@ -437,6 +436,14 @@ class SkillRuntimePort:
     # Execution and workflow timing
     # ------------------------------------------------------------------
     def execute(self, command: Any):
+        if not isinstance(command, MotionPhaseCommand):
+            raise TypeError("SkillRuntimePort.execute accepts MotionPhaseCommand only")
+        if command.is_direct or command.active_object is None:
+            # Direct interpolation and ordinary non-object Skills remain on
+            # the original execution lane.  Pick/Place commands carry an
+            # active object and are the only commands that enter the Physics
+            # Schema phase transition state machine.
+            return self._execution.forward_legacy_command(command)
         return self._execution.forward_phase_command(command)
 
     def dummy_forward(self, arm_action: Any, gripper_state: float):

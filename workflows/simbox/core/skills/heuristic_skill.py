@@ -96,36 +96,24 @@ class Heuristic_Skill(BaseSkill):
         return goal_arm_joints
 
     def _build_joint_traj(self, curr_joints, goal_joints, p_base_ee_cur, q_base_ee_cur):
-        """Build typed direct joint-space interpolation commands.
+        """Build legacy-lane direct joint-space interpolation commands.
 
-        Home deliberately owns its execution-only path. Other heuristic modes
-        retain planner-backed joint targets so a direct action cannot silently
-        bypass the Physics-schema safety path.
+        Heuristic joint motion is an interpolation contract, not a collision
+        world transition.  ``rel_ee`` still uses the planner once to obtain a
+        feasible endpoint, then all emitted samples use ``dummy_forward``.
         """
 
         manip_list = []
         for k in range(self.move_steps):
             alpha = float(k + 1) / float(self.move_steps)
             arm_action = goal_joints * alpha + curr_joints * (1.0 - alpha)
-            if self.mode == "home":
-                cmd = self.joint_command(
-                    arm_action,
-                    gripper_state=self._gripper_state,
-                    phase=MotionPhase.CARRY_HOME,
-                    direct=True,
-                    replan_allowed=False,
-                )
-            else:
-                cmd = self.joint_command(
-                    arm_action,
-                    gripper_action=(
-                        "close_gripper"
-                        if float(self._gripper_state) < 0.0
-                        else "open_gripper"
-                    ),
-                    phase=MotionPhase.CARRY_HOME,
-                    replan_allowed=False,
-                )
+            cmd = self.joint_command(
+                arm_action,
+                gripper_state=self._gripper_state,
+                phase=MotionPhase.CARRY_HOME,
+                direct=True,
+                replan_allowed=False,
+            )
             manip_list.append(cmd)
         return manip_list
 

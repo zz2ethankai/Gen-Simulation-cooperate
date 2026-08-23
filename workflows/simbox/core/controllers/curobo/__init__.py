@@ -1,4 +1,4 @@
-"""CuRobo-backed controller implementation and its internal components.
+"""CuRobo-backed controller implementation and its internal owners.
 
 The parent :mod:`core.controllers` package contains the controller registry
 and robot-specific subclasses.  This package owns the shared Isaac/CuRobo

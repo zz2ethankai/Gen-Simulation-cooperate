@@ -14,7 +14,10 @@ from curobo.types import JointState
 from isaacsim.core.utils.prims import get_prim_at_path
 from isaacsim.core.utils.transformations import get_relative_transform
 
-from core.controllers.curobo.components import ComponentState
+from core.controllers.curobo.components import (
+    MutableExecutionState,
+    PlanningConfig,
+)
 from core.planning.domain_types import BatchPlanResult, PlanResult
 from core.utils.joint_index_resolver import JointIndexResolutionError, resolve_joint_names
 from core.utils.json_utils import json_ready, joint_state_json_ready
@@ -27,7 +30,75 @@ from core.visualization.curobo_trajectory import (
 LOGGER = logging.getLogger("de_logger")
 
 
-class ControllerSetup(ComponentState):
+class ControllerSetup:
+    """Own controller setup, scene synchronization, and reset state.
+
+    This is a concrete owner rather than a generic component populated from a
+    controller port.  Runtime construction passes the values below directly,
+    so frame paths and execution state have one obvious source of truth.
+    """
+
+    @property
+    def ds_ratio(self) -> int:
+        return int(self.planning_config.ds_ratio)
+
+    @ds_ratio.setter
+    def ds_ratio(self, value: int) -> None:
+        self.planning_config.ds_ratio = max(1, int(value))
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        world: Any,
+        task: Any,
+        robot: Any,
+        arm_spec: Any,
+        robot_file: str,
+        tensor_args: Any,
+        phase_executor: Any,
+        execution_state: MutableExecutionState | None = None,
+        planning_config: PlanningConfig | None = None,
+        trajectory_visualizer: Any = None,
+        collision_scene_manager: Any = None,
+        batch_capability: bool = False,
+        debug_plan_json: bool = False,
+        debug_plan_dir: str | None = None,
+    ) -> None:
+        self.name = name
+        self.world = world
+        self.task = task
+        self.robot = robot
+        self.arm_spec = arm_spec
+        self.robot_file = robot_file
+        self.tensor_args = tensor_args
+        self.phase_executor = phase_executor
+        self.execution_state = execution_state or MutableExecutionState()
+        self.planning_config = planning_config or PlanningConfig()
+        self.trajectory_visualizer = trajectory_visualizer
+        self.collision_scene_manager = collision_scene_manager
+        self.batch_capability = bool(batch_capability)
+        self.raw_js_names = []
+        self.cmd_js_names = []
+        self.arm_indices = np.array([], dtype=np.int64)
+        self.gripper_indices = np.array([], dtype=np.int64)
+        self.reference_prim_path = None
+        self.robot_base_path = None
+        self.robot_ee_path = None
+        self.lr_name = None
+        self.runtime = None
+        self.scene_port = None
+        self.world_cfg = None
+        self.interpolation_dt = 0.01
+        self._get_ee_pose = None
+        self._world_cache_invalidated = False
+        self._world_cleanup_failed = False
+        self._world_cleanup_error = None
+        self._curobo_plan_debug_counter = 0
+        self._curobo_plan_debug_enabled = bool(debug_plan_json)
+        self._curobo_plan_debug_dir = debug_plan_dir or os.path.join(
+            "output", "local_navigation", "skills", "curobo_plan_debug"
+        )
     @staticmethod
     def _joint_state_derivatives(sim_js):
         """Return finite measured derivatives for debug snapshots."""
@@ -54,9 +125,9 @@ class ControllerSetup(ComponentState):
     def task_root_prim_path(self) -> str:
         """Expose only the task frame root needed by reference-frame consumers.
 
-        Components must not retain the whole task just to resolve a transform.
-        Setup already owns the task dependency, so publish this narrow value
-        for the explicit component wiring after frame paths are resolved.
+        The execution owner does not retain the whole task just to resolve a
+        transform.  Setup already owns the task dependency, so publish this
+        narrow value after frame paths are resolved.
         """
 
         return self.task.root_prim_path
@@ -91,13 +162,13 @@ class ControllerSetup(ComponentState):
         self._resolve_robot_frame_paths(robot_view, arm)
         self.reference_prim_path = self.robot_base_path
         self.lr_name = arm
-        self._gripper_state = (
+        self.execution_state.gripper_state = (
             1.0
             if float(getattr(self.robot, f"{arm}_gripper_state")) >= 0.0
             else -1.0
         )
         configured_home = getattr(self.robot, f"{arm}_gripper_home", None)
-        self._gripper_joint_position = np.asarray(
+        self.execution_state.gripper_joint_position = np.asarray(
             configured_home
             if configured_home is not None
             else self.arm_spec.gripper_home,
@@ -105,7 +176,7 @@ class ControllerSetup(ComponentState):
         ).reshape(-1)
 
     def _resolve_robot_frame_paths(self, robot_view: Any, arm: str) -> None:
-        """Resolve the selected arm's base and EE paths before port wiring."""
+        """Resolve the selected arm's base and EE paths before planning."""
 
         if arm == "left":
             base_path = robot_view.fl_base_path
@@ -218,7 +289,7 @@ class ControllerSetup(ComponentState):
         valid_query = result.metrics.get("valid_query")
         debug_info = result.metrics.get("debug_info")
         msg = (
-            f"[PlanDebug] {context} robot={self.name} arm={self.lr_name} command={self._last_command_name} "
+            f"[PlanDebug] {context} robot={self.name} arm={self.lr_name} command={self.execution_state.last_command_name} "
             f"batch_capability={self.batch_capability} success_count={success_count} "
             f"status={status} valid_query={valid_query}"
         )
@@ -250,7 +321,7 @@ class ControllerSetup(ComponentState):
             self.trajectory_visualizer.record_plan(
                 self.phase_executor.current,
                 frame=frame,
-                command=self._last_command_name,
+                command=self.execution_state.last_command_name,
             )
         except Exception:
             # The overlay is observational and must never change controller behavior.
@@ -258,7 +329,7 @@ class ControllerSetup(ComponentState):
                 "[TrajectoryDebug] failed to visualize robot=%s arm=%s command=%s",
                 self.name,
                 self.lr_name,
-                self._last_command_name,
+                self.execution_state.last_command_name,
             )
 
     @staticmethod
@@ -285,6 +356,8 @@ class ControllerSetup(ComponentState):
         selected_path_index=None,
         selected_path_source: str = "",
     ) -> None:
+        if not self._curobo_plan_debug_enabled:
+            return
         try:
             os.makedirs(self._curobo_plan_debug_dir, exist_ok=True)
             self._curobo_plan_debug_counter += 1
@@ -342,7 +415,7 @@ class ControllerSetup(ComponentState):
                     "raw_js_names": json_ready(self.raw_js_names),
                     "arm_indices": json_ready(self.arm_indices),
                     "gripper_indices": json_ready(self.gripper_indices),
-                    "idx_list": json_ready(self.idx_list),
+                    "idx_list": json_ready(self.execution_state.idx_list),
                 },
                 "goal": {
                     "ee_translation": json_ready(ee_trans),
@@ -412,9 +485,25 @@ class ControllerSetup(ComponentState):
                 raise RuntimeError(message)
             raise RuntimeError(message) from error
         self.collision_scene_manager.sync_dynamic_poses(
-            self._step_idx, interval_steps=1, force=False
+            self.execution_state.step_idx, interval_steps=1, force=False
         )
         self.collision_scene_manager.audit_controller(self.scene_port)
+
+    def update_specific(
+        self,
+        ignore_substring=None,
+        reference_prim_path=None,
+    ) -> None:
+        """Keep the legacy update hook on the lightweight execution lane.
+
+        Physics-schema callers do not rebuild a world from substring filters.
+        They only synchronize the exact dynamic scene and run the normal
+        controller audit; the old arguments are accepted for tuple-command
+        compatibility and intentionally have no effect.
+        """
+
+        del ignore_substring, reference_prim_path
+        self.update()
 
     def _refresh_reference_world_for_planning(self) -> None:
         """Synchronize a moved mobile reference once before a CuRobo query."""
@@ -446,9 +535,13 @@ class ControllerSetup(ComponentState):
         self.phase_executor.clear()
         self.execution_state.reset()
         if self.lr_name == "left":
-            self._gripper_state = 1.0 if self.robot.left_gripper_state == 1.0 else -1.0
+            self.execution_state.gripper_state = (
+                1.0 if self.robot.left_gripper_state == 1.0 else -1.0
+            )
         elif self.lr_name == "right":
-            self._gripper_state = 1.0 if self.robot.right_gripper_state == 1.0 else -1.0
+            self.execution_state.gripper_state = (
+                1.0 if self.robot.right_gripper_state == 1.0 else -1.0
+            )
         self._resolve_robot_frame_paths(self.robot, self.lr_name)
         self.T_base_ee_init = get_relative_transform(
             get_prim_at_path(self.robot_ee_path), get_prim_at_path(self.robot_base_path)
@@ -457,6 +550,12 @@ class ControllerSetup(ComponentState):
             get_prim_at_path(self.robot_base_path), get_prim_at_path(self.task.root_prim_path)
         )
         self.T_world_ee_init = self.T_world_base_init @ self.T_base_ee_init
-        self._ee_trans, self._ee_ori = self._get_ee_pose()
-        self._ee_trans = self.tensor_args.to_device(self._ee_trans)
-        self._ee_ori = self.tensor_args.to_device(self._ee_ori)
+        if not callable(self._get_ee_pose):
+            raise RuntimeError("ControllerSetup requires an execution EE-pose callback")
+        self.execution_state.ee_trans, self.execution_state.ee_ori = self._get_ee_pose()
+        self.execution_state.ee_trans = self.tensor_args.to_device(
+            self.execution_state.ee_trans
+        )
+        self.execution_state.ee_ori = self.tensor_args.to_device(
+            self.execution_state.ee_ori
+        )

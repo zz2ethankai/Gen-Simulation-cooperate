@@ -36,11 +36,10 @@ class Joint_Ctrl(BaseSkill):
             gripper_state = self.skill_cfg.get("gripper_state", 1.0)
             cmd = self.joint_command(
                 js,
-                gripper_action=(
-                    "close_gripper" if gripper_state < 0 else "open_gripper"
-                ),
+                gripper_state=gripper_state,
                 phase=MotionPhase.CARRY_HOME,
                 replan_allowed=False,
+                direct=True,
             )
             manip_list.append(cmd)
 
