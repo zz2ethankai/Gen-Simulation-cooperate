@@ -10,12 +10,7 @@ from core.planning.domain_types import CommandStatus, JointTrajectory
 
 @dataclass(frozen=True)
 class ExecutionStatus:
-    """Detailed, immutable execution snapshot behind the enum status API.
-
-    ``TemplateController.command_status`` deliberately exposes only the
-    finite :class:`CommandStatus` enum.  Diagnostics and safety orchestration
-    use this snapshot when they need phase, plan, or completion details.
-    """
+    """Detailed, immutable execution snapshot for safety orchestration."""
 
     status: CommandStatus = CommandStatus.IDLE
     phase: str | None = None
@@ -27,12 +22,6 @@ class ExecutionStatus:
     reason: str | None = None
     plan_id: str | None = None
     replan_allowed: bool = True
-
-    @property
-    def command_status(self) -> CommandStatus:
-        """Explicit alias for consumers that name the enum field."""
-
-        return self.status
 
 class PhaseExecutor:
     """Own the mutable trajectory cursor used by phase execution.

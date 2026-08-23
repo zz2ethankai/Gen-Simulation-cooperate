@@ -49,7 +49,7 @@ class Pick(BaseSkill):
             "Aligned_obj.usd", cfg.get("npy_name", "Aligned_grasp_sparse.npy")
         )
         sparse_grasps = np.load(grasp_path)
-        self.lr_arm = self.skill_runtime.lr_name
+        self.lr_arm = self.skill_runtime.arm_name
         self.T_obj_ee, self.scores = robot.pose_post_process_fn(
             sparse_grasps,
             lr_arm=self.lr_arm,

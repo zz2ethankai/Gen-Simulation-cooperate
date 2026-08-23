@@ -144,26 +144,6 @@ class ComponentState:
         self.planning_config.ds_ratio = max(1, int(value))
 
 
-class SetupPort(ComponentPort):
-    """Dependencies for scene/setup operations."""
-
-
-class StatePlanningPort(ComponentPort):
-    """Dependencies for typed state conversion and planning."""
-
-
-class PlanningQueriesPort(ComponentPort):
-    """Dependencies for candidate/query operations."""
-
-
-class PhasesPort(ComponentPort):
-    """Dependencies for phase-command construction."""
-
-
-class AttachmentPort(ComponentPort):
-    """Dependencies for attachment lifecycle operations."""
-
-
 @dataclass(frozen=True)
 class ControllerComponents:
     """The operation components assembled for one controller instance.
@@ -174,11 +154,7 @@ class ControllerComponents:
     """
 
     setup: Any
-    state_planning: Any
-    planning_queries: Any
-    phases: Any
     execution: Any
-    attachment: Any
 
 
 def wire_controller_components(port_factory, *, prepare_setup=None) -> ControllerComponents:
@@ -189,12 +165,8 @@ def wire_controller_components(port_factory, *, prepare_setup=None) -> Controlle
     here leaves ``TemplateController`` focused on lifecycle orchestration.
     """
 
-    from core.controllers.curobo.attachments import ControllerAttachment
     from core.controllers.curobo.execution import ControllerExecution
-    from core.controllers.curobo.motion_phases import ControllerPhases
-    from core.controllers.curobo.planning_queries import ControllerPlanningQueries
     from core.controllers.curobo.scene_setup import ControllerSetup
-    from core.controllers.curobo.state_planning import ControllerStatePlanning
 
     setup = ControllerSetup(
         port_factory(
@@ -205,12 +177,9 @@ def wire_controller_components(port_factory, *, prepare_setup=None) -> Controlle
                 "constrain_grasp_approach", "collision_activation_distance",
                 "raw_js_names", "cmd_js_names", "arm_indices", "gripper_indices",
                 "reference_prim_path", "lr_name", "planning_config", "execution_state",
-                "_world_cache_invalidated", "_world_cleanup_failed", "_world_cleanup_error",
-                "_world_update_signature", "_pending_pose_criteria", "phase_executor",
+                "phase_executor",
                 "_curobo_plan_debug_counter", "_curobo_plan_debug_dir", "runtime",
             ),
-            _joint_state_derivatives=ControllerStatePlanning._joint_state_derivatives,
-            port_type=SetupPort,
         )
     )
 
@@ -230,116 +199,32 @@ def wire_controller_components(port_factory, *, prepare_setup=None) -> Controlle
         setup_values.update(overrides)
         return port_factory(names, port_type=port_type, **setup_values)
 
-    state_planning = ControllerStatePlanning(
-        component_port(
-            (
-                "name", "robot", "arm_spec", "tensor_args", "raw_js_names", "cmd_js_names",
-                "arm_indices", "gripper_indices", "lr_name", "phase_executor", "runtime",
-                "planning_config", "execution_state",
-            ),
-            _log_plan_result=setup._log_plan_result,
-            _visualize_selected_plan=setup._visualize_selected_plan,
-            _refresh_reference_world_for_planning=setup._refresh_reference_world_for_planning,
-            port_type=StatePlanningPort,
-        )
-    )
-    planning_queries = ControllerPlanningQueries(
-        component_port(
-            (
-                "robot", "tensor_args", "raw_js_names", "arm_indices", "runtime",
-                "phase_executor", "lr_name", "planning_config", "execution_state",
-            ),
-            _arm_joint_state=state_planning._arm_joint_state,
-            _planner_joint_names=state_planning._planner_joint_names,
-            _planner_state=state_planning._planner_state,
-            _result_success=state_planning._result_success,
-            _result_path=state_planning._result_path,
-            _command_path=state_planning._command_path,
-            _plan_pose_from_state=state_planning._plan_pose_from_state,
-            _plan_batch_from_state=state_planning._plan_batch_from_state,
-            _native_plan_pose=state_planning._native_plan_pose,
-            _native_plan_pose_batch=state_planning._native_plan_pose_batch,
-            _log_plan_result=setup._log_plan_result,
-            _refresh_reference_world_for_planning=setup._refresh_reference_world_for_planning,
-            port_type=PlanningQueriesPort,
-        )
-    )
-    phases = ControllerPhases(
-        component_port(
-            (
-                "name", "lr_name", "robot", "task", "reference_prim_path",
-                "collision_scene_manager", "execution_state", "planning_config",
-                "_pick_mobile_base_prim_path", "_pick_cached_mobile_to_armbase_tf",
-                "_pick_configured_mobile_to_armbase_translation",
-                "_pick_configured_mobile_to_armbase_orientation", "_pick_plan_references",
-                "phase_executor", "runtime",
-            ),
-            _command_path=state_planning._command_path,
-            _install_command_plan=state_planning._install_command_plan,
-            port_type=PhasesPort,
-        )
-    )
     execution = ControllerExecution(
         component_port(
             (
-                "name", "lr_name", "robot", "arm_spec", "tensor_args",
+                "name", "lr_name", "robot", "task", "arm_spec", "tensor_args",
                 "arm_indices", "gripper_indices", "phase_executor", "runtime",
                 "collision_scene_manager",
                 "robot_base_path", "robot_ee_path", "task_root_prim_path",
+                "reference_prim_path", "_pick_mobile_base_prim_path",
+                "_pick_cached_mobile_to_armbase_tf",
+                "_pick_configured_mobile_to_armbase_translation",
+                "_pick_configured_mobile_to_armbase_orientation",
                 "planning_config", "execution_state", "batch_capability", "batch_enabled",
+                "setup",
             ),
-            _begin_phase_command=phases._begin_phase_command,
-            _install_preplanned_phase_path=phases._install_preplanned_phase_path,
-            _install_command_plan=state_planning._install_command_plan,
-            _arm_joint_state=state_planning._arm_joint_state,
-            _planner_state=state_planning._planner_state,
-            _planner_joint_names=state_planning._planner_joint_names,
-            _command_path=state_planning._command_path,
-            _result_path=state_planning._result_path,
-            _result_success=state_planning._result_success,
-            _native_plan_pose=state_planning._native_plan_pose,
-            _log_plan_result=setup._log_plan_result,
-            _write_curobo_plan_debug=setup._write_curobo_plan_debug,
-            port_type=ComponentPort,
+            setup=setup,
         )
     )
-    attachment = ControllerAttachment(
-        component_port(
-            (
-                "robot", "runtime", "arm_indices", "batch_capability", "phase_executor",
-                "planning_config", "execution_state", "_require_batch_scene_adapter",
-            ),
-            _arm_joint_state=state_planning._arm_joint_state,
-            _plan_pose_from_joint_positions=planning_queries.plan_pose_from_joint_positions,
-            _log_plan_result=setup._log_plan_result,
-            port_type=AttachmentPort,
-        )
-    )
-    phases.execute = execution.forward_phase_command
-    phases.get_armbase_pose = execution.get_armbase_pose
-    phases.update_pose_cost_metric = setup.update_pose_cost_metric
     setup._get_ee_pose = execution.get_ee_pose
-    planning_queries.forward_kinematic = execution.forward_kinematic
-    planning_queries._forward_kinematic_batch = execution._forward_kinematic_batch
-    return ControllerComponents(setup, state_planning, planning_queries, phases, execution, attachment)
-
-
-# The execution component is being migrated independently.  This name is a
-# temporary import alias only; it has no façade binding or magic dispatch.
-ControllerComponent = ComponentState
+    return ControllerComponents(setup=setup, execution=execution)
 
 
 __all__ = [
-    "AttachmentPort",
     "ComponentPort",
     "ComponentState",
-    "ControllerComponent",
     "ControllerComponents",
     "MutableExecutionState",
     "PlanningConfig",
-    "PhasesPort",
-    "PlanningQueriesPort",
-    "SetupPort",
-    "StatePlanningPort",
     "wire_controller_components",
 ]

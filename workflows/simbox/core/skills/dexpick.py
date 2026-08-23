@@ -52,7 +52,7 @@ class Dexpick(BaseSkill):
             self.pick_pose_idx = cfg.get("pick_pose_idx", 0)
             self.pose_ee2o = self.pick_poses[self.pick_pose_idx]
         self.manip_list = []
-        lr_arm = self.skill_runtime.lr_name
+        lr_arm = self.skill_runtime.arm_name
         self.pickcontact_view = task.pickcontact_views[robot.name][lr_arm][object_name]
         self.process_valid = True
         self.obj_init_trans = deepcopy(self.object.get_local_pose()[0])

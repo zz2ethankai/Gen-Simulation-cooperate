@@ -4,21 +4,16 @@ from __future__ import annotations
 
 import json
 import logging
-import numbers
 import os
 import time
 import warnings
-from typing import Any, List, Optional
+from typing import Any
 
 import numpy as np
-import torch
-from curobo.sphere_fit import SphereFitType
-from curobo.types import DeviceCfg, JointState, Pose
-from core.planning.native_bridge import SceneCfg, ToolPoseCriteria
+from curobo.types import JointState
 from isaacsim.core.utils.prims import get_prim_at_path
 from isaacsim.core.utils.transformations import get_relative_transform
 
-from core.controllers.controller_registry import ArmSpec
 from core.controllers.curobo.components import ComponentState
 from core.planning.domain_types import BatchPlanResult, PlanResult
 from core.utils.joint_index_resolver import JointIndexResolutionError, resolve_joint_names
@@ -33,6 +28,28 @@ LOGGER = logging.getLogger("de_logger")
 
 
 class ControllerSetup(ComponentState):
+    @staticmethod
+    def _joint_state_derivatives(sim_js):
+        """Return finite measured derivatives for debug snapshots."""
+
+        positions = sim_js.positions
+        if hasattr(positions, "detach"):
+            positions = positions.detach().cpu().numpy()
+        size = np.asarray(positions, dtype=float).reshape(-1).size
+
+        def field(name):
+            value = getattr(sim_js, name, None)
+            if value is None:
+                return np.zeros(size, dtype=float)
+            if hasattr(value, "detach"):
+                value = value.detach().cpu().numpy()
+            value = np.asarray(value, dtype=float).reshape(-1)
+            if value.size != size or not np.all(np.isfinite(value)):
+                return np.zeros(size, dtype=float)
+            return value.copy()
+
+        return field("velocities"), field("accelerations"), field("jerks")
+
     @property
     def task_root_prim_path(self) -> str:
         """Expose only the task frame root needed by reference-frame consumers.
@@ -51,11 +68,6 @@ class ControllerSetup(ComponentState):
         safety_cfg = self.task.cfg.get("planning", {}).get("execution_safety", {})
         max_stride = max(1, int(safety_cfg.get("max_waypoint_stride", 2)))
         self.ds_ratio = min(requested_stride, max_stride)
-
-    def _get_default_ignore_substring(self) -> List[str]:
-        if self.arm_spec is not None:
-            return list(self.arm_spec.default_ignore_substring)
-        return ["material", "Plane", "conveyor", "scene", "table"]
 
     def _configure_joint_indices(self, robot_file: str) -> None:
         """Resolve runtime indices from the subclass's :class:`ArmSpec`."""
@@ -154,19 +166,6 @@ class ControllerSetup(ComponentState):
             resolved_gripper_indices,
         )
 
-    def _load_robot(self, robot_file: str) -> None:
-        del robot_file
-        # Native robot configuration is constructed once by the planner
-        # factory.  The façade keeps this hook only for BaseController
-        # lifecycle compatibility; it does not duplicate that configuration.
-        self.robot_cfg = None
-
-    def _load_kin_model(self) -> None:
-        # PlannerRuntime publishes the native planner kinematics after lazy
-        # construction.  Keeping this hook inert avoids a second kinematics
-        # model with divergent robot configuration.
-        self.kin_model = None
-
     def _load_world(self, use_default: bool = True) -> None:
         del use_default
         if self.collision_scene_manager is None:
@@ -175,35 +174,6 @@ class ControllerSetup(ComponentState):
             self.reference_prim_path
         )
         return self.world_cfg
-
-    def _get_native_collision_cache(self):
-        """Override in subclasses to use different cache size (e.g. FR3 uses 1000)."""
-        if self.arm_spec is not None and self.arm_spec.collision_cache is not None:
-            return dict(self.arm_spec.collision_cache)
-        return {"cuboid": 700, "mesh": 700}
-
-    def _get_grasp_approach_linear_axis(self) -> int:
-        """Axis for grasp approach constraint (0=x, 1=y, 2=z). Override in subclasses (e.g. Lift2 uses 0)."""
-        if self.arm_spec is not None and self.arm_spec.grasp_approach_axis is not None:
-            return int(self.arm_spec.grasp_approach_axis)
-        if self.robot.cfg["ee_axis"] == "x":
-            return 0
-        elif self.robot.cfg["ee_axis"] == "y":
-            return 1
-        elif self.robot.cfg["ee_axis"] == "z":
-            return 2
-        else:
-            raise NotImplementedError
-
-    def _get_sort_path_weights(self) -> Optional[List[float]]:
-        """Optional per-joint weights for sort_by_difference_js.
-
-        Used when selecting among batch paths. None means equal weights.
-        Override in subclasses (e.g. Genie1).
-        """
-        if self.arm_spec is not None and self.arm_spec.sort_path_weights is not None:
-            return list(self.arm_spec.sort_path_weights)
-        return None
 
     @staticmethod
     def _plan_success_count(result) -> int:
@@ -290,52 +260,6 @@ class ControllerSetup(ComponentState):
                 self.lr_name,
                 self._last_command_name,
             )
-
-    def _set_native_pose_criteria(self, planner=None, criteria=None) -> None:
-        planner = planner or self.runtime.native_planner
-        if planner is None:
-            return
-        if criteria is None:
-            non_terminal = [0.0] * 6
-            if self.constrain_grasp_approach:
-                # Native axes are [x, y, z, roll, pitch, yaw].  The old
-                # approach metric held every axis except the approach axis.
-                non_terminal = [1.0] * 6
-                non_terminal[self.runtime._approach_axis()] = 0.0
-            criteria = ToolPoseCriteria(
-                terminal_pose_axes_weight_factor=[1.0] * 6,
-                non_terminal_pose_axes_weight_factor=non_terminal,
-                device_cfg=self.tensor_args,
-            )
-        planner.update_tool_pose_criteria(
-            {frame: criteria.clone() for frame in planner.tool_frames}
-        )
-
-    def update_pose_cost_metric(self, hold_vec_weight: Optional[List[float]] = None) -> None:
-        # reference: https://curobo.org/advanced_examples/3_constrained_planning.html
-        # [angular-x, angular-y, angular-z, linear-x, linear-y, linear-z]
-        # For example,
-        # when hold_vec_weight is None, the corresponding list is [0, 0, 0, 0, 0, 0],
-        # there is no cost added in any directions.
-        # When hold_vec_weight = [1, 1, 1, 0, 0, 0], the tool orientation is holed.
-        # assert hold_vec_weight is None or len(hold_vec_weight) == 6
-        if hold_vec_weight is None:
-            criteria = ToolPoseCriteria(device_cfg=self.tensor_args)
-        else:
-            if len(hold_vec_weight) != 6:
-                raise ValueError("hold_vec_weight must contain six legacy [r, r, r, p, p, p] weights")
-            # The controller's public contract is legacy [rx, ry, rz, px,
-            # py, pz]; native ToolPoseCriteria uses [px, py, pz, rx, ry, rz].
-            native_weights = [hold_vec_weight[index] for index in (3, 4, 5, 0, 1, 2)]
-            criteria = ToolPoseCriteria(
-                terminal_pose_axes_weight_factor=[1.0] * 6,
-                non_terminal_pose_axes_weight_factor=native_weights,
-                device_cfg=self.tensor_args,
-            )
-        self._pending_pose_criteria = criteria
-        self._set_native_pose_criteria(self.runtime.native_planner, criteria)
-        if self.runtime.batch_planner is not None:
-            self._set_native_pose_criteria(self.runtime.batch_planner, criteria)
 
     @staticmethod
     def _debug_norm_delta(a, b):
@@ -477,53 +401,6 @@ class ControllerSetup(ComponentState):
         except Exception as exc:  # Debug writing must never break an episode.
             print(f"[curobo-plan-debug] Failed to write plan debug: {exc}")
 
-    @staticmethod
-    def _signature_value(value: Any):
-        if value is None or isinstance(value, (str, bool, int)):
-            return value
-        if isinstance(value, numbers.Real):
-            return round(float(value), 6)
-        if isinstance(value, np.ndarray):
-            return tuple(round(float(x), 6) for x in value.reshape(-1).tolist())
-        if isinstance(value, torch.Tensor):
-            return tuple(round(float(x), 6) for x in value.detach().cpu().reshape(-1).tolist())
-        if isinstance(value, (list, tuple)):
-            return tuple(ControllerSetup._signature_value(x) for x in value)
-        return str(value)
-
-    @classmethod
-    def _make_world_update_signature(cls, world_cfg: SceneCfg):
-        objects = getattr(world_cfg, "objects", None) or []
-        signature = []
-        for obj in objects:
-            signature.append(
-                (
-                    type(obj).__name__,
-                    getattr(obj, "name", None),
-                    cls._signature_value(getattr(obj, "pose", None)),
-                    cls._signature_value(getattr(obj, "dims", None)),
-                    cls._signature_value(getattr(obj, "scale", None)),
-                    getattr(obj, "file_path", None),
-                    cls._signature_value(getattr(obj, "vertices", None)),
-                    cls._signature_value(getattr(obj, "faces", None)),
-                )
-            )
-        return tuple(signature)
-
-    def _update_world_if_changed(self, obstacles: SceneCfg) -> None:
-        signature = self._make_world_update_signature(obstacles)
-        needs_update = (
-            signature != getattr(self.runtime, "world_update_signature", None)
-            or getattr(self, "_world_cache_invalidated", False)
-        )
-        if self.runtime.native_planner is not None and needs_update:
-            # The controller runtime owns scene revisions and fans the update
-            # to the PlannerRuntime single/batch instances.
-            self.runtime.update_world(obstacles)
-            self._world_cache_invalidated = False
-        self.world_cfg = obstacles
-        self.runtime.world_update_signature = signature
-
     def update(self) -> None:
         if getattr(self, "_world_cleanup_failed", False):
             error = getattr(self, "_world_cleanup_error", None)
@@ -583,4 +460,4 @@ class ControllerSetup(ComponentState):
         self._ee_trans, self._ee_ori = self._get_ee_pose()
         self._ee_trans = self.tensor_args.to_device(self._ee_trans)
         self._ee_ori = self.tensor_args.to_device(self._ee_ori)
-        self.update_pose_cost_metric()
+        self.runtime.update_pose_cost_metric()

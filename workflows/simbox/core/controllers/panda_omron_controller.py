@@ -1,6 +1,5 @@
 """PandaOmron controller - template-based Panda arm controller."""
 
-import numpy as np
 from core.controllers.controller_registry import ArmSpec, register_controller
 from core.controllers.curobo.controller import TemplateController
 
@@ -25,8 +24,3 @@ class PandaOmronController(TemplateController):
         default_ignore_substring=("material", "Plane", "conveyor", "scene", "table", "fluid"),
         supported_arms=("left",),
     )
-
-    def get_gripper_action(self):
-        if self._gripper_state > 0.0:
-            return self._gripper_joint_position.copy()
-        return np.zeros_like(self._gripper_joint_position, dtype=float)

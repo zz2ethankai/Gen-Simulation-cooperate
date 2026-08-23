@@ -77,7 +77,7 @@ class ExecutionSupervisor:
             raise TypeError("ExecutionSupervisor accepts MotionPhaseCommand only")
         runtime = skill.skill_runtime
         if runtime is None:
-            raise RuntimeError("ExecutionSupervisor requires a composed SkillRuntimePort")
+            raise RuntimeError("ExecutionSupervisor requires a bound SkillRuntimePort")
         phase_key = (id(skill), id(command))
         replan_index = self.replan_counts.get(phase_key, 0)
         replan_limit = self._replan_limit(command)

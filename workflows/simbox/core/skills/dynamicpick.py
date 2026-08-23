@@ -47,7 +47,7 @@ class Dynamicpick(BaseSkill):
         usd_path = resolve_asset_path(self.task.asset_root, object_cfg)
         grasp_pose_path = usd_path.replace("Aligned_obj.usd", "Aligned_grasp_sparse.npy")
         sparse_grasp_poses = np.load(grasp_pose_path)
-        lr_arm = self.skill_runtime.lr_name
+        lr_arm = self.skill_runtime.arm_name
         self.T_obj_ee, self.scores = self.robot.pose_post_process_fn(
             sparse_grasp_poses, lr_arm=lr_arm, grasp_scale=self.grasp_scale, tcp_offset=self.tcp_offset
         )

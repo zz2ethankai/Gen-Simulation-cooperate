@@ -103,7 +103,7 @@ class PickPlanProbe(Pick):
         else:
             result = {
                 "feasible": False,
-                "arm": runtime.lr_name,
+                "arm": runtime.arm_name,
                 "grasp_count": 0,
                 "pregrasp_success_count": 0,
                 "grasp_success_count": 0,

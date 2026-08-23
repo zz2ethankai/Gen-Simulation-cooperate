@@ -40,7 +40,7 @@ class BaseSkill(ABC):
         runtime = self.skill_runtime
         if runtime is None:
             raise RuntimeError(
-                f"{self.__class__.__name__} requires a composed SkillRuntimePort"
+                f"{self.__class__.__name__} requires a bound SkillRuntimePort"
             )
         return runtime
 

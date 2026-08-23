@@ -2,9 +2,8 @@
 
 The parent :mod:`core.controllers` package contains the controller registry
 and robot-specific subclasses.  This package owns the shared Isaac/CuRobo
-implementation, split by responsibility so that execution, scene setup,
-planning queries, and phase handling are no longer hidden behind a collection
-of similarly named ``controller_*`` modules.
+implementation, split into setup, planning runtime, execution, and the
+Skill-facing runtime port.
 """
 
 from importlib import import_module

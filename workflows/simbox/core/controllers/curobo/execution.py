@@ -11,7 +11,14 @@ from core.controllers.curobo.phase_execution import ExecutionStatus
 from core.controllers.curobo.trajectory import execution_trajectory_tensor
 from core.planning.domain_types import CollisionPolicy, CommandStatus
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand
-from core.controllers.curobo.components import ControllerComponent
+from core.controllers.curobo.components import ComponentState
+from isaacsim.core.utils.prims import get_prim_at_path
+from isaacsim.core.utils.transformations import (
+    get_relative_transform,
+    pose_from_tf_matrix,
+    tf_matrix_from_pose,
+)
+from isaacsim.core.utils.xforms import get_world_pose
 
 LOGGER = logging.getLogger("de_logger")
 
@@ -22,7 +29,51 @@ JointState = None
 ArticulationAction = None
 
 
-class ControllerExecution(ControllerComponent):
+class ControllerExecution(ComponentState):
+    def _begin_phase_command(self, command: MotionPhaseCommand) -> bool:
+        """Reset execution bookkeeping when a new typed command starts."""
+
+        if command is self._active_phase_command:
+            return False
+        self._active_phase_command = command
+        self._phase_plan_started = False
+        self._phase_plan_finished = False
+        self._phase_bookkeeping_done = False
+        self._phase_dwell_count = 0
+        self._phase_tracking_failed = False
+        self._phase_plan_failed = False
+        self._phase_completion_logged = False
+        self._last_command_name = command.phase.value
+        self._phase_base_position, self._phase_base_orientation = self.get_armbase_pose()
+        LOGGER.info(
+            "[PhaseDebug] start robot=%s arm=%s phase=%s object=%s support=%s target=%s",
+            self.name,
+            self.lr_name,
+            command.phase.value,
+            command.active_object,
+            command.support_object,
+            None
+            if command.target_position is None
+            else np.asarray(command.target_position, dtype=float).round(5).tolist(),
+        )
+        return True
+
+    def _install_preplanned_phase_path(self, command: MotionPhaseCommand):
+        """Install a named trajectory already validated by Pick/Place."""
+
+        preplanned_path = command.params.get("preplanned_joint_path")
+        if preplanned_path is None:
+            return False
+        trajectory = self.runtime._command_path(preplanned_path)
+        self.runtime._install_command_plan(
+            trajectory,
+            target_position=command.target_position,
+            target_orientation=command.target_orientation,
+            phase_name=command.phase.value,
+            cached=True,
+        )
+        return True
+
     def _apply_gripper_action(self, action: Any) -> None:
         """Apply one of the finite gripper actions carried by a phase command."""
 
@@ -53,8 +104,8 @@ class ControllerExecution(ControllerComponent):
     def dummy_forward(self, arm_action, gripper_state, *args, **kwargs):
         """Return one direct articulation action without invoking the planner.
 
-        This is the compatibility execution boundary used by legacy
-        interpolation Skills.  The caller owns interpolation and completion;
+        This is the execution boundary used by interpolation Skills.  The
+        caller owns interpolation and completion;
         this method only applies the requested arm vector and gripper state.
         Extra positional/keyword arguments are accepted for old Skill call
         sites and intentionally ignored.
@@ -162,7 +213,7 @@ class ControllerExecution(ControllerComponent):
                     command.active_object, command.support_object, robot, arm
                 )
                 if command.params.get("preplanned_joint_path") is not None:
-                    cached_plan = self._command_path(
+                    cached_plan = self.runtime._command_path(
                         command.params["preplanned_joint_path"]
                     )
                     if command.params.get("continuous_descent", False):
@@ -246,8 +297,8 @@ class ControllerExecution(ControllerComponent):
 
             cached_path = command.params.get("preplanned_joint_path")
             if cached_path is not None:
-                trajectory = self._command_path(cached_path)
-                self._install_command_plan(
+                trajectory = self.runtime._command_path(cached_path)
+                self.runtime._install_command_plan(
                     trajectory,
                     target_position=command.target_position,
                     target_orientation=command.target_orientation,
@@ -261,16 +312,16 @@ class ControllerExecution(ControllerComponent):
                     context=command.phase.value,
                     request_metadata=request_metadata,
                 )
-                self._log_plan_result(
+                self.runtime._log_plan_result(
                     command.phase.value,
                     result,
                     target=np.asarray(command.joint_target, dtype=float),
                 )
-                if self._result_success(result):
-                    raw_plan = self._result_path(result)
-                    trajectory = self._command_path(raw_plan)
+                if self.runtime._result_success(result):
+                    raw_plan = self.runtime._result_path(result)
+                    trajectory = self.runtime._command_path(raw_plan)
                     if trajectory is not None:
-                        self._install_command_plan(
+                        self.runtime._install_command_plan(
                             trajectory,
                             target_position=command.target_position,
                             target_orientation=command.target_orientation,
@@ -363,7 +414,7 @@ class ControllerExecution(ControllerComponent):
             context="continuous place trajectory",
         )
         if len(plan_position):
-            batch_forward_kinematic = getattr(self, "_forward_kinematic_batch", None)
+            batch_forward_kinematic = getattr(self.runtime, "_forward_kinematic_batch", None)
             if not callable(batch_forward_kinematic):
                 raise RuntimeError(
                     "continuous-place validation requires the formal batched FK API"
@@ -538,7 +589,9 @@ class ControllerExecution(ControllerComponent):
         )
         plan_failed = bool(self._phase_plan_failed)
         tracking_failed = bool(self._phase_tracking_failed)
-        scene_failed = bool(getattr(self, "_world_cleanup_failed", False))
+        scene_failed = bool(
+            getattr(getattr(self, "setup", None), "_world_cleanup_failed", False)
+        )
         reason = None
         if scene_failed:
             reason = "scene_failed"
@@ -567,11 +620,6 @@ class ControllerExecution(ControllerComponent):
             plan_id=getattr(current, "plan_id", None),
             replan_allowed=bool(getattr(current, "replan_allowed", True)),
         )
-
-    def _command_status(self, command=None) -> CommandStatus:
-        """Return the finite public command-status enum."""
-
-        return self.execution_status(command).status
 
     def clear_plan_and_hold(self) -> None:
         """Stop consuming the old plan; the next action holds measured joints."""
@@ -653,28 +701,31 @@ class ControllerExecution(ControllerComponent):
                 self._phase_plan_started = True
                 active_command = getattr(self, "_active_phase_command", None)
                 if isinstance(active_command, MotionPhaseCommand):
-                    result = self._native_plan_pose(
+                    result = self.runtime.plan_pose(
                         ee_trans,
                         ee_ori,
-                        sim_js,
-                        js_names,
+                        start_state=self.runtime.arm_joint_state(sim_js).unsqueeze(0),
                         request_metadata=active_command.planning_request_metadata,
                     )
                 else:
-                    result = self._native_plan_pose(ee_trans, ee_ori, sim_js, js_names)
-                self._log_plan_result("ee_forward", result, target=ee_trans.detach().cpu().numpy())
-                if self._result_success(result):
-                    raw_plan = self._result_path(result)
-                    trajectory = self._command_path(raw_plan)
+                    result = self.runtime.plan_pose(
+                        ee_trans,
+                        ee_ori,
+                        start_state=self.runtime.arm_joint_state(sim_js).unsqueeze(0),
+                    )
+                self.runtime._log_plan_result("ee_forward", result, target=ee_trans.detach().cpu().numpy())
+                if self.runtime._result_success(result):
+                    raw_plan = self.runtime._result_path(result)
+                    trajectory = self.runtime._command_path(raw_plan)
                     if trajectory is not None:
-                        self._install_command_plan(
+                        self.runtime._install_command_plan(
                             trajectory,
                             target_position=ee_trans,
                             target_orientation=ee_ori,
                             phase_name=self._last_command_name,
                             cached=False,
                         )
-                        self._write_curobo_plan_debug(
+                        getattr(self.runtime.setup, "_write_curobo_plan_debug")(
                             result=result,
                             sim_js=sim_js,
                             js_names=js_names,
@@ -773,10 +824,11 @@ class ControllerExecution(ControllerComponent):
 
     def get_ee_pose(self):
         sim_js = self.robot.get_joints_state()
-        q_state = self._arm_joint_state(sim_js)
-        state = self.kin_model.compute_kinematics(q_state.unsqueeze(1))
-        ee_pose = state.tool_poses.get_link_pose(self.kin_model.tool_frames[0])
-        return ee_pose.position[0].cpu().numpy(), ee_pose.quaternion[0].cpu().numpy()
+        q_state = self.runtime.arm_joint_state(sim_js)
+        return self.runtime.compute_fk(
+            q_state.position,
+            joint_names=self.runtime._planner_joint_names(),
+        )
 
     def get_armbase_pose(self):
         from isaacsim.core.utils.prims import get_prim_at_path
@@ -790,84 +842,65 @@ class ControllerExecution(ControllerComponent):
         )
         return pose_from_tf_matrix(armbase_pose)
 
-    def forward_kinematic(self, q_state: np.ndarray):
-        joint_state_type = JointState
-        if joint_state_type is None:
-            from curobo.types import JointState as joint_state_type
+    def get_pick_armbase_transform(self):
+        """Return the current world transform of this controller's arm base."""
 
-        q_state = self.tensor_args.to_device(q_state.reshape(1, -1))
-        state = joint_state_type.from_position(q_state, joint_names=self._planner_joint_names())
-        out = self.kin_model.compute_kinematics(state.unsqueeze(1))
-        ee_pose = out.tool_poses.get_link_pose(self.kin_model.tool_frames[0])
-        return ee_pose.position[0].cpu().numpy(), ee_pose.quaternion[0].cpu().numpy()
+        armbase_tf_getter = getattr(self.robot, "get_armbase_world_transform", None)
+        if callable(armbase_tf_getter):
+            return armbase_tf_getter()
 
-    def _compute_fk_named(self, q_state, joint_names):
-        """Compute FK after an explicit named-joint reorder."""
+        reference_prim_path = str(getattr(self, "reference_prim_path", "")).strip()
+        if reference_prim_path:
+            reference_prim = get_prim_at_path(reference_prim_path)
+            if reference_prim.IsValid():
+                try:
+                    reference_t, reference_q = get_world_pose(reference_prim_path)
+                    world_armbase = tf_matrix_from_pose(reference_t, reference_q)
+                    if hasattr(self.robot, "get_mobile_base_pose"):
+                        try:
+                            mobile_base_t, mobile_base_q = self.robot.get_mobile_base_pose()
+                            world_mobile = tf_matrix_from_pose(mobile_base_t, mobile_base_q)
+                            self._pick_cached_mobile_to_armbase_tf = (
+                                np.linalg.inv(world_mobile) @ world_armbase
+                            )
+                        except Exception:
+                            pass
+                    return world_armbase
+                except Exception:
+                    pass
 
-        joint_state_type = JointState
-        if joint_state_type is None:
-            from curobo.types import JointState as joint_state_type
-
-        names = list(joint_names)
-        if not names or len(set(names)) != len(names):
-            raise ValueError("compute_fk joint_names must be non-empty and unique")
-        positions = self.tensor_args.to_device(q_state)
-        if positions.ndim != 1:
-            positions = positions.reshape(-1)
-        state = joint_state_type.from_position(positions, joint_names=names)
-        state = self._planner_state(state)
-        out = self.kin_model.compute_kinematics(state.unsqueeze(1))
-        ee_pose = out.tool_poses.get_link_pose(self.kin_model.tool_frames[0])
-        return ee_pose.position[0].cpu().numpy(), ee_pose.quaternion[0].cpu().numpy()
-
-    def _forward_kinematic_batch(self, joint_positions, joint_names=None):
-        """Compute tool positions for a trajectory in one native v2 FK call."""
-
-        joint_state_type = JointState
-        if joint_state_type is None:
-            from curobo.types import JointState as joint_state_type
-
-        joint_positions = self.tensor_args.to_device(joint_positions)
-        if joint_positions.ndim != 2:
-            raise ValueError(
-                "batched Cartesian FK requires a [time, dof] position tensor, "
-                f"got shape {tuple(joint_positions.shape)}"
-            )
-        planner_names = self._planner_joint_names()
-        source_names = planner_names if joint_names is None else list(joint_names)
-        if len(source_names) != joint_positions.shape[-1]:
-            raise ValueError(
-                "batched Cartesian FK joint_names do not match position DOF: "
-                f"position_shape={tuple(joint_positions.shape)}, "
-                f"joint_names={source_names!r}"
-            )
-        if len(set(source_names)) != len(source_names):
-            raise ValueError(
-                f"batched Cartesian FK joint_names must be unique: {source_names!r}"
-            )
-        if set(source_names) != set(planner_names):
-            raise ValueError(
-                "batched Cartesian FK joint contract does not match the native "
-                f"planner: source={source_names!r}, planner={planner_names!r}"
-            )
-        if source_names != planner_names:
-            reorder = [source_names.index(name) for name in planner_names]
-            joint_positions = joint_positions[..., reorder].contiguous()
-        state = joint_state_type.from_position(
-            joint_positions.contiguous(),
-            joint_names=planner_names,
+        configured_translation = np.asarray(
+            self._pick_configured_mobile_to_armbase_translation, dtype=float
         )
-        # Cartesian validation is read-only.  Avoid retaining an autograd graph
-        # for every candidate path while keeping the native v2 FK kernel and
-        # its single device-to-host transfer intact.
-        with torch.inference_mode():
-            out = self.kin_model.compute_kinematics(state)
-        ee_pose = out.tool_poses.get_link_pose(self.kin_model.tool_frames[0])
-        # Transfer the complete batch only after FK has finished.  The
-        # Cartesian checks use position only, matching forward_kinematic's
-        # existing callers while avoiding one device synchronization per
-        # waypoint.
-        return ee_pose.position.detach().cpu().numpy()
+        if configured_translation.shape == (3,):
+            if hasattr(self.robot, "get_mobile_base_pose"):
+                mobile_base_t, mobile_base_q = self.robot.get_mobile_base_pose()
+            else:
+                mobile_base_t, mobile_base_q = self.robot.get_world_pose()
+            world_mobile = tf_matrix_from_pose(mobile_base_t, mobile_base_q)
+            mobile_to_armbase = tf_matrix_from_pose(
+                configured_translation,
+                self._pick_configured_mobile_to_armbase_orientation,
+            )
+            self._pick_cached_mobile_to_armbase_tf = mobile_to_armbase
+            return world_mobile @ mobile_to_armbase
+
+        reference_prim = get_prim_at_path(self.reference_prim_path)
+        task_prim = get_prim_at_path(self.task_root_prim_path)
+        raw_task_armbase = get_relative_transform(reference_prim, task_prim)
+        mobile_base_prim_path = str(self._pick_mobile_base_prim_path or "").strip()
+        if not mobile_base_prim_path:
+            return raw_task_armbase
+
+        mobile_base_prim = get_prim_at_path(mobile_base_prim_path)
+        if not mobile_base_prim.IsValid():
+            return raw_task_armbase
+        task_mobile = get_relative_transform(mobile_base_prim, task_prim)
+        if self._pick_cached_mobile_to_armbase_tf is None:
+            self._pick_cached_mobile_to_armbase_tf = (
+                np.linalg.inv(task_mobile) @ raw_task_armbase
+            )
+        return task_mobile @ self._pick_cached_mobile_to_armbase_tf
 
     def close_gripper(self):
         self._gripper_state = -1.0

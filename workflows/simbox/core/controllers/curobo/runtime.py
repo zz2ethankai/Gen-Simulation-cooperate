@@ -17,19 +17,18 @@ import numpy as np
 
 from core.planning.attachment_runtime import AttachmentRuntime
 from core.controllers.curobo.phase_execution import PhaseExecutor
-from core.controllers.curobo.phase_execution import ExecutionStatus
 from core.planning.domain_types import (
     AttachmentSpec,
     BatchPlanResult,
     BatchPosePlanRequest,
     CollisionOptions,
     CollisionPolicy,
-    CommandStatus,
     CspacePlanRequest,
     PlanResult,
     PosePlanRequest,
     PlanningProfile,
     PlannerRuntimeProfile,
+    JointTrajectory,
 )
 from core.planning.native_scene_adapter import NativeSceneAdapter
 from core.planning.planner_runtime import PlannerRuntime
@@ -139,10 +138,6 @@ class _NativeAttachmentAdapter:
         return self._planner().attachment_manager.detach()
 
 
-class PlanningSceneRuntime(SceneRuntime):
-    """Controller-facing scene state with no simulator ownership."""
-
-
 @dataclass
 class RobotPort:
     """Narrow robot/state inputs consumed by :class:`MotionPlannerRuntime`."""
@@ -166,16 +161,6 @@ class RobotPort:
     kin_model: Any = None
 
 
-@dataclass(frozen=True)
-class ExecutionPort:
-    """Execution callbacks kept separate from planner/runtime state."""
-
-    forward_phase_command: Callable[[Any], Any]
-    dummy_forward: Callable[..., Any]
-    execution_status: Callable[[Any], ExecutionStatus]
-    hold_action: Callable[[], Any]
-
-
 class MotionPlannerRuntime:
     """Own planner construction and simulator-independent native operations."""
 
@@ -185,15 +170,17 @@ class MotionPlannerRuntime:
         self,
         planner_build_config: PlannerBuildConfig,
         robot_port: RobotPort,
-        execution_port: ExecutionPort,
         *,
         world: Any = None,
         phase_executor: PhaseExecutor | None = None,
+        execution_state: Any = None,
+        setup: Any = None,
     ) -> None:
         self.planner_build_config = planner_build_config
         self.robot_port = robot_port
-        self.execution_port = execution_port
-        self.scene_runtime = PlanningSceneRuntime(world)
+        self.execution_state = execution_state
+        self.setup = setup
+        self.scene_runtime = SceneRuntime(world)
         self.phase_executor = phase_executor or PhaseExecutor()
         self._pending_pose_criteria = None
         self.world_update_signature = None
@@ -202,6 +189,7 @@ class MotionPlannerRuntime:
             manager=_NativeAttachmentAdapter(self), strict=False
         )
         self.batch_attachment_runtime: AttachmentRuntime | None = None
+        self._require_batch_scene_adapter: Callable[[], Any] | None = None
         # Keep the controller-local geometry adapter on the same revision
         # fanout as every collision-scene adapter.  It is used by attachment
         # fitting and diagnostics, so leaving it outside PlannerRuntime would
@@ -431,6 +419,289 @@ class MotionPlannerRuntime:
         update = self.scene_runtime.update_poses(poses, force=force)
         return update
 
+    def update_pose_cost_metric(self, hold_vec_weight=None) -> None:
+        """Apply the active pose criterion to single and materialized batch planners."""
+
+        from core.planning.native_bridge import ToolPoseCriteria
+
+        if hold_vec_weight is None:
+            criteria = ToolPoseCriteria(device_cfg=self.robot_port.tensor_args)
+        else:
+            if len(hold_vec_weight) != 6:
+                raise ValueError("hold_vec_weight must contain six [r, r, r, p, p, p] weights")
+            native_weights = [hold_vec_weight[index] for index in (3, 4, 5, 0, 1, 2)]
+            criteria = ToolPoseCriteria(
+                terminal_pose_axes_weight_factor=[1.0] * 6,
+                non_terminal_pose_axes_weight_factor=native_weights,
+                device_cfg=self.robot_port.tensor_args,
+            )
+        self._pending_pose_criteria = criteria
+        self._set_pose_criteria(self.native_planner, criteria)
+        if self.batch_planner is not None:
+            self._set_pose_criteria(self.batch_planner, criteria)
+
+    def check_current_start_state(self):
+        """Validate the live articulation arm state against native joint limits."""
+
+        import torch
+
+        start_state = self.arm_joint_state(self.robot_port.robot.get_joints_state())
+        limits = self.native_planner.kinematics.get_joint_limits()
+        position = start_state.position
+        valid = bool(
+            torch.isfinite(position).all().item()
+            and (position >= limits.position_lower_limits).all().item()
+            and (position <= limits.position_upper_limits).all().item()
+        )
+        return valid, "valid" if valid else "joint_limit_or_non_finite"
+
+    # ------------------------------------------------------------------
+    # State conversion and candidate/query operations
+    # ------------------------------------------------------------------
+    @property
+    def name(self) -> str:
+        return self.robot_port.name
+
+    @property
+    def arm_name(self) -> str:
+        return self.robot_port.lr_name
+
+    @property
+    def raw_joint_names(self) -> tuple[str, ...]:
+        return tuple(self.robot_port.raw_js_names)
+
+    @property
+    def arm_indices(self):
+        return self.robot_port.arm_indices
+
+    @property
+    def tensor_args(self):
+        return self.robot_port.tensor_args
+
+    def _planner_joint_names(self) -> list[str]:
+        return list(self.native_planner.joint_names)
+
+    def _planner_state(self, state):
+        names = getattr(state, "joint_names", None)
+        if names is None:
+            raise ValueError("native CuRobo planning states require explicit joint_names")
+        names = list(names)
+        planner_names = self._planner_joint_names()
+        if set(planner_names) - set(names):
+            raise ValueError(
+                "planning state does not contain all native planner joints: "
+                f"required={planner_names}, got={names}"
+            )
+        return state.reorder(planner_names)
+
+    @staticmethod
+    def _result_success(result) -> bool:
+        if isinstance(result, BatchPlanResult):
+            return result.is_success
+        if isinstance(result, PlanResult):
+            return result.success
+        raise TypeError(
+            "controller planning queries require a normalized PlanResult or "
+            "BatchPlanResult"
+        )
+
+    @staticmethod
+    def _result_path(result, batch_index=0):
+        if isinstance(result, BatchPlanResult):
+            paths = result.trajectories
+        elif isinstance(result, PlanResult):
+            paths = (result.trajectory,)
+        else:
+            raise TypeError(
+                "controller planning queries require a normalized PlanResult or "
+                "BatchPlanResult"
+            )
+        if batch_index >= len(paths) or paths[batch_index] is None:
+            return None
+        return paths[batch_index]
+
+    def _command_path(self, path):
+        """Normalize one native/typed path for phase execution and Skills."""
+
+        if path is None:
+            return None
+        names = list(getattr(path, "joint_names", ()) or ())
+        trajectory = (
+            path
+            if isinstance(path, JointTrajectory)
+            else JointTrajectory.from_native(path, joint_names=names)
+        )
+        if set(self.raw_joint_names).issubset(trajectory.joint_names):
+            return trajectory.reorder(self.raw_joint_names)
+        active = self.joint_state_from_trajectory(trajectory)
+        full_native = self.native_planner.kinematics.get_full_js(active)
+        full_names = list(getattr(full_native, "joint_names", ()) or ())
+        full = JointTrajectory.from_native(
+            full_native,
+            joint_names=full_names or self._planner_joint_names(),
+        )
+        if not set(self.raw_joint_names).issubset(full.joint_names):
+            raise ValueError(
+                "native planner result cannot be mapped to controller arm names: "
+                f"result={full.joint_names}, arm={self.raw_joint_names}"
+            )
+        return full.reorder(self.raw_joint_names)
+
+    def _install_command_plan(
+        self,
+        trajectory,
+        *,
+        target_position=None,
+        target_orientation=None,
+        phase_name: str = "unknown",
+        cached: bool,
+    ):
+        """Install one normalized trajectory for ControllerExecution."""
+
+        if trajectory is None or len(trajectory) == 0:
+            raise ValueError(f"{phase_name} received an empty native-v2 path")
+        if self.execution_state is None:
+            raise RuntimeError("runtime execution state is not bound")
+        self.execution_state.idx_list = list(range(len(self.raw_joint_names)))
+        self.phase_executor.install(trajectory)
+        self.execution_state.phase_plan_started = True
+        if target_position is not None:
+            self.execution_state.ee_trans = self.tensor_args.to_device(target_position)
+        if target_orientation is not None:
+            self.execution_state.ee_ori = self.tensor_args.to_device(target_orientation)
+        setup = self.setup
+        if setup is not None:
+            visualize = getattr(setup, "_visualize_selected_plan", None)
+            if callable(visualize):
+                visualize()
+        LOGGER.info(
+            "[PhaseDebug] selected-plan robot=%s arm=%s phase=%s waypoints=%d stride=%d cached=%s",
+            self.name,
+            self.arm_name,
+            phase_name,
+            len(self.phase_executor.current),
+            int(getattr(self.execution_state, "ds_ratio", 1) or 1),
+            cached,
+        )
+        return trajectory
+
+    def _refresh_reference_world_for_planning(self):
+        setup = self.setup
+        refresh = getattr(setup, "_refresh_reference_world_for_planning", None)
+        if callable(refresh):
+            return refresh()
+        return None
+
+    def _log_plan_result(self, context: str, result, target=None):
+        setup = self.setup
+        logger = getattr(setup, "_log_plan_result", None)
+        if callable(logger):
+            return logger(context, result, target=target)
+        return None
+
+    def plan_pose_result(
+        self,
+        ee_translation,
+        ee_orientation,
+        *,
+        request_metadata=None,
+    ):
+        result = self.plan_pose(ee_translation, ee_orientation, request_metadata=request_metadata)
+        self._log_plan_result("plan_pose", result, target=ee_translation)
+        return result
+
+    def plan_pose_from_path(
+        self,
+        ee_translation,
+        ee_orientation,
+        start_path,
+        *,
+        request_metadata=None,
+    ):
+        start_state = self.joint_state_from_path_endpoint(start_path)
+        return self.plan_pose(
+            ee_translation,
+            ee_orientation,
+            start_state=start_state,
+            request_metadata=request_metadata,
+        )
+
+    def plan_pose_from_joint_positions(
+        self,
+        ee_translation,
+        ee_orientation,
+        *,
+        start_arm_positions=None,
+        request_metadata=None,
+    ):
+        positions = np.asarray(
+            self.robot_port.robot.get_joints_state().positions,
+            dtype=float,
+        ).copy()
+        if start_arm_positions is not None:
+            start_arm_positions = np.asarray(start_arm_positions, dtype=float).reshape(-1)
+            if len(start_arm_positions) != len(self.arm_indices):
+                raise ValueError(
+                    "start_arm_positions must match the controller arm joint count: "
+                    f"got {len(start_arm_positions)}, expected {len(self.arm_indices)}"
+                )
+            positions[self.arm_indices] = start_arm_positions
+        sim_state = type("JointStateSnapshot", (), {"positions": positions})()
+        start_state = self.arm_joint_state(sim_state)
+        result = self.plan_pose(
+            ee_translation,
+            ee_orientation,
+            start_state=start_state,
+            request_metadata=request_metadata,
+        )
+        if not self._result_success(result):
+            return False, None, result
+        trajectory = self._command_path(self._result_path(result))
+        if trajectory is None or len(trajectory) == 0:
+            return False, None, result
+        endpoint = np.asarray(trajectory.positions[-1], dtype=float)
+        return True, endpoint, result
+
+    def measure_cartesian_path(self, path, start_position, goal_position):
+        """Return path/direct length ratio and maximum straight-line deviation."""
+
+        positions, path_names = normalize_named_trajectory(
+            getattr(path, "position", getattr(path, "positions", None)),
+            getattr(path, "joint_names", None),
+            self.tensor_args,
+        )
+        active_names = list(self.raw_joint_names)
+        if tuple(path_names) != tuple(active_names):
+            reorder = getattr(path, "reorder", None)
+            if not callable(reorder):
+                raise ValueError(
+                    "Cartesian path joint order differs from active arm names "
+                    "but the path cannot reorder by explicit names"
+                )
+            path = reorder(active_names)
+            positions, path_names = normalize_named_trajectory(
+                getattr(path, "position", getattr(path, "positions", None)),
+                getattr(path, "joint_names", None),
+                self.tensor_args,
+            )
+        if len(positions) == 0:
+            return float("inf"), float("inf")
+        fk_positions = np.asarray(
+            self._forward_kinematic_batch(positions, joint_names=active_names),
+            dtype=float,
+        )
+        direct_vector = np.asarray(goal_position, dtype=float) - np.asarray(start_position, dtype=float)
+        direct_length = float(np.linalg.norm(direct_vector))
+        path_length = float(np.sum(np.linalg.norm(np.diff(fk_positions, axis=0), axis=1)))
+        if direct_length <= 1e-9:
+            return (1.0 if path_length <= 1e-9 else float("inf")), path_length
+        direction = direct_vector / direct_length
+        relative = fk_positions - np.asarray(start_position, dtype=float)
+        projection = np.clip(relative @ direction, 0.0, direct_length)
+        closest = np.asarray(start_position, dtype=float) + projection[:, None] * direction
+        deviation = float(np.max(np.linalg.norm(fk_positions - closest, axis=1)))
+        return path_length / direct_length, deviation
+
     def _request_common_kwargs(
         self,
         request_metadata: Mapping[str, Any] | None,
@@ -571,8 +842,11 @@ class MotionPlannerRuntime:
         request_metadata: Mapping[str, Any] | None = None,
     ) -> PlanResult:
         del context
+        self._refresh_reference_world_for_planning()
         if start_state is None:
             start_state = self.arm_joint_state(self.robot_port.robot.get_joints_state())
+        if getattr(getattr(start_state, "position", None), "ndim", 1) == 1:
+            start_state = start_state.unsqueeze(0)
         goal = self._goal_tool_pose(position, orientation)
         common = self._request_common_kwargs(
             request_metadata,
@@ -600,11 +874,16 @@ class MotionPlannerRuntime:
         request_metadata: Mapping[str, Any] | None = None,
     ) -> PlanResult:
         del context
+        self._refresh_reference_world_for_planning()
         batch = self.ensure_batch_planner()
         if start_paths is not None:
             start_state = self.batch_start_state_from_paths(start_paths)
         elif start_state is None:
             start_state = self.arm_joint_state(self.robot_port.robot.get_joints_state(), repeat=len(positions))
+        elif getattr(getattr(start_state, "position", None), "ndim", 1) == 1:
+            start_state = start_state.unsqueeze(0)
+            if len(positions) > 1:
+                start_state = start_state.repeat((len(positions), 1))
         goals = self._goal_tool_pose(positions, orientations, batch_size=len(positions))
         common = self._request_common_kwargs(
             request_metadata,
@@ -788,6 +1067,7 @@ class MotionPlannerRuntime:
         from curobo.types import JointState
 
         del context
+        self._refresh_reference_world_for_planning()
         goal = JointState.from_position(
             self.robot_port.tensor_args.to_device(goal_positions),
             joint_names=self.planner_names,
@@ -812,12 +1092,41 @@ class MotionPlannerRuntime:
     def compute_fk(self, joint_positions, *, joint_names=None):
         from curobo.types import JointState
 
-        names = list(joint_names or self.planner_names)
+        names = list(self.planner_names if joint_names is None else joint_names)
         state = JointState.from_position(self.robot_port.tensor_args.to_device(joint_positions), joint_names=names)
         state = state.reorder(self.planner_names)
         out = self.native_planner.compute_kinematics(state)
         pose = out.tool_poses.get_link_pose(self.native_planner.tool_frames[0])
         return pose.position.detach().cpu().numpy(), pose.quaternion.detach().cpu().numpy()
+
+    def _forward_kinematic_batch(self, joint_positions, joint_names=None):
+        """Compute tool positions for a named trajectory in one FK call."""
+
+        import torch
+        from curobo.types import JointState
+
+        values = self.tensor_args.to_device(joint_positions)
+        if values.ndim != 2:
+            raise ValueError(
+                "batched Cartesian FK requires a [time, dof] position tensor, "
+                f"got shape {tuple(values.shape)}"
+            )
+        planner_names = self._planner_joint_names()
+        source_names = planner_names if joint_names is None else list(joint_names)
+        if len(source_names) != values.shape[-1] or len(set(source_names)) != len(source_names):
+            raise ValueError("batched Cartesian FK joint_names do not match position DOF")
+        if set(source_names) != set(planner_names):
+            raise ValueError(
+                "batched Cartesian FK joint contract does not match the native planner"
+            )
+        if source_names != planner_names:
+            reorder = [source_names.index(name) for name in planner_names]
+            values = values[..., reorder].contiguous()
+        state = JointState.from_position(values.contiguous(), joint_names=planner_names)
+        with torch.inference_mode():
+            out = self.native_planner.compute_kinematics(state)
+        pose = out.tool_poses.get_link_pose(self.native_planner.tool_frames[0])
+        return pose.position.detach().cpu().numpy()
 
     def arm_joint_state(self, sim_state, *, repeat=1):
         from curobo.types import JointState
@@ -911,6 +1220,100 @@ class MotionPlannerRuntime:
         )
         return paths
 
+    def attach_collision_object(
+        self,
+        obj_prim_paths,
+        link_name="attached_object",
+        world_objects_pose_offset=None,
+    ):
+        """Attach exact scene colliders to the execution planner."""
+
+        paths = [str(path).strip() for path in obj_prim_paths]
+        if not paths or any(not path for path in paths):
+            raise ValueError("attachment requires non-empty exact collider paths")
+        self.native_scene_adapter.require_obstacles(paths)
+        meshes, attachment_offset = self._attachment_geometry(paths)
+        if world_objects_pose_offset is not None:
+            attachment_offset = world_objects_pose_offset
+        joint_state = self.arm_joint_state(self.robot_port.robot.get_joints_state())
+        self.attach_object(
+            AttachmentSpec(
+                name="|".join(paths),
+                state=joint_state,
+                meshes=meshes,
+                link_name=link_name,
+                pose_offset=attachment_offset,
+                disable_obstacle_names=tuple(paths),
+            )
+        )
+        if self.batch_attachment_runtime is not None:
+            self.batch_attachment_runtime.detach()
+        return True
+
+    def sync_native_batch_attachment(
+        self,
+        link_name="attached_object",
+        world_objects_pose_offset=None,
+    ) -> bool:
+        """Synchronize the held object with the candidate batch planner."""
+
+        if not self.robot_port.batch_capability:
+            return False
+        self.ensure_batch_planner()
+        require_adapter = self._require_batch_scene_adapter
+        if not callable(require_adapter):
+            raise RuntimeError(
+                "native batch attachment requires the collision-scene "
+                "manager's strict target-batch adapter"
+            )
+        batch_adapter = require_adapter()
+        if batch_adapter is None or not callable(
+            getattr(batch_adapter, "require_obstacles", None)
+        ):
+            raise RuntimeError(
+                "collision-scene manager did not provide a strict target-batch "
+                "scene adapter"
+            )
+        paths = list(self.attachment_runtime.attached_obstacle_names)
+        if not paths:
+            raise RuntimeError(
+                "cannot synchronize native batch attachment without an attached object"
+            )
+        batch_adapter.require_obstacles(paths)
+        batch_attachment_runtime = self.batch_attachment_runtime
+        if batch_attachment_runtime is None:
+            raise RuntimeError("batch attachment runtime was not initialized")
+        if list(batch_attachment_runtime.attached_obstacle_names) == paths:
+            return True
+
+        meshes, attachment_offset = self._attachment_geometry(paths)
+        if world_objects_pose_offset is not None:
+            attachment_offset = world_objects_pose_offset
+        batch_attachment_runtime.attach(
+            AttachmentSpec(
+                name="|".join(paths),
+                state=self.arm_joint_state(self.robot_port.robot.get_joints_state()),
+                meshes=meshes,
+                link_name=link_name,
+                pose_offset=attachment_offset,
+                disable_obstacle_names=tuple(paths),
+            )
+        )
+        return True
+
+    def detach_attachment(self):
+        """Detach the active object from execution and candidate planners."""
+
+        self.detach_object()
+        if self.batch_attachment_runtime is not None:
+            self.batch_attachment_runtime.detach()
+
+    def has_attached_collision_spheres(self, link_name="attached_object") -> bool:
+        spheres = self.native_planner.kinematics.config.kinematics_config.get_link_spheres(
+            link_name
+        )
+        return bool(np.any(spheres[:, 3].detach().cpu().numpy() > 0.0))
+
     def _attached_sphere_count(self, link_name, object_count, *, planner=None):
         planner = planner or self.native_planner
         total = planner.kinematics.config.kinematics_config.get_number_of_spheres(
@@ -986,29 +1389,6 @@ class MotionPlannerRuntime:
             )
         ], anchor_pose
 
-    def execute(self, command):
-        return self.execution_port.forward_phase_command(command)
-
-    def dummy_forward(self, arm_action, gripper_state, *args, **kwargs):
-        """Forward one legacy direct joint action to the articulation owner."""
-
-        return self.execution_port.dummy_forward(
-            arm_action, gripper_state, *args, **kwargs
-        )
-
-    def execution_status(self, command=None) -> ExecutionStatus:
-        """Expose detailed execution state without leaking planner storage."""
-
-        return self.execution_port.execution_status(command)
-
-    def command_status(self, command=None) -> CommandStatus:
-        """Expose only the finite public command-status enum."""
-
-        return self.execution_status(command).status
-
-    def hold(self):
-        return self.execution_port.hold_action()
-
     def attach_object(self, spec: AttachmentSpec):
         return self.attachment_runtime.attach(spec)
 
@@ -1048,8 +1428,6 @@ class MotionPlannerRuntime:
 
 
 __all__ = [
-    "ExecutionPort",
     "MotionPlannerRuntime",
-    "PlanningSceneRuntime",
     "RobotPort",
 ]

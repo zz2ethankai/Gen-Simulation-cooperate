@@ -43,7 +43,7 @@ class Manualpick(BaseSkill):
         )
         sparse_grasp_poses = np.load(grasp_pose_path)
         grasp_scale = self.skill_cfg.get("grasp_scale", 1)
-        lr_arm = self.skill_runtime.lr_name
+        lr_arm = self.skill_runtime.arm_name
         self.T_obj_ee, self.scores = self.robot.pose_post_process_fn(
             sparse_grasp_poses, lr_arm=lr_arm, grasp_scale=grasp_scale
         )
