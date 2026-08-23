@@ -101,17 +101,14 @@ class ControllerExecution(ComponentState):
         else:  # MotionPhaseCommand validates this; keep the execution guard too.
             raise ValueError("direct gripper_state must be exactly 1.0 or -1.0")
 
-    def dummy_forward(self, arm_action, gripper_state, *args, **kwargs):
+    def dummy_forward(self, arm_action, gripper_state):
         """Return one direct articulation action without invoking the planner.
 
         This is the execution boundary used by interpolation Skills.  The
-        caller owns interpolation and completion;
-        this method only applies the requested arm vector and gripper state.
-        Extra positional/keyword arguments are accepted for old Skill call
-        sites and intentionally ignored.
+        caller owns interpolation and completion; this method only applies the
+        requested arm vector and gripper state.
         """
 
-        del args, kwargs
         arm_action = np.asarray(arm_action, dtype=float).copy()
         clear = getattr(self.phase_executor, "clear", None)
         if callable(clear):
@@ -164,6 +161,7 @@ class ControllerExecution(ComponentState):
             self._apply_gripper_state(command.gripper_state)
             self._last_command_name = command.phase.value
             self._last_arm_action = np.asarray(direct_joint_action, dtype=float).copy()
+            self._last_commanded_arm_position = self._last_arm_action.copy()
             return self._make_action(
                 self._last_arm_action,
                 self.get_gripper_action(),
@@ -414,12 +412,12 @@ class ControllerExecution(ComponentState):
             context="continuous place trajectory",
         )
         if len(plan_position):
-            batch_forward_kinematic = getattr(self.runtime, "_forward_kinematic_batch", None)
-            if not callable(batch_forward_kinematic):
+            batch_fk = getattr(self.runtime, "_compute_cartesian_fk_batch", None)
+            if not callable(batch_fk):
                 raise RuntimeError(
                     "continuous-place validation requires the formal batched FK API"
                 )
-            positions_from_batch = batch_forward_kinematic(
+            positions_from_batch = batch_fk(
                 plan_position, joint_names=list(plan_joint_names)
             )
             positions = np.asarray(positions_from_batch, dtype=float)
@@ -619,6 +617,22 @@ class ControllerExecution(ComponentState):
             reason=reason,
             plan_id=getattr(current, "plan_id", None),
             replan_allowed=bool(getattr(current, "replan_allowed", True)),
+            active=bool(self._active_phase_command is not None and active),
+            last_commanded_arm_position=(
+                None
+                if self._last_commanded_arm_position is None
+                else np.asarray(self._last_commanded_arm_position, dtype=float).copy()
+            ),
+            phase_base_position=(
+                None
+                if self._phase_base_position is None
+                else np.asarray(self._phase_base_position, dtype=float).copy()
+            ),
+            phase_base_orientation=(
+                None
+                if self._phase_base_orientation is None
+                else np.asarray(self._phase_base_orientation, dtype=float).copy()
+            ),
         )
 
     def clear_plan_and_hold(self) -> None:

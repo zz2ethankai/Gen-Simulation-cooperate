@@ -26,7 +26,7 @@ class Heuristic_Skill(BaseSkill):
         self.task = task
         self.skill_cfg = cfg
 
-        self.lr_hand = "right" if "right" in self.skill_runtime.robot_file else "left"
+        self.lr_hand = self.skill_runtime.arm_name
         if self.lr_hand == "left":
             self._joint_indices = self.robot.left_joint_indices
             self._joint_home = self.robot.left_joint_home
@@ -98,34 +98,45 @@ class Heuristic_Skill(BaseSkill):
     def _build_joint_traj(self, curr_joints, goal_joints, p_base_ee_cur, q_base_ee_cur):
         """Build typed direct joint-space interpolation commands.
 
-        Home deliberately owns this path.  It sends one execution-only typed
-        command per interpolation point; no EE target or Physics-schema
-        planner request is created.  The final point is exactly the configured
-        home posture.
+        Home deliberately owns its execution-only path. Other heuristic modes
+        retain planner-backed joint targets so a direct action cannot silently
+        bypass the Physics-schema safety path.
         """
 
         manip_list = []
         for k in range(self.move_steps):
             alpha = float(k + 1) / float(self.move_steps)
             arm_action = goal_joints * alpha + curr_joints * (1.0 - alpha)
-            cmd = self.joint_command(
-                arm_action,
-                gripper_state=self._gripper_state,
-                phase=MotionPhase.CARRY_HOME,
-                direct=True,
-                replan_allowed=False,
-            )
+            if self.mode == "home":
+                cmd = self.joint_command(
+                    arm_action,
+                    gripper_state=self._gripper_state,
+                    phase=MotionPhase.CARRY_HOME,
+                    direct=True,
+                    replan_allowed=False,
+                )
+            else:
+                cmd = self.joint_command(
+                    arm_action,
+                    gripper_action=(
+                        "close_gripper"
+                        if float(self._gripper_state) < 0.0
+                        else "open_gripper"
+                    ),
+                    phase=MotionPhase.CARRY_HOME,
+                    replan_allowed=False,
+                )
             manip_list.append(cmd)
         return manip_list
 
     def simple_generate_manip_cmds(self):
-        """Generate the legacy joint interpolation for heuristic moves.
+        """Generate typed joint interpolation commands for heuristic moves.
 
         ``mode: home`` is intentionally execution-only.  It must not inspect
         attachments, contacts, or call a collision-aware planner; each
-        command is forwarded directly to the controller.  The other legacy
-        joint modes retain their existing behavior, while ``rel_ee`` still
-        uses the runtime planner only to solve its requested EE target.
+        command is forwarded directly to execution. The other joint modes use
+        c-space planning, while ``rel_ee`` also uses the runtime planner to
+        solve its requested EE target.
         """
 
         self.manip_list = []

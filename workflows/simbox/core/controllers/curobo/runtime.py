@@ -371,7 +371,7 @@ class MotionPlannerRuntime:
             return int(axis)
         return {"x": 0, "y": 1, "z": 2}[self.robot_port.robot.cfg["ee_axis"]]
 
-    def _goal_tool_pose(self, ee_translation, ee_orientation, batch_size=1):
+    def _make_tool_goal(self, ee_translation, ee_orientation, batch_size=1):
         from curobo.types import GoalToolPose
 
         position = self.robot_port.tensor_args.to_device(ee_translation)
@@ -501,7 +501,7 @@ class MotionPlannerRuntime:
         if isinstance(result, PlanResult):
             return result.success
         raise TypeError(
-            "controller planning queries require a normalized PlanResult or "
+            "native planning requires a normalized PlanResult or "
             "BatchPlanResult"
         )
 
@@ -513,7 +513,7 @@ class MotionPlannerRuntime:
             paths = (result.trajectory,)
         else:
             raise TypeError(
-                "controller planning queries require a normalized PlanResult or "
+            "native planning requires a normalized PlanResult or "
                 "BatchPlanResult"
             )
         if batch_index >= len(paths) or paths[batch_index] is None:
@@ -580,7 +580,7 @@ class MotionPlannerRuntime:
             self.arm_name,
             phase_name,
             len(self.phase_executor.current),
-            int(getattr(self.execution_state, "ds_ratio", 1) or 1),
+            int(getattr(setup, "ds_ratio", 1) or 1),
             cached,
         )
         return trajectory
@@ -687,7 +687,7 @@ class MotionPlannerRuntime:
         if len(positions) == 0:
             return float("inf"), float("inf")
         fk_positions = np.asarray(
-            self._forward_kinematic_batch(positions, joint_names=active_names),
+            self._compute_cartesian_fk_batch(positions, joint_names=active_names),
             dtype=float,
         )
         direct_vector = np.asarray(goal_position, dtype=float) - np.asarray(start_position, dtype=float)
@@ -847,7 +847,7 @@ class MotionPlannerRuntime:
             start_state = self.arm_joint_state(self.robot_port.robot.get_joints_state())
         if getattr(getattr(start_state, "position", None), "ndim", 1) == 1:
             start_state = start_state.unsqueeze(0)
-        goal = self._goal_tool_pose(position, orientation)
+        goal = self._make_tool_goal(position, orientation)
         common = self._request_common_kwargs(
             request_metadata,
             default_profile=PlanningProfile.TRANSIT,
@@ -884,7 +884,7 @@ class MotionPlannerRuntime:
             start_state = start_state.unsqueeze(0)
             if len(positions) > 1:
                 start_state = start_state.repeat((len(positions), 1))
-        goals = self._goal_tool_pose(positions, orientations, batch_size=len(positions))
+        goals = self._make_tool_goal(positions, orientations, batch_size=len(positions))
         common = self._request_common_kwargs(
             request_metadata,
             default_profile=PlanningProfile.TRANSIT,
@@ -962,7 +962,7 @@ class MotionPlannerRuntime:
                 single_common["metadata"] = metadata
                 single_result = self.planner_runtime.plan_pose(
                     PosePlanRequest(
-                        goal=self._goal_tool_pose(positions[index], orientations[index]),
+                        goal=self._make_tool_goal(positions[index], orientations[index]),
                         start_state=single_state,
                         kwargs=self._single_pose_native_kwargs(),
                         **single_common,
@@ -1099,7 +1099,7 @@ class MotionPlannerRuntime:
         pose = out.tool_poses.get_link_pose(self.native_planner.tool_frames[0])
         return pose.position.detach().cpu().numpy(), pose.quaternion.detach().cpu().numpy()
 
-    def _forward_kinematic_batch(self, joint_positions, joint_names=None):
+    def _compute_cartesian_fk_batch(self, joint_positions, joint_names=None):
         """Compute tool positions for a named trajectory in one FK call."""
 
         import torch

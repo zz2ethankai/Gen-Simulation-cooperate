@@ -166,7 +166,7 @@ class ControllerSetup(ComponentState):
             resolved_gripper_indices,
         )
 
-    def _load_world(self, use_default: bool = True) -> None:
+    def _load_world(self, use_default: bool = True) -> Any:
         del use_default
         if self.collision_scene_manager is None:
             raise RuntimeError("TemplateController requires CollisionSceneManager")

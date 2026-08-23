@@ -229,10 +229,4 @@ class FailPick(BaseSkill):
         return len(self.manip_list) == 0
 
     def is_feasible(self, th=5):
-        return int(
-            getattr(
-                self.skill_runtime,
-                "plan_failure_count",
-                getattr(self.skill_runtime, "num_plan_failed", 0),
-            )
-        ) <= th
+        return int(self.skill_runtime.num_plan_failed) <= th

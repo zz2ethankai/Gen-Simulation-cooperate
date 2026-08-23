@@ -419,8 +419,8 @@ class SkillRuntimePort:
     def execute(self, command: Any):
         return self._execution.forward_phase_command(command)
 
-    def dummy_forward(self, arm_action: Any, gripper_state: float, *args: Any, **kwargs: Any):
-        return self._execution.dummy_forward(arm_action, gripper_state, *args, **kwargs)
+    def dummy_forward(self, arm_action: Any, gripper_state: float):
+        return self._execution.dummy_forward(arm_action, gripper_state)
 
     def phase_complete(self, command: Any) -> bool:
         return bool(self._execution.is_phase_command_complete(command))

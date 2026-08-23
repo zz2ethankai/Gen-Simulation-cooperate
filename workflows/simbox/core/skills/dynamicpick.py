@@ -99,11 +99,7 @@ class Dynamicpick(BaseSkill):
             active_target=self.object_name,
         )
         if not success:
-            setter = getattr(self.skill_runtime, "set_plan_failure_count", None)
-            if callable(setter):
-                setter(1000)
-            else:
-                self.skill_runtime.num_plan_failed = 1000
+            self.skill_runtime.num_plan_failed = 1000
             return 0.0, start_arm_positions
         path = result.trajectory
         waypoints = len(path) if path is not None else 1
@@ -384,13 +380,7 @@ class Dynamicpick(BaseSkill):
         return contact, indices
 
     def is_feasible(self, th=10):
-        return int(
-            getattr(
-                self.skill_runtime,
-                "plan_failure_count",
-                getattr(self.skill_runtime, "num_plan_failed", 0),
-            )
-        ) <= th
+        return int(self.skill_runtime.num_plan_failed) <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0

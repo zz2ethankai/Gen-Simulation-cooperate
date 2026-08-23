@@ -1280,7 +1280,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         Fixed assets are still dynamic bodies; this boundary only restores the
         captured pose/scale/visibility and clears residual velocity after the
         reset warmup.  The collision manager then republishes the exact USD
-        poses through PlanningSceneRuntime/NativeSceneAdapter with a fresh
+        poses through SceneRuntime/NativeSceneAdapter with a fresh
         monotonic world revision.
         """
 
@@ -1898,12 +1898,21 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
     def _safety_measurements(self, skill, dynamic_changed: bool) -> SafetyMeasurements:
         runtime = skill.skill_runtime
         if runtime is None:
-            raise RuntimeError("execution safety requires a composed SkillRuntimePort")
+            raise RuntimeError("execution safety requires a bound SkillRuntimePort")
         robot = runtime.robot
         arm_indices = runtime.arm_indices
         joint_state = robot.get_joints_state()
         actual_arm = np.asarray(joint_state.positions[arm_indices], dtype=float)
-        commanded_arm = runtime.last_commanded_arm_position
+        command = skill.manip_list[0]
+        if not isinstance(command, MotionPhaseCommand):
+            raise TypeError(
+                f"operation Skill {self._skill_display_name(skill)!r} must emit "
+                "MotionPhaseCommand values"
+            )
+        execution_status = runtime.execution_status(command)
+        commanded_arm = self._status_value(
+            execution_status, "last_commanded_arm_position", None
+        )
         joint_error = (
             float(np.max(np.abs(actual_arm - commanded_arm)))
             if commanded_arm is not None and len(commanded_arm) == len(actual_arm)
@@ -1918,22 +1927,23 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             ee_orientation_error = quaternion_angle(expected_orientation, actual_orientation)
 
         base_position, base_orientation = runtime.arm_base_pose()
-        phase_base_pose = runtime.phase_base_pose()
-        if phase_base_pose is None:
+        phase_base_position = self._status_value(
+            execution_status, "phase_base_position", None
+        )
+        phase_base_orientation = self._status_value(
+            execution_status, "phase_base_orientation", None
+        )
+        if phase_base_position is None or phase_base_orientation is None:
             initial_position, initial_orientation = base_position, base_orientation
         else:
-            initial_position, initial_orientation = phase_base_pose
+            initial_position, initial_orientation = (
+                phase_base_position,
+                phase_base_orientation,
+            )
         base_translation = float(np.linalg.norm(np.asarray(base_position) - np.asarray(initial_position)))
         base_rotation = float(np.degrees(quaternion_angle(base_orientation, initial_orientation)))
         velocity = np.asarray(joint_state.velocities, dtype=float)
         arm_velocity = velocity[arm_indices]
-        command = skill.manip_list[0]
-        if not isinstance(command, MotionPhaseCommand):
-            raise TypeError(
-                f"operation Skill {self._skill_display_name(skill)!r} must emit "
-                "MotionPhaseCommand values"
-            )
-        execution_status = runtime.execution_status(command)
         VELOCITY_TRACE_LOGGER.info(
             "[VelocityTrace] step=%d phase=%s plan_active=%s steps_remaining=%s "
             "actual=%s commanded=%s velocity=%s",
@@ -2186,24 +2196,24 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 continue
             runtime = skill.skill_runtime
             if runtime is None:
-                raise RuntimeError("execution safety requires a composed SkillRuntimePort")
+                raise RuntimeError("execution safety requires a bound SkillRuntimePort")
             # This precheck evaluates the result of the *previous* physics
             # step.  A newly selected command has not run yet, so its phase
             # baseline and first commanded joint target do not exist.  Using
             # the controller's initialization pose here caused step-0 and
             # phase-transition false base-drift aborts.
-            if command is not runtime.active_phase_command:
+            execution_status = self._execution_status(runtime, command)
+            if not bool(self._status_value(execution_status, "active", False)):
                 continue
             if self.execution_supervisor.is_holding(runtime):
                 continue
             if (
                 step_id % 100 == 0
                 or bool(self._status_value(
-                    self._execution_status(runtime, command), "plan_failed", False
+                    execution_status, "plan_failed", False
                 ))
-                or self._status_tracking_failed(self._execution_status(runtime, command))
+                or self._status_tracking_failed(execution_status)
             ):
-                execution_status = self._execution_status(runtime, command)
                 LOGGER.info(
                     "[ExecutionHeartbeat] step=%d robot=%s arm=%s phase=%s plan_active=%s steps_remaining=%d complete=%s plan_failed=%s tracking_failed=%s",
                     step_id,
@@ -2267,7 +2277,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
     def _forward_or_hold(self, skill):
         runtime = skill.skill_runtime
         if runtime is None:
-            raise RuntimeError("operation Skill requires a composed SkillRuntimePort")
+            raise RuntimeError("operation Skill requires a bound SkillRuntimePort")
         command = skill.manip_list[0]
         if not isinstance(command, MotionPhaseCommand):
             raise TypeError(

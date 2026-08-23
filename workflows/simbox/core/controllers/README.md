@@ -54,32 +54,29 @@ action = skill_runtime.dummy_forward(arm_action, gripper_state)
 ```
 
 This sends one direct arm action through `ControllerExecution`; the caller
-owns interpolation and completion. The old tuple command and
-legacy tuple-parameter parser are removed.
+owns interpolation and completion. No tuple-form command parsing remains.
 
 ## SkillRuntimePort API
 
-The port exposes robot/configuration values (`robot`, `name`, `arm_name`,
-joint indices, robot paths, `robot_config`, `batch_capability`,
-`interpolation_dt`, and `num_plan_failed`), FK/pose queries, the unified
-`plan_pose*` methods, `measure_cartesian_path`, typed execution/status/hold
-operations, collision-world transitions, attachment ownership/synchronizing
-operations, and workflow timing scopes. It does not expose a controller
-façade, native CuRobo planner, legacy `lr_name`/`robot_cfg` aliases, or raw
-scene/collision diagnostics.
-
-The public planning calls are:
+`SkillRuntimePort` is the only controller-facing object bound into a Skill.
+Its public contract is intentionally explicit:
 
 ```text
-plan_pose()
-plan_pose_batch()
-plan_pose_result()
-plan_pose_from_path()
-plan_pose_from_joint_positions()
-measure_cartesian_path()
+robot, name, arm_name, arm_indices, gripper_indices
+robot_file, robot_config, robot_base_path, robot_ee_path, reference_prim_path
+batch_capability, interpolation_dt, num_plan_failed
+
+ee_pose(), arm_base_pose(), initial_ee_pose(), compute_fk(), arm_base_transform()
+plan_pose(), plan_pose_batch(), plan_pose_result()
+plan_pose_from_path(), plan_pose_from_joint_positions(), measure_cartesian_path()
+execute(command), dummy_forward(arm_action, gripper_state)
+phase_complete(command), execution_status(command=None)
+hold(reason=None), clear_plan_and_hold()
+transition_target(), restore_world(), source_support()
+assert_attached_owner(), sync_native_batch_attachment(), complete_contact_phase()
+push_timing_scope(), restore_timing_scope(), clear_timing_scope()
 ```
 
-Use `arm_name` for the selected arm and `compute_fk()` for forward
-kinematics. Scene ownership is accessed through `transition_target()`,
-`restore_world()`, `source_support()`, `assert_attached_owner()`,
-`sync_native_batch_attachment()`, and `complete_contact_phase()`.
+The port does not expose a controller object, native CuRobo planner, raw
+scene/collision diagnostics, or old compatibility aliases. Use `arm_name` for
+the selected arm and `compute_fk()` for forward kinematics.

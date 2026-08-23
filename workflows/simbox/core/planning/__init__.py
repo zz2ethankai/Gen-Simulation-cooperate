@@ -119,9 +119,9 @@ __all__ = [
 
 def __getattr__(name):
     if name in {"MotionPhase", "MotionPhaseCommand"}:
-        # motion_command retains its historical numpy dependency.  Keep the
-        # new domain/runtime imports usable in a plain Python process by
-        # loading that legacy module only when its symbols are requested.
+        # motion_command retains its NumPy dependency. Keep the domain/runtime
+        # imports usable in a plain Python process by loading it only when its
+        # symbols are requested.
         from .motion_command import MotionPhase, MotionPhaseCommand
 
         return {"MotionPhase": MotionPhase, "MotionPhaseCommand": MotionPhaseCommand}[name]

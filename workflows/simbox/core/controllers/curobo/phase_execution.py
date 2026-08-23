@@ -22,6 +22,10 @@ class ExecutionStatus:
     reason: str | None = None
     plan_id: str | None = None
     replan_allowed: bool = True
+    active: bool = False
+    last_commanded_arm_position: Any = None
+    phase_base_position: Any = None
+    phase_base_orientation: Any = None
 
 class PhaseExecutor:
     """Own the mutable trajectory cursor used by phase execution.

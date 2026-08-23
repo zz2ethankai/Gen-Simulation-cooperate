@@ -49,12 +49,10 @@ class BaseSkill(ABC):
 
         return self._require_skill_runtime().execute(command)
 
-    def dummy_forward(self, arm_action, gripper_state, *args, **kwargs):
-        """Send a direct joint action through the controller compatibility API."""
+    def dummy_forward(self, arm_action, gripper_state):
+        """Send one direct joint action through the Skill runtime port."""
 
-        return self._require_skill_runtime().dummy_forward(
-            arm_action, gripper_state, *args, **kwargs
-        )
+        return self._require_skill_runtime().dummy_forward(arm_action, gripper_state)
 
     def bind_target_visualizer(self, visualizer, **context):
         """Bind optional observational target rendering without changing Skill APIs."""
@@ -124,9 +122,8 @@ class BaseSkill(ABC):
     # ------------------------------------------------------------------
     # Typed command helpers
     # ------------------------------------------------------------------
-    # Skills used to return positional tuples whose third item was reflected
-    # into a controller method.  Keep the small amount of construction and
-    # completion plumbing here so every Skill has the same typed boundary.
+    # Keep command construction and completion plumbing here so every Skill
+    # has the same typed boundary.
     @staticmethod
     def pose_command(
         phase,
@@ -240,31 +237,6 @@ class BaseSkill(ABC):
             ) <= command.orientation_tolerance
             return bool(position_ok and orientation_ok)
         return False
-
-    @staticmethod
-    def command_status_debug(status):
-        """Serialize the public typed command status for Skill diagnostics."""
-
-        if status is None:
-            return None
-        if isinstance(status, dict):
-            return dict(status)
-        enum_status = getattr(getattr(status, "status", None), "value", None)
-        if not hasattr(status, "phase"):
-            return {
-                "status": enum_status
-                or getattr(status, "value", status),
-            }
-        return {
-            "status": enum_status,
-            "phase": status.phase,
-            "complete": bool(status.complete),
-            "plan_active": bool(status.plan_active),
-            "plan_failed": bool(status.plan_failed),
-            "tracking_failed": bool(getattr(status, "tracking_failed", False)),
-            "plan_steps_remaining": int(status.plan_steps_remaining),
-            "reason": status.reason,
-        }
 
     def pop_completed_command(self):
         if self.manip_list and self.command_complete(self.manip_list[0]):
