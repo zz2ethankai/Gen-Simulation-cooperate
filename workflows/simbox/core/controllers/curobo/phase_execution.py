@@ -26,6 +26,7 @@ class ExecutionStatus:
     last_commanded_arm_position: Any = None
     phase_base_position: Any = None
     phase_base_orientation: Any = None
+    gripper_state: float = 1.0
 
 class PhaseExecutor:
     """Own the mutable trajectory cursor used by phase execution.

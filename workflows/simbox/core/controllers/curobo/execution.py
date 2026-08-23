@@ -633,6 +633,7 @@ class ControllerExecution(ComponentState):
                 if self._phase_base_orientation is None
                 else np.asarray(self._phase_base_orientation, dtype=float).copy()
             ),
+            gripper_state=float(self._gripper_state),
         )
 
     def clear_plan_and_hold(self) -> None:

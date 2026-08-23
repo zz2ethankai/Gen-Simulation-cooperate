@@ -38,7 +38,8 @@ def _gripper_openness(runtime_ports: RuntimePorts, robot_name: str, lr_name: str
     runtime = robot_ports.get(lr_name)
     if runtime is None:
         return 1.0
-    return 1.0 if float(runtime.execution_state.gripper_state) > 0.0 else 0.0
+    status = runtime.execution_status()
+    return 1.0 if float(status.gripper_state) > 0.0 else 0.0
 
 
 # pylint: disable=line-too-long,unused-argument
