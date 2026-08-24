@@ -361,6 +361,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         """
 
         prim_paths = []  # do not collide with each other
+        dynamic_object_paths = []  # collide with robot and global supports
         global_collision_paths = []  # collide with everything
         collision_root_path = "/World/collisions"
 
@@ -374,17 +375,22 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         for candidate in candidates:
             candidate_prim_path = self.task.root_prim_path + "/" + candidate["name"]
             global_collision_paths.append(candidate_prim_path)
+            if candidate.get("target_class") == "RigidObject":
+                # Give dynamic pick objects their own group so the robot can
+                # contact them.  Their global relation is removed below so
+                # they still collide with support geometry without belonging
+                # to two PhysX collision groups.
+                prim_paths.append(candidate_prim_path)
+                dynamic_object_paths.append(candidate_prim_path)
             for neglect_collision_name in neglect_collision_names:
                 if neglect_collision_name not in candidate["name"]:
                     continue
-                # Keep the neglected fixture in the robot filter group.  With
-                # inverted PhysX collision filtering, leaving the source
-                # collider in neither group makes it collide by default with
-                # the robot.  Static geometry additionally gets a native
-                # support proxy in global_group so dynamic objects can still
-                # rest on the fixture without re-enabling robot contact.
+                # Keep a neglected support fixture in global_group.  Dynamic
+                # objects must still rest on it, while the robot group is
+                # filtered from global_group.  A separate prim group would
+                # leave the robot/fixture pair collision-enabled under
+                # inverted filtering.
                 if candidate.get("target_class") == "GeometryObject":
-                    prim_paths.append(candidate_prim_path)
                     support_obj = getattr(self.task, "_task_objects", {}).get(candidate["name"])
                     support_proxy_path = None
                     if os.environ.get("INTERNDATA_DEBUG_RESET_LIFECYCLE") == "1":
@@ -421,17 +427,23 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                             len(global_collision_paths),
                         )
                     if support_proxy_path:
-                        # Keep the native support collider in the same global
-                        # collection as dynamic objects and the floor.  The
-                        # robot group filters global as a whole, so this still
-                        # preserves the neglected-fixture behavior without
-                        # relying on a second cross-group opt-in relation.
+                        # Keep the native support collider in global_group
+                        # with the floor.  Dynamic object groups opt into
+                        # this group after the common filter setup below.
                         global_collision_paths.append(support_proxy_path)
                     else:
                         global_collision_paths.append(f"{candidate_prim_path}/collision_proxy")
                 else:
-                    prim_paths.append(candidate_prim_path)
-                global_collision_paths.remove(candidate_prim_path)
+                    if candidate_prim_path not in prim_paths:
+                        prim_paths.append(candidate_prim_path)
+                    global_collision_paths.remove(candidate_prim_path)
+
+        # A collider may belong to only one PhysX collision group.  Keep
+        # dynamic objects in their per-object groups, then opt those groups
+        # back into the global support group after the common filter setup.
+        for dynamic_object_path in dynamic_object_paths:
+            if dynamic_object_path in global_collision_paths:
+                global_collision_paths.remove(dynamic_object_path)
 
         filter_collisions(
             self.stage,
@@ -440,6 +452,23 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             prim_paths,
             global_collision_paths,
         )
+        global_group_path = collision_root_path + "/global_group"
+        global_group = self.stage.GetPrimAtPath(global_group_path)
+        global_filtered_groups = (
+            global_group.GetRelationship("physics:filteredGroups")
+            if global_group.IsValid()
+            else None
+        )
+        for group_index, prim_path in enumerate(prim_paths):
+            if prim_path not in dynamic_object_paths:
+                continue
+            group_path = f"{collision_root_path}/group{group_index}"
+            group_prim = self.stage.GetPrimAtPath(group_path)
+            group_filtered_groups = group_prim.GetRelationship("physics:filteredGroups")
+            if group_filtered_groups:
+                group_filtered_groups.RemoveTarget(global_group_path)
+            if global_filtered_groups:
+                global_filtered_groups.RemoveTarget(group_path)
         if os.environ.get("INTERNDATA_DEBUG_RESET_LIFECYCLE") == "1":
             collision_group_debug = {}
             collision_root = self.stage.GetPrimAtPath(collision_root_path)
@@ -1347,6 +1376,35 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         if callable(initialize_rigid_objects):
             initialize_rigid_objects(physics_sim_view)
 
+    def _refresh_task_robot_views_after_world_reset(self):
+        """Rebind task robot articulation views after ``World.reset()``.
+
+        Isaac Sim keeps the Python ``Robot`` wrappers alive across a hard
+        world reset, but their internal ``Articulation`` view can still hold
+        the old PhysX tensor handle.  ``Articulation.initialize`` is a no-op
+        while that handle is non-null, so the next observation may read an
+        invalid transform buffer (including an all-zero quaternion).  Clear
+        only the cached handle, then let the normal robot initialize path
+        rebuild it; the USD robot prim and its configuration are preserved.
+        """
+
+        physics_sim_view = self.world.physics_sim_view
+        robots = getattr(self.task, "robots", {})
+        for robot in robots.values():
+            articulation_view = getattr(robot, "_articulation_view", None)
+            if articulation_view is None:
+                continue
+            is_handle_valid = getattr(articulation_view, "is_physics_handle_valid", None)
+            if callable(is_handle_valid):
+                try:
+                    if is_handle_valid():
+                        continue
+                except Exception:
+                    pass
+            if hasattr(articulation_view, "_physics_view"):
+                articulation_view._physics_view = None
+            robot.initialize(physics_sim_view=physics_sim_view)
+
     def _reset_controllers(self, controllers):
         """Reset all controllers."""
         # Randomized retry resets can replace an object's USD subtree and its
@@ -1420,6 +1478,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         # Reset world
         self.world.reset()
         self._refresh_task_rigid_views_after_world_reset()
+        self._refresh_task_robot_views_after_world_reset()
         if self.trajectory_visualizer is not None:
             self.trajectory_visualizer.clear()
         if self.skill_target_visualizer is not None:
@@ -1474,6 +1533,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         # Reset world
         self.world.reset()
         self._refresh_task_rigid_views_after_world_reset()
+        self._refresh_task_robot_views_after_world_reset()
         if self.trajectory_visualizer is not None:
             self.trajectory_visualizer.clear()
         if self.skill_target_visualizer is not None:
@@ -1551,7 +1611,14 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         self._destroy_local_base_drivers()
 
         self.task.individual_reset()
-        self.world.reset()
+        # A failed planning attempt does not require rebuilding the PhysX
+        # scene.  A hard World.reset() tears down the articulation tensor
+        # view and then runs BananaBaseTask.post_reset() while the split
+        # Aloha virtual-base joints are being reattached; on Isaac Sim 6 that
+        # path can publish NaN link transforms and leave observations with a
+        # zero quaternion.  Keep the live physics view for this retry and
+        # restore the already-loaded rigid bodies in place.
+        self.world.reset(soft=True)
         self._refresh_task_rigid_views_after_world_reset()
         if hasattr(self.task, "reset_fixed_rigid_objects"):
             self.task.reset_fixed_rigid_objects()
@@ -1895,6 +1962,37 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             in {"tracking_failed", "tracking_completion_failed"}
         )
 
+    def _debug_finger_contacts(self, runtime):
+        """Return one-shot finger contact details for a failing terminal pose."""
+
+        manager = self.collision_scene_manager
+        filters = list(getattr(manager, "collision_prim_paths", ()))
+        views = getattr(manager, "_finger_environment_contact_views", {}).get(
+            (str(runtime.name), str(runtime.arm_name)), ()
+        )
+        if not filters or not views:
+            return []
+        contacts = []
+        for view_index, view in enumerate(views):
+            try:
+                values = np.asarray(view.get_contact_force_matrix(), dtype=float)
+                if not values.size:
+                    continue
+                magnitudes = np.linalg.norm(values, axis=-1).reshape(-1, len(filters))
+                maxima = np.max(magnitudes, axis=0)
+                contacts.extend(
+                    {
+                        "view": int(view_index),
+                        "filter": filters[index],
+                        "force": float(force),
+                    }
+                    for index, force in enumerate(maxima)
+                    if float(force) > 0.0
+                )
+            except Exception as exc:  # pragma: no cover - diagnostics only
+                contacts.append({"view": int(view_index), "error": repr(exc)})
+        return sorted(contacts, key=lambda item: float(item.get("force", 0.0)), reverse=True)
+
     def _safety_measurements(self, skill, dynamic_changed: bool) -> SafetyMeasurements:
         runtime = skill.skill_runtime
         if runtime is None:
@@ -1958,17 +2056,65 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             np.array2string(arm_velocity, precision=5),
         )
         joint_limit_violation = False
+        limits = None
+        arm_limits = None
+        limit_error = None
         try:
-            limits = np.asarray(robot.get_dof_limits(), dtype=float)
+            limit_owner = robot
+            get_dof_limits = getattr(robot, "get_dof_limits", None)
+            if not callable(get_dof_limits):
+                limit_owner = getattr(robot, "_articulation_view", None)
+                get_dof_limits = getattr(limit_owner, "get_dof_limits", None)
+            if not callable(get_dof_limits):
+                raise AttributeError("robot and articulation view expose no get_dof_limits")
+            limits = np.asarray(get_dof_limits(), dtype=float)
             arm_limits = limits[arm_indices]
             joint_limit_violation = bool(
                 np.any(actual_arm < arm_limits[:, 0] - 1e-4)
                 or np.any(actual_arm > arm_limits[:, 1] + 1e-4)
             )
-        except (AttributeError, IndexError, TypeError, ValueError):
+        except (AttributeError, IndexError, TypeError, ValueError) as exc:
             # Some robot wrappers do not expose limits.  Physics-schema
             # SplitAloha does; strict world audit remains the primary guard.
             joint_limit_violation = False
+            limit_error = repr(exc)
+        if (
+            os.environ.get("INTERNDATA_DEBUG_JOINT_LIMITS") == "1"
+            and command.phase == MotionPhase.TERMINAL_GRASP_APPROACH
+            and not bool(self._status_value(execution_status, "plan_active", False))
+            and not self._status_value(execution_status, "complete", False)
+        ):
+            try:
+                controller = robot.get_articulation_controller()
+                try:
+                    gains = controller.get_gains()
+                except Exception as exc:
+                    gains = f"unavailable:{exc!r}"
+                try:
+                    max_efforts = controller.get_max_efforts()
+                except Exception as exc:
+                    max_efforts = f"unavailable:{exc!r}"
+                LOGGER.warning(
+                    "[DofLimitDebug] robot=%s arm=%s dof_names=%s arm_indices=%s "
+                    "limits=%s arm_limits=%s limit_error=%s actual=%s commanded=%s "
+                    "gains=%s max_efforts=%s finger_contacts=%s",
+                    robot.name,
+                    runtime.arm_name,
+                    repr(getattr(robot, "dof_names", None)),
+                    list(arm_indices),
+                    repr(limits),
+                    repr(arm_limits),
+                    limit_error,
+                    np.array2string(actual_arm, precision=7),
+                    np.array2string(np.asarray(commanded_arm, dtype=float), precision=7)
+                    if commanded_arm is not None
+                    else None,
+                    gains,
+                    max_efforts,
+                    self._debug_finger_contacts(runtime),
+                )
+            except Exception as exc:  # pragma: no cover - diagnostics only
+                LOGGER.warning("[DofLimitDebug] unavailable error=%r", exc)
         arrays = (actual_arm, velocity, np.asarray(base_position), np.asarray(base_orientation))
         nan_detected = any(not np.all(np.isfinite(value)) for value in arrays)
 

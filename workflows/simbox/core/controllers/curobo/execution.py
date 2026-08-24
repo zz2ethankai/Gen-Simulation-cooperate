@@ -422,6 +422,14 @@ class ControllerExecution:
 
         self._apply_gripper_action(command.gripper_action)
 
+        if command.params.get("hold_position", False):
+            # A coincident terminal target has already been reached by the
+            # transit path.  Do not invoke native planning again and do not
+            # replay the transit trajectory from its original start state.
+            self.phase_executor.clear()
+            self._phase_plan_finished = True
+            return self.hold_action()
+
         if command.is_bookkeeping or command.phase in {
             MotionPhase.GRIPPER_CLOSE,
             MotionPhase.GRIPPER_OPEN,

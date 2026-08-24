@@ -302,6 +302,33 @@ class ControllerSetup:
         if rot_range is not None:
             msg += f" rot_error_range=({rot_range[0]:.6f}, {rot_range[1]:.6f})"
         LOGGER.info(msg)
+        if not result.is_success:
+            failure_keys = (
+                "feasible",
+                "converged",
+                "valid_query",
+                "position_error",
+                "rotation_error",
+                "cspace_error",
+                "optimized_dt",
+                "used_graph",
+                "attempts",
+                "trajopt_attempts",
+                "debug_info",
+            )
+            failure_metrics = {
+                key: result.metrics.get(key)
+                for key in failure_keys
+                if key in result.metrics
+            }
+            LOGGER.warning(
+                "[PlanFailureDetail] robot=%s arm=%s context=%s error=%s metrics=%s",
+                self.name,
+                self.lr_name,
+                context,
+                result.error,
+                failure_metrics,
+            )
 
     def _visualize_selected_plan(self) -> None:
         if self.trajectory_visualizer is None or self.phase_executor.current is None:

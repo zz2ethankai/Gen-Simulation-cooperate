@@ -28,6 +28,7 @@ from isaacsim.core.utils.transformations import (
 )
 from isaacsim.core.utils.xforms import get_world_pose
 from omegaconf import DictConfig, ListConfig, OmegaConf
+from pxr import Usd
 from scipy.spatial.transform import Rotation as R
 
 
@@ -703,7 +704,53 @@ class Place(BaseSkill):
             relative = get_relative_transform(get_prim_at_path(self.pick_obj.prim_path), get_prim_at_path(self.robot_base_path))[:3, 3]
             threshold = float(self.place_ee_trans[2] - 0.4)
             success = bool(relative[2] < threshold)
-            details = {"z": float(relative[2]), "threshold": threshold}
+            pick_bbox_min = np.asarray(pick_bbox.min, dtype=float)
+            pick_bbox_max = np.asarray(pick_bbox.max, dtype=float)
+            place_bbox_min = np.asarray(place_bbox.min, dtype=float)
+            place_bbox_max = np.asarray(place_bbox.max, dtype=float)
+            details = {
+                "z": float(relative[2]),
+                "threshold": threshold,
+                "relative_xyz": np.asarray(relative, dtype=float),
+                "place_ee_trans": np.asarray(self.place_ee_trans, dtype=float),
+                "pick_world_pose": self._world_pose(self.pick_obj),
+                "robot_base_world_pose": get_world_pose(self.robot_base_path),
+                "pick_bbox_min": pick_bbox_min,
+                "pick_bbox_max": pick_bbox_max,
+                "place_bbox_min": place_bbox_min,
+                "place_bbox_max": place_bbox_max,
+                "place_world_pose": self._world_pose(self.place_obj),
+                "place_meshes": [
+                    {
+                        "path": str(prim.GetPath()),
+                        "type": str(prim.GetTypeName()),
+                        "collision_enabled": (
+                            prim.GetAttribute("physics:collisionEnabled").Get()
+                            if prim.GetAttribute("physics:collisionEnabled")
+                            else None
+                        ),
+                        "approximation": (
+                            prim.GetAttribute("physics:approximation").Get()
+                            if prim.GetAttribute("physics:approximation")
+                            else None
+                        ),
+                        "point_count": (
+                            len(prim.GetAttribute("points").Get() or [])
+                            if prim.GetAttribute("points")
+                            else None
+                        ),
+                    }
+                    for prim in Usd.PrimRange(
+                        get_prim_at_path(self.place_prim_path)
+                    )
+                    if prim.GetTypeName() == "Mesh"
+                ],
+                "selected_reference_world": (
+                    None
+                    if not self._target_intent
+                    else self._target_intent.get("selected_reference_world")
+                ),
+            }
             if not success:
                 reasons.append("height_not_below_threshold")
         elif mode == "xybbox":

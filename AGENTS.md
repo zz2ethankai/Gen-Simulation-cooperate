@@ -119,3 +119,11 @@
 - Keep fixes scoped: do not change YAML to mask a code bug, and do not change code when the user explicitly asks for YAML-only repair.
 - Before risky rollback or checkpoint work, verify `git status --short`, branch, and `git log -1 --oneline`.
 - When saving a successful state, create a clear checkpoint commit and verify the final status. Include generated assets only when the user explicitly asks.
+
+## PnP/CuRobo Closed-Loop Debugging
+
+- Fix the first runtime error that prevents task generation; do not treat a later traceback, placeholder observation, video, or renderer startup warning as the root cause.
+- Keep each fix minimal and local to the proven regression. Do not add a large new control path, retries, or fallback layer merely to make a failed episode appear to progress.
+- For PnP/CuRobo planning regressions, inspect the earliest working implementation and the commit diff before changing current behavior; preserve the original project contract unless runtime evidence requires a targeted correction.
+- After every suspected bug-point fix, run the project-prescribed real single-episode wrapper and inspect the fresh first-failure log before making the next change.
+- Static compilation and unit/contract checks are useful gates, but completion requires a fresh runtime result with `Task is successful, mode=plan_with_render` and no `[LmdbLogger] Episode failed`.

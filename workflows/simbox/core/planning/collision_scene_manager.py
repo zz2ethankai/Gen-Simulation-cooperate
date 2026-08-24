@@ -379,6 +379,24 @@ class CollisionSceneManager:
 
         cfg = self._configured_entity_cfg(entity_name)
         parent_fixture = str(_cfg_get(cfg, "parent_fixture", "") or "").strip()
+        if not parent_fixture:
+            task_cfg = getattr(self.task, "cfg", {}) or {}
+            for region in task_cfg.get("regions", []) or []:
+                if str(_cfg_get(region, "object", "")) != str(entity_name):
+                    continue
+                parent_fixture = str(
+                    _cfg_get(
+                        region,
+                        "parent_fixture",
+                        _cfg_get(
+                            region,
+                            "support_target_fixture",
+                            _cfg_get(region, "target", ""),
+                        ),
+                    )
+                    or ""
+                ).strip()
+                break
         if parent_fixture and parent_fixture in self.records:
             return parent_fixture
         return None
@@ -441,6 +459,7 @@ class CollisionSceneManager:
 
     def _discover(self) -> None:
         discovered_paths: set[str] = set()
+        discovered_path_owners: dict[str, tuple[str, str]] = {}
         discovered_entity_names: set[str] = set()
         for entity_name, entity in self._iter_entities():
             if entity_name in discovered_entity_names:
@@ -509,8 +528,19 @@ class CollisionSceneManager:
             for prim in collider_prims:
                 path = str(prim.GetPath())
                 if path in discovered_paths:
+                    previous_entity, previous_root = discovered_path_owners[path]
+                    LOGGER.error(
+                        "[CollisionWorldDuplicate] path=%s previous_entity=%s "
+                        "previous_root=%s current_entity=%s current_root=%s",
+                        path,
+                        previous_entity,
+                        previous_root,
+                        entity_name,
+                        root_path,
+                    )
                     raise CollisionSceneError(f"collision Prim belongs to multiple entities: {path}")
                 discovered_paths.add(path)
+                discovered_path_owners[path] = (entity_name, root_path)
 
             if not collider_prims:
                 if self._explicitly_noncollidable(entity):

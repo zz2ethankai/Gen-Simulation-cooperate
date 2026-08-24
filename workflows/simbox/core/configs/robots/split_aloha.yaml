@@ -13,6 +13,8 @@ robot_file:
 gripper_max_width: 0.10
 gripper_min_width: 0.0
 tcp_offset: 0.12
+gripper_static_friction: 3.0
+gripper_dynamic_friction: 3.0
 
 # Solver parameters
 solver_position_iteration_count: 128

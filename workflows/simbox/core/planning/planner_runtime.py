@@ -1081,7 +1081,19 @@ class PlannerRuntime:
             return raw
 
         success_value = _native_result_success(raw)
-        success_mask = _plain_success_mask(success_value)
+        # A native batch planner is allowed to return ``None`` when IK finds
+        # no solution.  Preserve the request cardinality in that case (and
+        # for scalar test doubles) so the public result still has one entry
+        # per sampled candidate.  Without this, ``None`` becomes ``(False,)``
+        # and the controller reports ``0/1`` for a 20-candidate query,
+        # dropping the candidate/path alignment before fallback handling.
+        requested_batch_size = (
+            getattr(request, "batch_size", None) if batch else None
+        )
+        success_mask = _plain_success_mask(
+            success_value,
+            count=requested_batch_size,
+        )
         native_path = _native_result_path(raw)
         joint_names = _native_joint_names(native_path, request)
         request_metadata = getattr(request, "metadata", {}) or {}

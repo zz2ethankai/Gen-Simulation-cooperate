@@ -23,7 +23,7 @@ tasks:
       -
         name: "split_aloha"
         robot_config_file: workflows/simbox/core/configs/robots/split_aloha.yaml
-        path: "../../../InternDataAssets/assets/split_aloha_mid_360/robot.usd"
+        path: "../../../InternDataAssets/assets/split_aloha_mid_360_virtual/robot.usd"
         euler: [0.0, 0.0, 90.0]
         ignore_substring: ["material", "table", "gso_box"]
 
@@ -38,6 +38,8 @@ tasks:
         translation: [0.0, 0.0, 0.0]
         euler: [0.0, 0.0, 0.0]  # stable init pose
         scale: [1, 1, 1]
+        mass: 0.02
+        collision_approximation: convexHull
         apply_randomization: True
         orientation_mode: random
         optimize_2d_layout: True
@@ -51,6 +53,8 @@ tasks:
         translation: [0.0, 0.0, 0.0]
         euler: [0.0, 0.0, 0.0]  # stable init pose
         scale: [1, 1, 1]
+        mass: 0.02
+        collision_approximation: convexHull
         apply_randomization: True
         orientation_mode: random
         optimize_2d_layout: True
@@ -64,6 +68,8 @@ tasks:
         translation: [0.0, 0.0, 0.0]
         euler: [90.0, 0.0, 0.0]
         scale: [1.0, 1.0, 1.0]
+        collision_approximation: open_container
+        open_container_bottom: max_y
         apply_randomization: False
 
       -
@@ -76,6 +82,8 @@ tasks:
         translation: [0.0, 0.0, 0.0]
         euler: [90.0, 0.0, 0.0]
         scale: [1.0, 1.0, 1.0]
+        collision_approximation: open_container
+        open_container_bottom: max_y
         apply_randomization: False
 
     regions:
@@ -125,8 +133,8 @@ tasks:
         random_type: A_on_B_region_sampler
         random_config:
           pos_range: [
-            [0.0, -0.86, -0.775],
-            [0.0, -0.86, -0.725]
+            [0.0, -0.80, -0.775],
+            [0.0, -0.80, -0.725]
           ]
           yaw_rotation: [0.0, 0.0]
 
@@ -174,8 +182,9 @@ tasks:
                 objects: [pick_object_right]
                 filter_y_dir: ["forward", 60]
                 filter_z_dir: ["downward", 150]
+                target_grasp_orientation: [0.099016, 0.454680, 0.865600, 0.184927]
                 pre_grasp_offset: 0.05
-                gripper_change_steps: 10
+                gripper_change_steps: 40
                 t_eps: 0.025
                 o_eps: 1
                 process_valid: True
@@ -192,7 +201,7 @@ tasks:
                 y_ratio_range: [0.3, 0.4]
                 pre_place_z_offset: 0.3
                 place_z_offset: 0.3
-                success_mode: height
+                success_mode: xybbox
               -
                 name: heuristic__skill
                 mode: home
@@ -205,7 +214,7 @@ tasks:
                 filter_y_dir: ["forward", 60]
                 filter_z_dir: ["downward", 150]
                 pre_grasp_offset: 0.05
-                gripper_change_steps: 10
+                gripper_change_steps: 20
                 t_eps: 0.025
                 o_eps: 1
                 process_valid: True
@@ -222,7 +231,7 @@ tasks:
                 y_ratio_range: [0.3, 0.4]
                 pre_place_z_offset: 0.3
                 place_z_offset: 0.3
-                success_mode: height
+                success_mode: xybbox
               -
                 name: heuristic__skill
                 mode: home

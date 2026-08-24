@@ -921,7 +921,7 @@ class MotionPlannerRuntime:
             default_profile=PlanningProfile.TRANSIT,
             attachment_runtime=getattr(self, "attachment_runtime", None),
         )
-        return self.planner_runtime.plan_pose(
+        result = self.planner_runtime.plan_pose(
             PosePlanRequest(
                 goal=goal,
                 start_state=start_state,
@@ -929,6 +929,7 @@ class MotionPlannerRuntime:
                 **common,
             )
         )
+        return result
 
     def plan_pose_batch(
         self,
@@ -943,9 +944,11 @@ class MotionPlannerRuntime:
     ) -> PlanResult:
         del context
         self._refresh_reference_world_for_planning()
-        batch = self.ensure_batch_planner()
+        self.ensure_batch_planner()
         if start_paths is not None:
-            start_state = self.batch_start_state_from_paths(start_paths)
+            start_state = self.batch_start_state_from_paths(
+                start_paths, batch_size=len(positions)
+            )
         elif start_state is None:
             start_state = self.arm_joint_state(self.robot_port.robot.get_joints_state(), repeat=len(positions))
         elif getattr(getattr(start_state, "position", None), "ndim", 1) == 1:
@@ -968,12 +971,18 @@ class MotionPlannerRuntime:
             )
         )
         if not result.is_success and self.batch_single_fallback_candidates:
+            fallback_indices = None
+            if start_paths is not None:
+                fallback_indices = tuple(
+                    index for index, path in enumerate(start_paths) if path is not None
+                )
             result = self._single_fallback_for_batch(
                 result,
                 positions,
                 orientations,
                 start_state,
                 common,
+                candidate_indices=fallback_indices,
             )
         if not result.is_success:
             self._log_batch_failure(result, phase_id=common.get("phase_id"))
@@ -986,6 +995,7 @@ class MotionPlannerRuntime:
         orientations,
         start_state,
         common: Mapping[str, Any],
+        candidate_indices=None,
     ) -> BatchPlanResult:
         """Retry a few failed candidates through the shared single planner.
 
@@ -997,7 +1007,14 @@ class MotionPlannerRuntime:
 
         count = len(positions)
         limit = min(int(self.batch_single_fallback_candidates), count)
-        indices = tuple(range(limit))
+        if candidate_indices is None:
+            indices = tuple(range(limit))
+        else:
+            indices = tuple(
+                index
+                for index in candidate_indices
+                if 0 <= int(index) < count
+            )[:limit]
         LOGGER.warning(
             "[CuRoboBatchFallback] robot=%s arm=%s phase=%s batch=0/%d "
             "trying_single_candidates=%s",
@@ -1028,9 +1045,10 @@ class MotionPlannerRuntime:
                 single_common = dict(common)
                 single_common["phase_id"] = f"{common.get('phase_id', 'phase')}.single_fallback"
                 single_common["metadata"] = metadata
+                goal = self._make_tool_goal(positions[index], orientations[index])
                 single_result = self.planner_runtime.plan_pose(
                     PosePlanRequest(
-                        goal=self._make_tool_goal(positions[index], orientations[index]),
+                        goal=goal,
                         start_state=single_state,
                         kwargs=self._single_pose_native_kwargs(),
                         **single_common,
@@ -1245,16 +1263,30 @@ class MotionPlannerRuntime:
             joint_names=list(trajectory.joint_names),
         )
 
-    def batch_start_state_from_paths(self, paths):
+    def batch_start_state_from_paths(self, paths, *, batch_size=None):
         from curobo.types import JointState
 
+        expected_count = len(paths) if batch_size is None else int(batch_size)
+        if expected_count <= 0:
+            raise ValueError("batch start state requires at least one candidate")
+        normalized_paths = list(paths)
+        normalized_paths = normalized_paths[:expected_count]
+        normalized_paths.extend([None] * (expected_count - len(normalized_paths)))
+
         states = []
-        for path in paths:
+        for path in normalized_paths:
             if path is None:
                 states.append(self.arm_joint_state(self.robot_port.robot.get_joints_state()))
                 continue
             states.append(self.joint_state_from_path_endpoint(path))
-        positions = self.robot_port.tensor_args.to_device(np.stack([state.position.detach().cpu().numpy() for state in states]))
+        positions = self.robot_port.tensor_args.to_device(
+            np.stack([state.position.detach().cpu().numpy() for state in states])
+        )
+        if getattr(positions, "ndim", 0) != 2 or positions.shape[0] != expected_count:
+            raise RuntimeError(
+                "batch start state must contain one joint row per candidate: "
+                f"expected={expected_count}, shape={getattr(positions, 'shape', None)}"
+            )
         return JointState.from_position(positions, joint_names=self.planner_names)
 
     def attach_native(

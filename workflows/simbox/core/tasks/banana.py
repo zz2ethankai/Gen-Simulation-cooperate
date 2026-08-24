@@ -21,6 +21,7 @@ from core.utils.region_sampler import RandomRegionSampler
 from core.utils.rigid_pose import upright_world_orientation
 from core.utils.scene_utils import deactivate_selected_prims
 from core.utils.transformation_utils import get_orientation
+from core.utils.usd_geom_utils import compute_bbox
 from core.utils.visual_distractor import set_distractors
 from omegaconf import DictConfig
 from isaacsim.core.api.materials import PreviewSurface
@@ -36,7 +37,7 @@ from isaacsim.core.utils.prims import (
 from isaacsim.core.utils.stage import get_current_stage
 from isaacsim.core.experimental.objects import DomeLight
 from omni.physx.scripts import particleUtils
-from pxr import Gf, PhysxSchema, Sdf, Usd, UsdShade, Vt
+from pxr import Gf, PhysxSchema, Sdf, Usd, UsdGeom, UsdShade, Vt
 from scipy.spatial.transform import Rotation as R
 
 
@@ -216,6 +217,12 @@ class BananaBaseTask(BaseTask):
         """
 
         translation, orientation = pose
+        scale = None
+        if hasattr(obj, "get_local_scale"):
+            try:
+                scale = np.asarray(obj.get_local_scale(), dtype=float).copy()
+            except Exception:
+                scale = None
         if hasattr(obj, "set_world_pose"):
             obj.set_world_pose(position=translation, orientation=orientation)
         else:
@@ -223,6 +230,12 @@ class BananaBaseTask(BaseTask):
             # the legacy local-pose interface; all Isaac rigid prims take the
             # native v2 branch above.
             obj.set_local_pose(translation=translation, orientation=orientation)
+        # Isaac Sim 6 may rebuild the referenced rigid root while applying a
+        # world pose and restore its authored scale.  Preserve the effective
+        # task scale across that pose write; otherwise legacy assets whose
+        # source stage uses centimeters become tiny again before physics cook.
+        if scale is not None and hasattr(obj, "set_local_scale"):
+            obj.set_local_scale(scale)
 
     def _remember_rigid_object_state(self, obj, translation=None, orientation=None):
         """Remember a desired pose without touching the physics view."""
@@ -331,12 +344,6 @@ class BananaBaseTask(BaseTask):
             if obj is None:
                 continue
             try:
-                if "scale" in state and hasattr(obj, "set_local_scale"):
-                    obj.set_local_scale(state["scale"])
-            except Exception:
-                LOGGER.debug("Could not restore scale for %s", key, exc_info=True)
-
-            try:
                 if "visibility" in state and hasattr(obj, "set_visibility"):
                     obj.set_visibility(bool(state["visibility"]))
             except Exception:
@@ -367,6 +374,12 @@ class BananaBaseTask(BaseTask):
                         translation=state["translation"],
                         orientation=state["orientation"],
                     )
+                if "scale" in state and hasattr(obj, "set_local_scale"):
+                    # set_world_pose/set_local_pose can restore the authored
+                    # reference scale.  Apply the captured effective scale
+                    # after the pose so reset recovery does not shrink the
+                    # rigid asset back to source units.
+                    obj.set_local_scale(state["scale"])
                 # Placement/reset snapshots are captured at rest.  Keep the
                 # explicit zero fallback for old snapshots that predate
                 # velocity fields, while preserving a captured state when a
@@ -1001,7 +1014,9 @@ class BananaBaseTask(BaseTask):
 
         orientation = get_orientation(cfg.get("euler"), cfg.get("quaternion"))
         obj.set_local_pose(translation=cfg.get("translation"), orientation=orientation)
-        obj.set_local_scale(cfg.get("scale", [1.0, 1.0, 1.0]))
+        configured_scale = np.asarray(cfg.get("scale", [1.0, 1.0, 1.0]), dtype=float)
+        configured_scale *= float(getattr(obj, "asset_scale_correction", 1.0))
+        obj.set_local_scale(configured_scale)
         obj.set_visibility(cfg.get("visible", True))
 
         # Extra behavior per type
@@ -1141,6 +1156,50 @@ class BananaBaseTask(BaseTask):
             tgt = self._task_objects[cfg["target"]]
             if "sub_tgt_prim" in cfg:
                 tgt = SingleXFormPrim(prim_path=tgt.prim_path + cfg["sub_tgt_prim"])
+            if self._debug_reset_lifecycle:
+                try:
+                    obj_bbox = compute_bbox(obj.prim)
+                    tgt_bbox = compute_bbox(tgt.prim)
+                    obj_world = self._state_value_to_numpy(obj.get_world_pose()[0]).tolist()
+                    obj_scale = self._state_value_to_numpy(obj.get_local_scale()).tolist()
+                    xform_rows = []
+                    for prim in Usd.PrimRange(obj.prim):
+                        if not prim.IsA(UsdGeom.Xformable):
+                            continue
+                        xform_rows.append(
+                            {
+                                "path": str(prim.GetPath()),
+                                "translate": prim.GetAttribute("xformOp:translate").Get(),
+                                "scale": prim.GetAttribute("xformOp:scale").Get(),
+                            }
+                        )
+                        if len(xform_rows) >= 8:
+                            break
+                    LOGGER.warning(
+                        "[RegionDebug] object=%s target=%s obj_world=%s "
+                        "scale=%s usd=%s obj_bbox_z=(%.6f,%.6f) "
+                        "target_bbox_z=(%.6f,%.6f) stage_mpu=%s "
+                        "prim=%s xforms=%s",
+                        cfg["object"],
+                        cfg["target"],
+                        obj_world,
+                        obj_scale,
+                        getattr(obj, "usd_path", "<unknown>"),
+                        float(obj_bbox.min[2]),
+                        float(obj_bbox.max[2]),
+                        float(tgt_bbox.min[2]),
+                        float(tgt_bbox.max[2]),
+                        UsdGeom.GetStageMetersPerUnit(self.stage),
+                        str(obj.prim.GetPath()),
+                        xform_rows,
+                    )
+                except Exception as exc:
+                    LOGGER.warning(
+                        "[RegionDebug] object=%s target=%s pre_sample_error=%s",
+                        cfg["object"],
+                        cfg["target"],
+                        exc,
+                    )
             random_config = deepcopy(cfg.get("random_config", {}))
             sampling_cfg = cfg.get("sampling", {}) or {}
             if "keep_upright" not in random_config and "keep_upright" in sampling_cfg:
@@ -1173,6 +1232,25 @@ class BananaBaseTask(BaseTask):
                 sampler_fn = getattr(RandomRegionSampler, cfg["random_type"])
                 pose = sampler_fn(obj, tgt, **self._filter_sampler_random_config(sampler_fn, random_config))
                 self._set_sampled_world_pose(obj, pose)
+
+            if self._debug_reset_lifecycle:
+                try:
+                    sampled_translation = self._state_value_to_numpy(pose[0]).tolist()
+                    sampled_world = self._state_value_to_numpy(obj.get_world_pose()[0]).tolist()
+                    LOGGER.warning(
+                        "[RegionDebug] object=%s target=%s sampled=%s applied_world=%s",
+                        cfg["object"],
+                        cfg["target"],
+                        sampled_translation,
+                        sampled_world,
+                    )
+                except Exception as exc:
+                    LOGGER.warning(
+                        "[RegionDebug] object=%s target=%s post_sample_error=%s",
+                        cfg["object"],
+                        cfg["target"],
+                        exc,
+                    )
 
             # A placed RigidObject starts from rest.  Without this reset, a
             # previous failed episode can leave residual velocity on a fixed

@@ -58,12 +58,12 @@ def filter_collisions(
             for global_path in global_paths:
                 global_includes_rel.targetPathList.Append(global_path)
 
-            # filteredGroups rel
-            global_filtered_groups = Sdf.RelationshipSpec(global_collision_group, "physics:filteredGroups", False)
-            # Keep the same-group relation used by Isaac Sim's native Cloner
-            # implementation.  Under inverted filtering this preserves
-            # collisions among colliders collected by global_group.
-            global_filtered_groups.targetPathList.Append(global_collision_group_path)
+            # Leave the same-group relation in place for the inverted
+            # collision filter; cross-group relations below enable global
+            # objects to collide with each configured prim group.
+            global_filtered_groups = Sdf.RelationshipSpec(
+                global_collision_group, "physics:filteredGroups", False
+            )
 
         # set collision groups and filters
         for i, prim_path in enumerate(prim_paths):

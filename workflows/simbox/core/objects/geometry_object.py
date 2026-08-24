@@ -44,12 +44,71 @@ class GeometryObject(GeometryPrim):
 
         # ===== Initialize =====
         create_prim(prim_path=prim_path, usd_path=usd_path)
+        # Keep the GeometryPrim root at the imported prim.  The parent of a
+        # child asset is only the metrics-assembler reference for scale
+        # correction; using it as ``base_prim_path`` makes the collision
+        # manager claim the whole task subtree (including the floor).
+        self._asset_reference_prim_path = (
+            os.path.dirname(prim_path) if cfg.get("prim_path_child") else prim_path
+        )
+        configured_scale = cfg.get("scale")
+        if configured_scale is not None and not all(
+            abs(float(component) - 1.0) <= 1e-6 for component in configured_scale
+        ):
+            # A non-unit GeometryObject scale is an intentional asset fit
+            # (the arena table is one example), so do not reinterpret it as
+            # a legacy unit correction.
+            self.asset_scale_correction = 1.0
+        else:
+            self.asset_scale_correction = self._asset_scale_correction(usd_path)
         super().__init__(prim_path=prim_path, name=cfg["name"], *args, **kwargs)
         self.collision_proxy_path = None
         self._create_collision_proxy()
 
+    def _asset_scale_correction(self, usd_path):
+        """Cancel Isaac 6's duplicated unit scale on legacy references."""
+
+        try:
+            source_stage = Usd.Stage.Open(usd_path)
+            source_meters_per_unit = UsdGeom.GetStageMetersPerUnit(source_stage)
+            reference_prim = get_prim_at_path(self._asset_reference_prim_path)
+            scene_meters_per_unit = UsdGeom.GetStageMetersPerUnit(reference_prim.GetStage())
+            if source_meters_per_unit <= 0.0 or scene_meters_per_unit <= 0.0:
+                return 1.0
+
+            reference_scale = 1.0
+            found_scale = False
+            for op in UsdGeom.Xformable(reference_prim).GetOrderedXformOps():
+                if op.GetOpName() != "xformOp:scale":
+                    continue
+                if op.GetOpType() != UsdGeom.XformOp.TypeScale:
+                    continue
+                value = op.Get()
+                components = [float(value[index]) for index in range(3)]
+                if not all(abs(component - components[0]) <= 1e-6 for component in components):
+                    return 1.0
+                if abs(components[0]) <= 1e-12:
+                    return 1.0
+                reference_scale *= components[0]
+                found_scale = True
+            if not found_scale:
+                reference_scale = 1.0
+            return (
+                float(scene_meters_per_unit)
+                / float(source_meters_per_unit)
+                / reference_scale
+            )
+        except Exception:
+            LOGGER.debug(
+                "Could not determine asset unit scale for %s",
+                usd_path,
+                exc_info=True,
+            )
+            return 1.0
+
     def _create_collision_proxy(self):
         configured_collision = self.cfg.get("collision_enabled", None)
+        configured_approximation = self.cfg.get("collision_approximation", None)
         # Older pick-and-place arenas rely on the collider authored inside
         # ``table0/instance.usd``.  Isaac Sim 4 tolerated that legacy
         # convex-decomposition mesh as the only support surface, but Isaac
@@ -61,7 +120,9 @@ class GeometryObject(GeometryPrim):
             configured_collision is None
             and str(self.cfg.get("name", "")).strip().lower() == "table"
         )
-        if not bool(configured_collision) and not legacy_table_fallback:
+        if configured_collision is not None and not bool(configured_collision):
+            return
+        if not legacy_table_fallback and configured_approximation is None:
             return
 
         if legacy_table_fallback:
@@ -77,6 +138,9 @@ class GeometryObject(GeometryPrim):
             return
         if approximation == "bbox":
             self._create_bbox_collision_proxy()
+            return
+        if approximation == "openContainer":
+            self._create_open_container_collision_proxy()
             return
         if approximation in {"convexDecomposition", "convexHull", "meshSimplification"}:
             self._apply_mesh_collision_approximation(approximation)
@@ -142,6 +206,72 @@ class GeometryObject(GeometryPrim):
         UsdPhysics.CollisionAPI.Apply(collision_prim)
 
         if not bool(self.cfg.get("collision_visible", False)):
+            UsdGeom.Imageable(collision_prim).MakeInvisible()
+
+    def _create_open_container_collision_proxy(self):
+        """Replace a closed container mesh with a native open-box collider."""
+
+        self._disable_authored_mesh_collisions()
+
+        stage = self.prim.GetStage()
+        bbox_cache = UsdGeom.BBoxCache(
+            Usd.TimeCode.Default(),
+            [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy],
+            useExtentsHint=False,
+        )
+        bbox = bbox_cache.ComputeUntransformedBound(self.prim).ComputeAlignedBox()
+        min_point = bbox.GetMin()
+        max_point = bbox.GetMax()
+        min_x, min_y, min_z = (float(min_point[index]) for index in range(3))
+        max_x, max_y, max_z = (float(max_point[index]) for index in range(3))
+        size_x = max_x - min_x
+        size_y = max_y - min_y
+        size_z = max_z - min_z
+        if min(size_x, size_y, size_z) <= 0.0:
+            raise ValueError(f"Cannot create open-container collision for {self.name}: empty local bbox")
+
+        wall_thickness = float(self.cfg.get("open_container_wall_thickness", 0.02))
+        wall_thickness = min(wall_thickness, size_x * 0.25, size_z * 0.25)
+        if wall_thickness <= 0.0:
+            raise ValueError(
+                f"Cannot create open-container collision for {self.name}: invalid wall thickness"
+            )
+
+        center_x = (min_x + max_x) * 0.5
+        center_y = (min_y + max_y) * 0.5
+        center_z = (min_z + max_z) * 0.5
+        wall_height = size_y
+        inner_x = size_x - 2.0 * wall_thickness
+        inner_z = size_z - 2.0 * wall_thickness
+        bottom_at_max_y = str(self.cfg.get("open_container_bottom", "min_y")).strip().lower() == "max_y"
+        bottom_y = max_y - wall_thickness * 0.5 if bottom_at_max_y else min_y + wall_thickness * 0.5
+        boxes = (
+            ("bottom", (center_x, bottom_y, center_z),
+             (size_x, wall_thickness, size_z)),
+            ("wall_x_min", (min_x + wall_thickness * 0.5, center_y, center_z),
+             (wall_thickness, wall_height, size_z)),
+            ("wall_x_max", (max_x - wall_thickness * 0.5, center_y, center_z),
+             (wall_thickness, wall_height, size_z)),
+            ("wall_z_min", (center_x, center_y, min_z + wall_thickness * 0.5),
+             (inner_x, wall_height, wall_thickness)),
+            ("wall_z_max", (center_x, center_y, max_z - wall_thickness * 0.5),
+             (inner_x, wall_height, wall_thickness)),
+        )
+
+        self._collision_proxy_local_center = (center_x, center_y, center_z)
+        self._collision_proxy_local_size = (size_x, size_y, size_z)
+        collision_root_path = f"{self.prim_path}/open_container_collision"
+        UsdGeom.Scope.Define(stage, collision_root_path)
+        self.collision_proxy_path = f"{collision_root_path}/{boxes[0][0]}"
+
+        for name, center, size in boxes:
+            collision_geom = UsdGeom.Cube.Define(stage, f"{collision_root_path}/{name}")
+            collision_geom.CreateSizeAttr().Set(1.0)
+            collision_prim = collision_geom.GetPrim()
+            collision_xform = UsdGeom.Xformable(collision_prim)
+            collision_xform.AddTranslateOp().Set(center)
+            collision_xform.AddScaleOp().Set(size)
+            UsdPhysics.CollisionAPI.Apply(collision_prim)
             UsdGeom.Imageable(collision_prim).MakeInvisible()
 
     def create_native_support_collision_proxy(self, stage, collision_root_path: str, index: int):
@@ -293,6 +423,8 @@ class GeometryObject(GeometryPrim):
             "meshsimplification": "meshSimplification",
             "support_body_bbox": "supportBodyBBox",
             "supportbodybbox": "supportBodyBBox",
+            "open_container": "openContainer",
+            "opencontainer": "openContainer",
         }
         return aliases.get(value.replace("-", "_").lower(), value)
 
