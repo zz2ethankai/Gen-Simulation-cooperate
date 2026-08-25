@@ -471,6 +471,17 @@ class Place(BaseSkill):
                     "terminal_path_count": int(sum(path is not None for path in terminal_paths)),
                     "same_target_count": int(same_target_count),
                     "continuous": bool(options["continuous"]),
+                    "geometry": {
+                        "pre_world": geometry["pre_world"],
+                        "place_world": geometry["place_world"],
+                        "bbox_min": geometry["bbox_min"],
+                        "bbox_max": geometry["bbox_max"],
+                        "T_world_obj": self.T_world_obj,
+                        "T_world_ee": self.T_world_ee,
+                        "T_base_world": self.T_base_world,
+                        "T_obj_ee": self.T_obj_ee,
+                        "T_world_container": self.T_world_container,
+                    },
                     "pre_result": self._plan_summary(pre_result),
                     "terminal_result": self._plan_summary(terminal_result),
                 }

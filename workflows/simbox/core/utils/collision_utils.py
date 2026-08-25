@@ -64,6 +64,7 @@ def filter_collisions(
             global_filtered_groups = Sdf.RelationshipSpec(
                 global_collision_group, "physics:filteredGroups", False
             )
+            global_filtered_groups.targetPathList.Append(global_collision_group_path)
 
         # set collision groups and filters
         for i, prim_path in enumerate(prim_paths):

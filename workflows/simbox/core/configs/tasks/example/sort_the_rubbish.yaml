@@ -214,7 +214,7 @@ tasks:
                 filter_y_dir: ["forward", 60]
                 filter_z_dir: ["downward", 150]
                 pre_grasp_offset: 0.05
-                gripper_change_steps: 20
+                gripper_change_steps: 40
                 t_eps: 0.025
                 o_eps: 1
                 process_valid: True

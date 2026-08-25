@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from enum import Enum
@@ -807,6 +808,23 @@ class CollisionSceneManager:
         center_reference = relative.Transform(center)
         quaternion = transform.GetRotation().GetQuat()
         imaginary = quaternion.GetImaginary()
+        if (
+            os.environ.get("SIMBOX_DEBUG_COLLISION_GEOMETRY") == "1"
+            or os.environ.get("CUROBO_DEBUG_WORLD_COLLISION") == "1"
+        ):
+            LOGGER.warning(
+                "[CollisionGeometryDebug] path=%s reference=%s prim_type=%s "
+                "local_min=%s local_max=%s relative_scale=%s dims=%s "
+                "center_reference=%s",
+                prim_path,
+                reference_prim_path,
+                prim.GetTypeName(),
+                [float(value) for value in minimum],
+                [float(value) for value in maximum],
+                scale,
+                dims,
+                [float(value) for value in center_reference],
+            )
         return Cuboid(
             name=prim_path,
             pose=[

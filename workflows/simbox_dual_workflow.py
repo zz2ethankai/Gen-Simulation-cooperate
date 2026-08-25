@@ -361,7 +361,6 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         """
 
         prim_paths = []  # do not collide with each other
-        dynamic_object_paths = []  # collide with robot and global supports
         global_collision_paths = []  # collide with everything
         collision_root_path = "/World/collisions"
 
@@ -375,14 +374,22 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         for candidate in candidates:
             candidate_prim_path = self.task.root_prim_path + "/" + candidate["name"]
             global_collision_paths.append(candidate_prim_path)
-            if candidate.get("target_class") == "RigidObject":
-                # Give dynamic pick objects their own group so the robot can
-                # contact them.  Their global relation is removed below so
-                # they still collide with support geometry without belonging
-                # to two PhysX collision groups.
-                prim_paths.append(candidate_prim_path)
-                dynamic_object_paths.append(candidate_prim_path)
-            for neglect_collision_name in neglect_collision_names:
+            collision_filter_names = list(neglect_collision_names)
+            collision_approximation = str(candidate.get("collision_approximation", ""))
+            is_explicit_support_body = (
+                candidate.get("target_class") == "GeometryObject"
+                and collision_approximation.replace("_", "").lower() == "supportbodybbox"
+            )
+            if is_explicit_support_body and not any(
+                name in candidate["name"] for name in collision_filter_names
+            ):
+                # Referenced support meshes can remain visible in USD while
+                # their descendant shape is absent from the first PhysX
+                # collection expansion.  The explicit supportBodyBBox
+                # contract already provides a bounded native proxy; include
+                # it in the global group for dynamic-object contact too.
+                collision_filter_names.append(candidate["name"])
+            for neglect_collision_name in collision_filter_names:
                 if neglect_collision_name not in candidate["name"]:
                     continue
                 # Keep a neglected support fixture in global_group.  Dynamic
@@ -438,13 +445,6 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                         prim_paths.append(candidate_prim_path)
                     global_collision_paths.remove(candidate_prim_path)
 
-        # A collider may belong to only one PhysX collision group.  Keep
-        # dynamic objects in their per-object groups, then opt those groups
-        # back into the global support group after the common filter setup.
-        for dynamic_object_path in dynamic_object_paths:
-            if dynamic_object_path in global_collision_paths:
-                global_collision_paths.remove(dynamic_object_path)
-
         filter_collisions(
             self.stage,
             self.world.get_physics_context().prim_path,
@@ -452,23 +452,6 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             prim_paths,
             global_collision_paths,
         )
-        global_group_path = collision_root_path + "/global_group"
-        global_group = self.stage.GetPrimAtPath(global_group_path)
-        global_filtered_groups = (
-            global_group.GetRelationship("physics:filteredGroups")
-            if global_group.IsValid()
-            else None
-        )
-        for group_index, prim_path in enumerate(prim_paths):
-            if prim_path not in dynamic_object_paths:
-                continue
-            group_path = f"{collision_root_path}/group{group_index}"
-            group_prim = self.stage.GetPrimAtPath(group_path)
-            group_filtered_groups = group_prim.GetRelationship("physics:filteredGroups")
-            if group_filtered_groups:
-                group_filtered_groups.RemoveTarget(global_group_path)
-            if global_filtered_groups:
-                global_filtered_groups.RemoveTarget(group_path)
         if os.environ.get("INTERNDATA_DEBUG_RESET_LIFECYCLE") == "1":
             collision_group_debug = {}
             collision_root = self.stage.GetPrimAtPath(collision_root_path)
@@ -2175,7 +2158,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             runtime.arm_name,
             command.active_object if allow_target_robot_contact else None,
         )
-        _, unexpected_finger_contact = (
+        allowed_finger_contact, unexpected_finger_contact = (
             self.collision_scene_manager.get_finger_environment_contact_forces(
                 runtime.name,
                 runtime.arm_name,
@@ -2183,6 +2166,32 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             )
         )
         unexpected_contact = max(unexpected_contact, unexpected_finger_contact)
+        if (
+            os.environ.get("SIMBOX_DEBUG_PICK") == "1"
+            and command.phase == MotionPhase.TERMINAL_GRASP_APPROACH
+            and command.active_object
+            and (dynamic_changed or allowed_finger_contact > 0.0)
+        ):
+            LOGGER.warning(
+                "[PickDebug] terminal contact object=%s dynamic_changed=%s "
+                "allowed_finger_contact_n=%s unexpected_finger_contact_n=%s details=%s",
+                command.active_object,
+                bool(dynamic_changed),
+                float(allowed_finger_contact),
+                float(unexpected_finger_contact),
+                self._debug_finger_contacts(runtime),
+            )
+        if (
+            dynamic_changed
+            and command.phase == MotionPhase.TERMINAL_GRASP_APPROACH
+            and command.allow_target_finger_contact
+            and allowed_finger_contact > 0.0
+        ):
+            # Target motion caused by the explicitly allowed finger contact is
+            # part of the grasp approach contract.  Keep the safety check for
+            # unrelated robot/world contact and for target motion without any
+            # measured finger contact.
+            dynamic_changed = False
         allowed_support_contact = 0.0
         unexpected_object_contact = 0.0
         attached_slip_translation = 0.0
@@ -2290,6 +2299,14 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         # all-entity behavior for that diagnostic case.
         if not relevant_entities:
             return changed
+        # During terminal grasp approach the active target is intentionally
+        # allowed to move under finger contact.  Its pose is still synced to
+        # the exact native collider above, but that expected motion must not
+        # invalidate the approach path as if an unrelated obstacle moved.
+        if command.phase is MotionPhase.TERMINAL_GRASP_APPROACH:
+            changed = changed - {
+                str(command.active_object)
+            } if command.active_object else changed
         return changed & relevant_entities
 
     def _execution_safety_precheck(self, step_id: int, action_dict=None) -> bool:

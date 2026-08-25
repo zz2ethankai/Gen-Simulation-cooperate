@@ -62,6 +62,15 @@ def test_split_aloha_named_groups_match_bench21_runtime_asset():
     assert groups["right_gripper"] == [26]
 
 
+def test_split_aloha_compatibility_indices_match_active_virtual_asset():
+    config = _split_aloha_config()
+
+    assert config["left_joint_indices"] == [4, 6, 8, 10, 12, 14]
+    assert config["right_joint_indices"] == [5, 7, 9, 11, 13, 15]
+    assert config["left_gripper_indices"] == [16]
+    assert config["right_gripper_indices"] == [18]
+
+
 def test_named_resolution_tracks_reordered_asset_instead_of_legacy_indices():
     dof_names = ["unrelated", "arm_2", "gripper", "arm_1"]
     config = {

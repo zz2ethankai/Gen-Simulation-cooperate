@@ -21,12 +21,14 @@ solver_position_iteration_count: 128
 solver_velocity_iteration_count: 4
 stabilization_threshold: 0.005
 
-# Provisional indices are replaced from joint names after Isaac initializes the
-# virtual articulation. They remain present for config-schema compatibility.
-left_joint_indices: [1, 8, 15, 18, 20, 22]
-right_joint_indices: [2, 9, 16, 19, 21, 23]
-left_gripper_indices: [24]
-right_gripper_indices: [26]
+# Compatibility indices for the active split_aloha_mid_360_virtual asset.
+# Its runtime DOF order places the three virtual-base joints first, then the
+# interleaved left/right arm joints. Joint names below remain authoritative so
+# an asset with a different valid DOF order is still resolved safely.
+left_joint_indices: [4, 6, 8, 10, 12, 14]
+right_joint_indices: [5, 7, 9, 11, 13, 15]
+left_gripper_indices: [16]
+right_gripper_indices: [18]
 left_joint_names: [fl_joint1, fl_joint2, fl_joint3, fl_joint4, fl_joint5, fl_joint6]
 right_joint_names: [fr_joint1, fr_joint2, fr_joint3, fr_joint4, fr_joint5, fr_joint6]
 left_gripper_joint_names: [fl_joint7]

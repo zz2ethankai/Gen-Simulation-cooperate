@@ -463,7 +463,10 @@ class TemplateRobot(Robot):
             return
         self._sync_manipulation_base_hold_state()
         config = strategy.config
-        LOGGER.warning(
+        # Hold activation is an expected manipulation boundary, not a
+        # recovery or configuration warning. Keep the detailed audit visible
+        # at INFO while reserving WARNING for a failed hold operation.
+        LOGGER.info(
             "[BaseHold] robot=%s joints=%s indices=%s targets=%s kp=%.1f kd=%.1f max_effort=%.1f",
             self.name,
             list(config.joint_names),

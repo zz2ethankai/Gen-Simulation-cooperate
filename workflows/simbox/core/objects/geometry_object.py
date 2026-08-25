@@ -44,67 +44,42 @@ class GeometryObject(GeometryPrim):
 
         # ===== Initialize =====
         create_prim(prim_path=prim_path, usd_path=usd_path)
-        # Keep the GeometryPrim root at the imported prim.  The parent of a
-        # child asset is only the metrics-assembler reference for scale
-        # correction; using it as ``base_prim_path`` makes the collision
-        # manager claim the whole task subtree (including the floor).
-        self._asset_reference_prim_path = (
-            os.path.dirname(prim_path) if cfg.get("prim_path_child") else prim_path
-        )
-        configured_scale = cfg.get("scale")
-        if configured_scale is not None and not all(
-            abs(float(component) - 1.0) <= 1e-6 for component in configured_scale
-        ):
-            # A non-unit GeometryObject scale is an intentional asset fit
-            # (the arena table is one example), so do not reinterpret it as
-            # a legacy unit correction.
-            self.asset_scale_correction = 1.0
-        else:
-            self.asset_scale_correction = self._asset_scale_correction(usd_path)
         super().__init__(prim_path=prim_path, name=cfg["name"], *args, **kwargs)
+        self._apply_configured_static_physics()
         self.collision_proxy_path = None
         self._create_collision_proxy()
 
-    def _asset_scale_correction(self, usd_path):
-        """Cancel Isaac 6's duplicated unit scale on legacy references."""
+    def _apply_configured_static_physics(self):
+        """Honor static/kinematic flags on imported geometry bodies."""
 
-        try:
-            source_stage = Usd.Stage.Open(usd_path)
-            source_meters_per_unit = UsdGeom.GetStageMetersPerUnit(source_stage)
-            reference_prim = get_prim_at_path(self._asset_reference_prim_path)
-            scene_meters_per_unit = UsdGeom.GetStageMetersPerUnit(reference_prim.GetStage())
-            if source_meters_per_unit <= 0.0 or scene_meters_per_unit <= 0.0:
-                return 1.0
+        if not (
+            bool(self.cfg.get("static", False))
+            or bool(self.cfg.get("kinematic", False))
+            or self.cfg.get("rigidbody", None) is False
+        ):
+            return
 
-            reference_scale = 1.0
-            found_scale = False
-            for op in UsdGeom.Xformable(reference_prim).GetOrderedXformOps():
-                if op.GetOpName() != "xformOp:scale":
-                    continue
-                if op.GetOpType() != UsdGeom.XformOp.TypeScale:
-                    continue
-                value = op.Get()
-                components = [float(value[index]) for index in range(3)]
-                if not all(abs(component - components[0]) <= 1e-6 for component in components):
-                    return 1.0
-                if abs(components[0]) <= 1e-12:
-                    return 1.0
-                reference_scale *= components[0]
-                found_scale = True
-            if not found_scale:
-                reference_scale = 1.0
-            return (
-                float(scene_meters_per_unit)
-                / float(source_meters_per_unit)
-                / reference_scale
+        kinematic = bool(self.cfg.get("static", False) or self.cfg.get("kinematic", False))
+        rigid_body_enabled = kinematic or self.cfg.get("rigidbody", None) is not False
+        rigid_bodies = [
+            prim
+            for prim in Usd.PrimRange(self.prim)
+            if prim.IsValid() and prim.HasAPI(UsdPhysics.RigidBodyAPI)
+        ]
+        for prim in rigid_bodies:
+            rigid_body = UsdPhysics.RigidBodyAPI(prim)
+            rigid_body.CreateRigidBodyEnabledAttr().Set(rigid_body_enabled)
+            rigid_body.CreateKinematicEnabledAttr().Set(kinematic and rigid_body_enabled)
+            if kinematic:
+                rigid_body.CreateVelocityAttr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+                rigid_body.CreateAngularVelocityAttr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        if rigid_bodies:
+            LOGGER.info(
+                "[GeometryObject] configured static physics name=%s bodies=%s kinematic=%s",
+                self.name,
+                [str(prim.GetPath()) for prim in rigid_bodies],
+                kinematic,
             )
-        except Exception:
-            LOGGER.debug(
-                "Could not determine asset unit scale for %s",
-                usd_path,
-                exc_info=True,
-            )
-            return 1.0
 
     def _create_collision_proxy(self):
         configured_collision = self.cfg.get("collision_enabled", None)

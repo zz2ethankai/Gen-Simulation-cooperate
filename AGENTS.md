@@ -127,3 +127,11 @@
 - For PnP/CuRobo planning regressions, inspect the earliest working implementation and the commit diff before changing current behavior; preserve the original project contract unless runtime evidence requires a targeted correction.
 - After every suspected bug-point fix, run the project-prescribed real single-episode wrapper and inspect the fresh first-failure log before making the next change.
 - Static compilation and unit/contract checks are useful gates, but completion requires a fresh runtime result with `Task is successful, mode=plan_with_render` and no `[LmdbLogger] Episode failed`.
+
+## Cross-Task Collision Proxy Contract
+
+- Preserve the original asset collision/proxy contract. Do not replace a source collider with a newly invented box, delete or reshape an existing proxy, or make a debug proxy authoritative merely to solve one task.
+- Scene-8 and legacy Sort the Rubbish are a compatibility pair. Any rigid-object scale/parser/collision-group change must use the same compatible path for both and preserve native collision shapes, exact attach paths, PhysX contacts, and CuRobo addressability.
+- A visible/generated `collision_proxy`, a native USD `CollisionAPI` mesh, a PhysX shape, and a CuRobo in-memory geometry are different layers. Do not call a collision volume missing from a video or one audit field alone; verify all relevant layers.
+- Before changing collision parsing, compare the earliest working implementation and both task assets. After every suspected fix, run real single-episode Scene-8 and Sort the Rubbish validation, inspect the first-failure logs, and inspect fresh video frames when rendering is enabled.
+- A task-specific workaround, newly added box, hidden fallback, or YAML exception is not an acceptable substitute for a cross-task-compatible fix.

@@ -6,6 +6,8 @@ commands consumed by the CuRobo controller.
 """
 
 from copy import deepcopy
+import logging
+import os
 
 import numpy as np
 from core.planning.domain_types import BatchPlanResult, CollisionPolicy, PlanResult
@@ -18,6 +20,9 @@ from isaacsim.core.api.robots.robot import Robot
 from isaacsim.core.api.tasks import BaseTask
 from isaacsim.core.utils.transformations import pose_from_tf_matrix, tf_matrix_from_pose
 from omegaconf import DictConfig
+
+
+LOGGER = logging.getLogger("de_logger")
 
 
 @register_skill
@@ -375,6 +380,19 @@ class Pick(BaseSkill):
         pre_mask &= pre_path_mask
         terminal_mask &= terminal_path_mask | terminal_hold_mask
         valid = np.flatnonzero(pre_mask & terminal_mask).astype(int)
+        if os.environ.get("SIMBOX_DEBUG_PICK") == "1":
+            LOGGER.warning(
+                "[PickDebug] plan_masks count=%d pre=%s terminal=%s "
+                "pre_paths=%s terminal_paths=%s hold=%s valid=%s valid_raw=%s",
+                count,
+                np.flatnonzero(pre_mask).astype(int).tolist(),
+                np.flatnonzero(terminal_mask).astype(int).tolist(),
+                np.flatnonzero(pre_path_mask).astype(int).tolist(),
+                np.flatnonzero(terminal_path_mask).astype(int).tolist(),
+                np.flatnonzero(terminal_hold_mask).astype(int).tolist(),
+                valid.tolist(),
+                [int(self._candidate_raw_indices[index]) for index in valid],
+            )
         selected = self._select_grasp_index(
             positions, orientations, transforms, valid
         )
@@ -514,6 +532,41 @@ class Pick(BaseSkill):
             return
 
         index = int(result["selected_grasp_index"])
+        if os.environ.get("SIMBOX_DEBUG_PICK") == "1":
+            object_translation, object_orientation = self._object_world_pose()
+            raw_index = (
+                int(self._candidate_raw_indices[index])
+                if index < len(self._candidate_raw_indices)
+                else None
+            )
+            selected_transform = None
+            approach_vector = None
+            if raw_index is not None:
+                all_transforms = np.asarray(self.get_ee_poses("armbase"), dtype=float)
+                if 0 <= raw_index < len(all_transforms):
+                    selected_transform = all_transforms[raw_index]
+                    approach_vector = selected_transform[:3, self._axis_from_config(self.skill_runtime)]
+            LOGGER.warning(
+                "[PickDebug] object=%s usd=%s arm=%s approach_axis=%s "
+                "candidate_index=%s raw_index=%s score=%s object_world=%s "
+                "object_orientation=%s arm_base=%s pregrasp=%s grasp=%s "
+                "grasp_orientation=%s approach_vector=%s proxy=%s",
+                object_name,
+                getattr(self.pick_obj, "usd_path", None),
+                self.lr_arm,
+                self._axis_from_config(self.skill_runtime),
+                index,
+                raw_index,
+                result["selected_grasp_score"],
+                np.asarray(object_translation, dtype=float).tolist(),
+                np.asarray(object_orientation, dtype=float).tolist(),
+                np.asarray(self._arm_base_transform(), dtype=float).tolist(),
+                np.asarray(state["pregrasp_positions"][index], dtype=float).tolist(),
+                np.asarray(state["grasp_positions"][index], dtype=float).tolist(),
+                np.asarray(state["grasp_orientations"][index], dtype=float).tolist(),
+                None if approach_vector is None else np.asarray(approach_vector, dtype=float).tolist(),
+                getattr(self.pick_obj, "_physics_collision_proxy_path", None),
+            )
         post_offset = float(
             np.random.uniform(
                 self.skill_cfg.get("post_grasp_offset_min", 0.05),

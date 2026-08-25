@@ -617,6 +617,41 @@ class BananaBaseTask(BaseTask):
         entries = []
         for obj in self._iter_rigid_objects():
             entry = {"key": self._rigid_object_state_key(obj)}
+            prim_view = getattr(obj, "_prim_view", None)
+            if prim_view is not None:
+                physics_view = getattr(prim_view, "_physics_view", None)
+                entry["physics_view_bound"] = physics_view is not None
+                entry["physics_view_type"] = (
+                    None if physics_view is None else type(physics_view).__name__
+                )
+                entry["physics_num_shapes"] = getattr(prim_view, "_num_shapes", None)
+            try:
+                entry["local_scale"] = self._state_value_to_numpy(obj.get_local_scale()).tolist()
+            except Exception as exc:
+                entry["local_scale_error"] = repr(exc)
+            proxy_path = getattr(obj, "_physics_collision_proxy_path", None)
+            if proxy_path:
+                proxy_prim = get_prim_at_path(proxy_path)
+                proxy_entry = {
+                    "path": proxy_path,
+                    "valid": bool(proxy_prim.IsValid()),
+                }
+                if proxy_prim.IsValid():
+                    collision_enabled = proxy_prim.GetAttribute("physics:collisionEnabled")
+                    proxy_entry["collision_enabled"] = (
+                        None if not collision_enabled.IsValid() else collision_enabled.Get()
+                    )
+                    try:
+                        proxy_bbox = UsdGeom.BBoxCache(
+                            Usd.TimeCode.Default(),
+                            [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy],
+                            useExtentsHint=False,
+                        ).ComputeWorldBound(proxy_prim).ComputeAlignedBox()
+                        proxy_entry["world_bbox_min"] = [float(value) for value in proxy_bbox.GetMin()]
+                        proxy_entry["world_bbox_max"] = [float(value) for value in proxy_bbox.GetMax()]
+                    except Exception as exc:
+                        proxy_entry["world_bbox_error"] = repr(exc)
+                entry["collision_proxy"] = proxy_entry
             try:
                 world_translation, world_orientation = obj.get_world_pose()
                 entry["world"] = self._state_value_to_numpy(world_translation).tolist()

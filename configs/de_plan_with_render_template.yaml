@@ -4,7 +4,7 @@ load_stage:
     type: env_loader
     args:
       workflow_type: SimBoxDualWorkFlow
-      cfg_path: workflows/simbox/core/configs/tasks/example/sort_the_rubbish.yaml
+      cfg_path: InternDataAssets/assets/custom/scene_8/01_kitchen/assets/basic/kitchen_apple_orange_to_tray/simbox_task.yaml
       simulator:
         physics_dt: 1/30                   # Physics update rate
         rendering_dt: 1/30                 # Render update rate
@@ -55,11 +55,11 @@ plan_with_render_stage:
   plan_with_render:                        # Plan and render in a single stage
     type: plan_with_render
     args:
-      emit_obs_on_failure: false        # Strict validation must not hide retry/reset failures
+      emit_obs_on_failure: true         # Strict validation must not hide retry/reset failures
       failure_obs_length: 1
 store_stage:
   writer:                                  # Data writer
     type: env_writer
     args:
       batch_async: true                    # Async writes (better perf, more memory)
-      output_dir: output/${name}/          # Output directory
+      output_dir: output/${name}/          # Output directory/status
