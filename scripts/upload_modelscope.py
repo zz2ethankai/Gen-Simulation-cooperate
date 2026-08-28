@@ -20,13 +20,17 @@ REPO_TYPE = "dataset"
 PATH_IN_REPO = "InternDataAssets_7z"
 COMMIT_MESSAGE = "Upload split 7z InternDataAssets archive"
 EXCLUDED_SCENE_ASSETS = [
+    "art",
     "assets_addition",
     "background_textures",
+    "basic",
     "pick_and_place",
     "dark_table_textures",
-    # "floor_textures",
+    "envmap_lib",
+    "floor_textures",
     "home_scenes",
     "light_table_textures",
+    "long_horizon",
     "table0",
     "table_textures",
     "instance.usd",
@@ -56,8 +60,9 @@ def manifest_payload() -> dict[str, object]:
         "excluded_scene_assets": EXCLUDED_SCENE_ASSETS,
         "excluded_top_level_assets": EXCLUDED_TOP_LEVEL_ASSETS,
         "kept_assets_note": (
-            "Keeps scene assets under InternDataAssets/assets and manages "
-            "CuRobo through its separate Git repository."
+            "Keeps only InternDataAssets/assets/custom and robot assets under "
+            "InternDataAssets/robots; manages CuRobo through its separate Git "
+            "repository."
         ),
     }
 

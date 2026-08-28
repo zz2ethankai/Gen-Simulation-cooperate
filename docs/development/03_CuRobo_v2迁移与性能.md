@@ -8,6 +8,38 @@
 >
 > 运行时：当前开发容器使用 Isaac 自带 Warp `1.13.0`。当前方案没有把 Warp 固定为 `1.12.1`。
 
+## 资产来源与安装边界（2026-08-28）
+
+当前资产分为两条独立来源：
+
+- **ModelScope**：只提供 `InternDataAssets/assets/custom`、
+  `InternDataAssets/robots` 和 `InternDataAssets/panda_drake`。其他场景、任务、
+  纹理资产，以及 `curobo`/`curobov2` 都不进入 ModelScope 压缩包。
+- **Git**：CuRobo v2 使用独立仓库
+  `https://github.com/MaxDYF/curobo.git`，检出目录必须是
+  `InternDataAssets/curobov2`。迁移后的项目自定义配置、URDF、mesh 和 sphere
+  数据位于 `InternDataAssets/curobov2/curobo/content/custom/`。
+
+全新环境的安装顺序：
+
+```bash
+python3 scripts/download_modelscope.py --token <MODEL_SCOPE_TOKEN>
+git clone https://github.com/MaxDYF/curobo.git InternDataAssets/curobov2
+test -d InternDataAssets/assets/custom
+test -d InternDataAssets/robots
+test -f InternDataAssets/curobov2/curobo/__init__.py
+```
+
+运行时直接挂载和导入 `InternDataAssets/curobov2`，不依赖旧的
+`InternDataAssets/curobo` checkout，也不要求 ModelScope 创建 CuRobo 软链接。
+维护 ModelScope 资产时可使用：
+
+```bash
+python3 scripts/upload_modelscope.py --token "$MODELSCOPE_TOKEN"
+```
+
+上传脚本会按照上述边界排除两个 CuRobo checkout。
+
 ## 背景
 
 旧运行时依赖 CuRobo v1 的批量语义和兼容 API，普通单目标查询也要经过 batch 路径，重复目标 padding、每次 world/attachment 变化都清空重建，性能与正确性都不满足要求。迁移目标是删除核心 v1 兼容层，改用 vendored native v2。

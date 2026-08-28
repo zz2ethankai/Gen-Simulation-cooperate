@@ -42,6 +42,12 @@ skill 参数表只在 01_Skill_API.md 保留，02、03 通过交叉引用指向�
 - 分析/对接报告：`benchmark1_asset_inventory.md`、`benchmark_vs_standard_usd_stage_dump.md`、`capx_integration_feasibility.md`、`usd_structure_comparison.md`、`Bench2.1_资产问题与制造方对接建议.md`
 - 遗留：`ASSETS_ADDITION_TASK_TODO.md`、`MERGE_TODO.md`、`data_generation/`、`images/`
 
+## 安装与部署
+
+- [英文快速开始](../README.md)：ModelScope 场景/机器人资产与 CuRobo v2 Git checkout 的安装顺序。
+- [中文快速开始](../README-CN.md)：同一套安装、校验和 Docker 启动流程。
+- [CuRobo v2 迁移与资产边界](development/03_CuRobo_v2迁移与性能.md)：运行时来源、custom 数据和仓库职责。
+
 ## 约定
 
 - API 文档核对日期与代码基线写在各文档开头；改代码后需要同步更新对应文档。

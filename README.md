@@ -33,9 +33,10 @@ InternDataEngine is a synthetic data generation engine for embodied AI that powe
 
 ## 🚀 Quickstart
 
-The local Docker workflow depends on the full `InternDataAssets/` directory.
-Install the repository in this order so the Docker build can find
-`InternDataAssets/curobo` and SimBox can resolve its asset links.
+The local Docker workflow depends on scene/robot assets under
+`InternDataAssets/` and the CuRobo v2 checkout at
+`InternDataAssets/curobov2`. Scene assets are downloaded from ModelScope;
+CuRobo v2 is managed separately by Git.
 
 ### 1. System prerequisites
 
@@ -43,10 +44,10 @@ Install the repository in this order so the Docker build can find
 - Docker Engine with Compose v2
 - NVIDIA Container Toolkit
 - Python 3.10+ on the host for the asset download helper
+- Git
 - `7z` command line tool
-- Enough disk space for the asset archive, extracted assets, Docker images, and
-  Isaac Sim caches. The current extracted `InternDataAssets/` tree is about
-  200 GB.
+- Enough disk space for the selected assets, CuRobo checkout, Docker images,
+  and Isaac Sim caches.
 
 Quick checks:
 
@@ -61,7 +62,7 @@ On Ubuntu, install missing host tools with:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y p7zip-full python3-pip
+sudo apt-get install -y git p7zip-full python3-pip
 python3 -m pip install -U modelscope
 ```
 
@@ -74,16 +75,27 @@ python3 scripts/download_modelscope.py --token <MODEL_SCOPE_TOKEN>
 ```
 
 The script downloads `MinMaxMex/InterndataAssets/InternDataAssets_7z`, extracts
-`InternDataAssets/`, and creates the required SimBox relative symlinks:
+`InternDataAssets/`, and creates the scene and `panda_drake` SimBox symlinks.
+The ModelScope archive currently contains `assets/custom`, robot assets under
+`robots/`, and `panda_drake`; other scene/task assets and both CuRobo
+checkouts are excluded.
 
 ```text
 workflows/simbox/assets -> ../../InternDataAssets/assets
-workflows/simbox/curobo -> ../../InternDataAssets/curobo
 workflows/simbox/panda_drake -> ../../InternDataAssets/panda_drake
 ```
 
 It refuses to overwrite an existing `InternDataAssets/` directory. If you need
 to reinstall assets, move or remove the old directory first.
+
+Clone the CuRobo v2 repository separately after the ModelScope download:
+
+```bash
+git clone https://github.com/MaxDYF/curobo.git InternDataAssets/curobov2
+```
+
+The runtime uses `InternDataAssets/curobov2` directly. It does not download or
+require the legacy `InternDataAssets/curobo` checkout.
 
 ### 3. Verify the checkout
 
@@ -91,10 +103,11 @@ Run these checks before building Docker images:
 
 ```bash
 test -d InternDataAssets/assets
-test -d InternDataAssets/curobo
+test -d InternDataAssets/assets/custom
+test -d InternDataAssets/robots
+test -f InternDataAssets/curobov2/curobo/__init__.py
 test -d InternDataAssets/panda_drake
 test -L workflows/simbox/assets
-test -L workflows/simbox/curobo
 test -L workflows/simbox/panda_drake
 ```
 
