@@ -30,7 +30,7 @@ class Approach_Rotate(BaseSkill):
         self.rotate_cfg = self.skill_cfg.get("rotate", None)
 
         self.T_world_base = get_relative_transform(
-            get_prim_at_path(self.skill_runtime.robot_base_path), get_prim_at_path(self.task.root_prim_path)
+            get_prim_at_path(self.skill_runtime.setup.robot_base_path), get_prim_at_path(self.task.root_prim_path)
         )
 
         self.manip_list = []
@@ -55,7 +55,7 @@ class Approach_Rotate(BaseSkill):
 
     def getTgtPose(self):
 
-        T_world_ee_cur = self.T_world_base @ tf_matrix_from_pose(*self.skill_runtime.ee_pose())
+        T_world_ee_cur = self.T_world_base @ tf_matrix_from_pose(*self.skill_runtime.execution.get_ee_pose())
         T_world_move_obj_cur = tf_matrix_from_pose(*self.move_obj.get_world_pose())
 
         if self.skill_cfg.get("obj_axis_offset", None):
@@ -133,7 +133,7 @@ class Approach_Rotate(BaseSkill):
         return q_world_move_obj_tgt
 
     def is_feasible(self, th=5):
-        return self.skill_runtime.num_plan_failed <= th
+        return self.skill_runtime.execution.state.num_plan_failed <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
@@ -147,7 +147,7 @@ class Approach_Rotate(BaseSkill):
         return len(self.manip_list) == 0
 
     def is_success(self):
-        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.ee_pose()
+        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.execution.get_ee_pose()
         distance = np.linalg.norm(p_base_ee_cur - self.p_base_ee_tgt)
         flag = (distance < self.success_threshold_move) and (len(self.manip_list) == 0)
         if self.rotate_cfg:

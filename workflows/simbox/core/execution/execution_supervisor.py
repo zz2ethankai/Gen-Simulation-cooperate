@@ -30,9 +30,9 @@ class ExecutionSupervisor:
 
     @staticmethod
     def _execution_status(runtime):
-        """Read the detailed execution snapshot from the typed runtime port."""
+        """Read the detailed execution snapshot from the typed runtime."""
 
-        return runtime.execution_status()
+        return runtime.execution.execution_status()
 
     @staticmethod
     def _status_value(status, name, default=None):
@@ -58,7 +58,8 @@ class ExecutionSupervisor:
     def _hold(cls, runtime, reason: str):
         """Emit a typed measured hold; no legacy controller fallback."""
 
-        return runtime.hold(reason)
+        del reason
+        return runtime.execution.hold_action()
 
     def is_holding(self, runtime) -> bool:
         return self.controller_key(runtime) in self.holds
@@ -77,7 +78,7 @@ class ExecutionSupervisor:
             raise TypeError("ExecutionSupervisor accepts MotionPhaseCommand only")
         runtime = skill.skill_runtime
         if runtime is None:
-            raise RuntimeError("ExecutionSupervisor requires a bound SkillRuntimePort")
+            raise RuntimeError("ExecutionSupervisor requires a bound typed runtime")
         phase_key = (id(skill), id(command))
         replan_index = self.replan_counts.get(phase_key, 0)
         replan_limit = self._replan_limit(command)
@@ -104,7 +105,7 @@ class ExecutionSupervisor:
             replan_allowed=bool(replan_allowed) and replan_index < replan_limit,
         )
         if decision == SafetyDecision.ABORT:
-            runtime.clear_plan_and_hold()
+            runtime.execution.clear_plan_and_hold()
             if (
                 command.candidate_replan_limit is not None
                 and replan_index >= replan_limit
@@ -117,10 +118,10 @@ class ExecutionSupervisor:
                 )
             self.failure_reason = self.monitor.events[-1].trigger
         elif decision == SafetyDecision.HOLD_AND_REPLAN:
-            runtime.clear_plan_and_hold()
+            runtime.execution.clear_plan_and_hold()
             # Cached terminal paths start at the original pre-grasp endpoint;
             # recovery must plan from the measured hold state.
-            command.params.pop("preplanned_joint_path", None)
+            command.preplanned_joint_path = None
             # A skill may own a phase-specific cached path that cannot be
             # lazily rebuilt by TemplateController.forward().  CARRY_HOME is
             # one such phase: it must keep the attached object and the same
@@ -184,7 +185,7 @@ class ExecutionSupervisor:
         key = self.controller_key(runtime)
         remaining = self.holds.get(key)
         if remaining is None:
-            return runtime.execute(command)
+            return runtime.execution.forward_phase_command(command)
         action = self._hold(runtime, "execution_recovery_hold")
         remaining -= 1
         if remaining <= 0:

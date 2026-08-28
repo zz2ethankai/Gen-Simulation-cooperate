@@ -16,12 +16,9 @@ if str(SIMBOX_ROOT) not in sys.path:
     sys.path.insert(0, str(SIMBOX_ROOT))
 
 from core.planning.config_contract import (  # noqa: E402
-    DeprecatedPlanningParameterWarning,
     PASSTHROUGH_MODE,
     PHYSICS_SCHEMA_MODE,
     canonicalize_planning_config,
-    derive_batch_capabilities,
-    reset_deprecated_planning_warnings,
     resolve_collision_world_mode,
     resolve_skill_collision_world_mode,
     validate_planning_contract,
@@ -124,9 +121,7 @@ def test_planning_exclusions_are_exact_task_entity_names():
         validate_planning_exclusions(["table", "table"])
 
 
-def test_old_fields_are_ignored_and_warn_once_per_path_and_field(tmp_path):
-    reset_deprecated_planning_warnings()
-    config_path = tmp_path / "task.yaml"
+def test_old_world_fields_are_rejected_instead_of_ignored():
     task = {
         "planning": {
             "collision_world": {
@@ -144,7 +139,6 @@ def test_old_fields_are_ignored_and_warn_once_per_path_and_field(tmp_path):
                                 "objects": ["a"],
                                 "ignore_substring": ["table"],
                                 "test_mode": "ik",
-                                "use_batch": False,
                             }
                         ],
                         "right": [],
@@ -153,22 +147,8 @@ def test_old_fields_are_ignored_and_warn_once_per_path_and_field(tmp_path):
             }
         ],
     }
-    with warnings.catch_warnings(record=True) as got:
-        warnings.simplefilter("always")
-        first = canonicalize_planning_config(task, config_path=config_path)
-        second = canonicalize_planning_config(task, config_path=config_path)
-    assert first["planning"]["collision_world"]["mode"] == PHYSICS_SCHEMA_MODE
-    assert "exact_exclusions" not in first["planning"]["collision_world"]
-    assert first["planning"]["planning_exclusions"] == []
-    assert second["planning"]["collision_world"]["mode"] == PHYSICS_SCHEMA_MODE
-    values = [item for item in got if isinstance(item.message, DeprecatedPlanningParameterWarning)]
-    assert sorted(str(item.message).split("parameter '")[1].split("'")[0] for item in values) == [
-        "exact_exclusions",
-        "ignore_substring",
-        "mode",
-        "test_mode",
-        "use_batch",
-    ]
+    with pytest.raises(ValueError, match="only supported"):
+        canonicalize_planning_config(task)
 
 
 def test_legacy_neglect_names_remain_inert_for_planner_contract():
@@ -192,75 +172,24 @@ def test_canonical_exact_planning_exclusions_are_preserved_over_legacy_names():
 
     assert canonical["planning"]["planning_exclusions"] == ["table"]
     assert canonical["neglect_collision_names"] == ["legacy_substring"]
-
-
-def test_batch_capability_is_derived_from_dag_not_robot_flags():
-    task = {
-        "robots": [{"name": "robot", "use_batch": False}],
-        "skills": [
-            {
-                "robot": [
-                    {
-                        "left": [
-                            {"id": "nav", "name": "navigate"},
-                            {"id": "pick", "name": "pick", "objects": ["a"]},
-                        ],
-                        "right": [{"id": "hold", "name": "observe_hold"}],
-                    }
-                ]
-            }
-        ],
-    }
-    capabilities = derive_batch_capabilities(task)
-    assert capabilities[("robot", "left")] is True
-    assert capabilities[("robot", "right")] is False
-
-
-def test_all_non_manipulation_skills_are_passthrough_and_do_not_enable_batch():
-    task = {
-        "skills": [
-            {
-                "robot": [
-                    {
-                        "left": [
-                            {"id": name, "name": name}
-                            for name in ("navigate", "scan", "track")
-                        ],
-                        "right": [
-                            {"id": name, "name": name}
-                            for name in ("wait", "observe_hold")
-                        ],
-                    }
-                ]
-            }
-        ]
-    }
-    capabilities = derive_batch_capabilities(task)
-    assert all(value is False for value in capabilities.values())
-
-
 def test_all_task_yaml_documents_validate_the_physics_contract():
     """Validate every task under the repository's ``tasks[0]`` wrapper."""
 
     task_root = ROOT / "workflows" / "simbox" / "core" / "configs" / "tasks"
     task_files = []
     task_count = 0
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecatedPlanningParameterWarning)
-        for config_path in sorted(task_root.rglob("*.yaml")):
-            document = yaml.safe_load(config_path.read_text())
-            if not isinstance(document, dict) or "tasks" not in document:
-                continue
-            tasks = document["tasks"]
-            assert isinstance(tasks, list), f"{config_path}: tasks must be a list"
-            task_files.append(config_path)
-            for task_index, task in enumerate(tasks):
-                assert isinstance(task, dict), (
-                    f"{config_path}: tasks[{task_index}] must be a mapping"
-                )
-                canonical = canonicalize_planning_config(task, config_path=config_path)
-                validate_planning_contract(canonical, config_path=config_path)
-                task_count += 1
+    for config_path in sorted(task_root.rglob("*.yaml")):
+        document = yaml.safe_load(config_path.read_text())
+        if not isinstance(document, dict) or "tasks" not in document:
+            continue
+        tasks = document["tasks"]
+        assert isinstance(tasks, list), f"{config_path}: tasks must be a list"
+        task_files.append(config_path)
+        for task_index, task in enumerate(tasks):
+            assert isinstance(task, dict), f"{config_path}: tasks[{task_index}] must be a mapping"
+            canonical = canonicalize_planning_config(task, config_path=config_path)
+            validate_planning_contract(canonical, config_path=config_path)
+            task_count += 1
 
     assert len(task_files) == 1149
     assert task_count == 1149

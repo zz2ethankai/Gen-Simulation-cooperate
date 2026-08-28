@@ -291,7 +291,7 @@ workflows/simbox/core/workspace/
 workflows/simbox/core/utils/workspace_planner.py
 scripts/simbox/plan_workspace_layout.py
 scripts/simbox/validate_workspace_candidates.py
-scripts/docker/run_simbox_task.sh
+scripts/docker/up_simbox_isaac.sh
 scripts/docker/prepare_simbox_run.py
 configs/simbox/de_workspace_probe_template.yaml
 ```

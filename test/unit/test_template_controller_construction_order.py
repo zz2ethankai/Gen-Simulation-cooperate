@@ -61,11 +61,15 @@ def test_robot_ee_path_is_resolved_before_runtime_and_scene_ports(
             self.robot_port = SimpleNamespace(
                 kin_model=object(), interpolation_dt=0.01, obstacle_pose=None
             )
+            self.check_current_start_state = lambda: (True, "valid")
+            self.attach_collision_object = lambda *args, **kwargs: True
+            self.detach_attachment = lambda: None
+            self.has_attached_collision_spheres = lambda: False
 
     def fake_build_runtime(self, planning_world):
         assert planning_world is not None
-        observed["runtime_ee_path"] = self.robot_ee_path
-        observed["runtime_reference_path"] = self.reference_prim_path
+        observed["runtime_ee_path"] = self._setup.robot_ee_path
+        observed["runtime_reference_path"] = self._setup.reference_prim_path
         observed["execution_base_path"] = self._execution.robot_base_path
         observed["execution_ee_path"] = self._execution.robot_ee_path
         observed["execution_task_root"] = self._execution.task_root_prim_path
@@ -94,7 +98,7 @@ def test_robot_ee_path_is_resolved_before_runtime_and_scene_ports(
         collision_scene_manager=FakeSceneManager(),
     )
 
-    assert controller.robot_ee_path == expected_ee
+    assert controller._setup.robot_ee_path == expected_ee
     assert observed["runtime_ee_path"] == expected_ee
     assert observed["runtime_reference_path"] == expected_base
     assert observed["execution_base_path"] == expected_base
@@ -103,12 +107,8 @@ def test_robot_ee_path_is_resolved_before_runtime_and_scene_ports(
     assert observed["scene_port_kwargs"]["robot_ee_path"] == expected_ee
     assert observed["bound_scene_port"].robot_ee_path == expected_ee
 
-    # The task root belongs to ControllerSetup and is injected into the
-    # execution ComponentPort.  It must not be copied back onto the façade as
-    # a compatibility alias, while the SkillRuntimePort still receives the
-    # already-resolved arm paths from the setup-owned construction.
+    # The task root belongs to ControllerSetup and is injected into execution;
+    # Skills receive the one concrete typed runtime owned by the controller.
     assert not hasattr(controller, "task_root_prim_path")
     assert controller._setup.task_root_prim_path == "/World"
-    assert controller.skill_runtime.robot_base_path == expected_base
-    assert controller.skill_runtime.robot_ee_path == expected_ee
-    assert controller.skill_runtime.runtime is controller.runtime
+    assert controller.skill_runtime is controller.runtime

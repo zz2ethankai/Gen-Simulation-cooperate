@@ -24,8 +24,6 @@ sys.modules.setdefault("lmdb", lmdb_stub)
 
 from core.loggers.utils import log_dual_obs  # noqa: E402
 from core.loggers.lmdb_logger import _filter_missing_image_frames  # noqa: E402
-from core.controllers.curobo.components import MutableExecutionState  # noqa: E402
-from core.controllers.curobo.skill_runtime import SkillRuntimePort  # noqa: E402
 
 
 class _FakeLogger:
@@ -68,18 +66,9 @@ class LogDualObsTest(unittest.TestCase):
 
     @staticmethod
     def _runtime(gripper_state, arm_name="left"):
-        return SkillRuntimePort(
-            robot=SimpleNamespace(),
-            runtime=None,
-            execution_state=MutableExecutionState(gripper_state=gripper_state),
-            arm_spec=None,
-            arm_indices=[0],
-            gripper_indices=[1],
-            name="test_robot",
+        return SimpleNamespace(
             arm_name=arm_name,
-            ee_pose=lambda: None,
-            arm_base_pose=lambda: None,
-            compute_fk=lambda joints: joints,
+            execution_status=lambda: SimpleNamespace(gripper_state=gripper_state),
         )
 
     def test_single_arm_robot_logs_master_actions_from_obs_keys(self):

@@ -2216,13 +2216,13 @@ tasks:
         filter_x_dir: ["forward", 45]
         filter_z_dir: ["downward", 150]
         x_ratio_range:
-        - 0.50
+        - 0.70
         - 0.90
         y_ratio_range:
-        - 0.10
-        - 0.40
-        pre_place_z_offset: 0.1
-        place_z_offset: 0.01
+        - 0.20
+        - 0.30
+        pre_place_z_offset: 0.15
+        place_z_offset: 0.10
         gripper_change_steps: 20
       - name: heuristic__skill
         id: home_after_place_apple_0_id9008
@@ -2259,13 +2259,13 @@ tasks:
         filter_x_dir: ["forward", 45]
         filter_z_dir: ["downward", 150]
         x_ratio_range:
-        - 0.50
+        - 0.70
         - 0.90
         y_ratio_range:
-        - 0.60
+        - 0.70
         - 0.90
-        pre_place_z_offset: 0.1
-        place_z_offset: 0.01
+        pre_place_z_offset: 0.15
+        place_z_offset: 0.10
         gripper_change_steps: 20
       - name: heuristic__skill
         id: home_after_place_orange_0_id9009

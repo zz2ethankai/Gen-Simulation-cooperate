@@ -62,8 +62,8 @@ class Dexplace(BaseSkill):
             self.place_prim_path = f"{self.place_obj.prim_path}/{self.place_part_prim_path}"
         else:
             self.place_prim_path = self.place_obj.prim_path
-        self.robot_ee_path = self.skill_runtime.robot_ee_path
-        self.robot_base_path = self.skill_runtime.robot_base_path
+        self.robot_ee_path = self.skill_runtime.setup.robot_ee_path
+        self.robot_base_path = self.skill_runtime.setup.robot_base_path
         if kwargs:
             self.draw = kwargs["draw"]
         self.manip_list = []
@@ -134,7 +134,7 @@ class Dexplace(BaseSkill):
         # Post place
         T_base_ee_postplace = deepcopy(T_base_ee_place)
         # Retreat for a bit along gripper axis
-        if "r5a" in self.skill_runtime.robot_file:
+        if "r5a" in self.skill_runtime.planner_build_config.robot_file:
             T_base_ee_postplace[0:3, 3] = T_base_ee_postplace[0:3, 3] - T_base_ee_postplace[0:3, 0] * post_place_level
         else:
             T_base_ee_postplace[0:3, 3] = T_base_ee_postplace[0:3, 3] - T_base_ee_postplace[0:3, 2] * post_place_level
@@ -185,7 +185,7 @@ class Dexplace(BaseSkill):
                 self.draw.draw_points([vertex], [(0, 0, 0, 1)], [7])  # black
 
         # 1. Obtaining ee_ori
-        initial_ee_pose = self.skill_runtime.initial_ee_pose()
+        initial_ee_pose = self.skill_runtime.setup.T_world_ee_init
         if isinstance(initial_ee_pose, (tuple, list)) and len(initial_ee_pose) == 2:
             initial_ee_tf = tf_matrix_from_pose(*initial_ee_pose)
         else:
@@ -257,11 +257,11 @@ class Dexplace(BaseSkill):
         return waypoint
 
     def is_feasible(self, th=10):
-        return self.skill_runtime.num_plan_failed <= th
+        return self.skill_runtime.execution.state.num_plan_failed <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        return bool(self.skill_runtime.phase_complete(self.manip_list[0]))
+        return bool(self.skill_runtime.execution.is_phase_command_complete(self.manip_list[0]))
 
     def is_done(self):
         if len(self.manip_list) == 0:

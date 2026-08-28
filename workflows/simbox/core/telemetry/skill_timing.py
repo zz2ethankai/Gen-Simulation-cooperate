@@ -861,6 +861,24 @@ class SkillTimingScope:
             return _elapsed(self._start, self._recorder._now())
         return self._duration_sec
 
+    def to_dict(self) -> dict[str, Any]:
+        """Return this scope and its completed nested phases.
+
+        Planner timing is exported before the encompassing Skill finishes, so
+        this method supports both active and closed scopes.
+        """
+
+        return json_safe(
+            {
+                "skill_name": self.name,
+                "duration_sec": self.duration_sec,
+                "status": "failed" if self._failed else "success",
+                "reason": self._failure_reason if self._failed else None,
+                "metadata": self.metadata,
+                "phases": [phase.to_dict() for phase in self._phase_records],
+            }
+        )
+
 
 class SkillTimingRecorder:
     """Aggregate successful skill and nested phase durations.

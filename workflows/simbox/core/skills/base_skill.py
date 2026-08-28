@@ -1,14 +1,11 @@
 import logging
 import re
 from abc import ABC
-from typing import TYPE_CHECKING
+from typing import Any
 
 import numpy as np
 
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand
-
-if TYPE_CHECKING:
-    from core.controllers.curobo.skill_runtime import SkillRuntimePort
 
 SKILL_DICT = {}
 LOGGER = logging.getLogger("de_logger")
@@ -30,7 +27,7 @@ class BaseSkill(ABC):
         self._target_visualization_handle = None
         self.skill_runtime = None
 
-    def bind_skill_runtime(self, skill_runtime: "SkillRuntimePort"):
+    def bind_skill_runtime(self, skill_runtime: Any):
         """Bind the single generic runtime contract used by this Skill."""
 
         self.skill_runtime = skill_runtime
@@ -40,19 +37,14 @@ class BaseSkill(ABC):
         runtime = self.skill_runtime
         if runtime is None:
             raise RuntimeError(
-                f"{self.__class__.__name__} requires a bound SkillRuntimePort"
+                f"{self.__class__.__name__} requires a bound typed runtime"
             )
         return runtime
 
     def execute(self, command):
-        """Execute a typed command through the narrow runtime port."""
+        """Execute a typed command through the bound runtime."""
 
         return self._require_skill_runtime().execute(command)
-
-    def dummy_forward(self, arm_action, gripper_state):
-        """Send one direct joint action through the Skill runtime port."""
-
-        return self._require_skill_runtime().dummy_forward(arm_action, gripper_state)
 
     def bind_target_visualizer(self, visualizer, **context):
         """Bind optional observational target rendering without changing Skill APIs."""
@@ -192,7 +184,7 @@ class BaseSkill(ABC):
             positions = positions.detach().cpu().numpy()
         positions = np.asarray(positions, dtype=float)
         runtime = self._require_skill_runtime()
-        indices = np.asarray(runtime.arm_indices, dtype=int)
+        indices = np.asarray(runtime.robot_port.arm_indices, dtype=int)
         if indices.size:
             positions = positions[indices]
         phase = kwargs.pop("phase", MotionPhase.CARRY_HOME)
@@ -214,7 +206,7 @@ class BaseSkill(ABC):
                 f"{self.__class__.__name__} emits MotionPhaseCommand values only"
             )
         runtime = self._require_skill_runtime()
-        status = runtime.execution_status(command)
+        status = runtime.execution.execution_status(command)
         if isinstance(status, dict):
             return bool(status.get("complete", False))
         if hasattr(status, "complete"):
@@ -226,11 +218,11 @@ class BaseSkill(ABC):
                 positions = getattr(state_getter(), "positions", None)
                 if hasattr(positions, "detach"):
                     positions = positions.detach().cpu().numpy()
-                indices = np.asarray(runtime.arm_indices, dtype=int)
+                indices = np.asarray(runtime.robot_port.arm_indices, dtype=int)
                 if positions is not None and indices.size:
                     return bool(np.linalg.norm(np.asarray(positions)[indices] - direct) < 5e-3)
         if command.target_position is not None:
-            position, orientation = runtime.ee_pose()
+            position, orientation = runtime.execution.get_ee_pose()
             position_ok = np.linalg.norm(np.asarray(position) - command.target_position) <= command.translation_tolerance
             orientation_ok = 2 * np.arccos(
                 np.clip(abs(np.dot(np.asarray(orientation), command.target_orientation)), 0.0, 1.0)

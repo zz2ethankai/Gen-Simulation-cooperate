@@ -1,281 +1,126 @@
-"""Tests for preserving measured motion state across manipulation replans."""
+"""Behavior checks for measured-state starts and named trajectory execution."""
 
-import ast
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import torch
+
+from core.controllers.curobo.phase_execution import PhaseExecutor
+from core.execution.curobo_execution import ControllerExecution
+from core.planning.domain_types import JointTrajectory, PlanResult
 
 
-ROOT = Path(__file__).resolve().parents[2]
-SIMBOX_ROOT = ROOT / "workflows" / "simbox"
-if str(SIMBOX_ROOT) not in sys.path:
-    sys.path.insert(0, str(SIMBOX_ROOT))
+def test_cartesian_fk_path_reorders_named_positions_in_one_native_call(monkeypatch):
+    pytest.importorskip("curobo")
+    from core.controllers.curobo import runtime as runtime_module
 
-from core.planning.motion_command import MotionPhase, MotionPhaseCommand  # noqa: E402
+    class JointState:
+        @classmethod
+        def from_position(cls, position, joint_names):
+            return SimpleNamespace(position=position, joint_names=tuple(joint_names))
 
+    class NativePlanner:
+        tool_frames = ["ee"]
+        joint_names = ["joint_0", "joint_1"]
 
-@pytest.fixture(scope="module")
-def _simulation_app():
-    """Bootstrap Isaac extensions for the real phase-geometry assertion."""
+        def __init__(self):
+            self.seen = None
 
-    pytest.importorskip("isaacsim")
-    from isaacsim import SimulationApp
+        def compute_kinematics(self, state):
+            self.seen = state
+            return SimpleNamespace(
+                tool_poses=SimpleNamespace(
+                    get_link_pose=lambda _name: SimpleNamespace(
+                        position=state.position[..., :3]
+                    )
+                )
+            )
 
-    app = SimulationApp({"headless": True})
-    yield app
-    app.close()
-
-
-_CONTROLLERS_ROOT = (
-    Path(__file__).resolve().parents[2]
-    / "workflows"
-    / "simbox"
-    / "core"
-    / "controllers"
-)
-_STATE_PLANNING_PATH = _CONTROLLERS_ROOT / "curobo" / "state_planning.py"
-_PHASES_PATH = _CONTROLLERS_ROOT / "curobo" / "motion_phases.py"
-
-
-def _load_derivative_helper():
-    tree = ast.parse(_STATE_PLANNING_PATH.read_text(encoding="utf-8"))
-    controller_node = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == "ControllerStatePlanning"
+    planner = NativePlanner()
+    runtime = object.__new__(runtime_module.MotionPlannerRuntime)
+    runtime._planner = planner
+    runtime.tensor_args = SimpleNamespace(
+        to_device=lambda value: torch.as_tensor(value, dtype=torch.float32)
     )
-    method_node = next(
-        node
-        for node in controller_node.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_joint_state_derivatives"
-    )
-    namespace = {"np": np}
-    method_module = ast.fix_missing_locations(ast.Module(body=[method_node], type_ignores=[]))
-    exec(compile(method_module, _STATE_PLANNING_PATH, "exec"), namespace)
-    return namespace["_joint_state_derivatives"]
+    import curobo.types
+    monkeypatch.setattr(curobo.types, "JointState", JointState)
 
-
-def test_joint_state_derivatives_preserve_measured_values():
-    helper = _load_derivative_helper()
-    state = SimpleNamespace(
-        positions=np.zeros(3),
-        velocities=np.array([0.1, -0.2, 0.3]),
-        accelerations=np.array([0.4, 0.5, -0.6]),
-        jerks=np.array([-0.7, 0.8, 0.9]),
+    # The helper uses the runtime's CuRobo import directly; patch the module
+    # import site so this test exercises the real named Cartesian path logic.
+    result = runtime._compute_cartesian_fk_batch(
+        [[1.0, 2.0], [3.0, 4.0]], ["joint_1", "joint_0"]
     )
 
-    velocity, acceleration, jerk = helper(state)
-
-    np.testing.assert_allclose(velocity, state.velocities)
-    np.testing.assert_allclose(acceleration, state.accelerations)
-    np.testing.assert_allclose(jerk, state.jerks)
+    np.testing.assert_allclose(planner.seen.position, [[2.0, 1.0], [4.0, 3.0]])
+    np.testing.assert_allclose(result, [[2.0, 1.0], [4.0, 3.0]])
 
 
-def test_joint_state_derivatives_fall_back_for_missing_or_invalid_fields():
-    helper = _load_derivative_helper()
-    state = SimpleNamespace(
-        positions=np.zeros(3),
-        velocities=np.array([0.1, np.nan, 0.3]),
-    )
-
-    velocity, acceleration, jerk = helper(state)
-
-    np.testing.assert_array_equal(velocity, np.zeros(3))
-    np.testing.assert_array_equal(acceleration, np.zeros(3))
-    np.testing.assert_array_equal(jerk, np.zeros(3))
-
-
-def _load_retarget_helper():
-    tree = ast.parse(_PHASES_PATH.read_text(encoding="utf-8"))
-    controller_node = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == "ControllerPhases"
-    )
-    method_node = next(
-        node
-        for node in controller_node.body
-        if isinstance(node, ast.FunctionDef)
-        and node.name == "retarget_pick_phase_commands"
-    )
-
-    def tf_matrix_from_pose(translation, orientation):
-        x, y, z, w = np.asarray(orientation, dtype=float)
-        matrix = np.eye(4, dtype=float)
-        matrix[:3, :3] = np.array(
-            [
-                [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-                [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-                [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-            ]
-        )
-        matrix[:3, 3] = np.asarray(translation, dtype=float)
-        return matrix
-
-    def pose_from_tf_matrix(matrix):
-        return np.asarray(matrix[:3, 3]), np.array([0.0, 0.0, 0.0, 1.0])
-
-    namespace = {
-        "np": np,
-        "MotionPhase": MotionPhase,
-        "MotionPhaseCommand": MotionPhaseCommand,
-        "tf_matrix_from_pose": tf_matrix_from_pose,
-        "pose_from_tf_matrix": pose_from_tf_matrix,
-    }
-    method_module = ast.fix_missing_locations(ast.Module(body=[method_node], type_ignores=[]))
-    exec(compile(method_module, _PHASES_PATH, "exec"), namespace)
-    return namespace["retarget_pick_phase_commands"]
-
-
-def test_retarget_translation_uses_object_center_delta_not_rotation_lever_arm():
-    helper = _load_retarget_helper()
-    old_translation = np.array([-0.176, 0.114, 0.784])
-    current_translation = old_translation + np.array([0.007, -0.003, 0.005])
-    angle = np.deg2rad(9.0)
-    old_orientation = np.array([0.0, 0.0, 0.0, 1.0])
-    current_orientation = np.array([0.0, 0.0, np.sin(angle / 2), np.cos(angle / 2)])
-
-    controller = SimpleNamespace(
-        _pick_plan_references={
-            "target": {
-                "object_pose": (old_translation.copy(), old_orientation.copy()),
-                "world_armbase_tf": np.eye(4),
-            }
-        },
-        _get_pick_object_world_pose=lambda _name: (
-            current_translation.copy(),
-            current_orientation.copy(),
+def _execution(state=None):
+    measured = np.asarray([0.1, 0.2, 0.3, 0.01])
+    execution = ControllerExecution(
+        name="test_robot",
+        lr_name="left",
+        robot=SimpleNamespace(
+            get_joints_state=lambda: SimpleNamespace(positions=measured)
         ),
-        get_pick_armbase_transform=lambda: np.eye(4),
+        tensor_args=SimpleNamespace(
+            to_device=lambda value: torch.as_tensor(value, dtype=torch.float32)
+        ),
+        raw_js_names=["joint_0", "joint_1", "joint_2"],
+        arm_indices=[0, 1, 2],
+        gripper_indices=[3],
+        phase_executor=PhaseExecutor(),
+        execution_state=state,
     )
-    command = MotionPhaseCommand(
-        MotionPhase.TRANSIT_PREGRASP,
-        target_position=np.array([0.2, 0.1, 0.3]),
-        target_orientation=old_orientation.copy(),
-        active_object="target",
-        params={
-            "preplanned_joint_path": object(),
-            "path_length_ratio": 1.2,
-            "path_max_deviation_m": 0.01,
-        },
+    execution.state.ee_trans = torch.zeros(3)
+    execution.state.ee_ori = torch.zeros(4)
+    execution.state.last_arm_action = np.asarray([0.7, 0.8, 0.9])
+    execution.get_ee_pose = lambda: (np.zeros(3), np.zeros(4))
+    execution.get_gripper_action = lambda: np.asarray([0.01])
+    return execution, measured
+
+
+def test_replan_uses_measured_joint_state_and_discards_stale_path():
+    execution, measured = _execution()
+    stale = JointTrajectory(
+        positions=[[1.1, 1.2, 1.3]],
+        joint_names=("joint_0", "joint_1", "joint_2"),
+    )
+    execution.phase_executor.install(stale)
+    seen = []
+
+    def start_state(sim_state):
+        seen.append(np.asarray(sim_state.positions).copy())
+        return SimpleNamespace(unsqueeze=lambda _dim: sim_state)
+
+    execution.runtime = SimpleNamespace(
+        arm_joint_state=start_state,
+        plan_pose=lambda *args, **kwargs: PlanResult(success=False),
     )
 
-    translation_delta, rotation_delta = helper(controller, "target", [command])
+    action = execution.ee_forward(np.ones(3), np.ones(4))
 
-    np.testing.assert_allclose(translation_delta, np.linalg.norm(current_translation - old_translation))
-    assert abs(translation_delta - 0.00911043358) < 1e-8
-    assert abs(rotation_delta - 9.0) < 1e-6
-    assert isinstance(command, MotionPhaseCommand)
-    assert not np.allclose(command.target_position, [0.2, 0.1, 0.3])
-    assert "preplanned_joint_path" not in command.params
-    assert "path_length_ratio" not in command.params
-    assert "path_max_deviation_m" not in command.params
+    np.testing.assert_allclose(seen[0], measured)
+    np.testing.assert_allclose(action["arm_action"], measured[:3])
+    assert execution.phase_executor.current is None
+    assert execution.state.num_plan_failed == 1
 
 
-def test_real_controller_phases_retarget_non_identity_object_pose(_simulation_app):
-    """Exercise the composed phase component's real geometry imports."""
-
-    del _simulation_app
-    from core.controllers.curobo.components import (  # noqa: PLC0415
-        MutableExecutionState,
-        PhasesPort,
-    )
-    from core.controllers.curobo.motion_phases import ControllerPhases
-    from core.controllers.curobo.pick_planning import PickPlanningPort
-    from core.controllers.curobo.skill_runtime import SkillRuntimePort
-    from core.planning.collision_scene_manager import PlannerScenePort
-
-    old_translation = np.array([1.7, -0.8, 0.6])
-    old_orientation = np.array([0.0, 0.0, 0.0, 1.0])
-    current_translation = old_translation + np.array([0.007, -0.003, 0.005])
-    angle = np.deg2rad(9.0)
-    current_orientation = np.array(
-        [0.0, 0.0, np.sin(angle / 2.0), np.cos(angle / 2.0)]
-    )
-    execution_state = MutableExecutionState()
-    controller = ControllerPhases(
-        PhasesPort(
-            {
-                "execution_state": execution_state,
-                "_pick_plan_references": {
-                    "target": {
-                        "object_pose": (old_translation.copy(), old_orientation.copy()),
-                        "world_armbase_tf": np.eye(4),
-                    }
-                },
-            }
+def test_named_trajectory_is_reordered_once_and_consumed_in_order():
+    execution, _ = _execution()
+    execution.raw_js_names = ("joint_1", "joint_0", "joint_2")
+    execution.phase_executor.install(
+        JointTrajectory(
+            positions=[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+            joint_names=("joint_0", "joint_1", "joint_2"),
         )
     )
-    controller._get_pick_object_world_pose = lambda _name: (
-        current_translation.copy(),
-        current_orientation.copy(),
-    )
-    controller.get_pick_armbase_transform = lambda: np.eye(4)
-    command = MotionPhaseCommand(
-        MotionPhase.TRANSIT_PREGRASP,
-        target_position=np.array([0.2, 0.1, 0.3]),
-        target_orientation=old_orientation.copy(),
-        active_object="target",
-        params={
-            "preplanned_joint_path": object(),
-            "path_length_ratio": 1.2,
-            "path_max_deviation_m": 0.01,
-        },
-    )
+    execution.state.last_arm_action = None
+    execution._make_action = lambda arm, gripper: {"arm_action": np.asarray(arm)}
 
-    runtime = SimpleNamespace(
-        scene_revision=0,
-        robot_port=SimpleNamespace(interpolation_dt=0.01),
-    )
-    scene_port = PlannerScenePort(
-        name="robot",
-        lr_name="right",
-        reference_prim_path="/World/robot/base",
-        robot_ee_path="/World/robot/ee",
-        tensor_args=SimpleNamespace(),
-        robot=SimpleNamespace(),
-        runtime=runtime,
-    )
-    planning = PickPlanningPort(
-        scene_port=scene_port,
-        collision_scene_manager=SimpleNamespace(),
-        update_pose_cost_metric=lambda _value: None,
-        build_commands=lambda **kwargs: kwargs,
-        arm_base_transform=controller.get_pick_armbase_transform,
-        frame_debug=lambda: {},
-        capture_reference=lambda _name: None,
-        retarget_commands=controller.retarget_pick_phase_commands,
-        replan_after_safety=lambda _name, _command, _commands: True,
-        execution_ee_pose=lambda: (np.zeros(3), old_orientation.copy()),
-        phase_complete=lambda _command: True,
-    )
-    skill_runtime = SkillRuntimePort(
-        robot=scene_port.robot,
-        runtime=runtime,
-        execution_state=execution_state,
-        arm_spec=SimpleNamespace(name="right"),
-        arm_indices=[0],
-        gripper_indices=[1],
-        ee_pose=lambda: (np.zeros(3), old_orientation.copy()),
-        arm_base_pose=lambda: (np.zeros(3), old_orientation.copy()),
-        compute_fk=lambda joints: (np.asarray(joints), old_orientation.copy()),
-        initial_ee_pose=lambda: (np.zeros(3), old_orientation.copy()),
-    )
+    actions = [execution._forward_installed_joint_path() for _ in range(2)]
 
-    assert planning.scene_port is scene_port
-    assert skill_runtime.execution_state is execution_state
-    translation_delta, rotation_delta = planning.retarget_commands(
-        "target", [command]
-    )
-
-    np.testing.assert_allclose(
-        translation_delta, np.linalg.norm(current_translation - old_translation)
-    )
-    assert rotation_delta == pytest.approx(9.0, abs=1e-6)
-    assert not np.allclose(command.target_position, [0.2, 0.1, 0.3])
-    assert "preplanned_joint_path" not in command.params
-    assert "path_length_ratio" not in command.params
-    assert "path_max_deviation_m" not in command.params
+    np.testing.assert_allclose(actions[0]["arm_action"], [2.0, 1.0, 3.0])
+    np.testing.assert_allclose(actions[1]["arm_action"], [5.0, 4.0, 6.0])
+    assert execution.phase_executor.current is None

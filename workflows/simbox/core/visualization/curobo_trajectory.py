@@ -12,7 +12,7 @@ import numpy as np
 from curobo.types import JointState
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
 
-from core.planning.domain_types import BatchPlanResult, JointTrajectory, PlanResult
+from core.planning.domain_types import JointTrajectory, PlanResult
 
 try:
     from isaacsim.core.utils.prims import get_prim_at_path
@@ -55,18 +55,23 @@ class CuroboTrajectoryPlannerAdapter:
         return tuple(str(frame) for frame in self.kinematics.tool_frames)
 
     def native_positions(self, trajectory: JointTrajectory):
-        values = np.asarray(trajectory.positions, dtype=np.float64)
-        if values.ndim != 2:
+        values = trajectory.positions
+        try:
+            shape = tuple(int(size) for size in values.shape)
+        except AttributeError:
+            values = np.asarray(values, dtype=np.float64)
+            shape = values.shape
+        if len(shape) != 2:
             raise ValueError(
                 "trajectory visualization requires JointTrajectory positions [time, dof]"
             )
-        if values.shape[1] != len(self.joint_names):
+        if shape[1] != len(self.joint_names):
             raise ValueError(
                 "trajectory visualization joint count does not match planner kinematics: "
-                f"trajectory={values.shape[1]} planner={len(self.joint_names)}"
+                f"trajectory={shape[1]} planner={len(self.joint_names)}"
             )
         if self.tensor_args is None:
-            return values
+            return _numpy_value(values)
         return self.tensor_args.to_device(values)
 
     def canonical_trajectory(self, trajectory: JointTrajectory) -> JointTrajectory:
@@ -103,27 +108,16 @@ class TrajectoryVisualizationFrame:
 
 
 def _selected_trajectory(
-    plan: PlanResult | BatchPlanResult | JointTrajectory,
+    plan: PlanResult | JointTrajectory,
 ) -> JointTrajectory | None:
     """Extract the selected typed path; reject all native/raw plan objects."""
 
     if isinstance(plan, JointTrajectory):
         return plan
-    if isinstance(plan, BatchPlanResult):
-        index = plan.selected_candidate_index
-        if index is None:
-            index = next(
-                (candidate for candidate, success in enumerate(plan.success_mask) if success),
-                None,
-            )
-        if index is None or index < 0 or index >= len(plan.trajectories):
-            return None
-        return plan.trajectories[index]
     if isinstance(plan, PlanResult):
         return plan.trajectory if plan.success else None
     raise TypeError(
-        "trajectory visualization requires a normalized PlanResult, "
-        "BatchPlanResult, or JointTrajectory"
+        "trajectory visualization requires a normalized PlanResult or JointTrajectory"
     )
 
 
@@ -317,7 +311,7 @@ class CuroboTrajectoryVisualizer:
 
     def record_plan(
         self,
-        plan: PlanResult | BatchPlanResult | JointTrajectory,
+        plan: PlanResult | JointTrajectory,
         *,
         frame: TrajectoryVisualizationFrame,
         command: str,
@@ -336,8 +330,7 @@ class CuroboTrajectoryVisualizer:
             raise RuntimeError("record_plan requires the Isaac Sim runtime")
         trajectory = frame.planner.canonical_trajectory(trajectory)
         positions = frame.planner.native_positions(trajectory)
-        positions_np = np.asarray(trajectory.positions, dtype=np.float64)
-        trajectory_length = int(positions_np.shape[0])
+        trajectory_length = int(positions.shape[0])
         if trajectory_length <= 0:
             return
         if not self.accumulate:

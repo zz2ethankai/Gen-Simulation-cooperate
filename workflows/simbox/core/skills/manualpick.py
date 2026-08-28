@@ -65,7 +65,7 @@ class Manualpick(BaseSkill):
             raise ValueError(f"final_gripper_state must be 1 or -1, got {final_gripper_state}")
 
     def _get_armbase_world_tf(self):
-        return self.skill_runtime.arm_base_transform()
+        return self.skill_runtime.execution.get_pick_armbase_transform()
 
     def _get_object_world_tf(self):
         get_obj_world_pose = getattr(self.pick_obj, "get_world_pose", None)
@@ -367,11 +367,11 @@ class Manualpick(BaseSkill):
         return contact, indices
 
     def is_feasible(self, th=5):
-        return int(self.skill_runtime.num_plan_failed) <= th
+        return int(self.skill_runtime.execution.state.num_plan_failed) <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        return self.skill_runtime.phase_complete(self.manip_list[0])
+        return self.skill_runtime.execution.is_phase_command_complete(self.manip_list[0])
 
     def is_done(self):
         if len(self.manip_list) == 0:

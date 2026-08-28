@@ -152,3 +152,31 @@ def test_fixed_restore_is_wired_after_normal_layout_warmup():
     assert 'def restore_fixed_rigid_object_states(self, label="warmup"):' in task_source
     assert 'def audit_fixed_rigid_object_reset(self, label="audit"):' in task_source
     assert 'LOGGER = logging.getLogger("de_logger")' in task_source
+
+
+def test_task_reset_resets_camera_acquisition_timing_without_replacing_camera_pose():
+    """Camera timing must be reset because cameras are not World scene objects."""
+
+    camera_source = (ROOT / "workflows/simbox/core/cameras/custom_camera.py").read_text(encoding="utf-8")
+    task_source = (ROOT / "workflows/simbox/core/tasks/banana.py").read_text(encoding="utf-8")
+
+    assert "def post_reset(self) -> None:" in camera_source
+    assert "self._previous_time = None" in camera_source
+    assert "Camera.post_reset" in camera_source
+    assert "for camera in self.cameras.values():" in task_source
+    assert "post_reset = getattr(camera, \"post_reset\", None)" in task_source
+
+
+def test_failed_reset_uses_layout_snapshot_instead_of_resampling_from_post_failure_pose():
+    """The retry reset must not derive a new tabletop Z from a placed object."""
+
+    task_source = (ROOT / "workflows/simbox/core/tasks/banana.py").read_text(encoding="utf-8")
+    reset_start = task_source.index("    def reset_fixed_rigid_objects(self):")
+    reset_end = task_source.index("    def _get_region_cfg_for_object", reset_start)
+    reset_source = task_source[reset_start:reset_end]
+
+    assert "self.restore_rigid_object_states(states={key: state}, object_keys={key})" in reset_source
+    assert "self._get_deterministic_region_pose(obj, region_cfg)" in reset_source
+    assert reset_source.index("self.restore_rigid_object_states") < reset_source.index(
+        "self._get_deterministic_region_pose"
+    )

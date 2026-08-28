@@ -182,11 +182,6 @@ fluid: <Fluid>                             # optional
 | --- | --- | --- | --- |
 | `terminal_step_m` | `float` | `0.005` | pick 末端到位步长，注入 `pick.terminal_step_m`。 |
 | `max_terminal_distance_m` | `float` | `0.10` | pick 末端最大到位距离，注入 `pick.max_terminal_distance_m`。 |
-| `place_continuous_descent` | `bool` | `true` | place 是否连续下降，注入 `place.place_continuous_descent`。 |
-| `place_terminal_step_m` | `float` | `0.01` | place 末端到位步长，注入 `place.place_terminal_step_m`。 |
-| `place_terminal_tolerance_m` | `float` | `0.005` | place 末端到位容差，注入 `place.place_terminal_tolerance_m`；`place.py` 实际取 `min(0.005, place_terminal_step_m)`。 |
-| `place_terminal_max_path_length_ratio` | `float` | `1.5` | place 末端路径长度比上限。 |
-| `place_terminal_max_path_deviation_m` | `float` | `0.01` | place 末端路径偏差上限。 |
 | `place_settle_steps` | `int` | `10` | place 放置后稳定步数，注入 `place.place_settle_steps`。 |
 
 #### `execution_safety`

@@ -63,11 +63,6 @@ planning:
     exact_exclusions: []
   pick_place:
     terminal_step_m: 0.005
-    place_continuous_descent: true
-    place_terminal_step_m: 0.01
-    place_terminal_tolerance_m: 0.005
-    place_terminal_max_path_length_ratio: 1.5
-    place_terminal_max_path_deviation_m: 0.01
     max_terminal_distance_m: 0.10
     place_settle_steps: 10
   execution_safety:

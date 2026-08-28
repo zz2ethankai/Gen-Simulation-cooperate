@@ -14,8 +14,6 @@ from typing import Any, Callable, Iterable
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
-from .native_scene_adapter import NativeSceneAdapter
-
 LOGGER = logging.getLogger("de_logger")
 SUPPORTED_COLLIDER_TYPES = (
     UsdGeom.Mesh,
@@ -73,14 +71,11 @@ class PlannerScenePort:
     tensor_args: Any
     robot: Any
     runtime: Any
-    native_scene_adapter: NativeSceneAdapter | None = None
-    adopt_scene_revision: Callable[[int], int] | None = None
     check_current_start_state: Callable[[], tuple[bool, Any]] | None = None
     attach_collision_object: Callable[[Sequence[str]], Any] | None = None
     detach_attachment: Callable[[], Any] | None = None
     has_attached_collision_spheres: Callable[[], bool] | None = None
     collision_world_mode: str = "physics_schema"
-    require_batch_scene_adapter: Callable[[], NativeSceneAdapter] | None = None
 
 
 _ALLOWED_TRANSITIONS = {
@@ -144,30 +139,12 @@ class CollisionSceneManager:
         self.geometry_mode = str(
             _cfg_get(self.config, "geometry_mode", "bbox")
         ).strip().lower()
-        if self.geometry_mode in {"mesh", "usd", "native_usd"}:
-            self.geometry_mode = "native"
         if self.geometry_mode not in {"bbox", "native"}:
             raise ValueError(
                 "collision_world.geometry_mode must be 'bbox' or 'native', "
                 f"got {self.geometry_mode!r}"
             )
-        task_cfg = getattr(task, "cfg", {}) or {}
-        planning_cfg = _cfg_get(task_cfg, "planning", {}) or {}
-        planning_exclusions = _cfg_get(planning_cfg, "planning_exclusions", None)
-        if planning_exclusions is None:
-            planning_exclusions = _cfg_get(task_cfg, "planning_exclusions", None)
-        if planning_exclusions is None:
-            manager_planning_cfg = _cfg_get(self.config, "planning", {}) or {}
-            planning_exclusions = _cfg_get(
-                manager_planning_cfg, "planning_exclusions", None
-            )
-        if planning_exclusions is None:
-            # ``workflow_config`` passes the canonical list on the collision
-            # manager config as well.  Keep this fallback narrow and typed;
-            # old substring/path exclusion fields are intentionally ignored.
-            planning_exclusions = _cfg_get(self.config, "planning_exclusions", [])
-        if planning_exclusions is None:
-            planning_exclusions = []
+        planning_exclusions = _cfg_get(self.config, "planning_exclusions", [])
         if not isinstance(planning_exclusions, list):
             raise ValueError("planning_exclusions must be a YAML list of exact entity names")
         names: list[str] = []
@@ -206,12 +183,6 @@ class CollisionSceneManager:
         self.attach_prim_paths: dict[str, list[str]] = {}
         self.path_to_entity: dict[str, str] = {}
         self.scene_ports: dict[tuple[str, str], PlannerScenePort] = {}
-        # Native scene operations are routed through one adapter per planner.
-        # Keep this private: TemplateController deliberately does not expose
-        # a public ``planner`` attribute anymore, and the optional batch
-        # planner may be created after the controller is bound.
-        self._native_scene_adapters: dict[tuple[str, str], tuple[NativeSceneAdapter, ...]] = {}
-        self._planner_listener_callbacks: dict[tuple[str, str], tuple[Any, Any]] = {}
         self.controller_enabled: dict[tuple[str, str], dict[str, bool]] = {}
         self._controller_reference_matrices: dict[tuple[str, str], np.ndarray] = {}
         self.controller_audits: dict[str, dict[str, list[str]]] = {}
@@ -402,7 +373,7 @@ class CollisionSceneManager:
             return parent_fixture
         return None
 
-    def _support_collision_paths(self, support_entity: str | None) -> set[str]:
+    def support_collision_paths(self, support_entity: str | None) -> set[str]:
         """Resolve a fixture and its explicit support-plane descendants."""
 
         if not support_entity:
@@ -857,10 +828,6 @@ class CollisionSceneManager:
     def bind_scene_port(self, port: PlannerScenePort) -> None:
         if not isinstance(port, PlannerScenePort):
             raise TypeError("CollisionSceneManager requires a PlannerScenePort")
-        if port.adopt_scene_revision is None:
-            raise CollisionSceneError(
-                "PlannerScenePort requires adopt_scene_revision callback"
-            )
         if port.collision_world_mode == "physics_schema":
             missing_callbacks = [
                 name
@@ -891,10 +858,7 @@ class CollisionSceneManager:
                 port.reference_prim_path
             )
             self._temporary_disabled[key] = set()
-            self._native_scene_adapters[key] = self._build_native_scene_adapters(port)
-            for adapter in self._native_scene_adapters[key]:
-                self._register_scene_adapter(port, adapter)
-            planner = self._native_planner(port)
+            planner = port.runtime.native_planner
             if planner is None:
                 raise CollisionSceneError(f"controller has no native CuRobo planner: {key}")
             capacity = int(
@@ -914,15 +878,7 @@ class CollisionSceneManager:
                         f"attach_prims={attach_count} capacity={capacity}"
                     )
             self.audit_controller(port)
-            # Register only after the current native planners have passed the
-            # strict audit; subsequent lazy batch materialization is checked by
-            # the callback before planning can proceed.
-            self._register_planner_listener(port)
         except Exception:
-            # Binding is a transaction.  A failed strict audit must not leave
-            # a scene adapter, materialization callback, or partial controller
-            # state that can fan out into a later bind/reset.
-            self._clear_native_scene_bindings(key, port)
             self.scene_ports.pop(key, None)
             self.controller_enabled.pop(key, None)
             self._native_pose_cache.pop(key, None)
@@ -985,11 +941,12 @@ class CollisionSceneManager:
             current, previous, atol=1e-6, rtol=0.0
         ):
             return False
+        poses = {}
         for path in self.collision_prim_paths:
             obstacle_pose = self._port_obstacle_pose(port, path)
-            for adapter in self._native_scene_adapters_for(port):
-                adapter.update_obstacle_pose(path, obstacle_pose, revision=self.world_revision + 1)
+            poses[path] = obstacle_pose
             self._native_pose_cache.setdefault(key, {})[path] = obstacle_pose
+        port.runtime.update_obstacle_poses(poses, revision=self.world_revision + 1)
         self._controller_reference_matrices[key] = current
         self._adopt_world_revision()
         LOGGER.info(
@@ -1229,7 +1186,7 @@ class CollisionSceneManager:
                 ) from exc
             LOGGER.exception("[CollisionWorld] object contact view failed for %s", entity_name)
             return 0.0, 0.0
-        support_paths = self._support_collision_paths(support_entity)
+        support_paths = self.support_collision_paths(support_entity)
         allowed_indices = [index for index, path in enumerate(filters) if path in support_paths]
         other_indices = [index for index, path in enumerate(filters) if path not in support_paths]
         allowed = (
@@ -1325,119 +1282,11 @@ class CollisionSceneManager:
             + [int(port.runtime.scene_revision) for port in self.scene_ports.values()]
         )
         for port in self.scene_ports.values():
-            port.adopt_scene_revision(self.world_revision)
+            port.runtime.adopt_scene_revision(self.world_revision)
         return self.world_revision
 
-    @staticmethod
-    def _planner_runtime(port: PlannerScenePort) -> Any:
-        """Return the planner-owned runtime behind a scene port.
-
-        ``PlannerScenePort.runtime`` is deliberately an opaque runtime port;
-        this helper accepts both the dependency-injected ``PlannerRuntime``
-        itself and simulator composition wrappers that expose it as
-        ``planner_runtime``.  No controller façade or legacy planner field is
-        consulted.
-        """
-
-        return port.runtime.planner_runtime
-
-    @classmethod
-    def _native_planner(cls, port: PlannerScenePort) -> Any:
-        """Return the currently materialized single planner."""
-
-        return port.runtime.native_planner
-
-    @classmethod
-    def _runtime_scene_state(cls, port: PlannerScenePort) -> tuple[Any, int]:
-        """Read the complete cached world and monotonic revision from a port."""
-
-        runtime = port.runtime
-        return runtime.world, int(runtime.scene_revision)
-
-    @staticmethod
-    def _runtime_planners(port: PlannerScenePort) -> tuple[Any, ...]:
-        runtime = port.runtime
-        planners = [runtime.native_planner]
-        if runtime.batch_planner is not None:
-            planners.append(runtime.batch_planner)
-        return tuple(planners)
-
-    @classmethod
-    def _build_native_scene_adapters(cls, port: PlannerScenePort) -> tuple[NativeSceneAdapter, ...]:
-        """Build adapters for the single planner and any materialized batch planner."""
-
-        planners = cls._runtime_planners(port)
-        world, revision = cls._runtime_scene_state(port)
-        if port.native_scene_adapter is None:
-            raise CollisionSceneError(
-                f"scene port has no owned single adapter: {port.name}/{port.lr_name}"
-            )
-        adapters = [port.native_scene_adapter]
-        if adapters[0].planner is not planners[0]:
-            raise CollisionSceneError(
-                f"scene port single adapter does not own native planner: {port.name}/{port.lr_name}"
-            )
-        adapters[0].set_cached_world(world, revision=revision)
-        if len(planners) > 1:
-            adapters.append(
-                NativeSceneAdapter(
-                    planners[1],
-                    strict=True,
-                    name=f"{port.name}/{port.lr_name}/batch",
-                    world=world,
-                    world_revision=revision,
-                )
-            )
-        return tuple(adapters)
-
-    def _register_scene_adapter(
-        self,
-        port: PlannerScenePort,
-        adapter: NativeSceneAdapter,
-    ) -> None:
-        """Register adapter metadata with the planner runtime when supported."""
-
-        self._planner_runtime(port).register_scene_adapter(adapter)
-
-    def _unregister_scene_adapter(
-        self,
-        port: PlannerScenePort,
-        adapter: NativeSceneAdapter,
-    ) -> None:
-        """Remove one adapter from planner-runtime metadata fanout."""
-
-        # The single adapter is owned by MotionPlannerRuntime and remains
-        # registered for attachment geometry after manager unbind/reset.
-        if adapter is port.native_scene_adapter:
-            return
-        self._planner_runtime(port).unregister_scene_adapter(adapter)
-
-    def _clear_native_scene_bindings(
-        self,
-        key: tuple[str, str],
-        port: PlannerScenePort | None = None,
-    ) -> None:
-        """Unsubscribe listeners and unregister adapters for one controller."""
-
-        callback_entry = self._planner_listener_callbacks.pop(key, None)
-        if callback_entry is not None:
-            planner_runtime, token = callback_entry
-            try:
-                planner_runtime.unregister_planner_listener(token)
-            except (KeyError, ValueError):
-                pass
-        if port is None:
-            port = self.scene_ports.get(key)
-        if port is None:
-            return
-        for adapter in tuple(self._native_scene_adapters.get(key, ())):
-            try:
-                self._unregister_scene_adapter(port, adapter)
-            except (KeyError, ValueError):
-                pass
-
     def unbind_scene_port(self, port_or_key: PlannerScenePort | tuple[str, str]) -> None:
-        """Remove a controller scene port and all native fanout registrations."""
+        """Remove a controller scene port."""
 
         key = (
             (str(port_or_key.name), str(port_or_key.lr_name))
@@ -1445,9 +1294,7 @@ class CollisionSceneManager:
             else (str(port_or_key[0]), str(port_or_key[1]))
         )
         port = self.scene_ports.get(key)
-        self._clear_native_scene_bindings(key, port)
         self.scene_ports.pop(key, None)
-        self._native_scene_adapters.pop(key, None)
         self.controller_enabled.pop(key, None)
         self._native_pose_cache.pop(key, None)
         self._controller_reference_matrices.pop(key, None)
@@ -1455,210 +1302,23 @@ class CollisionSceneManager:
 
     unregister_scene_port = unbind_scene_port
 
-    def _replay_native_scene_state(
-        self,
-        port: PlannerScenePort,
-        adapter: NativeSceneAdapter,
-    ) -> None:
-        """Replay mutable scene state accumulated before lazy materialization.
-
-        The complete world geometry is loaded by ``PlannerRuntime`` first.
-        This replay covers the state that is intentionally maintained outside
-        that immutable world object: exact collider enable masks and dynamic
-        collider poses.  Attachment spheres remain an explicit Place-side
-        synchronization transaction and are never guessed here.
-        """
-
-        key = self._controller_key(port.name, port.lr_name)
-        _world, runtime_revision = self._runtime_scene_state(port)
-        revision = max(int(self.world_revision), int(runtime_revision))
-        enabled_state = self.controller_enabled.get(key, {})
-        # A freshly loaded native world is enabled by default.  Avoid issuing
-        # no-op enable calls when a narrow test/native checker exposes only
-        # the V2 presence API; any non-default mask still fails strictly if
-        # the native enable operation is unavailable.
-        if any(not bool(enabled_state.get(path, True)) for path in self.collision_prim_paths):
-            for path in self.collision_prim_paths:
-                if path in enabled_state:
-                    adapter.set_obstacle_enabled(
-                        path,
-                        bool(enabled_state[path]),
-                        revision=revision,
-                    )
-        for path, pose in self._native_pose_cache.get(key, {}).items():
-            adapter.update_obstacle_pose(path, pose, revision=revision)
-
-    def _on_planner_materialized(
-        self,
-        port: PlannerScenePort,
-        planner: Any,
-        _kind: Any = None,
-        world: Any = None,
-        scene_revision: int | None = None,
-    ) -> NativeSceneAdapter:
-        """Attach and strictly audit an adapter for a newly-created planner."""
-
-        key = self._controller_key(port.name, port.lr_name)
-        current = list(self._native_scene_adapters.get(key, ()))
-        for adapter in current:
-            if adapter.planner is planner:
-                return adapter
-        runtime_world, runtime_revision = self._runtime_scene_state(port)
-        if world is None:
-            world = runtime_world
-        if scene_revision is None:
-            scene_revision = runtime_revision
-        else:
-            scene_revision = max(int(scene_revision), runtime_revision)
-        planner_runtime = self._planner_runtime(port)
-        if int(scene_revision) > int(planner_runtime.scene_revision):
-            port.adopt_scene_revision(int(scene_revision))
-        adapter = NativeSceneAdapter(
-            planner,
-            strict=True,
-            name=f"{port.name}/{port.lr_name}/{len(current)}",
-            world=world,
-            world_revision=int(scene_revision),
-        )
-        try:
-            # Validate addressability before making the adapter visible.  The
-            # complete audit below additionally rejects unexpected native
-            # names, preserving the exact Physics-schema contract.
-            adapter.require_obstacles(self.collision_prim_paths)
-        except Exception as exc:
-            raise CollisionSceneError(
-                "late native planner materialization has missing exact colliders: "
-                f"{port.name}/{port.lr_name} planner={adapter.name}: {exc}"
-            ) from exc
-        current.append(adapter)
-        self._native_scene_adapters[key] = tuple(current)
-        try:
-            self._register_scene_adapter(port, adapter)
-            self.audit_controller(port)
-            self._replay_native_scene_state(port, adapter)
-        except Exception:
-            try:
-                self._unregister_scene_adapter(port, adapter)
-            except (KeyError, ValueError):
-                pass
-            self._native_scene_adapters[key] = tuple(
-                item for item in current if item is not adapter
-            )
-            raise
-        return adapter
-
-    def _register_planner_listener(self, port: PlannerScenePort) -> None:
-        """Watch for lazy batch materialization through the runtime seam."""
-
-        key = self._controller_key(port.name, port.lr_name)
-        planner_runtime = self._planner_runtime(port)
-        register = planner_runtime.register_planner_listener
-
-        def listener(planner, kind, world, scene_revision):
-            # The initial single planner was audited synchronously at bind.  A
-            # callback is needed for the late batch only; the identity check
-            # keeps this safe if a runtime replays existing planners.
-            known = {
-                id(adapter.planner)
-                for adapter in self._native_scene_adapters.get(key, ())
-            }
-            if id(planner) not in known:
-                self._on_planner_materialized(
-                    port,
-                    planner,
-                    kind,
-                    world,
-                    scene_revision,
-                )
-
-        token = register(listener, replay=False)
-        self._planner_listener_callbacks[key] = (planner_runtime, token or listener)
-
-    def _native_scene_adapters_for(self, port: PlannerScenePort) -> tuple[NativeSceneAdapter, ...]:
-        """Return adapters, adding a lazily-created batch planner when present."""
-
-        key = self._controller_key(port.name, port.lr_name)
-        current = list(self._native_scene_adapters.get(key, ()))
-        known = {id(adapter.planner) for adapter in current}
-        world, revision = self._runtime_scene_state(port)
-        for adapter in current:
-            adapter.set_cached_world(world, revision=revision)
-        for planner in self._runtime_planners(port):
-            if planner is None or id(planner) in known:
-                continue
-            self._on_planner_materialized(port, planner, world=world, scene_revision=revision)
-            current = list(self._native_scene_adapters.get(key, ()))
-            known.add(id(planner))
-        return tuple(self._native_scene_adapters.get(key, current))
-
-    def require_batch_native_adapter(self, port: PlannerScenePort) -> NativeSceneAdapter:
-        """Return and strictly audit the adapter for the target batch planner."""
-
-        key = self._controller_key(port.name, port.lr_name)
-        planner_runtime = self._planner_runtime(port)
-        batch = port.runtime.batch_planner
-        if batch is None:
-            raise CollisionSceneError(
-                f"batch native planner is not materialized for controller {key}"
-            )
-        adapters = self._native_scene_adapters_for(port)
-        adapter = next(
-            (candidate for candidate in adapters if candidate.planner is batch),
-            None,
-        )
-        if adapter is None:
-            raise CollisionSceneError(
-                f"batch native scene adapter is not registered for controller {key}"
-            )
-        try:
-            adapter.require_obstacles(self.collision_prim_paths, exact=True)
-        except Exception as exc:
-            raise CollisionSceneError(
-                f"batch native scene adapter failed exact collider audit for {key}: {exc}"
-            ) from exc
-        return adapter
-
-    # Public name used by the typed attachment port.
-    require_batch_scene_adapter = require_batch_native_adapter
-
     def has_native_obstacle(self, port: PlannerScenePort, path: str) -> bool:
-        """Check one exact collider through the native scene adapter boundary."""
+        """Check one exact collider through the unique typed scene owner."""
 
-        adapters = self._native_scene_adapters_for(port)
-        return bool(adapters) and all(
-            adapter.has_obstacle(str(path)) for adapter in adapters
-        )
+        return port.runtime.has_obstacle(str(path))
 
     def _set_enabled(self, key: tuple[str, str], paths: Iterable[str], enabled: bool) -> None:
         port = self.scene_ports[key]
-        adapters = self._native_scene_adapters_for(port)
-        if not adapters:
-            raise CollisionSceneError(
-                f"CuRobo scene has no native planner before enable change: {key}"
-            )
         requested_paths = tuple(str(path) for path in paths)
-        missing: list[tuple[str, str]] = []
-        for adapter in adapters:
-            try:
-                missing.extend(
-                    (adapter.name, path)
-                    for path in requested_paths
-                    if not adapter.has_obstacle(path)
-                )
-            except Exception as exc:
-                raise CollisionSceneError(
-                    f"CuRobo scene addressability check failed before enable change: "
-                    f"{key} planner={adapter.name}: {exc}"
-                ) from exc
+        missing = tuple(path for path in requested_paths if not port.runtime.has_obstacle(path))
         if missing:
             raise CollisionSceneError(
                 "CuRobo obstacle missing before enable change: "
-                f"{key} missing={missing}"
+                f"{key} missing={list(missing)}"
             )
         changed = False
         for path in requested_paths:
-            for adapter in adapters:
-                adapter.set_obstacle_enabled(path, bool(enabled), revision=self.world_revision)
+            port.runtime.set_obstacle_enabled(path, bool(enabled))
             changed = changed or self.controller_enabled[key].get(path, True) != bool(enabled)
             self.controller_enabled[key][path] = bool(enabled)
         if changed:
@@ -1827,7 +1487,7 @@ class CollisionSceneManager:
         # that state must not be re-enabled by candidate cleanup.
         paths = tuple(
             path
-            for path in support.collision_prim_paths
+            for path in self.support_collision_paths(support_entity)
             if self.controller_enabled[owner].get(path, True)
         )
         if paths:
@@ -1864,7 +1524,7 @@ class CollisionSceneManager:
         owner = self._controller_key(robot, arm)
         paths = tuple(
             path
-            for path in support.collision_prim_paths
+            for path in self.support_collision_paths(support_entity)
             if path in self._temporary_disabled.get(owner, set())
             and not self.controller_enabled[owner].get(path, True)
         )
@@ -1980,12 +1640,9 @@ class CollisionSceneManager:
             for key in self._physics_controller_keys():
                 controller = self.scene_ports[key]
                 obstacle_pose = self._port_obstacle_pose(controller, path)
-                for adapter in self._native_scene_adapters_for(controller):
-                    adapter.update_obstacle_pose(
-                        path,
-                        obstacle_pose,
-                        revision=self.world_revision + 1,
-                    )
+                controller.runtime.update_obstacle_pose(
+                    path, obstacle_pose, revision=self.world_revision + 1
+                )
                 self._native_pose_cache.setdefault(key, {})[path] = obstacle_pose
         if changed:
             record.pose_revision += 1
@@ -2043,30 +1700,15 @@ class CollisionSceneManager:
 
     def audit_controller(self, port: PlannerScenePort) -> None:
         expected = set(self.collision_prim_paths)
-        adapters = self._native_scene_adapters_for(port)
-        if not adapters:
+        try:
+            actual = set(port.runtime.obstacle_names())
+        except Exception as exc:
             raise CollisionSceneError(
-                f"Physics/CuRobo collider audit has no native planner for "
-                f"{port.name}/{port.lr_name}"
-            )
-        missing_by_planner: dict[str, set[str]] = {}
-        unexpected_by_planner: dict[str, set[str]] = {}
-        for adapter in adapters:
-            try:
-                actual = set(adapter.obstacle_names())
-            except Exception as exc:
-                raise CollisionSceneError(
-                    f"Physics/CuRobo collider audit cannot enumerate native world for "
-                    f"{port.name}/{port.lr_name} planner={adapter.name}: {exc}"
-                ) from exc
-            missing = expected - actual
-            unexpected = actual - expected
-            if missing:
-                missing_by_planner[adapter.name] = missing
-            if unexpected:
-                unexpected_by_planner[adapter.name] = unexpected
-        missing = sorted({path for paths in missing_by_planner.values() for path in paths})
-        unexpected = sorted({path for paths in unexpected_by_planner.values() for path in paths})
+                f"Physics/CuRobo collider audit cannot enumerate native world for "
+                f"{port.name}/{port.lr_name}: {exc}"
+            ) from exc
+        missing = sorted(expected - actual)
+        unexpected = sorted(actual - expected)
         key = f"{port.name}/{port.lr_name}"
         self.controller_audits[key] = {
             "missing_in_curobo": missing,
@@ -2075,8 +1717,7 @@ class CollisionSceneManager:
         if missing or unexpected:
             raise CollisionSceneError(
                 f"Physics/CuRobo collider mismatch for {key}: "
-                f"missing={missing} by_planner={missing_by_planner}, "
-                f"unexpected={unexpected} by_planner={unexpected_by_planner}"
+                f"missing={missing}, unexpected={unexpected}"
             )
 
     def assert_invariants(self) -> None:
@@ -2233,11 +1874,6 @@ class CollisionSceneManager:
         for key, controller in self.scene_ports.items():
             if controller.collision_world_mode != "physics_schema":
                 continue
-            # The old adapters are metadata subscribers held by
-            # PlannerRuntime.  Unregister them before replacing the world;
-            # otherwise reset/rebind fans updates into both stale and current
-            # native scene views.
-            self._clear_native_scene_bindings(key, controller)
             self.controller_enabled[key] = {
                 path: True for path in self.collision_prim_paths
             }
@@ -2247,18 +1883,14 @@ class CollisionSceneManager:
             )
 
             world = self.build_world_config(controller.reference_prim_path)
-            planner = self._native_planner(controller)
+            planner = controller.runtime.native_planner
             if planner is None:
                 raise CollisionSceneError(
                     f"controller has no native CuRobo planner during task reset: {key}"
                 )
             # The scene port owns the revision-bearing runtime update.
             controller.runtime.update_world(world)
-            self._native_scene_adapters[key] = self._build_native_scene_adapters(controller)
-            for adapter in self._native_scene_adapters[key]:
-                self._register_scene_adapter(controller, adapter)
             self.audit_controller(controller)
-            self._register_planner_listener(controller)
 
         self._adopt_world_revision()
 

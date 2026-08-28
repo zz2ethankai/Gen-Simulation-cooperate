@@ -622,7 +622,6 @@ collision world 解析为 `physics_schema`；workflow 通过 validation 探针�
 | `pre_place_hold_vec_weight` | 6 元数组 | 否 | 无 | 在当前 EE pose、生成 place 轨迹前更新 pose cost。 |
 | `post_place_hold_vec_weight` | 6 元数组 | 否 | 无 | 名称虽为 post，实际在到达 pre-place 后、最终 place 前更新 pose cost。 |
 | `preserve_attached_orientation` | `bool` | 否 | `false` | 批量旋转候选直接复制当前 EE 姿态，不做随机重定向（place.py:731）。 |
-| `place_terminal_max_path_length_ratio` | `float` | 否 | `1.5` | terminal 下降段的 `max_path_length_ratio` 参数（place.py:373）。 |
 | `hesitate_steps` | `int` | 否 | `0` | `>= 0`；松爪前保持。 |
 | `gripper_change_steps` | `int` | 否 | `10` | 建议 `> 0`；松爪命令次数。 |
 | `post_place_vector` | `[x,y,z]` | 否 | 无 | 松爪后的 EE 局部坐标 retreat 向量，代码用 place rotation 变换到 base。 |

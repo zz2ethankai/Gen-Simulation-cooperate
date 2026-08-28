@@ -12,7 +12,7 @@
 
 - Use `/home/dyf/miniconda3/envs/anygrasp/bin/python` for scene-4 helper scripts and compile checks.
 - Start Isaac through `scripts/docker/up_simbox_isaac.sh` or the validation wrapper that calls it; avoid ad-hoc container startup.
-- For real validation, prefer the Scene-4 validation wrapper when present, or `scripts/docker/run_simbox_task.sh` for one task. Judge success from the validation summary, per-task logs, and skill snapshots.
+- For real validation, prefer the Scene-4 validation wrapper when present, or `scripts/docker/up_simbox_isaac.sh` with `TASK_CONFIG` for one task. Judge success from the validation summary, per-task logs, and skill snapshots.
 - A successful run needs `Task is successful, mode=plan_with_render` and no `[LmdbLogger] Episode failed`; a video or missing traceback is not enough.
 - Keep `emit_obs_on_failure` disabled for strict validation. Placeholder observations can hide retry/reset behavior.
 - Stop and inspect the first failure when using `--stop-on-failure`; use `output/local_navigation/skills/*` snapshots before changing logic.
@@ -25,7 +25,7 @@
 - Run non-interactive checks through the wrapper, for example `scripts/docker/isaac_dev.sh exec -- bash -lc 'pwd; python -V'`; use `scripts/docker/isaac_dev.sh stop` to release the GPU.
 - The default developer container is `isaac-dev-dev`; custom `--stack-id` values isolate the container name and cache. Developer caches live under `output/isaac-dev/`, not the root-owned `.docker/isaac-sim/` tree.
 - Verify the developer environment before relying on it: `scripts/docker/isaac_dev.sh status`, container state `running`, `/workspace` as the working directory, `INTERNDATA_AUTOSTART_LAUNCHER=0`, and a Bash process as the container main process. CuRobo/Isaac Torch verification from the entrypoint must pass.
-- A running Bash developer container is not task validation. For task success, stop it if it competes for GPU resources and use the normal validation wrapper or `scripts/docker/run_simbox_task.sh`; require `Task is successful, mode=plan_with_render` and no `[LmdbLogger] Episode failed`.
+- A running Bash developer container is not task validation. For task success, stop it if it competes for GPU resources and use the normal validation wrapper or `scripts/docker/up_simbox_isaac.sh` with `TASK_CONFIG`; require `Task is successful, mode=plan_with_render` and no `[LmdbLogger] Episode failed`.
 
 ## Reset And Randomization
 

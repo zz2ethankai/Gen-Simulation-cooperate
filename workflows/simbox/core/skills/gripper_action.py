@@ -24,7 +24,7 @@ class Gripper_Action(BaseSkill):
     def simple_generate_manip_cmds(self):
         manip_list = []
 
-        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.ee_pose()
+        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.execution.get_ee_pose()
         if self._gripper_state == 1:  # Open
             phase = MotionPhase.GRIPPER_OPEN
             action = "open_gripper"
@@ -46,7 +46,7 @@ class Gripper_Action(BaseSkill):
         self.manip_list = manip_list
 
     def is_feasible(self, th=5):
-        return self.skill_runtime.num_plan_failed <= th
+        return self.skill_runtime.execution.state.num_plan_failed <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0

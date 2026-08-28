@@ -726,6 +726,23 @@ class BananaBaseTask(BaseTask):
             if obj is None:
                 continue
 
+            # ``individual_reset`` intentionally does not resample regions.
+            # Restore the pose captured after the current layout was
+            # randomized.  Re-running A_on_B_region_sampler here derives Z
+            # from the post-failure pose (for example, an apple held over the
+            # tray), which changes the canonical reset state and contaminates
+            # the next plan_with_render episode.
+            key = self._rigid_object_state_key(obj)
+            state = self._rigid_object_reset_states.get(key)
+            if (
+                state is not None
+                and "world_translation" in state
+                and "world_orientation" in state
+            ):
+                self.restore_rigid_object_states(states={key: state}, object_keys={key})
+                self._zero_object_velocity(obj)
+                continue
+
             orientation = get_orientation(cfg.get("euler"), cfg.get("quaternion"))
             translation = cfg.get("translation")
             if translation is None:
@@ -864,6 +881,14 @@ class BananaBaseTask(BaseTask):
         for cfg in self.cfg["objects"]:
             if cfg["target_class"] == "ArticulatedObject":
                 self.objects[cfg["name"]].initialize()
+        # Cameras are task-owned sensors rather than World scene objects, so
+        # World.reset() does not invoke their acquisition-timing reset.  Keep
+        # their configured/mounted pose intact while clearing the previous
+        # episode's render timestamp and frame cache.
+        for camera in self.cameras.values():
+            post_reset = getattr(camera, "post_reset", None)
+            if callable(post_reset):
+                post_reset()
 
     def initialize_rigid_objects(self, physics_sim_view=None):
         """Attach newly referenced rigid USDs to the Isaac Sim 6 tensor view.

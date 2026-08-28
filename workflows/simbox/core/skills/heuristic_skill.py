@@ -96,11 +96,11 @@ class Heuristic_Skill(BaseSkill):
         return goal_arm_joints
 
     def _build_joint_traj(self, curr_joints, goal_joints, p_base_ee_cur, q_base_ee_cur):
-        """Build legacy-lane direct joint-space interpolation commands.
+        """Build typed direct joint-space interpolation commands.
 
         Heuristic joint motion is an interpolation contract, not a collision
         world transition.  ``rel_ee`` still uses the planner once to obtain a
-        feasible endpoint, then all emitted samples use ``dummy_forward``.
+        feasible endpoint, then all emitted samples carry direct joint actions.
         """
 
         manip_list = []
@@ -124,14 +124,14 @@ class Heuristic_Skill(BaseSkill):
         attachments, contacts, or call a collision-aware planner; each
         command is forwarded directly to execution. ``rel_ee`` uses the
         runtime planner once to solve its requested EE endpoint; every
-        interpolated sample then stays on the direct legacy lane.
+        interpolated sample then carries a typed direct joint action.
         """
 
         self.manip_list = []
         self.failure_reason = ""
         self.error_message = ""
 
-        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.ee_pose()
+        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.execution.get_ee_pose()
         curr_joints = np.asarray(
             self.robot.get_joint_positions(), dtype=float
         )[self._joint_indices]
@@ -179,7 +179,7 @@ class Heuristic_Skill(BaseSkill):
     def is_feasible(self, th=5):
         if self.execution_mode == DIRECT_EXECUTION_MODE:
             return True
-        return self.skill_runtime.num_plan_failed <= th
+        return self.skill_runtime.execution.state.num_plan_failed <= th
 
     def is_subtask_done(self, t_eps=0.088):
         if len(self.manip_list) == 0:

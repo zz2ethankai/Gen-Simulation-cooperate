@@ -23,14 +23,14 @@ class Home(BaseSkill):
 
         self.lr_hand = self.skill_runtime.arm_name
         if self.lr_hand == "left":
-            self._joint_indices = self.skill_runtime.arm_indices
+            self._joint_indices = self.skill_runtime.robot_port.arm_indices
             self._joint_home = self.robot.left_joint_home
             if self.skill_cfg.get("gripper_state", None):
                 self._gripper_state = self.skill_cfg["gripper_state"]
             else:
                 self._gripper_state = self.robot.left_gripper_state
         elif self.lr_hand == "right":
-            self._joint_indices = self.skill_runtime.arm_indices
+            self._joint_indices = self.skill_runtime.robot_port.arm_indices
             self._joint_home = self.robot.right_joint_home
             if self.skill_cfg.get("gripper_state", None):
                 self._gripper_state = self.skill_cfg["gripper_state"]
@@ -45,7 +45,7 @@ class Home(BaseSkill):
         """Build typed execution-only joint interpolation used by Home."""
 
         manip_list = []
-        curr_ee_trans, curr_ee_ori = self.skill_runtime.ee_pose()
+        curr_ee_trans, curr_ee_ori = self.skill_runtime.execution.get_ee_pose()
         curr_joints = np.asarray(self.robot.get_joint_positions(), dtype=float)[self._joint_indices]
         home_joints = np.asarray(self._joint_home, dtype=float)
 

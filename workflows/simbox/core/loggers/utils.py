@@ -7,9 +7,6 @@ from core.utils.transformation_utils import get_fk_solution, pose_to_6d
 
 from .lmdb_logger import LmdbLogger
 
-if TYPE_CHECKING:
-    from core.controllers.curobo.skill_runtime import SkillRuntimePort
-
 
 class _LoggingBaseBridge(Protocol):
     """Narrow local-base logging contract used by :func:`log_dual_obs`."""
@@ -18,7 +15,7 @@ class _LoggingBaseBridge(Protocol):
         """Return the most recent body-twist command snapshot."""
 
 
-RuntimePorts = Mapping[str, Mapping[str, "SkillRuntimePort"]]
+RuntimePorts = Mapping[str, Mapping[str, Any]]
 
 
 def _robot_has_keys(robot_infos, *keys):
@@ -30,7 +27,7 @@ def _gripper_openness(runtime_ports: RuntimePorts, robot_name: str, lr_name: str
 
     A missing arm is a valid configuration for single-arm/passive robots, and
     is represented as the neutral open value.  Active arms must expose the
-    typed execution state carried by ``SkillRuntimePort``; no controller
+    typed execution state; no controller
     façade or private state is inspected here.
     """
 
@@ -38,7 +35,7 @@ def _gripper_openness(runtime_ports: RuntimePorts, robot_name: str, lr_name: str
     runtime = robot_ports.get(lr_name)
     if runtime is None:
         return 1.0
-    status = runtime.execution_status()
+    status = runtime.execution.execution_status()
     return 1.0 if float(status.gripper_state) > 0.0 else 0.0
 
 
@@ -53,7 +50,7 @@ def log_dual_obs(
 ):
     """Record one observation using explicit runtime/state inputs.
 
-    ``runtime_ports`` is a robot-to-arm mapping of ``SkillRuntimePort``
+    ``runtime_ports`` is a robot-to-arm mapping of typed runtimes
     instances.  The logger intentionally receives neither the controller
     façade nor a private gripper field; command actions remain in
     ``action_dict`` and measured robot state remains in ``obs``.

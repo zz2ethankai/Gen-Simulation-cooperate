@@ -40,7 +40,7 @@ class Track(BaseSkill):
             self.last_target_ori = np.array([1.0, 0.0, 0.0, 0.0])
             self.manip_list = []
             return
-        self.robot_base_path = self.skill_runtime.robot_base_path
+        self.robot_base_path = self.skill_runtime.setup.robot_base_path
         self.T_base_2_world = get_relative_transform(
             get_prim_at_path(self.robot_base_path), get_prim_at_path(self.task.root_prim_path)
         )
@@ -103,7 +103,7 @@ class Track(BaseSkill):
 
     def get_tcp_pose(self, frame: str = "world"):
         if frame == "world":
-            p_base_ee, q_base_ee = self.skill_runtime.ee_pose()
+            p_base_ee, q_base_ee = self.skill_runtime.execution.get_ee_pose()
             T_ee_2_base = tf_matrix_from_pose(p_base_ee, q_base_ee)
             T_tcp_2_world = self.T_base_2_world @ T_ee_2_base @ self.T_tcp_2_ee
             return T_tcp_2_world
@@ -201,7 +201,7 @@ class Track(BaseSkill):
         return way_points
 
     def is_feasible(self, th=5):
-        return self._passthrough or self.skill_runtime.num_plan_failed <= th
+        return self._passthrough or self.skill_runtime.execution.state.num_plan_failed <= th
 
     def is_ready(self):
         return not self._passthrough
@@ -222,7 +222,7 @@ class Track(BaseSkill):
     def is_success(self, t_eps=5e-3, o_eps=0.087):
         if self._passthrough:
             return True
-        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.ee_pose()
+        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.execution.get_ee_pose()
         p_base_ee, q_base_ee = self.last_target_trans, self.last_target_ori
         diff_trans = np.linalg.norm(p_base_ee_cur - p_base_ee)
         diff_ori = 2 * np.arccos(min(abs(np.dot(q_base_ee_cur, q_base_ee)), 1.0))

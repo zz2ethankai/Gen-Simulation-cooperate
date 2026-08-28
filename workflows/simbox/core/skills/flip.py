@@ -32,8 +32,8 @@ class Flip(BaseSkill):
         self.manip_list = []
         if kwargs:
             self.draw = kwargs["draw"]
-        self.robot_ee_path = self.skill_runtime.robot_ee_path
-        self.robot_base_path = self.skill_runtime.robot_base_path
+        self.robot_ee_path = self.skill_runtime.setup.robot_ee_path
+        self.robot_base_path = self.skill_runtime.setup.robot_base_path
 
     @staticmethod
     def _get_object_world_tf(obj):
@@ -111,7 +111,7 @@ class Flip(BaseSkill):
         camera_axis = np.array([0, 1, 0])
         q_world_ee = self.get_ee_ori(gripper_axis, T_world_ee, camera_axis)
         # 2. Obtaining ee_trans
-        p_world_ee_init = self.skill_runtime.initial_ee_pose()[0:3, 3]
+        p_world_ee_init = self.skill_runtime.setup.T_world_ee_init[0:3, 3]
         p_world_ee = p_world_ee_init.copy()
         p_world_ee[0] += np.random.uniform(0.19, 0.21)  # 0.2
         p_world_ee[1] += np.random.uniform(0.23, 0.27)  # 0.25
@@ -165,7 +165,7 @@ class Flip(BaseSkill):
         return waypoint
 
     def is_feasible(self, th=10):
-        return self.skill_runtime.num_plan_failed <= th
+        return self.skill_runtime.execution.state.num_plan_failed <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
@@ -188,7 +188,7 @@ class Flip(BaseSkill):
         angle = np.arccos(np.clip(dot_product, -1.0, 1.0))  # Clip to handle numerical errors
         angle_degrees = np.degrees(angle)
         # Position
-        ee_init_position = self.skill_runtime.initial_ee_pose()[0:3, 3]
+        ee_init_position = self.skill_runtime.setup.T_world_ee_init[0:3, 3]
         obj_position = T_world_obj[0:3, 3]
         delta_y = obj_position[1] - ee_init_position[1]
         return angle_degrees < 90 and 0 < delta_y < 0.7

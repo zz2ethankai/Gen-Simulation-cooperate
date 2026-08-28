@@ -257,7 +257,7 @@ def _run_probe(
     terminated_after_results = False
     with log_path.open("w", encoding="utf-8") as stream:
         process = subprocess.Popen(
-            ["bash", "scripts/docker/run_simbox_task.sh"],
+            ["bash", "scripts/docker/up_simbox_isaac.sh"],
             cwd=REPO_ROOT,
             env=env,
             stdout=stream,
@@ -418,7 +418,7 @@ def _run_pick(
     log_path = case_dir / "stdout.log"
     with log_path.open("w", encoding="utf-8") as stream:
         process = subprocess.Popen(
-            ["bash", "scripts/docker/run_simbox_task.sh"],
+            ["bash", "scripts/docker/up_simbox_isaac.sh"],
             cwd=REPO_ROOT,
             env=env,
             stdout=stream,

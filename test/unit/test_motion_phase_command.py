@@ -14,7 +14,6 @@ if str(SIMBOX_ROOT) not in sys.path:
 
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand  # noqa: E402
 from core.planning.domain_types import CollisionPolicy, PlanningProfile  # noqa: E402
-from core.planning.direct_command import dummy_forward_params  # noqa: E402
 
 
 def test_motion_phase_command_validates_pose_and_exposes_semantics():
@@ -53,13 +52,13 @@ def test_motion_phase_command_rejects_partial_or_invalid_pose():
         )
 
 
-def test_motion_phase_command_preserves_typed_planner_request_metadata():
+def test_motion_phase_command_preserves_typed_planner_fields():
     command = MotionPhaseCommand(
         phase=MotionPhase.TERMINAL_PLACE_DESCENT,
         target_position=np.zeros(3),
         target_orientation=np.array([1.0, 0.0, 0.0, 0.0]),
-        active_target="apple",
-        support="tray",
+        active_object="apple",
+        support_object="tray",
         completion_policy="contact_or_tolerance",
         replan_policy="dynamic_scene",
         collision_policy=CollisionPolicy.PLACEMENT_DESCENT,
@@ -69,21 +68,13 @@ def test_motion_phase_command_preserves_typed_planner_request_metadata():
 
     assert command.active_object == "apple"
     assert command.support_object == "tray"
-    assert command.active_target == "apple"
-    assert command.support == "tray"
-    assert command.planning_request_metadata == {
-        "phase_id": "place.descent",
-        "completion_policy": "contact_or_tolerance",
-        "replan_policy": "dynamic_scene",
-        "candidate_replan_limit": None,
-        "collision_policy": CollisionPolicy.PLACEMENT_DESCENT,
-        "collision_options": command.collision_options,
-        "active_target": "apple",
-        "support": "tray",
-        "profile": PlanningProfile.TERMINAL_LINEAR,
-        "preplanned_joint_path": None,
-        "metadata": {},
-    }
+    assert command.active_object == "apple"
+    assert command.support_object == "tray"
+    assert command.phase_id == "place.descent"
+    assert command.completion_policy == "contact_or_tolerance"
+    assert command.replan_policy == "dynamic_scene"
+    assert command.collision_policy is CollisionPolicy.PLACEMENT_DESCENT
+    assert command.profile is PlanningProfile.TERMINAL_LINEAR
 
 
 def test_joint_target_is_planner_input_and_direct_payload_requires_hold():
@@ -102,16 +93,13 @@ def test_joint_target_is_planner_input_and_direct_payload_requires_hold():
         )
 
 
-def test_dummy_forward_command_is_a_skill_level_direct_execution_boundary():
-    command = (
-        np.zeros(3),
-        np.array([1.0, 0.0, 0.0, 0.0]),
-        "dummy_forward",
-        {"arm_action": np.array([0.1, 0.2]), "gripper_state": 1.0},
+def test_direct_joint_action_is_the_typed_execution_boundary():
+    command = MotionPhaseCommand(
+        phase=MotionPhase.CARRY_HOME,
+        direct_joint_action=np.array([0.1, 0.2]),
+        gripper_state=1.0,
     )
 
-    params = dummy_forward_params(command)
-
-    assert params["gripper_state"] == 1.0
-    np.testing.assert_allclose(params["arm_action"], [0.1, 0.2])
-    assert dummy_forward_params(("not", "a", "typed", "command")) is None
+    assert command.is_direct
+    assert command.collision_policy is CollisionPolicy.PASSTHROUGH
+    np.testing.assert_allclose(command.direct_joint_action, [0.1, 0.2])

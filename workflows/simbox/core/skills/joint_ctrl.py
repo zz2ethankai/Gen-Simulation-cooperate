@@ -20,7 +20,7 @@ class Joint_Ctrl(BaseSkill):
         self.task = task
         self.name = cfg["name"]
         self.skill_cfg = cfg
-        self.robot_base_path = self.skill_runtime.robot_base_path
+        self.robot_base_path = self.skill_runtime.setup.robot_base_path
         if self.skill_runtime.arm_name == "left":
             self.robot_lr = "left"
         elif self.skill_runtime.arm_name == "right":
@@ -60,9 +60,9 @@ class Joint_Ctrl(BaseSkill):
         joint_positions = self.robot.get_joints_state().positions
 
         if isinstance(joint_positions, torch.Tensor):
-            curr_js = joint_positions.detach().cpu().numpy()[self.skill_runtime.arm_indices]
+            curr_js = joint_positions.detach().cpu().numpy()[self.skill_runtime.robot_port.arm_indices]
         elif isinstance(joint_positions, np.ndarray):
-            curr_js = joint_positions[self.skill_runtime.arm_indices]
+            curr_js = joint_positions[self.skill_runtime.robot_port.arm_indices]
         else:
             raise TypeError(f"Unsupported joint state type: {type(joint_positions)}")
 
@@ -81,7 +81,7 @@ class Joint_Ctrl(BaseSkill):
                 raise ValueError(f"Unknown control mode: {mode}")
 
         # --- Apply robot-specific joint limits / safety clamps ---
-        robot_file = self.skill_runtime.robot_file.lower()
+        robot_file = self.skill_runtime.planner_build_config.robot_file.lower()
 
         if "piper" in robot_file:
             # Example: clamp elbow and wrist joints for Piper robot
@@ -95,7 +95,7 @@ class Joint_Ctrl(BaseSkill):
         return curr_js, target_js
 
     def is_feasible(self, th=5):
-        return self.skill_runtime.num_plan_failed <= th
+        return self.skill_runtime.execution.state.num_plan_failed <= th
 
     def is_subtask_done(self, js_eps=5e-3, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
@@ -115,9 +115,9 @@ class Joint_Ctrl(BaseSkill):
     def is_success(self):
         joint_positions = self.robot.get_joints_state().positions
         if isinstance(joint_positions, torch.Tensor):
-            curr_js = joint_positions.numpy()[self.skill_runtime.arm_indices]  # JointState
+            curr_js = joint_positions.numpy()[self.skill_runtime.robot_port.arm_indices]  # JointState
         elif isinstance(joint_positions, np.ndarray):
-            curr_js = joint_positions[self.skill_runtime.arm_indices]  # JointState
+            curr_js = joint_positions[self.skill_runtime.robot_port.arm_indices]  # JointState
         distance_js = np.linalg.norm(curr_js - self.target_js)
         flag = (distance_js < self.success_threshold_js) and (len(self.manip_list) == 0)
 

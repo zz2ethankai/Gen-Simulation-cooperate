@@ -9,7 +9,6 @@ from importlib import import_module
 
 from core.controllers.controller_registry import ArmSpec, CONTROLLER_DICT
 from core.controllers.curobo.phase_execution import ExecutionStatus
-from core.controllers.curobo.skill_runtime import SkillRuntimePort
 from core.planning.domain_types import CommandStatus
 
 _LAZY_CONTROLLERS = {
@@ -57,7 +56,6 @@ def _load_controllers():
 __all__ = [
     "TemplateController",
     "ArmSpec",
-    "SkillRuntimePort",
     "CommandStatus",
     "ExecutionStatus",
     "FR3Controller",

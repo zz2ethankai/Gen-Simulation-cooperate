@@ -43,13 +43,13 @@ class Rotate(BaseSkill):
 
     # debug start: KPAMPlanner
     def setup_kpam(self):
-        robot_config = self.skill_runtime.robot_config
+        robot_config = self.skill_runtime.robot_port.robot.cfg
         robot_frame = KPAMRobotFrame.from_config(
             robot_config=robot_config,
             arm_name=self.skill_runtime.arm_name,
-            base_path=self.skill_runtime.robot_base_path,
-            ee_path=self.skill_runtime.robot_ee_path,
-            hand_path=self.skill_runtime.robot_ee_path,
+            base_path=self.skill_runtime.setup.robot_base_path,
+            ee_path=self.skill_runtime.setup.robot_ee_path,
+            hand_path=self.skill_runtime.setup.robot_ee_path,
         )
         queries = KPAMPlannerQueries(
             get_joint_positions=self.robot.get_joint_positions,
@@ -86,7 +86,7 @@ class Rotate(BaseSkill):
             self.manip_list = []
             return
         T_world_base = get_relative_transform(
-            get_prim_at_path(self.skill_runtime.robot_base_path),
+            get_prim_at_path(self.skill_runtime.setup.robot_base_path),
             get_prim_at_path(self.task.root_prim_path),
         )
         self.traj_keyframes = traj_keyframes
@@ -150,7 +150,7 @@ class Rotate(BaseSkill):
                 )
             )
             current_arm = np.asarray(
-                self.robot.get_joints_state().positions[self.skill_runtime.arm_indices],
+                self.robot.get_joints_state().positions[self.skill_runtime.robot_port.arm_indices],
                 dtype=float,
             )
             for k in range(100):
@@ -172,7 +172,7 @@ class Rotate(BaseSkill):
         )
 
     def is_feasible(self, th=5):
-        return self.skill_runtime.num_plan_failed <= th
+        return self.skill_runtime.execution.state.num_plan_failed <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0

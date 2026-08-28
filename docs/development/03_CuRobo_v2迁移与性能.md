@@ -108,7 +108,7 @@ TASK_CONFIG=InternDataAssets/assets/custom/scene_8/01_kitchen/assets/basic/kitch
 RUN_NAME=curobo_v2_native_validation_warp113_fork_retry22 \
 LAUNCH_TEMPLATE=output/simbox_plan_with_render/de_config.yaml \
 RANDOM_NUM=1 RANDOM_SEED=0 \
-bash scripts/docker/run_simbox_task.sh
+bash scripts/docker/up_simbox_isaac.sh
 ```
 
 运行结束后按 wrapper 的严格判据检查 Isaac log；不能只看容器退出、视频或缺少 traceback：
@@ -186,7 +186,7 @@ RANDOM_NUM=1 RANDOM_SEED=0 \
 RUN_NAME=curobo_v2_native_validation_warp113_fork_retry25 \
 CUROBO_DEBUG_WORLD_COLLISION=1 \
 INTERNDATA_CONTAINER_UID=$(id -u) INTERNDATA_CONTAINER_GID=$(id -g) \
-scripts/docker/run_simbox_task.sh
+scripts/docker/up_simbox_isaac.sh
 ```
 
 结果：严格成功 marker 缺失，首个失败发生在 `transit_pregrasp`。Apple `apple_0_id9008` 被 `CollisionSceneManager` 识别为活动目标刚体，其动态位姿在 step 250、310、325 发生变化；step 250 触发 `hold_and_replan` `1/2`，step 310 触发 `hold_and_replan` `2/2`，step 325 再次变化后以 `dynamic_obstacle_changed` abort，随后日志记录 `plan_with_render returned 0`。该阶段没有接触、滑移或关节跟踪异常，不能把失败归因于 CuRobo batch IK 或 native planner 初始化。

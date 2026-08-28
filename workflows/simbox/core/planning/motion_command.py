@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from enum import Enum
 from typing import Any, Mapping
 
@@ -86,7 +86,6 @@ class MotionPhaseCommand:
     # collisions remain safety violations.
     allow_target_robot_contact: bool = False
     allow_object_support_contact: bool = False
-    replan_allowed: bool = True
     # Pick may opt into a larger, candidate-scoped safety budget.  ``None``
     # keeps the ordinary ExecutionSupervisor budget unchanged.
     candidate_replan_limit: int | None = None
@@ -96,17 +95,17 @@ class MotionPhaseCommand:
     plan_id: str | None = None
     # Canonical planner/execution metadata.  ``active_object`` and
     # ``support_object`` remain the workflow-facing spellings; the canonical
-    # aliases below let request builders pass entity identity without parsing
-    # an untyped params dictionary.
     phase_id: str | None = None
     completion_policy: Any = "default"
     replan_policy: Any = None
     collision_policy: CollisionPolicy | str | None = None
-    collision_options: CollisionOptions | Mapping[str, Any] | None = None
+    collision_options: CollisionOptions | None = None
     profile: PlanningProfile | str | None = None
-    active_target: str | None = None
-    support: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    replan_allowed: InitVar[bool] = True
+    # A candidate planner may already have produced a named trajectory.  Keep
+    # it on the typed command instead of hiding a planner input in ``params``.
+    preplanned_joint_path: Any = None
     # A joint target is a planner request, not an articulation action.  The
     # latter is reserved for explicit measured-state hold commands.
     joint_target: np.ndarray | None = None
@@ -117,7 +116,7 @@ class MotionPhaseCommand:
     # translating it to an open/close verb.
     gripper_state: float | None = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, replan_allowed: bool) -> None:
         if not isinstance(self.phase, MotionPhase):
             self.phase = MotionPhase(self.phase)
         if self.phase_id is None:
@@ -125,30 +124,16 @@ class MotionPhaseCommand:
         else:
             self.phase_id = str(self.phase_id)
         if self.replan_policy is None:
-            self.replan_policy = "allowed" if self.replan_allowed else "forbidden"
+            self.replan_policy = "allowed" if replan_allowed else "forbidden"
         if self.candidate_replan_limit is not None:
             self.candidate_replan_limit = int(self.candidate_replan_limit)
             if self.candidate_replan_limit < 0:
                 raise ValueError("candidate_replan_limit must be non-negative")
 
-        if self.active_target is not None and self.active_object is not None:
-            if str(self.active_target) != str(self.active_object):
-                raise ValueError("active_target and active_object must identify the same entity")
-        self.active_target = (
-            str(self.active_target)
-            if self.active_target is not None
-            else (str(self.active_object) if self.active_object is not None else None)
-        )
-        self.active_object = self.active_target
-        if self.support is not None and self.support_object is not None:
-            if str(self.support) != str(self.support_object):
-                raise ValueError("support and support_object must identify the same entity")
-        self.support = (
-            str(self.support)
-            if self.support is not None
-            else (str(self.support_object) if self.support_object is not None else None)
-        )
-        self.support_object = self.support
+        if self.active_object is not None:
+            self.active_object = str(self.active_object)
+        if self.support_object is not None:
+            self.support_object = str(self.support_object)
 
         requested_collision_policy = self.collision_policy
         if self.collision_policy is None:
@@ -156,7 +141,7 @@ class MotionPhaseCommand:
                 self.phase, CollisionPolicy.WORLD_TRANSIT
             )
             if (
-                self.active_target is None
+                self.active_object is None
                 and default_policy == CollisionPolicy.ATTACHED_CARRY
             ):
                 default_policy = CollisionPolicy.WORLD_TRANSIT
@@ -171,45 +156,26 @@ class MotionPhaseCommand:
         # CuRobo v2 planner does not understand arbitrary command kwargs, so
         # preserve them in ``CollisionOptions`` for the PlannerRuntime/native
         # adapter to map to exact scene/attachment operations.
-        collision_options = CollisionOptions.from_mapping(
-            self.collision_options,
-            default_policy=self.collision_policy,
-        )
-        collision_options = CollisionOptions.from_mapping(
-            {
-                **collision_options.to_dict(),
-                "allow_target_contact": (
-                    collision_options.allow_target_contact
-                    or self.allow_target_finger_contact
-                ),
-                "allow_target_finger_contact": (
-                    collision_options.allow_target_finger_contact
-                    or self.allow_target_finger_contact
-                ),
-                "allow_target_robot_contact": (
-                    collision_options.allow_target_robot_contact
-                    or self.allow_target_robot_contact
-                ),
-                "allow_support_contact": (
-                    collision_options.allow_support_contact
-                    or self.allow_object_support_contact
-                ),
-                "allow_object_support_contact": (
-                    collision_options.allow_object_support_contact
-                    or self.allow_object_support_contact
-                ),
-                "require_attached_spheres": (
-                    collision_options.require_attached_spheres
-                    or self.collision_policy
-                    in {
-                        CollisionPolicy.ATTACHED_CARRY,
-                        CollisionPolicy.PLACEMENT_DESCENT,
-                    }
-                ),
+        if self.collision_options is not None and not isinstance(self.collision_options, CollisionOptions):
+            raise TypeError("MotionPhaseCommand.collision_options must be CollisionOptions")
+        base = self.collision_options or CollisionOptions(self.collision_policy)
+        self.collision_options = CollisionOptions(
+            policy=self.collision_policy,
+            mode=base.mode,
+            excluded_obstacles=base.excluded_obstacles,
+            included_obstacles=base.included_obstacles,
+            allow_self_collision=base.allow_self_collision,
+            allow_target_contact=base.allow_target_contact or self.allow_target_finger_contact or self.allow_target_robot_contact,
+            allow_support_contact=base.allow_support_contact or self.allow_object_support_contact,
+            require_attached_spheres=base.require_attached_spheres or self.collision_policy in {
+                CollisionPolicy.ATTACHED_CARRY,
+                CollisionPolicy.PLACEMENT_DESCENT,
             },
-            default_policy=self.collision_policy,
+            target_obstacles=base.target_obstacles,
+            support_obstacles=base.support_obstacles,
+            attached_obstacles=base.attached_obstacles,
+            allow_stale_scene=base.allow_stale_scene,
         )
-        self.collision_options = collision_options
         if not isinstance(self.metadata, Mapping):
             raise TypeError("MotionPhaseCommand metadata must be a mapping")
         self.metadata = dict(self.metadata)
@@ -249,12 +215,7 @@ class MotionPhaseCommand:
             # Direct actions are never planner requests. This assignment is
             # intentionally automatic so every producer gets the same policy.
             self.collision_policy = CollisionPolicy.PASSTHROUGH
-            option_mapping = self.collision_options.to_dict()
-            option_mapping["policy"] = CollisionPolicy.PASSTHROUGH.value
-            self.collision_options = CollisionOptions.from_mapping(
-                option_mapping,
-                default_policy=CollisionPolicy.PASSTHROUGH,
-            )
+            self.collision_options = CollisionOptions(CollisionPolicy.PASSTHROUGH)
         elif self.gripper_state is not None:
             raise ValueError("gripper_state is only valid with direct_joint_action")
         if self.target_position is not None:
@@ -283,24 +244,6 @@ class MotionPhaseCommand:
         return self.direct_joint_action is not None
 
     @property
-    def planning_request_metadata(self) -> dict[str, Any]:
-        """Return the explicit common fields for a native planner request."""
-
-        return {
-            "phase_id": self.phase_id,
-            "completion_policy": self.completion_policy,
-            "replan_policy": self.replan_policy,
-            "candidate_replan_limit": self.candidate_replan_limit,
-            "collision_policy": self.collision_policy,
-            "collision_options": self.collision_options,
-            "active_target": self.active_target,
-            "support": self.support,
-            "profile": self.profile,
-            "preplanned_joint_path": self.params.get("preplanned_joint_path"),
-            "metadata": dict(self.metadata),
-        }
-
-    @property
     def is_bookkeeping(self) -> bool:
         return self.phase in BOOKKEEPING_PHASES
 
@@ -325,3 +268,7 @@ class MotionPhaseCommand:
         """Target-change epsilon, deliberately independent of completion tolerance."""
 
         return 1e-4
+
+    @property
+    def replan_allowed(self) -> bool:
+        return str(self.replan_policy).lower() != "forbidden"

@@ -19,7 +19,7 @@ physical-4WIS probes.
 - [ ] Runtime-validate SplitAloha `manipulation_base_hold` against the local
   virtual-base asset. Confirm the three base joints remain fixed during Agent
   Pick/Place and that Nav2 control resumes without a pose jump afterward.
-- [ ] Run one Agent-generated task through `scripts/docker/run_simbox_task.sh`
+- [ ] Run one Agent-generated task through `scripts/docker/up_simbox_isaac.sh` with `TASK_CONFIG`
   and verify strict success from the task log, episode events, LMDB metadata,
   and skill snapshots.
 - [ ] Validate one Agent-generated task that uses an object-level `asset_root`;

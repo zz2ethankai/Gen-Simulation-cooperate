@@ -47,7 +47,7 @@ class FailPick(BaseSkill):
         self.obj_init_trans = deepcopy(self.object.get_local_pose()[0])
 
     def _get_armbase_world_tf(self):
-        return self.skill_runtime.arm_base_transform()
+        return self.skill_runtime.execution.get_pick_armbase_transform()
 
     def _get_object_world_tf(self):
         get_obj_world_pose = getattr(self.object, "get_world_pose", None)
@@ -212,7 +212,7 @@ class FailPick(BaseSkill):
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        return self.skill_runtime.phase_complete(self.manip_list[0])
+        return self.skill_runtime.execution.is_phase_command_complete(self.manip_list[0])
 
     def is_record(self):
         return len(self.manip_list) < (1 * self.skill_cfg.get("gripper_change_steps", 10) + 2)
@@ -229,4 +229,4 @@ class FailPick(BaseSkill):
         return len(self.manip_list) == 0
 
     def is_feasible(self, th=5):
-        return int(self.skill_runtime.num_plan_failed) <= th
+        return int(self.skill_runtime.execution.state.num_plan_failed) <= th

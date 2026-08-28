@@ -1,7 +1,7 @@
 """Candidate-driven Place skill.
 
 Place owns only placement-target generation and the release/settle protocol.
-All collision-aware motion queries go through ``SkillRuntimePort``; the
+All collision-aware motion queries go through the controller-owned typed runtime; the
 controller owns the CuRobo/native execution details.
 """
 
@@ -13,11 +13,12 @@ from core.planning.domain_types import BatchPlanResult, CollisionPolicy, PlanRes
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand
 from core.skills.base_skill import BaseSkill, register_skill
 from core.utils.box import Box, get_bbox_center_and_corners
-from core.utils.constants import CUROBO_BATCH_SIZE
 from core.utils.iou import IoU
+from core.utils.plan_utils import sort_by_difference_js
 from core.utils.transformation_utils import create_pose_matrices, poses_from_tf_matrices
 from core.utils.usd_geom_utils import compute_bbox
 from core.visualization.skill_target_math import ratio_box_corners
+from core.utils.constants import CUROBO_BATCH_SIZE
 from isaacsim.core.api.robots.robot import Robot
 from isaacsim.core.api.tasks import BaseTask
 from isaacsim.core.utils.prims import get_prim_at_path
@@ -72,8 +73,8 @@ class Place(BaseSkill):
         self.align_pick_obj_axis = cfg.get("align_pick_obj_axis")
         self.align_place_obj_axis = cfg.get("align_place_obj_axis")
         self.align_obj_tol = cfg.get("align_obj_tol")
-        self.robot_ee_path = self.skill_runtime.robot_ee_path
-        self.robot_base_path = self.skill_runtime.reference_prim_path
+        self.robot_ee_path = self.skill_runtime.setup.robot_ee_path
+        self.robot_base_path = self.skill_runtime.setup.reference_prim_path
 
         self.manip_list = []
         self.place_ee_trans = None
@@ -94,15 +95,12 @@ class Place(BaseSkill):
         return self.task.cfg.get("planning", {}).get("pick_place", {})
 
     @staticmethod
-    def _plan_mask(result, count):
+    def _plan_mask(result):
         if isinstance(result, BatchPlanResult):
-            values = result.success_mask
-        elif isinstance(result, PlanResult):
-            values = (result.success,)
-        else:
-            return np.zeros(int(count), dtype=bool)
-        values = np.asarray(values, dtype=bool).reshape(-1)
-        return values if len(values) == int(count) else np.zeros(int(count), dtype=bool)
+            return np.asarray(result.success, dtype=bool)
+        if not isinstance(result, PlanResult):
+            raise TypeError(f"unsupported plan result: {type(result).__name__}")
+        return np.asarray([bool(result.success)], dtype=bool)
 
     @staticmethod
     def _plan_paths(result):
@@ -110,7 +108,35 @@ class Place(BaseSkill):
             return list(result.trajectories)
         if isinstance(result, PlanResult):
             return [] if result.trajectory is None else [result.trajectory]
-        return []
+        raise TypeError(f"unsupported plan result: {type(result).__name__}")
+
+    @staticmethod
+    def _plan_metric(result, name):
+        values = result.metrics.get(name)
+        if values is None:
+            return np.full(len(result.success), np.inf, dtype=float)
+        values = np.asarray(values, dtype=float)
+        if values.ndim == 0:
+            return np.full(len(result.success), float(values), dtype=float)
+        return values.reshape(values.shape[0], -1).min(axis=1)
+
+    @staticmethod
+    def _select_priority_index(valid, position_error, rotation_error, paths):
+        indices = np.flatnonzero(valid)
+        path_indices = np.asarray(
+            [index for index in indices if paths[index] is not None], dtype=int
+        )
+        if len(path_indices) == 0:
+            return int(indices[0])
+        position = position_error[path_indices]
+        rotation = rotation_error[path_indices]
+        filtered = path_indices[
+            (position <= np.mean(position)) & (rotation <= np.mean(rotation))
+        ]
+        if len(filtered) == 0:
+            filtered = path_indices
+        order = sort_by_difference_js([paths[index] for index in filtered])
+        return int(filtered[int(order[0])])
 
     @staticmethod
     def _json_ready(value):
@@ -158,13 +184,15 @@ class Place(BaseSkill):
     def _plan_summary(result):
         if result is None:
             return None
-        mask = getattr(result, "success_mask", None)
+        if not isinstance(result, (PlanResult, BatchPlanResult)):
+            raise TypeError(f"unsupported plan result: {type(result).__name__}")
+        success = result.success if isinstance(result, BatchPlanResult) else (result.success,)
         return {
             "type": type(result).__name__,
             "status": str(getattr(result, "status", "")),
             "error": None if getattr(result, "error", None) is None else str(result.error),
-            "success_count": None if mask is None else int(np.count_nonzero(mask)),
-            "candidate_count": None if mask is None else int(len(mask)),
+            "success_count": int(getattr(result, "success_count", sum(success))),
+            "candidate_count": len(success),
             "metrics": getattr(result, "metrics", {}),
         }
 
@@ -189,7 +217,7 @@ class Place(BaseSkill):
 
     def _arm_base_world_tf(self):
         try:
-            pose = self.skill_runtime.arm_base_pose()
+            pose = self.skill_runtime.execution.get_armbase_pose()
             if isinstance(pose, (tuple, list)) and len(pose) == 2:
                 return tf_matrix_from_pose(*pose)
             matrix = np.asarray(pose, dtype=float)
@@ -198,54 +226,6 @@ class Place(BaseSkill):
         except (AttributeError, RuntimeError, TypeError, ValueError):
             pass
         return tf_matrix_from_pose(*get_world_pose(self.robot_base_path))
-
-    def _terminal_options(self):
-        cfg = self._pick_place_cfg
-        step = float(cfg.get("place_terminal_step_m", cfg.get("terminal_step_m", 0.01)))
-        tolerance = float(cfg.get("place_terminal_tolerance_m", min(0.005, step)))
-        if not np.isfinite(step) or step <= 0.0:
-            raise ValueError("Place terminal step must be positive and finite")
-        if not np.isfinite(tolerance) or tolerance <= 0.0 or tolerance > step:
-            raise ValueError("Place terminal tolerance must be in (0, step]")
-        continuous = cfg.get("place_continuous_descent", True)
-        if not isinstance(continuous, bool):
-            raise ValueError("place_continuous_descent must be a boolean")
-        return {
-            "step": step,
-            "tolerance": tolerance,
-            "continuous": continuous,
-            "max_ratio": float(cfg.get("place_terminal_max_path_length_ratio", 1.5)),
-            "max_deviation": float(cfg.get("place_terminal_max_path_deviation_m", step)),
-        }
-
-    @staticmethod
-    def _terminal_samples(start, goal, step):
-        start = np.asarray(start, dtype=float)
-        goal = np.asarray(goal, dtype=float)
-        count = max(1, int(np.ceil(np.linalg.norm(goal - start) / step - 1e-9)))
-        return [start + (goal - start) * (index / count) for index in range(1, count + 1)]
-
-    def _terminal_path_ok(self, path, start, goal, options):
-        if path is None:
-            return True
-        try:
-            ratio, deviation = self.skill_runtime.measure_cartesian_path(path, start, goal)
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            return True
-        return bool(
-            np.isfinite(ratio)
-            and np.isfinite(deviation)
-            and float(ratio) <= options["max_ratio"] + 1e-6
-            and float(deviation) <= options["max_deviation"] + 1e-6
-        )
-
-    def _place_request(self, policy, phase_id):
-        return {
-            "phase_id": phase_id,
-            "collision_policy": policy,
-            "active_target": self.pick_obj.name,
-            "support": self.place_obj.name,
-        }
 
     def _candidate_geometry(self):
         self.T_world_obj = self._object_world_tf(self.pick_obj)
@@ -258,10 +238,12 @@ class Place(BaseSkill):
         b_min = np.asarray(bbox.min, dtype=float)
         b_max = np.asarray(bbox.max, dtype=float)
         defaults = (("x_ratio_range", (0.4, 0.6)), ("y_ratio_range", (0.4, 0.6)), ("z_ratio_range", (0.4, 0.6)))
+        target_rotations = self.generate_constrained_rotations()[:60]
+        candidate_count = len(target_rotations)
 
         def ratios(key, default):
             bounds = self.skill_cfg.get(key, default)
-            return np.random.uniform(float(bounds[0]), float(bounds[1]), CUROBO_BATCH_SIZE)
+            return np.random.uniform(float(bounds[0]), float(bounds[1]), candidate_count)
 
         x_ratio = ratios("x_ratio_range", (0.4, 0.6))
         y_ratio = ratios("y_ratio_range", (0.4, 0.6))
@@ -274,8 +256,8 @@ class Place(BaseSkill):
         if direction == "vertical":
             x = b_min[0] + x_ratio * (b_max[0] - b_min[0])
             y = b_min[1] + y_ratio * (b_max[1] - b_min[1])
-            pre_world = np.column_stack((x, y, np.full(CUROBO_BATCH_SIZE, b_max[2] + pre_offset)))
-            place_world = np.column_stack((x, y, np.full(CUROBO_BATCH_SIZE, b_max[2] + place_offset)))
+            pre_world = np.column_stack((x, y, np.full(candidate_count, b_max[2] + pre_offset)))
+            place_world = np.column_stack((x, y, np.full(candidate_count, b_max[2] + place_offset)))
             region = ratio_box_corners(
                 b_min, b_max,
                 tuple(tuple(float(value) for value in self.skill_cfg.get(key, default)) for key, default in defaults),
@@ -305,7 +287,6 @@ class Place(BaseSkill):
         base_rotation = self.T_base_world[:3, :3]
         pre_base = (base_rotation @ pre_world.T).T + self.T_base_world[:3, 3]
         place_base = (base_rotation @ place_world.T).T + self.T_base_world[:3, 3]
-        target_rotations = self.generate_constrained_rotation_batch()
         if constraint == "object":
             ee_from_object = np.linalg.inv(self.T_obj_ee)[:3, :3]
             object_rotations = target_rotations @ ee_from_object
@@ -335,7 +316,9 @@ class Place(BaseSkill):
             "constraint": constraint,
         }
 
-    def _plan_candidates(self, geometry, options):
+    def _plan_candidates(self, geometry):
+        """Evaluate every target in native batches and intersect both phases."""
+
         runtime = self.skill_runtime
         object_name, support_name = self.pick_obj.name, self.place_obj.name
         pre = np.asarray(geometry["pre_positions"])
@@ -346,118 +329,80 @@ class Place(BaseSkill):
         pre_paths, terminal_paths = [None] * count, [None] * count
         pre_ok = np.zeros(count, dtype=bool)
         terminal_ok = np.zeros(count, dtype=bool)
-        pre_result = None
-        terminal_result = None
-        same_target_count = 0
-
-        if runtime.batch_capability:
-            runtime.sync_native_batch_attachment()
-            runtime.transition_target(object_name, support_name, collision_policy=CollisionPolicy.ATTACHED_CARRY)
+        terminal_hold = np.zeros(count, dtype=bool)
+        pre_position_error = np.full(count, np.inf, dtype=float)
+        pre_rotation_error = np.full(count, np.inf, dtype=float)
+        terminal_position_error = np.full(count, np.inf, dtype=float)
+        terminal_rotation_error = np.full(count, np.inf, dtype=float)
+        same_target = np.array_equal(pre, place) and np.array_equal(pre_q, place_q)
+        pre_result = terminal_result = None
+        runtime.transition_target(
+            object_name, support_name, collision_policy=CollisionPolicy.ATTACHED_CARRY
+        )
+        for start in range(0, count, CUROBO_BATCH_SIZE):
+            stop = min(start + CUROBO_BATCH_SIZE, count)
             pre_result = runtime.plan_pose_batch(
-                pre, pre_q,
+                pre[start:stop], pre_q[start:stop],
                 collision_policy=CollisionPolicy.ATTACHED_CARRY,
                 active_target=object_name,
                 support=support_name,
                 phase_id="place_preplace_batch",
-                request_metadata=self._place_request(CollisionPolicy.ATTACHED_CARRY, "place_preplace_batch"),
             )
-            pre_ok = self._plan_mask(pre_result, count)
-            values = self._plan_paths(pre_result)
-            pre_paths[: len(values)] = values[:count]
-            if options["continuous"]:
-                candidate_indices = np.flatnonzero(pre_ok)
-                if len(candidate_indices):
-                    same_target = np.allclose(place[candidate_indices], pre[candidate_indices]) and np.allclose(place_q[candidate_indices], pre_q[candidate_indices])
-                    if same_target:
-                        same_target_count = int(len(candidate_indices))
-                        terminal_ok[candidate_indices] = True
-                        # The pre-place path starts at the pre-grasp state.  It
-                        # cannot be replayed after TRANSIT_PREPLACE has already
-                        # consumed it; for a coincident target the old PnP
-                        # protocol is simply hold-at-place, then release.
-                        for index in candidate_indices:
-                            terminal_paths[index] = None
-                    else:
-                        valid = np.asarray(
-                            [index for index in candidate_indices if pre_paths[index] is not None],
-                            dtype=int,
-                        )
-                    if not same_target and len(valid):
-                        runtime.transition_target(object_name, support_name, collision_policy=CollisionPolicy.PLACEMENT_DESCENT)
-                        terminal_result = runtime.plan_pose_batch(
-                            place[valid], place_q[valid],
-                            start_paths=[pre_paths[index] for index in valid],
-                            collision_policy=CollisionPolicy.PLACEMENT_DESCENT,
-                            active_target=object_name,
-                            support=support_name,
-                            phase_id="place_terminal_batch",
-                            request_metadata=self._place_request(CollisionPolicy.PLACEMENT_DESCENT, "place_terminal_batch"),
-                        )
-                        terminal_values = self._plan_paths(terminal_result)
-                        terminal_flags = self._plan_mask(terminal_result, len(valid))
-                        for local, index in enumerate(valid):
-                            path = terminal_values[local] if local < len(terminal_values) else None
-                            if terminal_flags[local] and self._terminal_path_ok(path, pre[index], place[index], options):
-                                terminal_ok[index] = True
-                                terminal_paths[index] = path
-            else:
-                terminal_ok = pre_ok.copy()
+            mask = self._plan_mask(pre_result)
+            paths = self._plan_paths(pre_result)
+            pre_ok[start:stop] = mask[:stop - start]
+            pre_paths[start:stop] = paths[:stop - start]
+            pre_position_error[start:stop] = self._plan_metric(pre_result, "position_error")
+            pre_rotation_error[start:stop] = self._plan_metric(pre_result, "rotation_error")
+
+        if same_target:
+            terminal_ok[:] = pre_ok
+            terminal_hold[:] = pre_ok
+            terminal_position_error[:] = pre_position_error
+            terminal_rotation_error[:] = pre_rotation_error
         else:
-            for index in range(count):
-                runtime.transition_target(object_name, support_name, collision_policy=CollisionPolicy.ATTACHED_CARRY)
-                result = runtime.plan_pose_result(
-                    pre[index], pre_q[index],
-                    collision_policy=CollisionPolicy.ATTACHED_CARRY,
-                    active_target=object_name,
-                    support=support_name,
-                    phase_id="place_preplace",
-                    request_metadata=self._place_request(CollisionPolicy.ATTACHED_CARRY, "place_preplace"),
-                )
-                pre_ok[index] = bool(self._plan_mask(result, 1)[0])
-                paths = self._plan_paths(result)
-                pre_paths[index] = paths[0] if paths else None
-                if not pre_ok[index]:
-                    continue
-                if not options["continuous"]:
-                    terminal_ok[index] = True
-                    break
-                if np.allclose(pre[index], place[index]) and np.allclose(pre_q[index], place_q[index]):
-                    terminal_ok[index] = True
-                    # Do not replay the pre-place path from its original
-                    # start.  A coincident terminal target needs no second
-                    # motion plan before the release phase.
-                    terminal_paths[index] = None
-                    same_target_count += 1
-                    break
-                if pre_paths[index] is None:
-                    continue
-                runtime.transition_target(object_name, support_name, collision_policy=CollisionPolicy.PLACEMENT_DESCENT)
-                result = runtime.plan_pose_from_path(
-                    place[index], place_q[index], pre_paths[index],
+            valid_pre = np.flatnonzero(
+                pre_ok & np.asarray([path is not None for path in pre_paths])
+            )
+            runtime.transition_target(
+                object_name, support_name,
+                collision_policy=CollisionPolicy.PLACEMENT_DESCENT,
+            )
+            for start in range(0, len(valid_pre), CUROBO_BATCH_SIZE):
+                indices = valid_pre[start:start + CUROBO_BATCH_SIZE]
+                terminal_result = runtime.plan_pose_batch(
+                    place[indices], place_q[indices],
+                    start_paths=[pre_paths[index] for index in indices],
                     collision_policy=CollisionPolicy.PLACEMENT_DESCENT,
                     active_target=object_name,
                     support=support_name,
-                    phase_id="place_terminal",
-                    request_metadata=self._place_request(CollisionPolicy.PLACEMENT_DESCENT, "place_terminal"),
+                    phase_id="place_terminal_batch",
                 )
-                terminal_ok[index] = bool(self._plan_mask(result, 1)[0])
-                paths = self._plan_paths(result)
-                terminal_paths[index] = paths[0] if paths else None
-                if terminal_ok[index] and not self._terminal_path_ok(terminal_paths[index], pre[index], place[index], options):
-                    terminal_ok[index] = False
-                if terminal_ok[index]:
-                    break
+                mask = self._plan_mask(terminal_result)
+                paths = self._plan_paths(terminal_result)
+                position_error = self._plan_metric(terminal_result, "position_error")
+                rotation_error = self._plan_metric(terminal_result, "rotation_error")
+                for local, index in enumerate(indices):
+                    terminal_ok[index] = bool(local < len(mask) and mask[local])
+                    terminal_paths[index] = paths[local] if local < len(paths) else None
+                    terminal_position_error[index] = position_error[local]
+                    terminal_rotation_error[index] = rotation_error[local]
 
-        # Candidate validation may have entered PLACEMENT_CONTACT.  Leave the
-        # scene in ATTACHED carry state for execution; RESTORE_WORLD is only
-        # emitted after the detach/settle phase.
+        # Candidate validation may have entered PLACEMENT_CONTACT. Leave the
+        # scene attached for execution; RESTORE_WORLD is emitted only after
+        # detach/settle.
         runtime.transition_target(
             object_name,
             support_name,
             collision_policy=CollisionPolicy.ATTACHED_CARRY,
         )
-        valid = np.flatnonzero(pre_ok & terminal_ok)
-        if len(valid) == 0:
+        # A candidate is eligible only when both batch phases produced a
+        # successful result and a replayable trajectory.
+        valid = pre_ok & terminal_ok & (
+            np.asarray([path is not None for path in terminal_paths], dtype=bool)
+            | terminal_hold
+        )
+        if not np.any(valid):
             self._write_plan_snapshot(
                 {
                     "robot": self.robot.name,
@@ -469,8 +414,8 @@ class Place(BaseSkill):
                     "preplace_path_count": int(sum(path is not None for path in pre_paths)),
                     "terminal_success_count": int(np.count_nonzero(terminal_ok)),
                     "terminal_path_count": int(sum(path is not None for path in terminal_paths)),
-                    "same_target_count": int(same_target_count),
-                    "continuous": bool(options["continuous"]),
+                    "same_target": bool(same_target),
+                    "terminal_hold_count": int(np.count_nonzero(terminal_hold)),
                     "geometry": {
                         "pre_world": geometry["pre_world"],
                         "place_world": geometry["place_world"],
@@ -486,23 +431,25 @@ class Place(BaseSkill):
                     "terminal_result": self._plan_summary(terminal_result),
                 }
             )
-            raise PlaceCandidateError(
-                "NO_COLLISION_SAFE_CONTINUOUS_PLACE_PLAN"
-                if options["continuous"]
-                else "NO_COLLISION_FREE_PREPLACE_PLAN"
-            )
-        index = int(valid[0])
+            raise PlaceCandidateError("NO_COLLISION_FREE_PLACE_PLAN")
+
+        index = self._select_priority_index(
+            valid,
+            terminal_position_error,
+            terminal_rotation_error,
+            terminal_paths,
+        )
         self._selected_plan = {
             "candidate_index": index,
             "preplace_path": pre_paths[index],
             "terminal_path": terminal_paths[index],
+            "terminal_hold": bool(terminal_hold[index]),
         }
         return index
 
     def sample_gripper_place_traj(self):
         geometry = self._candidate_geometry()
-        options = self._terminal_options()
-        index = self._plan_candidates(geometry, options)
+        index = self._plan_candidates(geometry)
         pre = [geometry["pre_positions"][index], geometry["pre_orientations"][index]]
         place = [geometry["place_positions"][index], geometry["place_orientations"][index]]
         self.place_ee_trans = np.asarray(place[0], dtype=float)
@@ -533,14 +480,17 @@ class Place(BaseSkill):
         object_name, support_name = self.pick_obj.name, self.place_obj.name
         pre_position, pre_orientation = map(np.asarray, result[0])
         place_position, place_orientation = map(np.asarray, result[1])
-        options = self._terminal_options()
         tolerance = {
             "position_m": float(self.skill_cfg.get("t_eps", 0.005)),
             "orientation_rad": float(self.skill_cfg.get("o_eps", 0.05)),
         }
-        pre_params = {}
-        if self._selected_plan.get("preplace_path") is not None:
-            pre_params["preplanned_joint_path"] = self._selected_plan["preplace_path"]
+        pre_path = self._selected_plan.get("preplace_path")
+        terminal_params = {}
+        terminal_path = None
+        if self._selected_plan.get("terminal_hold", False):
+            terminal_params["hold_position"] = True
+        elif self._selected_plan.get("terminal_path") is not None:
+            terminal_path = self._selected_plan["terminal_path"]
         commands = [
             MotionPhaseCommand(
                 MotionPhase.TRANSIT_PREPLACE,
@@ -552,39 +502,40 @@ class Place(BaseSkill):
                 allow_target_finger_contact=True,
                 allow_target_robot_contact=True,
                 completion_tolerance=tolerance,
-                params=pre_params,
+                preplanned_joint_path=pre_path,
             )
         ]
-        points = [place_position] if options["continuous"] else self._terminal_samples(pre_position, place_position, options["step"])
-        for point_index, point in enumerate(points):
-            ratio = (point_index + 1) / len(points)
-            orientation = (1.0 - ratio) * pre_orientation + ratio * place_orientation
-            orientation /= max(float(np.linalg.norm(orientation)), 1e-12)
-            params = {}
-            if options["continuous"]:
-                params.update(
-                    continuous_descent=True,
-                    max_cartesian_step_m=options["step"],
-                    max_path_length_ratio=options["max_ratio"],
-                    max_path_deviation_m=options["max_deviation"],
-                )
-                if self._selected_plan.get("terminal_path") is not None:
-                    params["preplanned_joint_path"] = self._selected_plan["terminal_path"]
+        # The original Place emitted one ordinary terminal motion. The
+        # Physics-schema phase enters PLACEMENT_CONTACT before planning, so
+        # the same motion/release sequence remains collision-auditable without
+        # the later continuous-descent segmentation and validator.
+        commands.append(
+            MotionPhaseCommand(
+                MotionPhase.TERMINAL_PLACE_DESCENT,
+                place_position,
+                place_orientation,
+                gripper_action="close_gripper",
+                active_object=object_name,
+                support_object=support_name,
+                allow_target_finger_contact=True,
+                allow_object_support_contact=True,
+                completion_tolerance=tolerance,
+                params=terminal_params,
+                preplanned_joint_path=terminal_path,
+            )
+        )
+        hesitate_steps = int(self.skill_cfg.get("hesitate_steps", 0))
+        if hesitate_steps > 0:
             commands.append(
                 MotionPhaseCommand(
-                    MotionPhase.TERMINAL_PLACE_DESCENT,
-                    point,
-                    orientation,
+                    MotionPhase.GRIPPER_CLOSE,
                     gripper_action="close_gripper",
                     active_object=object_name,
                     support_object=support_name,
                     allow_target_finger_contact=True,
                     allow_object_support_contact=True,
-                    completion_tolerance={
-                        "position_m": options["tolerance"],
-                        "orientation_rad": tolerance["orientation_rad"],
-                    },
-                    params=params,
+                    replan_allowed=False,
+                    dwell_steps=hesitate_steps,
                 )
             )
         commands.extend(
@@ -631,6 +582,9 @@ class Place(BaseSkill):
         self.failure_reason = ""
         object_name, support_name = self.pick_obj.name, self.place_obj.name
         self.skill_runtime.assert_attached_owner(object_name)
+        runtime = self.skill_runtime
+        runtime.sync_dynamic_poses(force=True)
+        runtime.reset_pose_cost_metric()
         self.skill_runtime.transition_target(object_name, support_name, collision_policy=CollisionPolicy.ATTACHED_CARRY)
         try:
             result = self.sample_gripper_place_traj()
@@ -641,18 +595,18 @@ class Place(BaseSkill):
             self.manip_list = []
             self.publish_target_intent({"kind": "place", "objects": list(self.skill_cfg["objects"]), "has_target": False, "failure_reason": self.failure_reason})
 
-    def generate_constrained_rotation_batch(self, batch_size=3000):
+    def generate_constrained_rotations(self, sample_count=3000):
         if self.skill_cfg.get("preserve_attached_orientation", False):
             rotation = (self.T_base_world @ self.T_world_ee)[:3, :3]
-            return np.repeat(rotation[None], CUROBO_BATCH_SIZE, axis=0)
+            return rotation[None]
 
         conditions = {
             "x": {"forward": (0, 0, 1), "backward": (0, 0, -1), "leftward": (1, 0, 1), "rightward": (1, 0, -1), "upward": (2, 0, 1), "downward": (2, 0, -1)},
             "y": {"forward": (0, 1, 1), "backward": (0, 1, -1), "leftward": (1, 1, 1), "rightward": (1, 1, -1), "upward": (2, 1, 1), "downward": (2, 1, -1)},
             "z": {"forward": (0, 2, 1), "backward": (0, 2, -1), "leftward": (1, 2, 1), "rightward": (1, 2, -1), "upward": (2, 2, 1), "downward": (2, 2, -1)},
         }
-        rotations = R.random(batch_size).as_matrix()
-        valid = np.ones(batch_size, dtype=bool)
+        rotations = R.random(sample_count).as_matrix()
+        valid = np.ones(sample_count, dtype=bool)
         for axis, values in conditions.items():
             spec = self.skill_cfg.get(f"filter_{axis}_dir")
             if spec is None:
@@ -676,19 +630,16 @@ class Place(BaseSkill):
             valid &= np.arccos(np.clip(cosine, -1.0, 1.0)) < np.deg2rad(float(self.align_obj_tol))
 
         choices = rotations[valid]
-        if len(choices) == 0:
-            choices = rotations
-        indices = np.random.choice(len(choices), CUROBO_BATCH_SIZE, replace=len(choices) < CUROBO_BATCH_SIZE)
-        return choices[indices]
+        return choices
 
     def is_feasible(self, th=5):
-        return bool(self.skill_runtime.num_plan_failed <= th and not self.failure_reason)
+        return bool(self.skill_runtime.execution.state.num_plan_failed <= th and not self.failure_reason)
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         del t_eps, o_eps
         if not self.manip_list:
             return True
-        return bool(self.skill_runtime.phase_complete(self.manip_list[0]))
+        return bool(self.skill_runtime.execution.is_phase_command_complete(self.manip_list[0]))
 
     def is_done(self):
         if self.manip_list and self.is_subtask_done(

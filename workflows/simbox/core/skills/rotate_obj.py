@@ -27,7 +27,7 @@ class Rotate_Obj(BaseSkill):
         self.name = cfg["name"]
         self.move_obj = task.objects[cfg["objects"][0]]
         self.skill_cfg = cfg
-        self.robot_base_path = self.skill_runtime.robot_base_path
+        self.robot_base_path = self.skill_runtime.setup.robot_base_path
         self.T_world_base = get_relative_transform(
             get_prim_at_path(self.robot_base_path), get_prim_at_path(self.task.root_prim_path)
         )
@@ -41,7 +41,7 @@ class Rotate_Obj(BaseSkill):
 
     def simple_generate_manip_cmds(self):
         manip_list = []
-        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.ee_pose()
+        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.execution.get_ee_pose()
 
         self.p_base_ee_tgt, self.q_base_ee_tgt = self.getTgtPose()
 
@@ -104,7 +104,7 @@ class Rotate_Obj(BaseSkill):
         self.manip_list = manip_list
 
     def getTgtPose(self):
-        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.ee_pose()
+        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.execution.get_ee_pose()
         p_world_move_obj_cur, q_world_move_obj_cur = self.move_obj.get_world_pose()  # w,x,y,z
 
         T_world_ee_cur = self.T_world_base @ tf_matrix_from_pose(p_base_ee_cur, q_base_ee_cur)
@@ -170,9 +170,9 @@ class Rotate_Obj(BaseSkill):
         joint_positions = self.robot.get_joints_state().positions
 
         if isinstance(joint_positions, torch.Tensor):
-            curr_js = joint_positions.detach().cpu().numpy()[self.skill_runtime.arm_indices]
+            curr_js = joint_positions.detach().cpu().numpy()[self.skill_runtime.robot_port.arm_indices]
         elif isinstance(joint_positions, np.ndarray):
-            curr_js = joint_positions[self.skill_runtime.arm_indices]
+            curr_js = joint_positions[self.skill_runtime.robot_port.arm_indices]
         else:
             raise TypeError(f"Unsupported joint state type: {type(joint_positions)}")
 
@@ -191,7 +191,7 @@ class Rotate_Obj(BaseSkill):
                 raise ValueError(f"Unknown control mode: {mode}")
 
         # --- Apply robot-specific joint limits / safety clamps ---
-        robot_file = self.skill_runtime.robot_file.lower()
+        robot_file = self.skill_runtime.planner_build_config.robot_file.lower()
 
         if "piper" in robot_file:
             # Example: clamp elbow and wrist joints for Piper robot
@@ -205,7 +205,7 @@ class Rotate_Obj(BaseSkill):
         return curr_js, target_js
 
     def is_feasible(self, th=5):
-        return self.skill_runtime.num_plan_failed <= th
+        return self.skill_runtime.execution.state.num_plan_failed <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
@@ -220,7 +220,7 @@ class Rotate_Obj(BaseSkill):
         return len(self.manip_list) == 0
 
     def is_success(self):
-        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.ee_pose()
+        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.execution.get_ee_pose()
         distance = np.linalg.norm(p_base_ee_cur - self.p_base_ee_tgt)
         flag = (distance < self.success_threshold_move) and (len(self.manip_list) == 0)
         dot = np.clip(np.dot(q_base_ee_cur, self.q_base_ee_tgt), -1.0, 1.0)

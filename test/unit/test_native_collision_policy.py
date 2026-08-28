@@ -20,12 +20,11 @@ from core.planning.domain_types import (  # noqa: E402
     PosePlanRequest,
     PlanningProfile,
 )
-from core.planning.native_planner_adapter import (  # noqa: E402
-    NativeCollisionPolicyError,
-    NativePlannerAdapter,
+from core.planning.planner_runtime import (  # noqa: E402
+    PlannerRuntime,
+    PlannerRuntimeError,
     map_collision_policy,
 )
-from core.planning.planner_runtime import PlannerCallError, PlannerRuntime  # noqa: E402
 
 
 def _request(policy, *, options=None, target="/World/object", support="/World/support"):
@@ -62,7 +61,7 @@ def test_native_collision_policy_mapping_is_explicit_and_deterministic(
         support_obstacles=("/World/support/collider",),
         attached_obstacles=("/World/object/collider",),
         allow_target_contact=policy is CollisionPolicy.TARGET_APPROACH,
-        allow_object_support_contact=policy is CollisionPolicy.PLACEMENT_DESCENT,
+        allow_support_contact=policy is CollisionPolicy.PLACEMENT_DESCENT,
     )
     mapped = map_collision_policy(_request(policy, options=options))
 
@@ -86,8 +85,8 @@ def test_passthrough_is_not_silently_sent_to_native_planner():
     assert mapped.native_expressible is False
     assert "execution-only" in (mapped.unsupported_reason or "")
 
-    with pytest.raises(NativeCollisionPolicyError):
-        NativePlannerAdapter(types.SimpleNamespace()).plan_pose(
+    with pytest.raises(PlannerRuntimeError):
+        PlannerRuntime(planner=types.SimpleNamespace()).plan_pose(
             _request(
                 CollisionPolicy.PASSTHROUGH,
                 options=CollisionOptions(policy=CollisionPolicy.PASSTHROUGH),
@@ -122,7 +121,13 @@ class _AttachedPlanner:
 
     def plan_pose(self, goal, current_state, **kwargs):
         self.calls.append((goal, current_state, kwargs))
-        return types.SimpleNamespace(success=True, path=[goal])
+        return types.SimpleNamespace(
+            success=True,
+            interpolated_trajectory=types.SimpleNamespace(
+                position=[[0.0]], joint_names=("joint_0",)
+            ),
+            interpolated_last_tstep=1,
+        )
 
 
 def test_attached_carry_temporarily_disables_support_and_preserves_native_profile():
@@ -135,18 +140,21 @@ def test_attached_carry_temporarily_disables_support_and_preserves_native_profil
             target_obstacles=("/World/object/collider",),
             support_obstacles=("/World/support/collider",),
             attached_obstacles=("/World/object/collider",),
-            allow_object_support_contact=True,
-            allow_target_robot_contact=True,
+            allow_support_contact=True,
+            allow_target_contact=True,
         ),
     )
-    request.kwargs = types.MappingProxyType(
-        {"max_attempts": 4, "enable_graph_attempt": 1}
-    )
+    request.max_attempts = 4
+    request.enable_graph_attempt = 1
 
     result = runtime.plan_pose(request)
 
     assert result.success is True
-    assert planner.calls[0][2] == {"max_attempts": 4, "enable_graph_attempt": 1}
+    assert planner.calls[0][2] == {
+        "use_implicit_goal": True,
+        "max_attempts": 4,
+        "enable_graph_attempt": 1,
+    }
     assert planner.scene_collision_checker.events == [
         ("/World/object/collider", False),
         ("/World/support/collider", False),
@@ -156,33 +164,40 @@ def test_attached_carry_temporarily_disables_support_and_preserves_native_profil
 
 def test_request_builder_resolves_logical_entities_to_exact_native_paths():
     runtime = object.__new__(MotionPlannerRuntime)
-    runtime.planner_runtime = types.SimpleNamespace(scene_revision=11)
+    runtime._scene_revision = 11
     runtime.robot_port = types.SimpleNamespace(
         collision_scene_manager=types.SimpleNamespace(
             records={
                 "object": types.SimpleNamespace(
                     collision_prim_paths=["/World/object/collider"]
                 ),
-                "support": {"collision_prim_paths": ["/World/support/collider"]},
+                "support": types.SimpleNamespace(
+                    collision_prim_paths=["/World/support/collider"]
+                ),
+            },
+            support_collision_paths=lambda entity: {
+                "/World/support/collider",
+                "/World/support/support_collision_plane",
             }
+            if entity == "support"
+            else set(),
         )
     )
     runtime.attachment_runtime = types.SimpleNamespace(
         attached_obstacle_names=("/World/object/collider",)
     )
 
-    common = runtime._request_common_kwargs(
-        {
-            "collision_policy": CollisionPolicy.ATTACHED_CARRY,
-            "collision_options": CollisionOptions(
-                policy=CollisionPolicy.ATTACHED_CARRY,
-                allow_object_support_contact=True,
-            ),
-            "active_target": "object",
-            "support": "support",
-            "profile": PlanningProfile.ATTACHED_CARRY,
-        },
+    common = runtime._request_common(
+        phase_id="place_preplace",
         default_profile=PlanningProfile.TRANSIT,
+        collision_policy=CollisionPolicy.ATTACHED_CARRY,
+        collision_options=CollisionOptions(
+            policy=CollisionPolicy.ATTACHED_CARRY,
+            allow_support_contact=True,
+        ),
+        active_target="object",
+        support="support",
+        profile=PlanningProfile.ATTACHED_CARRY,
     )
 
     assert common["collision_options"].target_obstacles == (
@@ -190,6 +205,7 @@ def test_request_builder_resolves_logical_entities_to_exact_native_paths():
     )
     assert common["collision_options"].support_obstacles == (
         "/World/support/collider",
+        "/World/support/support_collision_plane",
     )
     assert common["collision_options"].attached_obstacles == (
         "/World/object/collider",

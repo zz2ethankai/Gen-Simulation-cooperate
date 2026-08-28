@@ -91,7 +91,7 @@ def test_docker_runner_dry_run_never_requires_local_isaac_or_conda():
         )
 
         completed = subprocess.run(
-            ["bash", "scripts/docker/run_simbox_task.sh"],
+            ["bash", "scripts/docker/up_simbox_isaac.sh"],
             cwd=REPO_ROOT,
             env=env,
             capture_output=True,
@@ -129,7 +129,7 @@ def test_docker_runner_ignores_ros_domain_environment():
         )
 
         completed = subprocess.run(
-            ["bash", "scripts/docker/run_simbox_task.sh"],
+            ["bash", "scripts/docker/up_simbox_isaac.sh"],
             cwd=REPO_ROOT,
             env=env,
             capture_output=True,
@@ -167,6 +167,7 @@ def test_docker_runner_reports_missing_required_image(tmp_path):
         fake_bin / "docker",
         """
         if [[ "$1" == "compose" && "$2" == "version" ]]; then exit 0; fi
+        if [[ "$1" == "info" && "$*" == *"--format"* ]]; then printf '{"nvidia":"fake"}\n'; exit 0; fi
         if [[ "$1" == "info" ]]; then exit 0; fi
         if [[ "$1" == "compose" && "$*" == *"config --images"* ]]; then
             printf '%s\\n' local/isaac-sim-test:latest
@@ -182,7 +183,7 @@ def test_docker_runner_reports_missing_required_image(tmp_path):
     with tempfile.TemporaryDirectory(prefix="docker_missing_image_test_", dir=output_root) as raw_dir:
         run_dir = Path(raw_dir)
         completed = subprocess.run(
-            ["bash", "scripts/docker/run_simbox_task.sh"],
+            ["bash", "scripts/docker/up_simbox_isaac.sh"],
             cwd=REPO_ROOT,
             env=_runner_env(run_dir, fake_bin),
             capture_output=True,
@@ -230,6 +231,7 @@ def test_docker_runner_validates_application_success_marker(
         fake_bin / "docker",
         """
         if [[ "$1" == "compose" && "$2" == "version" ]]; then exit 0; fi
+        if [[ "$1" == "info" && "$*" == *"--format"* ]]; then printf '{"nvidia":"fake"}\n'; exit 0; fi
         if [[ "$1" == "info" ]]; then exit 0; fi
         if [[ "$1" == "compose" && "$*" == *"config --images"* ]]; then
             printf '%s\\n' local/isaac-sim-test:latest
@@ -254,7 +256,7 @@ def test_docker_runner_validates_application_success_marker(
         env = _runner_env(run_dir, fake_bin)
         env["FAKE_DOCKER_LOG"] = str(fake_log)
         completed = subprocess.run(
-            ["bash", "scripts/docker/run_simbox_task.sh"],
+            ["bash", "scripts/docker/up_simbox_isaac.sh"],
             cwd=REPO_ROOT,
             env=env,
             capture_output=True,
@@ -281,6 +283,7 @@ def test_docker_runner_sigterm_records_interrupt_and_cleans_stack(tmp_path):
         """
         printf '%s\\n' "$*" >> "${FAKE_DOCKER_CALLS}"
         if [[ "$1" == "compose" && "$2" == "version" ]]; then exit 0; fi
+        if [[ "$1" == "info" && "$*" == *"--format"* ]]; then printf '{"nvidia":"fake"}\n'; exit 0; fi
         if [[ "$1" == "info" ]]; then exit 0; fi
         if [[ "$1" == "compose" && "$*" == *"config --images"* ]]; then
             printf '%s\\n' local/isaac-sim-test:latest
@@ -302,7 +305,7 @@ def test_docker_runner_sigterm_records_interrupt_and_cleans_stack(tmp_path):
         env = _runner_env(run_dir, fake_bin)
         env["FAKE_DOCKER_CALLS"] = str(calls_path)
         process = subprocess.Popen(
-            ["bash", "scripts/docker/run_simbox_task.sh"],
+            ["bash", "scripts/docker/up_simbox_isaac.sh"],
             cwd=REPO_ROOT,
             env=env,
             stdout=subprocess.DEVNULL,

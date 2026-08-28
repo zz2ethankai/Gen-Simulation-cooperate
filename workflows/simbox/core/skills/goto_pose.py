@@ -69,7 +69,7 @@ class Goto_Pose(BaseSkill):
         return get_world_pose(prim_path)
 
     def _get_ee_world_tf(self):
-        return tf_matrix_from_pose(*self._get_world_pose_from_path(self.skill_runtime.robot_ee_path))
+        return tf_matrix_from_pose(*self._get_world_pose_from_path(self.skill_runtime.setup.robot_ee_path))
 
     @staticmethod
     def _get_object_world_tf(obj):
@@ -80,7 +80,7 @@ class Goto_Pose(BaseSkill):
 
     def simple_generate_manip_cmds(self):
         manip_list = []
-        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.ee_pose()
+        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.execution.get_ee_pose()
 
         if self.q_base_ee_tgt is None:
             # Start Filter according to constraints
@@ -232,7 +232,7 @@ class Goto_Pose(BaseSkill):
         return interp_trans, interp_ori
 
     def is_feasible(self, th=5):
-        return self.skill_runtime.num_plan_failed <= th
+        return self.skill_runtime.execution.state.num_plan_failed <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
@@ -246,7 +246,7 @@ class Goto_Pose(BaseSkill):
         return len(self.manip_list) == 0
 
     def is_success(self, t_eps=5e-3, o_eps=0.087):
-        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.ee_pose()
+        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.execution.get_ee_pose()
         diff_pos = np.linalg.norm(p_base_ee_cur - self.p_base_ee_tgt)
         diff_ori = 2 * np.arccos(min(abs(np.dot(q_base_ee_cur, self.q_base_ee_tgt)), 1.0))
         pose_flag = np.logical_or(

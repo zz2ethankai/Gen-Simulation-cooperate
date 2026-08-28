@@ -403,7 +403,7 @@ class AgentOrchestrator:
                 "PYTHONUNBUFFERED": "1",
             }
         )
-        command = ["bash", "scripts/docker/run_simbox_task.sh"]
+        command = ["bash", "scripts/docker/up_simbox_isaac.sh"]
         (attempt_dir / "command.json").write_text(
             json.dumps({"command": command, "env": {key: env[key] for key in sorted(env) if key.startswith("INTERNDATA_") or key in {"TASK_CONFIG", "GPU_ID", "RANDOM_NUM", "RANDOM_SEED", "RUN_NAME", "OUTPUT_DIR", "LAUNCH_TEMPLATE", "SIMBOX_DEBUG_OUTPUT_DIR"}}}, ensure_ascii=False, indent=2)
             + "\n",

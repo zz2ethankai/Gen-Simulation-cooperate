@@ -56,7 +56,7 @@ services:
       - ..:/workspace:rw
       - ../InternDataAssets/curobov2:/workspace/InternDataAssets/curobov2:ro
     tmpfs:
-      - /isaac-sim/kit/cache:rw,exec
-      - /isaac-sim/kit/data:rw,exec
+      - /isaac-sim/kit/cache:rw,exec,mode=1777
+      - /isaac-sim/kit/data:rw,exec,mode=1777
     working_dir: /workspace
     entrypoint: ["/entrypoint.sh"]

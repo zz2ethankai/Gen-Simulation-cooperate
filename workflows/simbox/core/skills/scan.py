@@ -78,7 +78,7 @@ class Scan(BaseSkill):
         camera_axis = np.array([0, 1, 1])
         q_world_ee = self.get_ee_ori(gripper_axis, T_world_ee, camera_axis)
         # 2. Obtaining p_world_ee
-        p_world_ee_init = self.skill_runtime.initial_ee_pose()[0:3, 3]
+        p_world_ee_init = self.skill_runtime.setup.T_world_ee_init[0:3, 3]
         p_world_ee = p_world_ee_init.copy()
         p_world_ee[0] += np.random.uniform(-0.02, 0.02)
         p_world_ee[1] += np.random.uniform(0.15, 0.2)
@@ -121,7 +121,7 @@ class Scan(BaseSkill):
         return contact, indices
 
     def is_feasible(self, th=10):
-        return self._passthrough or self.skill_runtime.num_plan_failed <= th
+        return self._passthrough or self.skill_runtime.execution.state.num_plan_failed <= th
 
     def is_ready(self):
         return not self._passthrough

@@ -22,9 +22,8 @@ from core.planning.collision_scene_manager import (  # noqa: E402
     CollisionSceneManager,
     PlannerScenePort,
 )
-from core.planning.domain_types import PlannerKind, PlannerRuntimeProfile  # noqa: E402
+from core.planning.domain_types import PlannerRuntimeProfile  # noqa: E402
 from core.planning.planner_runtime import PlannerRuntime  # noqa: E402
-from core.planning.native_scene_adapter import NativeSceneAdapter  # noqa: E402
 import core.planning.native_bridge as native_bridge  # noqa: E402
 
 
@@ -79,6 +78,7 @@ def _scene_port(
             "/World/task_0/movable_b/collider",
         ]
     checker.get_obstacle_names = lambda: list(obstacle_names)
+    checker.check_obstacle_exists = lambda name: name in obstacle_names
     kinematics = types.SimpleNamespace(
         config=types.SimpleNamespace(
             kinematics_config=types.SimpleNamespace(
@@ -92,29 +92,6 @@ def _scene_port(
         update_world=lambda world: setattr(planner, "world", world),
     )
     planner_runtime = PlannerRuntime(planner=planner, scene_revision=0)
-    native_scene_adapter = NativeSceneAdapter(planner, strict=True)
-    planner_runtime.register_scene_adapter(native_scene_adapter)
-    runtime = types.SimpleNamespace(
-        native_planner=planner,
-        batch_planner=None,
-        planner_runtime=planner_runtime,
-        world=None,
-        scene_revision=0,
-        native_scene_adapter=native_scene_adapter,
-    )
-    def adopt_scene_revision(revision):
-        runtime.scene_revision = planner_runtime.adopt_scene_revision(revision)
-        return runtime.scene_revision
-
-    runtime.adopt_scene_revision = adopt_scene_revision
-    def update_world(world):
-        runtime.world = world
-        runtime.scene_revision = planner_runtime.update_world(
-            world, revision=runtime.scene_revision + 1
-        )
-        return runtime.scene_revision
-
-    runtime.update_world = update_world
     port = PlannerScenePort(
         name="robot",
         lr_name=arm,
@@ -122,9 +99,7 @@ def _scene_port(
         robot_ee_path="/World/task_0",
         tensor_args=types.SimpleNamespace(to_device=lambda value: value),
         robot=types.SimpleNamespace(),
-        runtime=runtime,
-        native_scene_adapter=native_scene_adapter,
-        adopt_scene_revision=runtime.adopt_scene_revision,
+        runtime=planner_runtime,
         check_current_start_state=check_current_start_state,
         attach_collision_object=lambda _paths: None,
         detach_attachment=lambda: None,
@@ -135,49 +110,6 @@ def _scene_port(
         ),
     )
     return port, planner, checker
-
-
-def _formal_port_from_planner_runtime(runtime, *, arm):
-    """Wrap a PlannerRuntime fake in the production MotionPlannerRuntime port."""
-
-    planner = runtime.ensure_planner()
-    adapter = NativeSceneAdapter(planner, strict=True)
-    runtime.register_scene_adapter(adapter)
-    wrapper = types.SimpleNamespace(
-        native_planner=planner,
-        batch_planner=None,
-        planner_runtime=runtime,
-        world=runtime.world,
-        scene_revision=runtime.scene_revision,
-        native_scene_adapter=adapter,
-    )
-    def adopt_scene_revision(revision):
-        wrapper.scene_revision = runtime.adopt_scene_revision(revision)
-        return wrapper.scene_revision
-
-    def update_world(world):
-        wrapper.world = world
-        wrapper.scene_revision = runtime.update_world(
-            world, revision=runtime.scene_revision + 1
-        )
-        return wrapper.scene_revision
-
-    wrapper.adopt_scene_revision = adopt_scene_revision
-    wrapper.update_world = update_world
-    return PlannerScenePort(
-        name="robot",
-        lr_name=arm,
-        reference_prim_path="/World/task_0",
-        robot_ee_path="/World/task_0",
-        tensor_args=types.SimpleNamespace(to_device=lambda value: value),
-        robot=types.SimpleNamespace(),
-        runtime=wrapper,
-        native_scene_adapter=adapter,
-        adopt_scene_revision=wrapper.adopt_scene_revision,
-        attach_collision_object=lambda _paths: None,
-        detach_attachment=lambda: None,
-        has_attached_collision_spheres=lambda: False,
-    )
 
 
 def test_discovery_uses_enabled_collision_api_not_names_or_visual_meshes():
@@ -288,178 +220,6 @@ def test_floor_collision_api_must_be_native_addressable_before_episode_reset():
     manager.reset_episode()
 
     assert (floor_path, True) in updates
-
-
-def test_lazy_batch_scene_sync_replays_masks_and_cached_dynamic_poses():
-    stage = Usd.Stage.CreateInMemory()
-    task = _task(stage)
-    paths = [
-        "/World/task_0/sink_table_named_asset/collider",
-        "/World/task_0/movable_b/collider",
-    ]
-
-    class Checker:
-        def __init__(self):
-            self.enabled = []
-            self.poses = []
-
-        def get_obstacle_names(self):
-            return list(paths)
-
-        def check_obstacle_exists(self, name):
-            return str(name) in paths
-
-        def enable_obstacle(self, name, enabled):
-            self.enabled.append((str(name), bool(enabled)))
-
-        def update_obstacle_pose(self, name, pose):
-            self.poses.append((str(name), pose))
-
-    class Planner:
-        def __init__(self):
-            self.scene_collision_checker = Checker()
-            self.worlds = []
-            self.kinematics = types.SimpleNamespace(
-                config=types.SimpleNamespace(
-                    kinematics_config=types.SimpleNamespace(
-                        get_number_of_spheres=lambda _link: 8
-                    )
-                )
-            )
-
-        def update_world(self, world):
-            self.worlds.append(world)
-
-    def factory(profile=None, kind=None):
-        del profile, kind
-        return Planner()
-
-    runtime = PlannerRuntime(
-        PlannerRuntimeProfile(
-            planner_factory=factory,
-            batch_planner_factory=factory,
-        )
-    )
-    runtime.update_world({"complete": paths}, revision=7)
-    port = _formal_port_from_planner_runtime(runtime, arm="right")
-    manager = CollisionSceneManager(stage, task, {"strict": True})
-    manager.bind_scene_port(port)
-    key = ("robot", "right")
-    manager.controller_enabled[key][paths[0]] = False
-    manager._native_pose_cache[key][paths[1]] = "cached-pose"  # pylint: disable=protected-access
-
-    batch = runtime.ensure_batch_planner()
-
-    assert batch.worlds == [{"complete": paths}]
-    assert (paths[0], False) in batch.scene_collision_checker.enabled
-    assert (paths[1], "cached-pose") in batch.scene_collision_checker.poses
-    assert manager._native_scene_adapters[key][1].world_revision == 7  # pylint: disable=protected-access
-
-
-def test_lazy_batch_scene_sync_rejects_missing_exact_collider():
-    stage = Usd.Stage.CreateInMemory()
-    task = _task(stage)
-    paths = [
-        "/World/task_0/sink_table_named_asset/collider",
-        "/World/task_0/movable_b/collider",
-    ]
-
-    class Checker:
-        def __init__(self, names):
-            self.names = set(names)
-
-        def get_obstacle_names(self):
-            return list(self.names)
-
-        def check_obstacle_exists(self, name):
-            return str(name) in self.names
-
-        def enable_obstacle(self, *_args):
-            return None
-
-    class Planner:
-        def __init__(self, names):
-            self.scene_collision_checker = Checker(names)
-            self.worlds = []
-            self.kinematics = types.SimpleNamespace(
-                config=types.SimpleNamespace(
-                    kinematics_config=types.SimpleNamespace(
-                        get_number_of_spheres=lambda _link: 8
-                    )
-                )
-            )
-
-        def update_world(self, world):
-            self.worlds.append(world)
-
-    def factory(profile=None, kind=None):
-        del profile
-        return Planner(paths if kind != PlannerKind.BATCH else paths[:1])
-
-    runtime = PlannerRuntime(
-        PlannerRuntimeProfile(
-            planner_factory=factory,
-            batch_planner_factory=factory,
-        )
-    )
-    runtime.update_world({"complete": paths}, revision=4)
-    port = _formal_port_from_planner_runtime(runtime, arm="left")
-    manager = CollisionSceneManager(stage, task, {"strict": True})
-    manager.bind_scene_port(port)
-
-    with pytest.raises(CollisionSceneError, match="missing exact colliders"):
-        runtime.ensure_batch_planner()
-
-
-def test_scene_adapter_unbind_removes_runtime_fanout_and_listener():
-    stage = Usd.Stage.CreateInMemory()
-    task = _task(stage)
-    paths = [
-        "/World/task_0/sink_table_named_asset/collider",
-        "/World/task_0/movable_b/collider",
-    ]
-
-    class Checker:
-        def get_obstacle_names(self):
-            return list(paths)
-
-        def check_obstacle_exists(self, name):
-            return str(name) in paths
-
-    class Planner:
-        def __init__(self):
-            self.scene_collision_checker = Checker()
-            self.kinematics = types.SimpleNamespace(
-                config=types.SimpleNamespace(
-                    kinematics_config=types.SimpleNamespace(
-                        get_number_of_spheres=lambda _link: 8
-                    )
-                )
-            )
-
-        def update_world(self, world):
-            self.world = world
-
-    runtime = PlannerRuntime(
-        PlannerRuntimeProfile(
-            planner_factory=lambda **_kwargs: Planner(),
-            batch_planner_factory=lambda **_kwargs: Planner(),
-        )
-    )
-    runtime.update_world({"complete": paths}, revision=3)
-    port = _formal_port_from_planner_runtime(runtime, arm="right")
-    manager = CollisionSceneManager(stage, task, {"strict": True})
-    manager.bind_scene_port(port)
-    assert len(runtime._scene_adapters) == 1  # pylint: disable=protected-access
-    assert len(runtime._planner_listeners) == 1  # pylint: disable=protected-access
-
-    manager.unbind_scene_port(port)
-
-    # The single adapter belongs to the runtime; manager unbind removes only
-    # its batch/materialization registrations.
-    assert len(runtime._scene_adapters) == 1  # pylint: disable=protected-access
-    assert runtime._planner_listeners == []  # pylint: disable=protected-access
-    assert ("robot", "right") not in manager._native_scene_adapters  # pylint: disable=protected-access
 
 
 def test_duplicate_task_entity_name_is_rejected_before_exclusion_resolution():
@@ -974,8 +734,7 @@ def test_native_usd_parser_computes_relative_dynamic_pose(monkeypatch):
         tensor_args=controller.tensor_args,
         robot=controller.robot,
         runtime=controller.runtime,
-        native_scene_adapter=controller.native_scene_adapter,
-        adopt_scene_revision=controller.adopt_scene_revision,
+        check_current_start_state=controller.check_current_start_state,
     )
     result = manager._port_obstacle_pose(  # pylint: disable=protected-access
         controller, "/World/task_0/movable_b/collider"

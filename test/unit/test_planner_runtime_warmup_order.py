@@ -13,7 +13,6 @@ if str(SIMBOX_ROOT) not in sys.path:
 
 from core.planning.domain_types import PlannerKind, PlannerRuntimeProfile  # noqa: E402
 from core.planning.planner_runtime import PlannerRuntime  # noqa: E402
-from core.planning.scene_runtime import SceneRuntime  # noqa: E402
 
 
 class _WarmupOrderPlanner:
@@ -44,15 +43,15 @@ def test_native_warmup_follows_world_update_and_batch_stays_lazy():
         events.append(("construct", kind))
         return _WarmupOrderPlanner(events, kind)
 
-    scene = SceneRuntime({"world": 1})
     runtime = PlannerRuntime(
         PlannerRuntimeProfile(
             planner_factory=factory,
             batch_planner_factory=factory,
             warmup_config={"enable_graph": False, "num_warmup_iterations": 1},
         ),
-        scene=scene,
+        world={"world": 1},
     )
+    runtime.ensure_planner()
 
     assert runtime.batch_planner is None
     assert [event[0] for event in events] == [

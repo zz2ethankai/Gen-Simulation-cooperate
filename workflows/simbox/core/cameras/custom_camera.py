@@ -232,3 +232,22 @@ class CustomCamera(Camera):
         if motion_vectors is not None:
             obs["motion_vectors"] = motion_vectors
         return obs
+
+    def post_reset(self) -> None:
+        """Reset camera acquisition timing without changing its mounted pose.
+
+        Task cameras are not registered as World scene objects, so Isaac's
+        automatic ``Camera.post_reset`` hook is not reached for them.  After
+        an episode reset the simulation clock jumps back to zero while the
+        camera's ``_previous_time`` still contains the previous episode's
+        timestamp.  With a finite acquisition frequency this suppresses new
+        frames for roughly one old-episode duration, making the next video
+        appear frozen on the previous failure frame.
+
+        ``Camera.post_reset`` also resets the prim pose through
+        ``SingleXFormPrim``; that would undo task-owned camera randomization
+        and mounted-camera transforms.  Reset only the acquisition state here.
+        """
+
+        self._elapsed_time = 0
+        self._previous_time = None

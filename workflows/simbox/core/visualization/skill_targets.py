@@ -36,7 +36,7 @@ DEBUG_ROOT_NAME = "__debug_skill_targets__"
 class SkillTargetReferenceFrame:
     """Narrow robot inputs required to draw one skill target.
 
-    Skills expose this information through ``SkillRuntimePort``.  Keeping the
+    Skills expose this information through the typed runtime. Keeping the
     frame and robot geometry together avoids making the visualization layer
     depend on the controller façade (which is an Isaac lifecycle object).
     ``robot`` is intentionally the only robot value needed by the renderer:
@@ -54,18 +54,18 @@ def _skill_reference_frame(skill) -> SkillTargetReferenceFrame:
     runtime = skill.skill_runtime
     if runtime is None:
         raise RuntimeError(
-            "skill target visualization requires a bound SkillRuntimePort"
+            "skill target visualization requires a bound typed runtime"
         )
-    base_path = str(runtime.robot_base_path or "").strip()
+    base_path = str(runtime.setup.robot_base_path or "").strip()
     if not base_path:
         raise RuntimeError("skill target visualization requires robot_base_path")
     arm_name = str(runtime.arm_name or "").strip()
     if arm_name not in {"left", "right"}:
         raise RuntimeError(
-            "skill target visualization requires a left/right SkillRuntimePort arm"
+            "skill target visualization requires a left/right typed runtime arm"
         )
     return SkillTargetReferenceFrame(
-        robot=runtime.robot,
+        robot=runtime.robot_port.robot,
         arm_name=arm_name,
         robot_base_path=base_path,
     )

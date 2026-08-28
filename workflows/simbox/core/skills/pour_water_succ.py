@@ -42,7 +42,7 @@ class Pour_Water_Succ(BaseSkill):
 
     def simple_generate_manip_cmds(self):
         manip_list = []
-        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.ee_pose()
+        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.execution.get_ee_pose()
         if self.p_base_ee_tgt is None:
             self.p_base_ee_tgt = p_base_ee_cur
         if self.q_base_ee_tgt is None:
@@ -71,7 +71,7 @@ class Pour_Water_Succ(BaseSkill):
     #     return interp_trans, interp_ori
 
     def is_feasible(self, th=5):
-        return self.skill_runtime.num_plan_failed <= th
+        return self.skill_runtime.execution.state.num_plan_failed <= th
 
     def is_subtask_done(self, js_eps=5e-3, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0

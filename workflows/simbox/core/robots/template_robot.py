@@ -20,6 +20,7 @@ from isaacsim.core.utils.transformations import (
     pose_from_tf_matrix,
     tf_matrix_from_pose,
 )
+from isaacsim.core.utils.xforms import get_world_pose as get_prim_world_pose
 from scipy.interpolate import interp1d
 from pxr import Usd
 
@@ -141,6 +142,22 @@ class TemplateRobot(Robot):
         self.fr_ee_path = f"{self.robot_prim_path}/{fr_ee_path}" if fr_ee_path else ""
         self.fr_base_path = f"{self.robot_prim_path}/{self.cfg['fr_base_path']}" if self.cfg.get("fr_base_path") else ""
         self.fr_hand_path = self.fr_ee_path
+
+    def get_armbase_world_pose(self, arm="left"):
+        """Return the active arm-base pose in the Isaac world frame."""
+        if arm == "left":
+            base_path = self.fl_base_path
+        elif arm == "right":
+            base_path = self.fr_base_path
+        else:
+            raise ValueError(f"unsupported arm {arm!r}")
+        translation, orientation = get_prim_world_pose(base_path)
+        return np.asarray(translation, dtype=np.float32), np.asarray(orientation, dtype=np.float32)
+
+    def get_armbase_world_transform(self, arm="left"):
+        """Return the active arm-base transform in the Isaac world frame."""
+        translation, orientation = self.get_armbase_world_pose(arm)
+        return tf_matrix_from_pose(translation, orientation)
 
     def _setup_gripper_keypoints(self):
         """Setup gripper keypoints. Override in subclass."""

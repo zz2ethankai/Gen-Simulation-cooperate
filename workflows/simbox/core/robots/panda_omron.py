@@ -362,7 +362,9 @@ class PandaOmron(TemplateRobot):
             joint_indices=self._active_manipulator_joint_indices,
         )
 
-    def get_armbase_world_pose(self):
+    def get_armbase_world_pose(self, arm="left"):
+        if arm != "left":
+            raise ValueError(f"unsupported arm {arm!r}")
         mobile_translation, mobile_orientation = self.get_mobile_base_pose()
         world_mobile = tf_matrix_from_pose(mobile_translation, mobile_orientation)
         mobile_to_armbase = tf_matrix_from_pose(
@@ -373,8 +375,8 @@ class PandaOmron(TemplateRobot):
         translation, orientation = pose_from_tf_matrix(world_armbase)
         return translation.astype(np.float32), orientation.astype(np.float32)
 
-    def get_armbase_world_transform(self):
-        translation, orientation = self.get_armbase_world_pose()
+    def get_armbase_world_transform(self, arm="left"):
+        translation, orientation = self.get_armbase_world_pose(arm)
         return tf_matrix_from_pose(translation, orientation)
 
     def apply_base_command(self, steering_positions, wheel_velocities):

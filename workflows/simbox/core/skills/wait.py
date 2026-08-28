@@ -34,7 +34,7 @@ class Wait(BaseSkill):
             self.manip_list = [None] * self.wait_steps
             return
         manip_list = []
-        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.ee_pose()
+        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.execution.get_ee_pose()
 
         self.p_base_ee_tgt = p_base_ee_cur
         self.q_base_ee_tgt = q_base_ee_cur
@@ -62,7 +62,7 @@ class Wait(BaseSkill):
         return not self._passthrough
 
     def is_feasible(self, th=5):
-        return self._passthrough or self.skill_runtime.num_plan_failed <= th
+        return self._passthrough or self.skill_runtime.execution.state.num_plan_failed <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
@@ -82,7 +82,7 @@ class Wait(BaseSkill):
     def is_success(self):
         if self._passthrough:
             return True
-        p_base_ee_cur, _ = self.skill_runtime.ee_pose()
+        p_base_ee_cur, _ = self.skill_runtime.execution.get_ee_pose()
         distance = np.linalg.norm(p_base_ee_cur - self.p_base_ee_tgt)
         flag = (distance < self.success_threshold) and (len(self.manip_list) == 0)
 

@@ -1,14 +1,7 @@
-"""Native-boundary normalization for named joint trajectories."""
-
 from __future__ import annotations
-
 from typing import Any
-
 import numpy as np
-
 from core.planning.domain_types import JointTrajectory
-
-
 def normalize_named_trajectory(
     positions: Any,
     joint_names: Any,
@@ -16,14 +9,6 @@ def normalize_named_trajectory(
     *,
     context: str = "trajectory endpoint",
 ):
-    """Return a device tensor with shape ``[time, dof]`` and its names.
-
-    CuRobo single-query results may retain singleton batch and IK-seed axes
-    (``[1, 1, time, dof]``).  Only those *leading* singleton axes are
-    removed.  A non-singleton leading axis is never flattened because doing
-    so would silently select or merge batch/seed candidates.
-    """
-
     if joint_names is None or isinstance(joint_names, (str, bytes)):
         raise ValueError(f"{context} requires explicit joint_names")
     names = list(joint_names)
@@ -31,13 +16,11 @@ def normalize_named_trajectory(
         raise ValueError(f"{context} joint_names must be non-empty and unique")
     if positions is None:
         raise ValueError(f"{context} requires position values")
-
     position = tensor_args.to_device(positions)
     try:
         shape = tuple(int(value) for value in position.shape)
     except AttributeError:
         shape = tuple(int(value) for value in np.asarray(position).shape)
-
     if len(shape) < 2 or len(shape) > 4:
         raise ValueError(
             f"{context} position must have shape [time, dof] with at most "
@@ -49,12 +32,8 @@ def normalize_named_trajectory(
             f"{context} position has non-singleton leading dimensions; "
             f"select a batch/seed candidate before conversion, got shape={shape}"
         )
-
-    # Indexing, rather than reshape/flatten, makes the accepted singleton
-    # axes explicit and preserves the time and joint dimensions.
     for _ in leading_shape:
         position = position[0]
-
     try:
         normalized_shape = tuple(int(value) for value in position.shape)
     except AttributeError:
@@ -70,8 +49,6 @@ def normalize_named_trajectory(
             f"joint_names={names!r}"
         )
     return position, names
-
-
 def execution_trajectory_tensor(
     trajectory: JointTrajectory,
     tensor_args: Any,
@@ -79,16 +56,6 @@ def execution_trajectory_tensor(
     target_joint_names: Any = None,
     context: str = "controller execution trajectory",
 ):
-    """Convert one public trajectory to the execution tensor boundary.
-
-    ``PlannerRuntime`` publishes :class:`JointTrajectory` values whose
-    positions are deliberately plain Python lists.  Execution is the first
-    boundary allowed to materialize those values on the Isaac/CuRobo device.
-    Keeping the conversion here prevents phase execution from treating a
-    list waypoint as a native ``JointState`` object while preserving the
-    named-joint contract used to build articulation actions.
-    """
-
     if not isinstance(trajectory, JointTrajectory):
         raise TypeError(
             f"{context} requires JointTrajectory, got {type(trajectory).__name__}"
@@ -112,6 +79,4 @@ def execution_trajectory_tensor(
     if tuple(names) != target:
         positions = positions[..., [names.index(name) for name in target]]
     return positions, target
-
-
 __all__ = ["execution_trajectory_tensor", "normalize_named_trajectory"]

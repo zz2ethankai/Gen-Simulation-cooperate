@@ -1,7 +1,7 @@
 """Candidate-driven Pick skill.
 
 Pick owns grasp annotation filtering and candidate selection.  CuRobo planning
-is accessed directly through ``SkillRuntimePort``; execution phases are typed
+is accessed directly through the controller-owned typed runtime; execution phases are typed
 commands consumed by the CuRobo controller.
 """
 
@@ -12,9 +12,9 @@ import os
 import numpy as np
 from core.planning.domain_types import BatchPlanResult, CollisionPolicy, PlanResult
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand
+from core.utils.constants import CUROBO_BATCH_SIZE
 from core.skills.base_skill import BaseSkill, register_skill
 from core.utils.asset_path_utils import resolve_asset_path
-from core.utils.constants import CUROBO_BATCH_SIZE
 from core.utils.transformation_utils import poses_from_tf_matrices
 from isaacsim.core.api.robots.robot import Robot
 from isaacsim.core.api.tasks import BaseTask
@@ -85,7 +85,7 @@ class Pick(BaseSkill):
         return getter() if callable(getter) else self.pick_obj.get_local_pose()
 
     def _arm_base_transform(self):
-        return np.asarray(self.skill_runtime.arm_base_transform(), dtype=float)
+        return np.asarray(self.skill_runtime.execution.get_pick_armbase_transform(), dtype=float)
 
     def _object_pose_in_arm_base(self):
         return pose_from_tf_matrix(
@@ -107,12 +107,10 @@ class Pick(BaseSkill):
     @staticmethod
     def _plan_mask(result):
         if isinstance(result, BatchPlanResult):
-            values = result.success_mask
-        elif isinstance(result, PlanResult):
-            values = (result.success,)
-        else:
+            return np.asarray(result.success, dtype=bool)
+        if not isinstance(result, PlanResult):
             raise TypeError(f"unsupported plan result: {type(result).__name__}")
-        return np.asarray(values, dtype=bool).reshape(-1)
+        return np.asarray((result.success,), dtype=bool)
 
     @staticmethod
     def _plan_paths(result):
@@ -123,30 +121,14 @@ class Pick(BaseSkill):
         raise TypeError(f"unsupported plan result: {type(result).__name__}")
 
     @staticmethod
-    def _fit_plan_mask(values, count):
-        """Align a possibly truncated fallback mask without repeating flags."""
-
-        fitted = np.zeros(int(count), dtype=bool)
-        values = np.asarray(values, dtype=bool).reshape(-1)
-        fitted[: min(len(values), len(fitted))] = values[: len(fitted)]
-        return fitted
-
-    @staticmethod
-    def _fit_plan_paths(values, count):
-        """Align fallback paths with the candidate slots they came from."""
-
-        paths = list(values[: int(count)])
-        return paths + [None] * max(0, int(count) - len(paths))
-
-    @staticmethod
     def _axis_from_config(runtime):
         axis = getattr(runtime, "grasp_approach_axis", None)
         if axis is None:
-            axis = 0 if "r5a" in str(runtime.robot_file).lower() else 2
+            axis = 0 if "r5a" in str(runtime.planner_build_config.robot_file).lower() else 2
         return int(axis)
 
-    def sample_ee_pose(self, max_length=CUROBO_BATCH_SIZE):
-        """Apply the YAML grasp filters and return a ranked candidate batch."""
+    def sample_ee_pose(self, max_length=None):
+        """Apply all YAML grasp filters and return every ranked candidate."""
 
         poses = np.asarray(self.get_ee_poses("armbase"), dtype=float)
         count = len(poses)
@@ -195,10 +177,9 @@ class Pick(BaseSkill):
                 flags &= projection <= 0.0 if side == "toward_arm" else projection > 0.0
 
         candidates = np.flatnonzero(flags)
-        if len(candidates) == 0:
-            candidates = np.arange(count)
         candidates = candidates[np.argsort(np.asarray(self.scores)[candidates])]
-        candidates = candidates[: max(1, int(max_length))]
+        if max_length is not None:
+            candidates = candidates[: max(1, int(max_length))]
         self._candidate_raw_indices = np.asarray(candidates, dtype=int)
         self.sampled_scores = np.asarray(self.scores[candidates], dtype=float)
         return poses[candidates]
@@ -270,100 +251,44 @@ class Pick(BaseSkill):
         pre_mask = np.zeros(count, dtype=bool)
         terminal_mask = np.zeros(count, dtype=bool)
         terminal_hold_mask = np.zeros(count, dtype=bool)
-        pre_result = None
-        terminal_result = None
         same_pose = np.array_equal(pre_positions, positions) and np.array_equal(
             pre_orientations, orientations
         )
+        runtime.transition_target(object_name, collision_policy=CollisionPolicy.WORLD_TRANSIT)
+        for start in range(0, count, CUROBO_BATCH_SIZE):
+            stop = min(start + CUROBO_BATCH_SIZE, count)
+            result = runtime.plan_pose_batch(
+                pre_positions[start:stop], pre_orientations[start:stop],
+                collision_policy=CollisionPolicy.WORLD_TRANSIT,
+                active_target=object_name,
+                phase_id="pick_pregrasp_batch",
+            )
+            mask = self._plan_mask(result)
+            paths = self._plan_paths(result)
+            pre_mask[start:stop] = mask[: stop - start]
+            pre_paths[start:stop] = paths[: stop - start]
 
-        if runtime.batch_capability:
-            runtime.transition_target(object_name, collision_policy=CollisionPolicy.WORLD_TRANSIT)
-            if same_pose:
-                terminal_result = runtime.plan_pose_batch(
-                    positions,
-                    orientations,
-                    collision_policy=CollisionPolicy.TARGET_APPROACH,
-                    active_target=object_name,
-                )
-                pre_result = terminal_result
-                pre_mask = self._fit_plan_mask(self._plan_mask(terminal_result), count)
-                pre_paths = self._fit_plan_paths(self._plan_paths(terminal_result), count)
-                pre_mask &= np.asarray(
-                    [path is not None for path in pre_paths], dtype=bool
-                )
-                terminal_mask = pre_mask.copy()
-                # With a zero pre-grasp offset, the transit and terminal poses
-                # are identical.  The one planned path is consumed by the
-                # pre-grasp transit; replaying it as the terminal path would
-                # send the arm back toward the original start state.
-                terminal_paths = [None] * count
-                terminal_hold_mask = terminal_mask.copy()
-            else:
-                pre_result = runtime.plan_pose_batch(
-                    pre_positions,
-                    pre_orientations,
-                    collision_policy=CollisionPolicy.WORLD_TRANSIT,
-                    active_target=object_name,
-                )
-                pre_mask = self._fit_plan_mask(self._plan_mask(pre_result), count)
-                pre_paths = self._fit_plan_paths(self._plan_paths(pre_result), count)
-                pre_mask &= np.asarray(
-                    [path is not None for path in pre_paths], dtype=bool
-                )
-                # CuRobo's batch planner is allocated at its configured
-                # max_batch_size.  Keep both pose stages at the full candidate
-                # cardinality; failed pre-grasps use the current state through
-                # ``None`` start paths and are filtered by ``pre_mask`` below.
-                runtime.transition_target(
-                    object_name, collision_policy=CollisionPolicy.TARGET_APPROACH
-                )
-                terminal_result = runtime.plan_pose_batch(
-                    positions,
-                    orientations,
-                    collision_policy=CollisionPolicy.TARGET_APPROACH,
-                    active_target=object_name,
-                    start_paths=pre_paths,
-                )
-                terminal_paths = self._fit_plan_paths(
-                    self._plan_paths(terminal_result), count
-                )
-                terminal_mask = self._fit_plan_mask(
-                    self._plan_mask(terminal_result), count
-                )
+        if same_pose:
+            terminal_mask[:] = pre_mask
+            terminal_hold_mask[:] = pre_mask
         else:
-            for index in range(count):
-                runtime.transition_target(object_name, collision_policy=CollisionPolicy.WORLD_TRANSIT)
-                pre_result = runtime.plan_pose_result(
-                    pre_positions[index],
-                    pre_orientations[index],
-                    collision_policy=CollisionPolicy.WORLD_TRANSIT,
-                    active_target=object_name,
-                )
-                pre_ok = bool(self._plan_mask(pre_result)[0])
-                pre_mask[index] = pre_ok
-                paths = self._plan_paths(pre_result)
-                pre_paths[index] = paths[0] if paths else None
-                if not pre_ok:
-                    continue
-                if same_pose:
-                    terminal_mask[index] = pre_paths[index] is not None
-                    terminal_hold_mask[index] = terminal_mask[index]
-                    continue
-                runtime.transition_target(object_name, collision_policy=CollisionPolicy.TARGET_APPROACH)
-                terminal_result = runtime.plan_pose_from_path(
-                    positions[index],
-                    orientations[index],
-                    pre_paths[index],
+            valid_pre = np.flatnonzero(pre_mask & np.asarray([p is not None for p in pre_paths]))
+            runtime.transition_target(object_name, collision_policy=CollisionPolicy.TARGET_APPROACH)
+            for start in range(0, len(valid_pre), CUROBO_BATCH_SIZE):
+                indices = valid_pre[start:start + CUROBO_BATCH_SIZE]
+                result = runtime.plan_pose_batch(
+                    positions[indices], orientations[indices],
+                    start_paths=[pre_paths[index] for index in indices],
                     collision_policy=CollisionPolicy.TARGET_APPROACH,
                     active_target=object_name,
+                    phase_id="pick_grasp_batch",
                 )
-                terminal_ok = bool(self._plan_mask(terminal_result)[0])
-                terminal_mask[index] = terminal_ok
-                paths = self._plan_paths(terminal_result)
-                terminal_paths[index] = paths[0] if paths else None
+                mask = self._plan_mask(result)
+                paths = self._plan_paths(result)
+                for local, index in enumerate(indices):
+                    terminal_mask[index] = bool(local < len(mask) and mask[local])
+                    terminal_paths[index] = paths[local] if local < len(paths) else None
 
-        pre_paths = self._fit_plan_paths(pre_paths, count)
-        terminal_paths = self._fit_plan_paths(terminal_paths, count)
         pre_path_mask = np.asarray(
             [path is not None for path in pre_paths], dtype=bool
         )
@@ -371,12 +296,9 @@ class Pick(BaseSkill):
             [path is not None for path in terminal_paths], dtype=bool
         )
 
-        pre_mask = self._fit_plan_mask(pre_mask, count)
-        terminal_mask = self._fit_plan_mask(terminal_mask, count)
-        # A planner success mask is not sufficient to select a candidate: the
-        # corresponding execution path must also be present.  The only
-        # intentional exception is the coincident pre-grasp/terminal pose,
-        # which uses an explicit terminal hold instead of a second path.
+        # A typed planner success is usable only when it also produced a
+        # trajectory.  This keeps V1's candidate intersection semantics while
+        # protecting the native-v2 boundary from success-without-path results.
         pre_mask &= pre_path_mask
         terminal_mask &= terminal_path_mask | terminal_hold_mask
         valid = np.flatnonzero(pre_mask & terminal_mask).astype(int)
@@ -417,7 +339,7 @@ class Pick(BaseSkill):
             "grasp_orientations": orientations,
             "pregrasp_path": pre_paths[selected] if selected is not None and selected < len(pre_paths) else None,
             "terminal_path": terminal_paths[selected] if selected is not None and selected < len(terminal_paths) else None,
-            "terminal_hold": bool(terminal_hold_mask[selected]) if selected is not None else False,
+            "terminal_hold": bool(selected is not None and terminal_hold_mask[selected]),
         }
         return self.plan_state
 
@@ -432,7 +354,11 @@ class Pick(BaseSkill):
             "orientation_rad": float(self.skill_cfg.get("o_eps", 0.05)),
         }
         commands = [
-            MotionPhaseCommand(MotionPhase.SYNC_WORLD, active_object=object_name, replan_allowed=False),
+            MotionPhaseCommand(
+                MotionPhase.SYNC_WORLD,
+                active_object=object_name,
+                replan_allowed=False,
+            ),
             MotionPhaseCommand(
                 MotionPhase.TRANSIT_PREGRASP,
                 pre_position,
@@ -440,14 +366,15 @@ class Pick(BaseSkill):
                 gripper_action="open_gripper",
                 active_object=object_name,
                 completion_tolerance=tolerance,
-                params={"preplanned_joint_path": state["pregrasp_path"]},
+                preplanned_joint_path=state["pregrasp_path"],
             ),
         ]
         terminal_params = {}
+        terminal_path = None
         if state.get("terminal_hold", False):
             terminal_params["hold_position"] = True
         else:
-            terminal_params["preplanned_joint_path"] = state["terminal_path"]
+            terminal_path = state["terminal_path"]
         commands.append(MotionPhaseCommand(
                 MotionPhase.TERMINAL_GRASP_APPROACH,
                 grasp_position,
@@ -457,6 +384,7 @@ class Pick(BaseSkill):
                 allow_target_finger_contact=True,
                 completion_tolerance=tolerance,
                 params=terminal_params,
+                preplanned_joint_path=terminal_path,
             ))
         commands.extend([
             MotionPhaseCommand(
@@ -492,7 +420,7 @@ class Pick(BaseSkill):
                     support_object=support,
                     allow_target_finger_contact=True,
                     allow_target_robot_contact=True,
-                    allow_object_support_contact=support is not None,
+                    allow_object_support_contact=True,
                     completion_tolerance=tolerance,
                 )
             )
@@ -507,6 +435,7 @@ class Pick(BaseSkill):
                     support_object=support,
                     allow_target_finger_contact=True,
                     allow_target_robot_contact=True,
+                    allow_object_support_contact=True,
                     completion_tolerance=tolerance,
                 )
             )
@@ -515,13 +444,20 @@ class Pick(BaseSkill):
     def generate_manip_cmds(self):
         self.failure_reason = ""
         self._grasp_contact_verified = False
-        transforms = self.sample_ee_pose()
+        runtime = self.skill_runtime
+        transforms = self.sample_ee_pose(max_length=60)
         object_name = self.pick_obj.name
-        self.skill_runtime.transition_target(object_name, collision_policy=CollisionPolicy.WORLD_TRANSIT)
+        # Keep candidate generation on the same Physics-schema world/metric
+        # boundary as the original Pick implementation.  In particular, a
+        # preceding Place or another skill may have left dynamic poses or
+        # approach-only pose costs cached in the native planners.
+        runtime.sync_dynamic_poses(force=True)
+        runtime.reset_pose_cost_metric()
+        runtime.transition_target(object_name, collision_policy=CollisionPolicy.WORLD_TRANSIT)
         try:
             state = self._plan_candidates(transforms)
         finally:
-            self.skill_runtime.restore_world(object_name)
+            runtime.restore_world(object_name)
         result = state["result"] if "result" in state else state
         if not result["feasible"]:
             self.failure_reason = result.get("failure_code", "NO_JOINT_GRASP_PLAN")
@@ -592,7 +528,7 @@ class Pick(BaseSkill):
             MotionPhase.TRANSIT_PREGRASP,
             MotionPhase.TERMINAL_GRASP_APPROACH,
         }:
-            command.params.pop("preplanned_joint_path", None)
+            command.preplanned_joint_path = None
         return True
 
     def get_contact(self, contact_threshold=0.0):
@@ -613,7 +549,7 @@ class Pick(BaseSkill):
         if not self.manip_list:
             return True
         command = self.manip_list[0]
-        done = bool(self.skill_runtime.phase_complete(command))
+        done = bool(self.skill_runtime.execution.is_phase_command_complete(command))
         if done and command.phase == MotionPhase.GRIPPER_CLOSE:
             threshold = float(command.params.get("contact_threshold_n", 0.0))
             _, contacts = self.get_contact(threshold)

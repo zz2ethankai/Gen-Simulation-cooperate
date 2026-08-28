@@ -67,7 +67,7 @@ class Dynamicpick(BaseSkill):
         self.obj_init_trans = deepcopy(self.pick_obj.get_local_pose()[0])
 
     def _get_armbase_world_tf(self):
-        return self.skill_runtime.arm_base_transform()
+        return self.skill_runtime.execution.get_pick_armbase_transform()
 
     def _get_object_world_tf(self):
         if self.meet_pose_o2w is not None:
@@ -92,25 +92,34 @@ class Dynamicpick(BaseSkill):
     def _preview_pose(self, position, orientation, start_arm_positions=None, *, ds_ratio=1):
         """Preview a typed pose plan without executing a reflected command."""
 
-        success, end_positions, result = self.skill_runtime.plan_pose_from_joint_positions(
+        start_state = None
+        if start_arm_positions is not None:
+            positions = np.asarray(self.robot.get_joints_state().positions, dtype=float).copy()
+            positions[self.skill_runtime.robot_port.arm_indices] = np.asarray(
+                start_arm_positions, dtype=float
+            ).reshape(-1)
+            start_state = self.skill_runtime.arm_joint_state(
+                type("JointStateSnapshot", (), {"positions": positions})()
+            )
+        result = self.skill_runtime.plan_pose(
             position,
             orientation,
-            start_arm_positions=start_arm_positions,
+            start_state=start_state,
             active_target=self.object_name,
         )
-        if not success:
-            self.skill_runtime.num_plan_failed = 1000
+        if not result.success or result.trajectory is None:
+            self.skill_runtime.execution.state.num_plan_failed = 1000
             return 0.0, start_arm_positions
         path = result.trajectory
         waypoints = len(path) if path is not None else 1
         stride = max(1, int(ds_ratio))
         duration = (
             waypoints
-            * self.skill_runtime.interpolation_dt
+            * self.skill_runtime.robot_port.interpolation_dt
             / float(getattr(self.skill_runtime, "time_dilation_factor", 1.0))
             / stride
         )
-        return duration, end_positions
+        return duration, np.asarray(path.positions[-1], dtype=float)
 
     def predict_manip_cmds(self):
         # Prediction can be refreshed when the conveyor intercept is known;
@@ -119,7 +128,7 @@ class Dynamicpick(BaseSkill):
         self.cmd_time = 0.0
         manip_list = []
 
-        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.ee_pose()
+        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.execution.get_ee_pose()
 
         cmd_time, expected_js = self._preview_pose(p_base_ee_cur, q_base_ee_cur)
         self.cmd_time += cmd_time
@@ -328,7 +337,7 @@ class Dynamicpick(BaseSkill):
             object_position, object_orientation = get_obj_world_pose()
         else:
             object_position, object_orientation = self.pick_obj.get_local_pose()
-        initial_position, initial_orientation = self.skill_runtime.initial_ee_pose()
+        initial_position, initial_orientation = self.skill_runtime.setup.T_world_ee_init
         T_world_ee_init = self._get_armbase_world_tf() @ tf_matrix_from_pose(
             initial_position, initial_orientation
         )
@@ -380,11 +389,11 @@ class Dynamicpick(BaseSkill):
         return contact, indices
 
     def is_feasible(self, th=10):
-        return int(self.skill_runtime.num_plan_failed) <= th
+        return int(self.skill_runtime.execution.state.num_plan_failed) <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        return self.skill_runtime.phase_complete(self.manip_list[0])
+        return self.skill_runtime.execution.is_phase_command_complete(self.manip_list[0])
 
     def is_done(self):
         if not self.is_ready():

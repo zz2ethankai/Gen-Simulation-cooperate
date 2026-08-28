@@ -43,7 +43,6 @@ from core.planning.config_contract import (
     PHYSICS_SCHEMA_MODE,
     PASSTHROUGH_MODE,
     canonicalize_planning_config,
-    derive_batch_capability,
     is_passthrough_skill,
     resolve_collision_world_mode,
     resolve_skill_collision_world_mode,
@@ -392,58 +391,16 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             for neglect_collision_name in collision_filter_names:
                 if neglect_collision_name not in candidate["name"]:
                     continue
-                # Keep a neglected support fixture in global_group.  Dynamic
-                # objects must still rest on it, while the robot group is
-                # filtered from global_group.  A separate prim group would
-                # leave the robot/fixture pair collision-enabled under
-                # inverted filtering.
-                if candidate.get("target_class") == "GeometryObject":
-                    support_obj = getattr(self.task, "_task_objects", {}).get(candidate["name"])
-                    support_proxy_path = None
-                    if os.environ.get("INTERNDATA_DEBUG_RESET_LIFECYCLE") == "1":
-                        LOGGER.warning(
-                            "[CollisionGroups] support candidate=%s obj=%s type=%s method=%s",
-                            candidate_prim_path,
-                            getattr(support_obj, "prim_path", None),
-                            type(support_obj).__name__ if support_obj is not None else None,
-                            hasattr(support_obj, "create_native_support_collision_proxy"),
-                        )
-                    create_support_proxy = getattr(
-                        support_obj,
-                        "create_native_support_collision_proxy",
-                        None,
-                    )
-                    if create_support_proxy is not None:
-                        try:
-                            support_proxy_path = create_support_proxy(
-                                self.stage,
-                                collision_root_path,
-                                len(global_collision_paths),
-                            )
-                        except Exception:
-                            LOGGER.warning(
-                                "[CollisionGroups] native support proxy failed for %s",
-                                candidate_prim_path,
-                                exc_info=True,
-                            )
-                    if not support_proxy_path:
-                        support_proxy_path = self._create_native_support_collision_proxy(
-                            self.stage,
-                            collision_root_path,
-                            candidate_prim_path,
-                            len(global_collision_paths),
-                        )
-                    if support_proxy_path:
-                        # Keep the native support collider in global_group
-                        # with the floor.  Dynamic object groups opt into
-                        # this group after the common filter setup below.
-                        global_collision_paths.append(support_proxy_path)
-                    else:
-                        global_collision_paths.append(f"{candidate_prim_path}/collision_proxy")
-                else:
-                    if candidate_prim_path not in prim_paths:
-                        prim_paths.append(candidate_prim_path)
-                    global_collision_paths.remove(candidate_prim_path)
+                # Preserve the original task contract: a neglected fixture is
+                # in the robot's filtered group, while dynamic objects stay in
+                # global_group and can collide with the fixture's authored or
+                # task-local proxy descendants.  Keeping the fixture in
+                # global_group disables object/support contact under Isaac 6's
+                # inverted collision-group filtering and only becomes visible
+                # after a failed-generation reset.
+                if candidate_prim_path not in prim_paths:
+                    prim_paths.append(candidate_prim_path)
+                global_collision_paths.remove(candidate_prim_path)
 
         filter_collisions(
             self.stage,
@@ -855,6 +812,9 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 except Exception:
                     pass
             self._finish_skill_timing(skill, False, reason=str(exc), error=exc)
+            self._log_planner_timing(
+                robot_name, skill, scope, phase, success=False, reason=str(exc)
+            )
             raise
         finally:
             if runtime is not None:
@@ -865,6 +825,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             except Exception:
                 pass
         if getattr(skill, "manip_list", None):
+            self._log_planner_timing(robot_name, skill, scope, phase, success=True)
             self._start_skill_execution_phase(skill)
         elif bool(getattr(skill, "is_ready", lambda: True)()):
             # A manipulator Skill with no commands is a planning failure in
@@ -872,6 +833,42 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             # retained even when the loop exits before the next update tick.
             reason = str(getattr(skill, "failure_reason", "") or "empty_manip_list")
             self._finish_skill_timing(skill, False, reason=reason)
+            self._log_planner_timing(
+                robot_name, skill, scope, phase, success=False, reason=reason
+            )
+
+    def _log_planner_timing(
+        self, robot_name, skill, scope, phase, *, success: bool, reason: str | None = None
+    ):
+        """Log one planner invocation and all of its nested timing phases."""
+
+        if scope is None:
+            return
+        try:
+            payload = scope.to_dict()
+            if phase is not None and phase.record is not None:
+                duration = float(phase.record.duration_sec)
+            else:
+                duration = float(payload.get("duration_sec", 0.0))
+            segments = {
+                str(item.get("name", "unknown")): round(
+                    float(item.get("duration_sec", 0.0)), 3
+                )
+                for item in payload.get("phases", [])
+            }
+            LOGGER.info(
+                "[PlannerTiming] robot=%s skill=%s status=%s duration=%.3fs "
+                "segments=%s reason=%s",
+                robot_name,
+                self._skill_display_name(skill),
+                "success" if success else "failed",
+                duration,
+                segments,
+                reason or "",
+            )
+        except Exception:
+            # Diagnostic timing must never change planning or episode behavior.
+            LOGGER.debug("Failed to log planner timing", exc_info=True)
 
     def _finish_skill_timing(self, skill, success, reason=None, error=None):
         scope = getattr(skill, "_timing_scope", None)
@@ -1046,7 +1043,6 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
     def _initialize_controllers(self, task, task_cfg, world):
         """Initialize controllers for each robot."""
         controllers = {}
-        batch_capabilities = derive_batch_capability(task_cfg)
         for robot in task_cfg["robots"]:
             robot_name = robot["name"]
             controllers[robot_name] = {}
@@ -1074,12 +1070,6 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                     collision_activation_distance=robot.get("collision_activation_distance", 0.03),
                     task=task,
                     world=world,
-                    # Physics schema discovers exact CollisionAPI prims.  The
-                    # old substring list is intentionally not passed to the
-                    # controller; it is a deprecated inert field.
-                    batch_capability=bool(
-                        batch_capabilities.get((robot_name, controller_name), False)
-                    ),
                     trajectory_visualizer=self.trajectory_visualizer,
                     skill_target_visualizer=self.skill_target_visualizer,
                     collision_scene_manager=self.collision_scene_manager,
@@ -1292,7 +1282,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         Fixed assets are still dynamic bodies; this boundary only restores the
         captured pose/scale/visibility and clears residual velocity after the
         reset warmup.  The collision manager then republishes the exact USD
-        poses through SceneRuntime/NativeSceneAdapter with a fresh
+        poses through the typed PlannerRuntime scene owner with a fresh
         monotonic world revision.
         """
 
@@ -1979,7 +1969,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
     def _safety_measurements(self, skill, dynamic_changed: bool) -> SafetyMeasurements:
         runtime = skill.skill_runtime
         if runtime is None:
-            raise RuntimeError("execution safety requires a bound SkillRuntimePort")
+            raise RuntimeError("execution safety requires a bound typed runtime")
         robot = runtime.robot
         arm_indices = runtime.arm_indices
         joint_state = robot.get_joints_state()
@@ -2359,7 +2349,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 continue
             runtime = skill.skill_runtime
             if runtime is None:
-                raise RuntimeError("execution safety requires a bound SkillRuntimePort")
+                raise RuntimeError("execution safety requires a bound typed runtime")
             # This precheck evaluates the result of the *previous* physics
             # step.  A newly selected command has not run yet, so its phase
             # baseline and first commanded joint target do not exist.  Using
@@ -2440,7 +2430,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
     def _forward_or_hold(self, skill):
         runtime = skill.skill_runtime
         if runtime is None:
-            raise RuntimeError("operation Skill requires a bound SkillRuntimePort")
+            raise RuntimeError("operation Skill requires a bound typed runtime")
         command = skill.manip_list[0]
         if not isinstance(command, MotionPhaseCommand):
             raise TypeError(

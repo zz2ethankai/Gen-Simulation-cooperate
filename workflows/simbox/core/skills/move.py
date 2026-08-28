@@ -31,7 +31,7 @@ class Move(BaseSkill):
 
     def simple_generate_manip_cmds(self):
         manip_list = []
-        _p_base_ee_cur, q_base_ee_cur = self.skill_runtime.ee_pose()
+        _p_base_ee_cur, q_base_ee_cur = self.skill_runtime.execution.get_ee_pose()
 
         p_base_ee_tgt = self.getTgtTranslation()
         for delta_trans in self.delta_trans:
@@ -52,8 +52,8 @@ class Move(BaseSkill):
         p_world_move_obj = self.move_obj.get_world_pose()[0]
         p_world_tgt_obj = self.tgt_obj.get_world_pose()[0]
         global_move = p_world_tgt_obj - p_world_move_obj
-        _, q_world_base_cur = self.skill_runtime.arm_base_pose()
-        p_base_ee_cur, _ = self.skill_runtime.ee_pose()
+        _, q_world_base_cur = self.skill_runtime.execution.get_armbase_pose()
+        p_base_ee_cur, _ = self.skill_runtime.execution.get_ee_pose()
         R_we = R.from_quat(q_world_base_cur, scalar_first=True).as_matrix()  # EE -> World
         R_ew = R_we.T  # World -> EE
         ee_move = R_ew @ global_move
@@ -63,7 +63,7 @@ class Move(BaseSkill):
         return p_base_ee_tgt
 
     def is_feasible(self, th=5):
-        return self.skill_runtime.num_plan_failed <= th
+        return self.skill_runtime.execution.state.num_plan_failed <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
@@ -80,7 +80,7 @@ class Move(BaseSkill):
         return len(self.manip_list) == 0
 
     def is_success(self):
-        p_base_ee_cur, _ = self.skill_runtime.ee_pose()
+        p_base_ee_cur, _ = self.skill_runtime.execution.get_ee_pose()
         distance = np.linalg.norm(p_base_ee_cur - self.p_base_ee_tgt)
         flag = (distance < self.success_threshold) and (len(self.manip_list) == 0)
 

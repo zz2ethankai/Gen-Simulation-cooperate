@@ -170,7 +170,7 @@ TaskRequest
 
 Agent 控制进程在仓库根目录的 Python 环境中运行；所有 Workspace Probe、
 CuRobo、Isaac Sim 和 Nav2 执行都强制通过
-`scripts/docker/run_simbox_task.sh` 启动独立 Docker stack。没有宿主机仿真
+`scripts/docker/up_simbox_isaac.sh` 启动独立 Docker stack。没有宿主机仿真
 回退路径，Docker 不可用时运行会直接停止并生成基础设施诊断。
 
 首次使用或场景/资产变化后建立 inventory：

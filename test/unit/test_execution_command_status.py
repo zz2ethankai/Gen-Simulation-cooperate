@@ -1,4 +1,4 @@
-"""ExecutionSupervisor consumes the typed SkillRuntimePort command status."""
+"""ExecutionSupervisor consumes the typed runtime command status."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from core.execution.execution_supervisor import ExecutionSupervisor  # noqa: E40
 from core.execution.safety_monitor import SafetyDecision, SafetyMeasurements, SafetyMonitor  # noqa: E402
 from core.controllers.curobo.components import MutableExecutionState  # noqa: E402
 from core.controllers.curobo.phase_execution import ExecutionStatus  # noqa: E402
-from core.controllers.curobo.skill_runtime import SkillRuntimePort  # noqa: E402
 from core.planning.domain_types import CommandStatus  # noqa: E402
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand  # noqa: E402
 
@@ -27,38 +26,25 @@ class _RuntimeOwner:
         self.execution_state = MutableExecutionState()
         self.clear_count = 0
         self.executions = 0
+        self.name = "robot"
+        self.arm_name = "right"
 
-    def execution_status(self, _command=None):
-        return self.status
+        self.execution = SimpleNamespace(
+            execution_status=lambda _command=None: self.status,
+            forward_phase_command=self._execute,
+            hold_action=lambda: "hold",
+            clear_plan_and_hold=self._clear,
+        )
 
-    def execute(self, _command):
+    def _execute(self, _command):
         self.executions += 1
         return "runtime-motion"
 
-    def hold(self):
-        return "hold"
-
-    def clear_plan_and_hold(self):
+    def _clear(self):
         self.clear_count += 1
 
     def port(self):
-        return SkillRuntimePort(
-            robot=SimpleNamespace(),
-            runtime=None,
-            execution_state=self.execution_state,
-            arm_spec=None,
-            arm_indices=[0],
-            gripper_indices=[1],
-            name="robot",
-            arm_name="right",
-            ee_pose=lambda: None,
-            arm_base_pose=lambda: None,
-            compute_fk=lambda joints: joints,
-            execution_status=self.execution_status,
-            execute=self.execute,
-            hold=self.hold,
-            clear_plan_and_hold=self.clear_plan_and_hold,
-        )
+        return self
 
 
 def _fixture(status):
@@ -97,7 +83,7 @@ def test_safety_event_uses_command_status_phase_and_plan_id():
     assert event.phase == "status-phase"
     assert event.plan_id == "status-plan"
     assert owner.clear_count == 1
-    assert runtime.command_status() is CommandStatus.ACTIVE
+    assert runtime.execution.execution_status().status is CommandStatus.ACTIVE
 
 
 def test_forward_uses_typed_runtime_when_not_holding():
