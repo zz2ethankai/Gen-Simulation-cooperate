@@ -4,7 +4,7 @@ load_stage:
     type: env_loader
     args:
       workflow_type: SimBoxDualWorkFlow
-      cfg_path: workflows/simbox/core/configs/tasks/example/sort_the_rubbish.yaml
+      cfg_path: InternDataAssets/assets/custom/scene_8/01_kitchen/assets/basic/kitchen_apple_orange_to_tray/simbox_task.yaml
       simulator:
         physics_dt: 1/30                   # Physics update rate
         rendering_dt: 1/30                 # Render update rate

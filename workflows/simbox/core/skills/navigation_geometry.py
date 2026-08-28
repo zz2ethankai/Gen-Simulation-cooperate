@@ -18,8 +18,8 @@ from workflows.simbox.core.mobile.platforms import get_mobile_base_platform
 @dataclass(frozen=True)
 class ApproachConfig:
     target_name: str
-    min_distance: float = 0.85
-    max_distance: float = 1.30
+    min_distance: float
+    max_distance: float
     sample_count: int = 256
     static_free_value_min: int = 250
     footprint_padding_m: float | None = None
@@ -35,13 +35,17 @@ def wrap_to_pi(yaw: float) -> float:
     return (float(yaw) + math.pi) % (2.0 * math.pi) - math.pi
 
 
-def parse_approach_config(cfg: dict[str, Any]) -> ApproachConfig | None:
+def parse_approach_config(
+    cfg: dict[str, Any],
+    navigation_cfg: dict[str, Any],
+) -> ApproachConfig | None:
     target_name = str(cfg.get("approach", "") or "").strip()
     if not target_name:
         return None
 
-    min_distance = float(cfg.get("approach_min_distance", 0.45))
-    max_distance = float(cfg.get("approach_max_distance", 0.65))
+    approach_cfg = navigation_cfg["approach"]
+    min_distance = float(approach_cfg["min_distance"])
+    max_distance = float(approach_cfg["max_distance"])
     sample_count = int(cfg.get("approach_sample_count", 512))
     footprint_padding_m = cfg.get("approach_footprint_padding", None)
     footprint_padding_m = None if footprint_padding_m is None else float(footprint_padding_m)
@@ -55,9 +59,12 @@ def parse_approach_config(cfg: dict[str, Any]) -> ApproachConfig | None:
     if sampling_random and sampling_seed is None:
         sampling_seed = int.from_bytes(os.urandom(8), byteorder="big", signed=False)
     if min_distance <= 0.0:
-        raise ValueError("approach_min_distance must be positive")
+        raise ValueError("base.local_navigation.approach.min_distance must be positive")
     if max_distance < min_distance:
-        raise ValueError("approach_max_distance must be >= approach_min_distance")
+        raise ValueError(
+            "base.local_navigation.approach.max_distance must be >= "
+            "base.local_navigation.approach.min_distance"
+        )
     if sample_count <= 0:
         raise ValueError("approach_sample_count must be positive")
     if footprint_padding_m is not None and footprint_padding_m < 0.0:

@@ -16,9 +16,9 @@ tasks:
     - 0
     - 0
   robots:
-  - name: panda_omron
-    robot_config_file: workflows/simbox/core/configs/robots/panda_omron_virtual.yaml
-    path: ../../../panda_omron_virtual/robot.usd
+  - name: split_aloha
+    robot_config_file: workflows/simbox/core/configs/robots/split_aloha.yaml
+    path: ../../../split_aloha_mid_360_virtual/robot.usd
     translation:
     - 2.0
     - 1.5
@@ -50,7 +50,7 @@ tasks:
     # - outlet
     use_batch: true
     collision_activation_distance: 0.05
-    target_class: PandaOmronVirtual
+    target_class: SplitAloha
   objects:
   - name: white_mug_a_0_id9000
     target_class: GeometryObject
@@ -1377,7 +1377,7 @@ tasks:
     support_surface_source: mesh_upward_face_area_cluster
     tabletop_overlap_repair: Adjusted fixed region center to avoid support-local tabletop
       footprint overlap.
-  - object: panda_omron
+  - object: split_aloha
     target: floor
     random_type: A_on_B_region_sampler
     random_config:
@@ -2052,99 +2052,71 @@ tasks:
       y: 0.0
       yaw: 158.68
   cameras:
-  # - name: panda_omron_navigate_global
-  #   translation:
-  #   - 2.0
-  #   - 1.5
-  #   - 6.0
-  #   orientation:
-  #   - 1.0
-  #   - 0.0
-  #   - 0.0
-  #   - 0.0
-  #   camera_axes: usd
-  #   camera_file: workflows/simbox/core/configs/cameras/realsense_d455_v3.yaml
-  #   parent: ''
-  #   apply_randomization: true
-  # - name: panda_omron_agentview_center
-  #   translation:
-  #   - -0.6
-  #   - 0.0
-  #   - 1.15
-  #   orientation:
-  #   - 0.636945903301239
-  #   - 0.3325185477733612
-  #   - -0.3199238181114197
-  #   - -0.6175596117973328
-  #   camera_axes: usd
-  #   camera_file: workflows/simbox/core/configs/cameras/realsense_d455_v3.yaml
-  #   parent: panda_omron/robot0_base/mobilebase0_support
-  #   apply_randomization: false
-  - name: panda_omron_agentview_left
+  - name: split_aloha_global
     translation:
-    - -0.5
-    - 0.35
-    - 1.05
+    - 2.0
+    - 1.5
+    - 6.0
     orientation:
-    - 0.55623853
-    - 0.29935253
-    - -0.37678665
-    - -0.6775092
+    - 1.0
+    - 0.0
+    - 0.0
+    - 0.0
     camera_axes: usd
     camera_file: workflows/simbox/core/configs/cameras/realsense_d455_v3.yaml
-    parent: panda_omron/robot0_base/mobilebase0_support
+    parent: ''
     apply_randomization: false
-  - name: panda_omron_agentview_right
+  - name: split_aloha_hand_left
     translation:
-    - -0.5
-    - -0.35
-    - 1.05
-    orientation:
-    - 0.6775091886520386
-    - 0.3767866790294647
-    - -0.2993525564670563
-    - -0.55623859167099
-    camera_axes: usd
-    camera_file: workflows/simbox/core/configs/cameras/realsense_d455_v3.yaml
-    parent: panda_omron/robot0_base/mobilebase0_support
-    apply_randomization: false
-  # - name: panda_omron_frontview
-  #   translation:
-  #   - -0.5
-  #   - 0.0
-  #   - 0.95
-  #   orientation:
-  #   - 0.6088936924934387
-  #   - 0.3814677894115448
-  #   - -0.3673907518386841
-  #   - -0.5905545353889465
-  #   camera_axes: usd
-  #   camera_file: workflows/simbox/core/configs/cameras/realsense_d455_v3.yaml
-  #   parent: panda_omron/robot0_base/mobilebase0_support
-  #   apply_randomization: false
-  - name: panda_omron_eye_in_hand
-    translation:
+    - 0.0
+    - 0.08
     - 0.05
-    - 0.0
-    - 0.0
     orientation:
     - 0.0
-    - 0.707107
-    - 0.707107
     - 0.0
+    - 0.965
+    - 0.259
+    camera_axes: usd
+    camera_file: workflows/simbox/core/configs/cameras/astra.yaml
+    parent: split_aloha/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link6
+    apply_randomization: false
+  - name: split_aloha_hand_right
+    translation:
+    - 0.0
+    - 0.08
+    - 0.04
+    orientation:
+    - 0.0
+    - 0.0
+    - 0.972
+    - 0.233
+    camera_axes: usd
+    camera_file: workflows/simbox/core/configs/cameras/astra.yaml
+    parent: split_aloha/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link6
+    apply_randomization: false
+  - name: split_aloha_head
+    translation:
+    - 0.0
+    - -0.00818
+    - 0.1
+    orientation:
+    - 0.658
+    - 0.259
+    - -0.282
+    - -0.648
     camera_axes: usd
     camera_file: workflows/simbox/core/configs/cameras/realsense_d455_v3.yaml
-    parent: panda_omron/robot0_base/panda_hand
+    parent: split_aloha/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/top_camera_link
     apply_randomization: false
   skills:
-  - panda_omron:
+  - split_aloha:
     - base:
       - name: navigate
         id: nav_to_pick_apple_0_id9008
         depends_on: []
         approach: apple_0_id9008
         approach_sampling_random: true
-        approach_arm: left
+        approach_arm: right
         approach_object_armbase_xy:
         - 0.5
         - 0.0
@@ -2156,7 +2128,7 @@ tasks:
         - home_after_pick_apple_0_id9008
         approach: metal_tray_0_id9016
         approach_sampling_random: true
-        approach_arm: left
+        approach_arm: right
         approach_object_armbase_xy:
         - 0.5
         - 0.0
@@ -2168,7 +2140,7 @@ tasks:
         - home_after_place_apple_0_id9008
         approach: orange_0_id9009
         approach_sampling_random: true
-        approach_arm: left
+        approach_arm: right
         approach_object_armbase_xy:
         - 0.5
         - 0.0
@@ -2180,13 +2152,13 @@ tasks:
         - home_after_pick_orange_0_id9009
         approach: metal_tray_0_id9016
         approach_sampling_random: true
-        approach_arm: left
+        approach_arm: right
         approach_object_armbase_xy:
         - 0.5
         - 0.0
         xy_goal_tolerance: 0.1
         yaw_goal_tolerance: 0.1
-      left:
+      right:
       - name: pick
         id: pick_apple_0_id9008
         depends_on:
@@ -2273,7 +2245,7 @@ tasks:
         - place_orange_0_id9009
         mode: home
         gripper_state: 1.0
-      right: []
+      left: []
   source_tasks: []
   data:
     task_dir: runs/kitchen_apple_orange_to_tray

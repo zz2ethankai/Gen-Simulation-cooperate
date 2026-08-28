@@ -29,10 +29,12 @@ left_joint_indices: [4, 6, 8, 10, 12, 14]
 right_joint_indices: [5, 7, 9, 11, 13, 15]
 left_gripper_indices: [16]
 right_gripper_indices: [18]
+lift_indices: [3]
 left_joint_names: [fl_joint1, fl_joint2, fl_joint3, fl_joint4, fl_joint5, fl_joint6]
 right_joint_names: [fr_joint1, fr_joint2, fr_joint3, fr_joint4, fr_joint5, fr_joint6]
 left_gripper_joint_names: [fl_joint7]
 right_gripper_joint_names: [fr_joint7]
+lift_names: [lifting_joint]
 # Compatibility aliases used by the Agent's runtime joint resolver.
 left_gripper_names: [fl_joint7]
 right_gripper_names: [fr_joint7]
@@ -95,8 +97,10 @@ left_joint_home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 right_joint_home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 left_gripper_home: [0.05]
 right_gripper_home: [0.05]
+lift_home: [-0.3]
 
 mobile_base_path: "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/base_link"
+lift_joint_path: "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/box_link/lifting_joint"
 virtual_base_joint_paths:
   - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/dummy_base_x/mobile_translate_x"
   - "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/dummy_base_y/mobile_translate_y"
@@ -105,6 +109,10 @@ virtual_base_joint_paths:
 base:
   base_config_file: workflows/simbox/core/configs/bases/split_aloha_virtual_base.yaml
   local_navigation_config_file: workflows/simbox/core/configs/navigation/default_local_navigation.yaml
+  local_navigation:
+    approach:
+      min_distance: 0.40
+      max_distance: 0.60
   steering_joint_names: []
   wheel_joint_names: [mobile_translate_x, mobile_translate_y, mobile_rotate]
   base_velocity_joint_names: [mobile_translate_x, mobile_translate_y, mobile_rotate]

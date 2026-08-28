@@ -101,14 +101,18 @@ class _FakeVirtualRobot:
 
 class LocalNavigationTests(unittest.TestCase):
     def test_approach_sampling_is_opt_in_and_faces_target(self):
-        self.assertIsNone(parse_approach_config({}))
+        self.assertIsNone(parse_approach_config({}, {}))
         config = parse_approach_config(
             {
                 "approach": "apple",
-                "approach_min_distance": 0.5,
-                "approach_max_distance": 0.8,
                 "approach_sample_count": 8,
-            }
+            },
+            {
+                "approach": {
+                    "min_distance": 0.5,
+                    "max_distance": 0.8,
+                }
+            },
         )
         self.assertIsNotNone(config)
         candidates = sample_approach_candidates(config, (1.0, 2.0))
@@ -193,7 +197,11 @@ class LocalNavigationTests(unittest.TestCase):
                 1: [(0.0, 0.0), (0.6, 0.5)],
             }
             goal, debug = _LOCAL_NAV_MODULE.select_approach_goal(
-                approach_config=ApproachConfig(target_name="tray"),
+                approach_config=ApproachConfig(
+                    target_name="tray",
+                    min_distance=0.45,
+                    max_distance=0.65,
+                ),
                 target_xy=(1.0, 1.0),
                 start_pose=(0.0, 0.0, 0.0),
                 static_map=static_map,

@@ -130,7 +130,7 @@ class Navigate(BaseSkill):
             raise ValueError("Navigate settling tolerances must be non-negative and consecutive_steps must be positive")
         self._goal_reached = False
         self._settle_streak = 0
-        self.approach_config = parse_approach_config(cfg_container)
+        self.approach_config = parse_approach_config(cfg_container, self.local_navigation_cfg)
         if self.approach_config is None:
             self.goal_x, self.goal_y, self.goal_yaw = self._resolve_goal_pose(task, cfg)
         else:

@@ -546,6 +546,30 @@ cameras:
 | `max_orientation_noise` | `float` | 否 | `10.0` | 外参扰动最大旋转，degree。 |
 | `output_mode` | `str` | 否 | `rgb` | `rgb` 取 RGBA 前三通道；`diffuse_albedo` 挂 albedo annotator。当前目标 YAML 未观测。 |
 
+### 机器人相机预设与迁移记录
+
+当前 Scene-8 `kitchen_apple_orange_to_tray` 使用 Split Aloha 的标准相机布局：
+
+| 相机 | 相机文件 | parent | 局部位姿 |
+| --- | --- | --- | --- |
+| `split_aloha_global` | `realsense_d455_v3.yaml` | world | `[2.0, 1.5, 6.0]`, `[1, 0, 0, 0]` |
+| `split_aloha_hand_left` | `astra.yaml` | `.../fl/link6` | `[0, 0.08, 0.05]`, `[0, 0, 0.965, 0.259]` |
+| `split_aloha_hand_right` | `astra.yaml` | `.../fr/link6` | `[0, 0.08, 0.04]`, `[0, 0, 0.972, 0.233]` |
+| `split_aloha_head` | `realsense_d455_v3.yaml` | `.../top_camera_link` | `[0, -0.00818, 0.1]`, `[0.658, 0.259, -0.282, -0.648]` |
+
+迁移前该任务使用的是 Panda Omron 相机配置。以下保留完整配置，便于追溯；其中“启用”对应迁移前 YAML 中未注释的条目：
+
+| 相机 | 启用 | 相机文件 | parent | 局部位姿 |
+| --- | --- | --- | --- | --- |
+| `panda_omron_navigate_global` | 否 | `realsense_d455_v3.yaml` | world | `[2.0, 1.5, 6.0]`, `[1, 0, 0, 0]` |
+| `panda_omron_agentview_center` | 否 | `realsense_d455_v3.yaml` | `panda_omron/robot0_base/mobilebase0_support` | `[-0.6, 0, 1.15]`, `[0.6369459033, 0.3325185478, -0.3199238181, -0.6175596118]` |
+| `panda_omron_agentview_left` | 是 | `realsense_d455_v3.yaml` | `panda_omron/robot0_base/mobilebase0_support` | `[-0.5, 0.35, 1.05]`, `[0.55623853, 0.29935253, -0.37678665, -0.6775092]` |
+| `panda_omron_agentview_right` | 是 | `realsense_d455_v3.yaml` | `panda_omron/robot0_base/mobilebase0_support` | `[-0.5, -0.35, 1.05]`, `[0.6775091887, 0.3767866790, -0.2993525565, -0.5562385917]` |
+| `panda_omron_frontview` | 否 | `realsense_d455_v3.yaml` | `panda_omron/robot0_base/mobilebase0_support` | `[-0.5, 0, 0.95]`, `[0.6088936925, 0.3814677894, -0.3673907518, -0.5905545354]` |
+| `panda_omron_eye_in_hand` | 是 | `realsense_d455_v3.yaml` | `panda_omron/robot0_base/panda_hand` | `[0.05, 0, 0]`, `[0, 0.707107, 0.707107, 0]` |
+
+两套配置的关键差异是：Panda Omron 的观察相机挂在移动底盘支撑节点、手眼相机挂在 `panda_hand`；Split Aloha 使用头部 `top_camera_link` 和左右末端 `fl/fr/link6` 的原生挂载点，左右手相机使用 `astra.yaml`。
+
 ### Camera File 字段
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |

@@ -557,7 +557,21 @@ class SplitAloha(SplitAlohaActual):
             )
 
     def _set_initial_positions(self):
+        if self.lift_indices and self.lift_home:
+            lift_joint_path = f"{self.robot_prim_path}/{self.cfg['lift_joint_path']}"
+            lift_drive = UsdPhysics.DriveAPI.Get(
+                get_prim_at_path(lift_joint_path),
+                "linear",
+            )
+            lift_drive.CreateTargetPositionAttr().Set(float(self.lift_home[0]))
         super()._set_initial_positions()
+        if self.lift_indices and self.lift_home:
+            lift_positions = np.asarray(self.lift_home, dtype=np.float32).reshape(1, -1)
+            lift_indices = np.asarray(self.lift_indices, dtype=np.int32)
+            self._articulation_view.set_joint_position_targets(
+                lift_positions,
+                joint_indices=lift_indices,
+            )
         positions = self.left_joint_home + self.right_joint_home + self.left_gripper_home + self.right_gripper_home
         indices = (
             self.left_joint_indices

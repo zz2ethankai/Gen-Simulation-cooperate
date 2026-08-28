@@ -71,5 +71,9 @@ right_gripper_home: [0.05]
 base:
   base_config_file: workflows/simbox/core/configs/bases/ranger_mini_v3.yaml
   local_navigation_config_file: workflows/simbox/core/configs/navigation/default_local_navigation.yaml
+  local_navigation:
+    approach:
+      min_distance: 0.35
+      max_distance: 0.55
   steering_joint_names: [fl_steering_joint, fr_steering_joint, rl_steering_joint, rr_steering_joint]
   wheel_joint_names: [fl_wheel, fr_wheel, rl_wheel, rr_wheel]
