@@ -32,6 +32,10 @@ EXCLUDED_SCENE_ASSETS = [
     "instance.usd",
     "table_info.json",
 ]
+EXCLUDED_TOP_LEVEL_ASSETS = [
+    "curobo",
+    "curobov2",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,9 +54,10 @@ def manifest_payload() -> dict[str, object]:
         "source_dir": ASSET_DIR.name,
         "volume_size": VOLUME_SIZE,
         "excluded_scene_assets": EXCLUDED_SCENE_ASSETS,
+        "excluded_top_level_assets": EXCLUDED_TOP_LEVEL_ASSETS,
         "kept_assets_note": (
-            "Keeps envmap_lib, robot directories, and task/object asset "
-            "directories under InternDataAssets/assets."
+            "Keeps scene assets under InternDataAssets/assets and manages "
+            "CuRobo through its separate Git repository."
         ),
     }
 
@@ -120,6 +125,10 @@ def run_7z_compress() -> None:
     ]
     for scene_asset in EXCLUDED_SCENE_ASSETS:
         relative_path = Path(ASSET_DIR.name) / "assets" / scene_asset
+        cmd.append(f"-xr!{relative_path.as_posix()}")
+        cmd.append(f"-xr!{relative_path.as_posix()}/*")
+    for top_level_asset in EXCLUDED_TOP_LEVEL_ASSETS:
+        relative_path = Path(ASSET_DIR.name) / top_level_asset
         cmd.append(f"-xr!{relative_path.as_posix()}")
         cmd.append(f"-xr!{relative_path.as_posix()}/*")
 

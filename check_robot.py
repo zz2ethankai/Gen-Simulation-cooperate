@@ -11,7 +11,7 @@ try:
 
     USD_PATH = (
         "/home/bld/ykqin/InternDataEngine/"
-        "workflows/simbox/assets/franka/robot.usd"
+        "InternDataAssets/robots/franka/robot.usd"
     )
 
     print(f"Opening USD: {USD_PATH}")

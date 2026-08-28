@@ -20,7 +20,6 @@ TARGET_DIR = REPO_ROOT / "InternDataAssets"
 SIMBOX_DIR = REPO_ROOT / "workflows" / "simbox"
 SIMBOX_LINKS = {
     "assets": Path("../../InternDataAssets/assets"),
-    "curobo": Path("../../InternDataAssets/curobo"),
     "panda_drake": Path("../../InternDataAssets/panda_drake"),
 }
 

@@ -13,7 +13,7 @@ from isaacsim import SimulationApp
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--usd", default="InternDataAssets/assets/panda_omron/robot.usd")
+    parser.add_argument("--usd", default="InternDataAssets/robots/panda_omron/robot.usd")
     parser.add_argument("--output", default="output/debug_panda_omron_wheel_drive/nav_command_result.json")
     parser.add_argument("--floor", choices=("default", "simbox"), default="simbox")
     parser.add_argument("--settle-steps", type=int, default=240)

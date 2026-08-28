@@ -33,7 +33,7 @@ ROOT_BODY = f"{ROBOT_ROOT}/robot0_base"
 BASE_BODY = f"{ROBOT_ROOT}/mobilebase0_base"
 FIXED_SUPPORT_BODY = f"{ROBOT_ROOT}/mobilebase0_fixed_support"
 SUPPORT_BODY = f"{ROBOT_ROOT}/mobilebase0_support"
-FRANKA_SOURCE_USD = Path(__file__).resolve().parents[2] / "InternDataAssets/assets/franka/robot.usd"
+FRANKA_SOURCE_USD = Path(__file__).resolve().parents[2] / "InternDataAssets/robots/franka/robot.usd"
 FRANKA_SOURCE_ASSET_DIR = FRANKA_SOURCE_USD.parent
 FRANKA_GRIPPER_ASSET_FILES = (
     "Materials/Materials.usd",
@@ -630,19 +630,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input",
         type=Path,
-        default=Path("InternDataAssets/assets/panda_omron_virtual/robot.usd"),
+        default=Path("InternDataAssets/robots/panda_omron_virtual/robot.usd"),
         help="Input USD from Isaac MJCF importer.",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("InternDataAssets/assets/panda_omron_virtual/robot.usd"),
+        default=Path("InternDataAssets/robots/panda_omron_virtual/robot.usd"),
         help="Patched output USD path.",
     )
     parser.add_argument(
         "--metadata-output",
         type=Path,
-        default=Path("InternDataAssets/assets/panda_omron_virtual/source/virtual_postprocess_metadata.json"),
+        default=Path("InternDataAssets/robots/panda_omron_virtual/source/virtual_postprocess_metadata.json"),
         help="Output metadata JSON path.",
     )
     return parser.parse_args()

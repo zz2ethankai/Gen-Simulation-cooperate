@@ -1,10 +1,10 @@
 # PandaOmron virtual-base mobile manipulator configuration
 
 target_class: PandaOmronVirtual
-path: "panda_omron_virtual/robot.usd"
+path: "InternDataAssets/robots/panda_omron_virtual/robot.usd"
 
 robot_file:
-  - workflows/simbox/curobo/src/curobo/content/configs/robot/panda_omron_left_arm.yml
+  - InternDataAssets/curobov2/curobo/content/custom/configs/robot/panda_omron_left_arm.yml
 
 gripper_max_width: 0.08
 gripper_min_width: 0.0

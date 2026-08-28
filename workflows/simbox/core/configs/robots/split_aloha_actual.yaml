@@ -4,11 +4,11 @@
 deprecated: true
 
 target_class: SplitAlohaActual
-path: "split_aloha_mid_360/robot.usd"
+path: "InternDataAssets/robots/split_aloha_mid_360/robot.usd"
 
 robot_file:
-  - workflows/simbox/curobo/src/curobo/content/configs/robot/piper100_left_arm.yml
-  - workflows/simbox/curobo/src/curobo/content/configs/robot/piper100_right_arm.yml
+  - InternDataAssets/curobov2/curobo/content/custom/configs/robot/piper100_left_arm.yml
+  - InternDataAssets/curobov2/curobo/content/custom/configs/robot/piper100_right_arm.yml
 
 gripper_max_width: 0.10
 gripper_min_width: 0.0

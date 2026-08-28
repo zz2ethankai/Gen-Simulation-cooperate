@@ -3,12 +3,12 @@
 
 # Robot info
 target_class: Genie1
-path: "G1_120s/robot.usd"
+path: "InternDataAssets/robots/G1_120s/robot.usd"
 
 # CuRobo file
 robot_file:
-  - workflows/simbox/curobo/src/curobo/content/configs/robot/G1_120s_left_arm_parallel_gripper.yml
-  - workflows/simbox/curobo/src/curobo/content/configs/robot/G1_120s_right_arm_parallel_gripper.yml
+  - InternDataAssets/curobov2/curobo/content/custom/configs/robot/G1_120s_left_arm_parallel_gripper.yml
+  - InternDataAssets/curobov2/curobo/content/custom/configs/robot/G1_120s_right_arm_parallel_gripper.yml
 
 # Gripper parameters
 gripper_max_width: 0.1

@@ -4,11 +4,11 @@
 # Robot info
 target_class: Tracer2Franka
 robot_type: mobile_manipulator
-path: "tracer2_franka/robot.usd"
+path: "InternDataAssets/robots/tracer2_franka/robot.usd"
 
 # CuRobo file
 robot_file:
-  - InternDataAssets/curobo/src/curobo/content/configs/robot/franka_mobile.yml
+  - InternDataAssets/curobov2/curobo/content/custom/configs/robot/franka_mobile.yml
 
 # Gripper parameters
 gripper_max_width: 0.08
