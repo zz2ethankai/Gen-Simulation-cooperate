@@ -5,6 +5,7 @@ dist
 *.egg
 .vscode
 output
+InternDataAssets/
 *.err
 *.out
 .cursor
