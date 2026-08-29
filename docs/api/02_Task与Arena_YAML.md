@@ -377,13 +377,12 @@ objects:
 | `art_cat` | `str` | 随机化时需要 | 无 | reset 中 articulation 随机资产目录。 |
 | `obj_info_path` | `str` | 随机化后写入 | 无 | 信息文件相对路径；skill 也可覆盖。 |
 
-#### `PlaneObject` / `ConveyorObject` / `BoxObject` / `ShapeObject` / `XFormObject`
+#### `PlaneObject` / `ConveyorObject` / `ShapeObject` / `XFormObject`
 
 | 类型 | 必填字段 | 主要用途 |
 | --- | --- | --- |
 | `PlaneObject` | `size`；`collision_enabled`、`collision_thickness`（默认 `0.02`）、`collision_visible` 可选 | 程序生成平面；当前 task objects 未用，arena fixtures 使用。 |
 | `ConveyorObject` | `path`、`linear_velocity`、`linear_track_list`、`angular_velocity`、`angular_track_list` | 传送带，轨道名 `World/<track>/node_`、`World/<track>/validate_obj`；当前仅在 arena fixtures 出现。 |
-| `BoxObject` | `name`、`target_class` | 程序 cube，`scale` 控大小，可选 `color`、`collision_enabled`。 |
 | `ShapeObject` | `name`、`target_class` | 低层 `GeometryPrim` 包装，当前无完整 shape 创建逻辑。 |
 | `XFormObject` | `name`、`target_class`、`path` | 加载 USD 为 xform，可选 `parent_obj`。 |
 
@@ -821,7 +820,7 @@ fixture 用 object 注册表加载，字段与 task `objects[]` 基本一致；�
 | `ArticulatedObject` | `objects[].target_class`，代码支持 fixture | 读 `Kps/<info_name>/info.json`，支持 `open`/`close`/`artpreplan`。 |
 | `PlaneObject` | `fixtures[].target_class`，代码支持 task object | 程序生成平面。 |
 | `ConveyorObject` | `fixtures[].target_class`，代码支持 task object | 传送带，轨道加线/角速度。 |
-| `BoxObject` / `ShapeObject` / `XFormObject` | 代码已注册 | 程序 cube / 低层 GeometryPrim / xform 容器；目标 YAML 未出现。 |
+| `ShapeObject` / `XFormObject` | 代码已注册 | 低层 GeometryPrim / xform 容器；目标 YAML 未出现。 |
 
 资源元信息：`texture_lib` 候选如 `background_textures`、`floor_textures`、`table_textures`、`val2017`、`light_table_textures`、`dark_table_textures`；`objects[].dataset` 候选 `assets_addition`、`oo3d`、`gso`、`pm`、`arcode`、`grutopia`、`gr`；`prim_path_child` 常见 `Aligned`、`root`。
 

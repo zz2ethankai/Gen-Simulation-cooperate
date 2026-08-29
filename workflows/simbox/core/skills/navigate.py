@@ -26,7 +26,6 @@ try:
         build_navigation_plan,
         load_or_export_static_map,
         parse_approach_config,
-        resolve_footprint_points,
         select_approach_goal,
     )
 except ImportError:
@@ -40,7 +39,6 @@ except ImportError:
     build_navigation_plan = local_navigation.build_navigation_plan
     load_or_export_static_map = local_navigation.load_or_export_static_map
     parse_approach_config = local_navigation.parse_approach_config
-    resolve_footprint_points = local_navigation.resolve_footprint_points
     select_approach_goal = local_navigation.select_approach_goal
 
 
@@ -77,7 +75,7 @@ class Navigate(BaseSkill):
             {
                 key: value
                 for key, value in cfg_container.items()
-                if key in self.map_cfg or key in {"occupancy_map_path", "map_yaml_path", "map_output_dir"}
+                if key in self.map_cfg
             }
         )
         self.navigation_controller_cfg.update(
@@ -174,6 +172,7 @@ class Navigate(BaseSkill):
         self._plan_started = False
         self._started_time = None
         self._static_map = None
+        self._static_map_debug = {}
         self._controller = None
         self._driver = None
         self._plan = None
@@ -338,27 +337,25 @@ class Navigate(BaseSkill):
                 workflow=self.workflow,
                 robot=self.robot,
                 cfg=self.map_cfg,
-                scene_name=self.scene_name,
             )
+            get_map_debug = getattr(self.workflow, "get_static_map_debug", None)
+            if callable(get_map_debug):
+                self._static_map_debug = get_map_debug(self.robot)
         except Exception as exc:
             self.failure_reason = "static_map_error"
             self.error_message = f"Static occupancy map preparation failed: {type(exc).__name__}: {exc}"
             return False
         if self._static_map is None and not bool(self.skill_cfg.get("allow_unmapped_navigation", False)):
             self.failure_reason = "static_map_unavailable"
-            self.error_message = "Local navigation requires a generated or configured static occupancy map"
+            self.error_message = "Local navigation requires a generated static occupancy map"
             return False
         start_pose = self._get_pose()
-        base_cfg = getattr(self.robot, "base_cfg", {}) or {}
-        footprint = resolve_footprint_points(base_cfg)
-        padding = float(self.local_navigation_cfg.get("footprint_padding_m", 0.0))
         if self.approach_config is not None:
             goal, debug = select_approach_goal(
                 approach_config=self.approach_config,
                 target_xy=self._target_xy(),
                 start_pose=start_pose,
                 static_map=self._static_map,
-                base_cfg=base_cfg,
                 robot_cfg=self._robot_cfg_for_approach(),
                 planner_cfg=self.planner_cfg,
             )
@@ -372,8 +369,6 @@ class Navigate(BaseSkill):
             start_pose=start_pose,
             goal=(self.goal_x, self.goal_y, self.goal_yaw),
             static_map=self._static_map,
-            footprint_points=footprint,
-            footprint_padding_m=padding,
             planner_cfg=self.planner_cfg,
         )
         if self._plan is None:
@@ -445,7 +440,13 @@ class Navigate(BaseSkill):
         try:
             path = os.path.join(self.output_root, "local_navigation", self.scene_name, f"{tag}.json")
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            payload = {"goal": [self.goal_x, self.goal_y, self.goal_yaw], "failure_reason": self.failure_reason, "error_message": self.error_message, "approach": self._approach_debug}
+            payload = {
+                "goal": [self.goal_x, self.goal_y, self.goal_yaw],
+                "failure_reason": self.failure_reason,
+                "error_message": self.error_message,
+                "approach": self._approach_debug,
+                "map": self._static_map_debug,
+            }
             if self.settle_barrier is not None:
                 payload["settle"] = self.settle_barrier.result.to_dict()
             if self._plan is not None:

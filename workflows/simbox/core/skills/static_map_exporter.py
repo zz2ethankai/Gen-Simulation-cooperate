@@ -3,48 +3,58 @@
 from __future__ import annotations
 
 import math
-import os
-import warnings
+import logging
 
-import cv2
 import numpy as np
 import omni.usd  # type: ignore[import-not-found]
 from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+try:
+    from .navigation_geometry import StaticMap
+except ImportError:
+    from workflows.simbox.core.skills.navigation_geometry import StaticMap
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class IsaacStaticMapExporter:
     """Export Isaac scene collision geometry into a local occupancy map."""
 
-    def __init__(self, workflow, robot, base_cfg: dict, scene_name: str = "scene"):
+    def __init__(self, workflow, robot, base_cfg: dict, map_cfg: dict | None = None):
         self.workflow = workflow
         self.robot = robot
         self.base_cfg = base_cfg
-        self.scene_name = str(scene_name or "scene")
 
-        self.localization_cfg = self.base_cfg.get("local_navigation", {}).get("map", {})
-        if not isinstance(self.localization_cfg, dict):
+        local_navigation_cfg = self.base_cfg.get("local_navigation", {})
+        if not isinstance(local_navigation_cfg, dict):
+            raise TypeError("base_cfg['local_navigation'] must be a dict")
+        configured_map_cfg = local_navigation_cfg.get("map", {})
+        if not isinstance(configured_map_cfg, dict):
             raise TypeError("base_cfg['local_navigation']['map'] must be a dict")
+        self.localization_cfg = dict(configured_map_cfg)
+        if map_cfg is not None:
+            if not isinstance(map_cfg, dict):
+                raise TypeError("map_cfg must be a dict")
+            self.localization_cfg.update(map_cfg)
 
         self._resolution = float(self.localization_cfg.get("map_resolution", 0.02))
         self._z_min = float(self.localization_cfg.get("map_z_min", 0.0))
         self._z_max = float(self.localization_cfg.get("map_z_max", 1.50))
         self._padding = float(self.localization_cfg.get("map_bounds_padding_m", 0.75))
-        self._robot_clear_radius = float(self.localization_cfg.get("robot_clear_radius_m", 0.70))
-        self._robot_clear_footprint_points = self._resolve_robot_clear_footprint_points()
         self._border_obstacle_thickness = float(self.localization_cfg.get("map_border_obstacle_thickness_m", 0.15))
         self._min_obstacle_height = float(self.localization_cfg.get("map_min_obstacle_height_m", 0.04))
-        self._include_visual_wall_geometry = bool(
-            self.localization_cfg.get("map_include_visual_wall_geometry", True)
-        )
+        self.last_export_debug: dict[str, object] = {}
         if self._resolution <= 0.0:
             raise ValueError("localization.map_resolution must be positive")
         if self._z_max <= self._z_min:
             raise ValueError("localization.map_z_max must be greater than map_z_min")
 
-    def export_map(self, output_dir: str, clear_center_xy=None) -> dict:
+    def export_map(self) -> StaticMap:
         stage = omni.usd.get_context().get_stage()
         if stage is None:
             raise RuntimeError("USD stage is unavailable, cannot export localization map")
+        robot_path = self._require_robot_prim_path(stage)
 
         min_x, min_y, max_x, max_y = self._compute_bounds_xy(stage)
         min_x = math.floor(min_x / self._resolution) * self._resolution
@@ -57,75 +67,39 @@ class IsaacStaticMapExporter:
         if width <= 0 or height <= 0:
             raise RuntimeError("Occupancy map generator returned empty dimensions")
 
-        image = np.full((height, width), 254, dtype=np.uint8)
-        self._paint_map_border(image=image)
-        box_object_paths = self._configured_box_object_paths()
-        occupied_cell_count = self._rasterize_static_colliders(
+        occupancy = np.zeros((height, width), dtype=np.uint8)
+        self._paint_map_border(occupancy=occupancy)
+        usd_prim_count, _ = self._rasterize_static_colliders(
             stage=stage,
-            image=image,
+            occupancy=occupancy,
             min_x=min_x,
             min_y=min_y,
-            excluded_prim_paths=box_object_paths,
+            robot_path=robot_path,
         )
-        if occupied_cell_count <= 0:
-            occupied_cell_count = self._rasterize_configured_obstacles(
-                image=image,
-                min_x=min_x,
-                min_y=min_y,
-            )
-
-        if clear_center_xy is not None:
-            self._clear_robot_footprint(
-                image=image,
-                min_x=min_x,
-                min_y=min_y,
-                clear_center_xy=clear_center_xy,
-            )
-
-        map_dir = os.path.join(output_dir, self.scene_name)
-        os.makedirs(map_dir, exist_ok=True)
-        pgm_path = os.path.join(map_dir, "map.pgm")
-        yaml_path = os.path.join(map_dir, "map.yaml")
-
-        if not cv2.imwrite(pgm_path, image):
-            raise RuntimeError(f"Failed to write localization map image to {pgm_path}")
-
-        yaml_lines = [
-            f"image: {os.path.basename(pgm_path)}",
-            "mode: trinary",
-            f"resolution: {self._resolution:.6f}",
-            f"origin: [{float(min_x):.6f}, {float(min_y):.6f}, 0.0]",
-            "negate: 0",
-            "occupied_thresh: 0.65",
-            "free_thresh: 0.25",
-            "",
-        ]
-        with open(yaml_path, "w", encoding="utf-8") as file:
-            file.write("\n".join(yaml_lines))
-
-        return {
-            "yaml_path": yaml_path,
-            "pgm_path": pgm_path,
+        occupied_cell_count = int(np.count_nonzero(occupancy == 1))
+        self.last_export_debug = {
+            "shape": [int(height), int(width)],
             "resolution": float(self._resolution),
             "origin": [float(min_x), float(min_y), 0.0],
-            "width": int(width),
-            "height": int(height),
-            "bounds_xy": {
-                "min_x": float(min_x),
-                "min_y": float(min_y),
-                "max_x": float(max_x),
-                "max_y": float(max_y),
-            },
-            "z_bounds": {
-                "min_z": float(self._z_min),
-                "max_z": float(self._z_max),
-            },
-            "robot_clear_radius_m": float(self._robot_clear_radius),
-            "robot_clear_footprint_points": [
-                [float(x), float(y)] for x, y in self._robot_clear_footprint_points
-            ],
+            "usd_collision_prim_count": int(usd_prim_count),
             "occupied_cell_count": int(occupied_cell_count),
+            "robot_prim_path": robot_path,
         }
+        LOGGER.info(
+            "[local-navigation] static map shape=%s resolution=%.6f origin=%s "
+            "usd_collision_prims=%d occupied_cells=%d robot=%s",
+            self.last_export_debug["shape"],
+            self._resolution,
+            self.last_export_debug["origin"],
+            usd_prim_count,
+            occupied_cell_count,
+            robot_path,
+        )
+        return StaticMap(
+            occupancy=occupancy,
+            resolution=self._resolution,
+            origin=(float(min_x), float(min_y), 0.0),
+        )
 
     def _compute_bounds_xy(self, stage) -> tuple[float, float, float, float]:
         root_path = str(getattr(self.workflow.task, "root_prim_path", "/World"))
@@ -150,131 +124,52 @@ class IsaacStaticMapExporter:
             raise RuntimeError("Localization map bounds are degenerate")
         return min_x, min_y, max_x, max_y
 
-    def _paint_map_border(self, image: np.ndarray):
+    def _paint_map_border(self, occupancy: np.ndarray):
         border_cells = max(1, int(math.ceil(self._border_obstacle_thickness / self._resolution)))
-        image[:border_cells, :] = 0
-        image[-border_cells:, :] = 0
-        image[:, :border_cells] = 0
-        image[:, -border_cells:] = 0
+        occupancy[:border_cells, :] = 1
+        occupancy[-border_cells:, :] = 1
+        occupancy[:, :border_cells] = 1
+        occupancy[:, -border_cells:] = 1
 
-    def _configured_box_object_paths(self) -> set[str]:
-        task_cfg = getattr(self.workflow.task, "cfg", {})
-        if not isinstance(task_cfg, dict):
-            return set()
-
-        root_path = str(getattr(self.workflow.task, "root_prim_path", "/World")).rstrip("/")
-        objects = task_cfg.get("objects", [])
-        if not isinstance(objects, list):
-            return set()
-
-        prim_paths: set[str] = set()
-        for obj_cfg in objects:
-            if not isinstance(obj_cfg, dict):
-                continue
-            if str(obj_cfg.get("target_class", "")) != "BoxObject":
-                continue
-            name = str(obj_cfg.get("name", "")).strip()
-            if not name:
-                continue
-            prim_paths.add(f"{root_path}/{name}")
-        return prim_paths
-
-    def _rasterize_configured_obstacles(self, image: np.ndarray, min_x: float, min_y: float) -> int:
-        warnings.warn(
-            "BoxObject-based static map rasterization is deprecated; prefer USD collision geometry instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        task_cfg = getattr(self.workflow.task, "cfg", {})
-        if not isinstance(task_cfg, dict):
-            return 0
-
-        occupied_before = int(np.count_nonzero(image == 0))
-        objects = task_cfg.get("objects", [])
-        if not isinstance(objects, list):
-            objects = []
-
-        for obj_cfg in objects:
-            if not isinstance(obj_cfg, dict):
-                continue
-            if str(obj_cfg.get("target_class", "")) != "BoxObject":
-                continue
-            if not bool(obj_cfg.get("collision_enabled", True)):
-                continue
-
-            translation = obj_cfg.get("translation", [0.0, 0.0, 0.0])
-            scale = obj_cfg.get("scale", [1.0, 1.0, 1.0])
-            if not (
-                isinstance(translation, (list, tuple))
-                and isinstance(scale, (list, tuple))
-                and len(translation) == 3
-                and len(scale) == 3
-            ):
-                continue
-
-            half_x = 0.5 * float(scale[0])
-            half_y = 0.5 * float(scale[1])
-            half_z = 0.5 * float(scale[2])
-            bbox_min = (
-                float(translation[0]) - half_x,
-                float(translation[1]) - half_y,
-                float(translation[2]) - half_z,
+    def _require_robot_prim_path(self, stage) -> str:
+        robot_path = str(getattr(self.robot, "robot_prim_path", "") or "").strip().rstrip("/")
+        if not robot_path:
+            raise RuntimeError(
+                "Robot must expose a non-empty robot_prim_path for static-map self-collision exclusion"
             )
-            bbox_max = (
-                float(translation[0]) + half_x,
-                float(translation[1]) + half_y,
-                float(translation[2]) + half_z,
+        robot_prim = stage.GetPrimAtPath(robot_path)
+        if not robot_prim.IsValid():
+            raise RuntimeError(
+                f"Robot prim path '{robot_path}' is invalid; cannot exclude robot from static map"
             )
-            if not self._should_rasterize_collider(bbox_min, bbox_max):
-                continue
-
-            self._paint_world_rect(
-                image=image,
-                min_x=min_x,
-                min_y=min_y,
-                rect_min_xy=(bbox_min[0], bbox_min[1]),
-                rect_max_xy=(bbox_max[0], bbox_max[1]),
-            )
-
-        return int(np.count_nonzero(image == 0) - occupied_before)
+        return robot_path
 
     def _rasterize_static_colliders(
         self,
         stage,
-        image: np.ndarray,
+        occupancy: np.ndarray,
         min_x: float,
         min_y: float,
-        excluded_prim_paths: set[str] | None = None,
-    ) -> int:
+        robot_path: str,
+    ) -> tuple[int, int]:
         root_path = str(getattr(self.workflow.task, "root_prim_path", "/World"))
         root_prim = stage.GetPrimAtPath(root_path)
         if not root_prim.IsValid():
             raise RuntimeError(f"Task root prim '{root_path}' is invalid, cannot rasterize static colliders")
 
-        robot_path = str(getattr(self.robot, "robot_prim_path", "") or "").rstrip("/")
-        if not robot_path:
-            raise RuntimeError("Robot must expose robot_prim_path for static-map self-collision exclusion")
-        excluded_prim_paths = set(excluded_prim_paths or ())
         bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), includedPurposes=[UsdGeom.Tokens.default_])
         bbox_cache.Clear()
 
-        occupied_before = int(np.count_nonzero(image == 0))
+        usd_prim_count = 0
         for prim in Usd.PrimRange(root_prim):
             if not prim.IsValid():
                 continue
 
             prim_path = str(prim.GetPath())
-            if robot_path and (prim_path == robot_path or prim_path.startswith(f"{robot_path}/")):
-                continue
-            if any(prim_path == path or prim_path.startswith(f"{path}/") for path in excluded_prim_paths):
+            if prim_path == robot_path or prim_path.startswith(f"{robot_path}/"):
                 continue
             has_collision = prim.HasAPI(UsdPhysics.CollisionAPI)
-            is_visual_wall = (
-                self._include_visual_wall_geometry
-                and "/Walls/" in prim_path
-                and (prim.IsA(UsdGeom.Mesh) or prim.IsA(UsdGeom.Gprim))
-            )
-            if not has_collision and not is_visual_wall:
+            if not has_collision:
                 continue
 
             if has_collision:
@@ -294,14 +189,15 @@ class IsaacStaticMapExporter:
                 continue
 
             self._paint_world_rect(
-                image=image,
+                occupancy=occupancy,
                 min_x=min_x,
                 min_y=min_y,
                 rect_min_xy=(bbox_min[0], bbox_min[1]),
                 rect_max_xy=(bbox_max[0], bbox_max[1]),
             )
+            usd_prim_count += 1
 
-        return int(np.count_nonzero(image == 0) - occupied_before)
+        return usd_prim_count, int(np.count_nonzero(occupancy == 1))
 
     def _should_rasterize_collider(self, bbox_min: tuple[float, float, float], bbox_max: tuple[float, float, float]) -> bool:
         if not all(math.isfinite(v) for v in (*bbox_min, *bbox_max)):
@@ -320,13 +216,13 @@ class IsaacStaticMapExporter:
 
     def _paint_world_rect(
         self,
-        image: np.ndarray,
+        occupancy: np.ndarray,
         min_x: float,
         min_y: float,
         rect_min_xy: tuple[float, float],
         rect_max_xy: tuple[float, float],
     ):
-        height, width = image.shape[:2]
+        height, width = occupancy.shape[:2]
         min_col = int(math.floor((float(rect_min_xy[0]) - min_x) / self._resolution))
         max_col = int(math.ceil((float(rect_max_xy[0]) - min_x) / self._resolution))
         min_row = int(math.floor((float(rect_min_xy[1]) - min_y) / self._resolution))
@@ -339,63 +235,4 @@ class IsaacStaticMapExporter:
         if min_col > max_col or min_row > max_row:
             return
 
-        image[height - 1 - max_row : height - min_row, min_col : max_col + 1] = 0
-
-    def _clear_robot_footprint(self, image: np.ndarray, min_x: float, min_y: float, clear_center_xy):
-        height, width = image.shape[:2]
-        center_x = float(clear_center_xy[0])
-        center_y = float(clear_center_xy[1])
-        center_yaw = float(clear_center_xy[2]) if len(clear_center_xy) >= 3 else 0.0
-
-        if self._robot_clear_footprint_points:
-            cos_yaw = math.cos(center_yaw)
-            sin_yaw = math.sin(center_yaw)
-            pixel_points = []
-            for point_x, point_y in self._robot_clear_footprint_points:
-                world_x = center_x + point_x * cos_yaw - point_y * sin_yaw
-                world_y = center_y + point_x * sin_yaw + point_y * cos_yaw
-                col = int(round((world_x - min_x) / self._resolution))
-                row = int(round((world_y - min_y) / self._resolution))
-                col = max(0, min(width - 1, col))
-                row = max(0, min(height - 1, row))
-                pixel_points.append([col, height - 1 - row])
-            if len(pixel_points) >= 3:
-                cv2.fillPoly(image, [np.asarray(pixel_points, dtype=np.int32)], 254)
-                return
-
-        center_col = int(round((center_x - min_x) / self._resolution))
-        center_row = int(round((center_y - min_y) / self._resolution))
-        radius_cells = max(1, int(math.ceil(self._robot_clear_radius / self._resolution)))
-
-        for dy in range(-radius_cells, radius_cells + 1):
-            for dx in range(-radius_cells, radius_cells + 1):
-                if dx * dx + dy * dy > radius_cells * radius_cells:
-                    continue
-                col = center_col + dx
-                row = center_row + dy
-                if 0 <= col < width and 0 <= row < height:
-                    image[height - 1 - row, col] = 254
-
-    def _resolve_robot_clear_footprint_points(self) -> list[tuple[float, float]]:
-        localization_points = self.localization_cfg.get("clear_footprint_points")
-        if localization_points is not None:
-            return self._normalize_footprint_points(localization_points)
-
-        platform_cfg = self.base_cfg.get("platform", {})
-        local_navigation_cfg = platform_cfg.get("local_navigation", {}) if isinstance(platform_cfg, dict) else {}
-        return self._normalize_footprint_points(
-            local_navigation_cfg.get("footprint_points") if isinstance(local_navigation_cfg, dict) else None
-        )
-
-    @staticmethod
-    def _normalize_footprint_points(points) -> list[tuple[float, float]]:
-        if not isinstance(points, (list, tuple)):
-            return []
-        normalized = []
-        for point in points:
-            if not isinstance(point, (list, tuple)) or len(point) < 2:
-                continue
-            normalized.append((float(point[0]), float(point[1])))
-        if len(normalized) < 3:
-            return []
-        return normalized
+        occupancy[height - 1 - max_row : height - min_row, min_col : max_col + 1] = 1

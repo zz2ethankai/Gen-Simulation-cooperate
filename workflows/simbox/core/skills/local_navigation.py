@@ -13,7 +13,6 @@ from dataclasses import dataclass
 import heapq
 import importlib.util
 import math
-import os
 from pathlib import Path
 import sys
 from typing import Any
@@ -27,12 +26,10 @@ try:
         check_footprint_static_collision,
         check_path_static_collision,
         choose_best_reachable_candidate,
-        load_static_map,
         parse_approach_config,
-        resolve_approach_footprint_padding_m,
-        resolve_mobile_footprint_points as _resolve_legacy_footprint_points,
         sample_approach_candidates,
         sort_candidates_for_preflight,
+        StaticMap,
         wrap_to_pi,
     )
 except ImportError:
@@ -49,21 +46,11 @@ except ImportError:
     check_footprint_static_collision = geometry_module.check_footprint_static_collision
     check_path_static_collision = geometry_module.check_path_static_collision
     choose_best_reachable_candidate = geometry_module.choose_best_reachable_candidate
-    load_static_map = geometry_module.load_static_map
     parse_approach_config = geometry_module.parse_approach_config
-    resolve_approach_footprint_padding_m = geometry_module.resolve_approach_footprint_padding_m
-    _resolve_legacy_footprint_points = geometry_module.resolve_mobile_footprint_points
     sample_approach_candidates = geometry_module.sample_approach_candidates
     sort_candidates_for_preflight = geometry_module.sort_candidates_for_preflight
+    StaticMap = geometry_module.StaticMap
     wrap_to_pi = geometry_module.wrap_to_pi
-
-
-def resolve_footprint_points(base_cfg: dict[str, Any]) -> list[list[float]]:
-    local_cfg = base_cfg.get("local_navigation", {}) if isinstance(base_cfg, dict) else {}
-    points = local_cfg.get("footprint_points") if isinstance(local_cfg, dict) else None
-    if isinstance(points, (list, tuple)) and len(points) >= 3:
-        return [[float(x), float(y)] for x, y in points]
-    return _resolve_legacy_footprint_points(base_cfg)
 
 
 @dataclass
@@ -80,29 +67,20 @@ class GridAStarPlanner:
         self.resolution = float(resolution)
         self.safety_distance_m = max(float(safety_distance_m), 0.0)
         self.proximity_weight = max(float(proximity_weight), 0.0)
-        self.static_map: dict[str, Any] | None = None
+        self.static_map: StaticMap | None = None
         self._grid: np.ndarray | None = None
         self._distance_field: np.ndarray | None = None
         self._origin = np.zeros(2, dtype=np.float32)
-        self._footprint_points: list[list[float]] = []
-        self._footprint_padding_m = 0.0
 
-    def set_static_map(self, static_map: dict[str, Any], *, footprint_points: list[list[float]], footprint_padding_m: float = 0.0):
-        image = np.asarray(static_map["image"])
-        if image.ndim != 2 or float(static_map["resolution"]) <= 0.0:
-            raise ValueError("static map must contain a 2-D image and positive resolution")
+    def set_static_map(self, static_map: StaticMap):
+        if not isinstance(static_map, StaticMap):
+            raise TypeError("static_map must be a StaticMap")
         self.static_map = static_map
-        self.resolution = float(static_map["resolution"])
-        self._origin = np.asarray(static_map["origin"][:2], dtype=np.float32)
-        self._footprint_points = [[float(x), float(y)] for x, y in footprint_points]
-        self._footprint_padding_m = max(float(footprint_padding_m), 0.0)
+        self.resolution = static_map.resolution
+        self._origin = np.asarray(static_map.origin[:2], dtype=np.float32)
         # The map image uses the conventional top-left row origin.  A* uses
         # bottom-left rows so world y increases with the row index.
-        occupied = np.flipud(image) < 250
-        # The reference skill checks only the robot center against occupancy.
-        # Keep footprint arguments for API/debug compatibility, but do not
-        # inflate the map or reject cells based on the mobile-base volume.
-        self._grid = occupied.astype(bool)
+        self._grid = np.flipud(static_map.occupancy == 1)
         self._distance_field = self._compute_distance_field(self._grid)
 
     @staticmethod
@@ -344,16 +322,16 @@ class WaypointController:
         return body_vx, body_vy, wz, False, {"waypoint_index": self.waypoint_index, "waypoint_count": len(self.path), "distance_to_goal": distance, "yaw_error": yaw_error}
 
 
-def build_navigation_plan(*, start_pose: tuple[float, float, float], goal: tuple[float, float, float], static_map: dict[str, Any] | None, footprint_points: list[list[float]], footprint_padding_m: float = 0.0, planner_cfg: dict[str, Any] | None = None, planner: GridAStarPlanner | None = None, planned_points: list[tuple[float, float]] | None = None) -> NavigationPlan | None:
+def build_navigation_plan(*, start_pose: tuple[float, float, float], goal: tuple[float, float, float], static_map: StaticMap | None, planner_cfg: dict[str, Any] | None = None, planner: GridAStarPlanner | None = None, planned_points: list[tuple[float, float]] | None = None) -> NavigationPlan | None:
     planner_cfg = planner_cfg or {}
     if planner is None:
         planner = GridAStarPlanner(
-            resolution=float(planner_cfg.get("map_resolution", static_map.get("resolution", 0.05) if static_map else 0.05)),
+            resolution=float(planner_cfg.get("map_resolution", static_map.resolution if static_map else 0.05)),
             safety_distance_m=float(planner_cfg.get("safety_distance_m", 0.35)),
             proximity_weight=float(planner_cfg.get("proximity_weight", 2.0)),
         )
         if static_map is not None:
-            planner.set_static_map(static_map, footprint_points=footprint_points, footprint_padding_m=footprint_padding_m)
+            planner.set_static_map(static_map)
     points = planned_points if planned_points is not None else planner.plan((start_pose[0], start_pose[1]), (goal[0], goal[1]))
     if not points:
         return None
@@ -374,24 +352,22 @@ def build_navigation_plan(*, start_pose: tuple[float, float, float], goal: tuple
     else:
         collision = check_path_static_collision(
             static_map=static_map,
-            footprint_points=footprint_points,
             path_poses=poses,
-            footprint_padding_m=footprint_padding_m,
-            initial_padding_egress_distance_m=float(planner_cfg.get("initial_padding_egress_distance_m", 0.0)),
         )
         if not collision.get("ok", False):
             return None
     return NavigationPlan(path=poses, goal=tuple(float(v) for v in goal), collision_check=collision)
 
 
-def load_or_export_static_map(*, workflow, robot, cfg: dict[str, Any], scene_name: str) -> dict[str, Any] | None:
-    configured_path = str(cfg.get("occupancy_map_path", cfg.get("map_yaml_path", "")) or "").strip()
-    if configured_path:
-        if not os.path.exists(configured_path):
-            raise FileNotFoundError(f"Configured occupancy map does not exist: {configured_path}")
-        return load_static_map(configured_path)
+def load_or_export_static_map(*, workflow, robot, cfg: dict[str, Any]) -> StaticMap | None:
     if workflow is None or robot is None:
         return None
+    get_cached_map = getattr(workflow, "get_or_export_static_map", None)
+    if callable(get_cached_map):
+        static_map = get_cached_map(robot=robot, map_cfg=cfg)
+        if not isinstance(static_map, StaticMap):
+            raise TypeError("workflow.get_or_export_static_map() must return a StaticMap")
+        return static_map
     try:
         try:
             from .static_map_exporter import IsaacStaticMapExporter
@@ -406,39 +382,39 @@ def load_or_export_static_map(*, workflow, robot, cfg: dict[str, Any], scene_nam
             IsaacStaticMapExporter = exporter_module.IsaacStaticMapExporter
     except ImportError:
         return None
-    export = IsaacStaticMapExporter(workflow, robot, robot.get_base_interface()["base_cfg"], scene_name=scene_name)
-    clear_center_xy = None
-    pose_getter = getattr(robot, "get_nav_base_pose", None) or getattr(robot, "get_mobile_base_pose", None)
-    if callable(pose_getter):
-        translation, _ = pose_getter()
-        clear_center_xy = (float(translation[0]), float(translation[1]))
-    result = export.export_map(str(cfg.get("map_output_dir", "output/local_navigation_maps")), clear_center_xy=clear_center_xy)
-    return load_static_map(result["yaml_path"])
+    export = IsaacStaticMapExporter(
+        workflow,
+        robot,
+        robot.get_base_interface()["base_cfg"],
+        map_cfg=cfg,
+    )
+    static_map = export.export_map()
+    if not isinstance(static_map, StaticMap):
+        raise TypeError("IsaacStaticMapExporter.export_map() must return a StaticMap")
+    return static_map
 
 
-def select_approach_goal(*, approach_config: ApproachConfig, target_xy: tuple[float, float], start_pose: tuple[float, float, float], static_map: dict[str, Any] | None, base_cfg: dict[str, Any], robot_cfg: dict[str, Any] | None = None, planner_cfg: dict[str, Any] | None = None) -> tuple[tuple[float, float, float] | None, dict[str, Any]]:
+def select_approach_goal(*, approach_config: ApproachConfig, target_xy: tuple[float, float], start_pose: tuple[float, float, float], static_map: StaticMap | None, robot_cfg: dict[str, Any] | None = None, planner_cfg: dict[str, Any] | None = None) -> tuple[tuple[float, float, float] | None, dict[str, Any]]:
     robot_cfg = robot_cfg or {}
     planner_cfg = planner_cfg or {}
-    footprint_points = resolve_footprint_points(base_cfg)
-    padding = resolve_approach_footprint_padding_m(base_cfg, approach_config)
     context = build_armbase_target_context(robot_cfg, approach_config)
     candidates = sample_approach_candidates(approach_config, target_xy, context)
     planner = GridAStarPlanner(
-        resolution=float(planner_cfg.get("map_resolution", static_map.get("resolution", 0.05) if static_map else 0.05)),
+        resolution=float(planner_cfg.get("map_resolution", static_map.resolution if static_map else 0.05)),
         safety_distance_m=float(planner_cfg.get("safety_distance_m", 0.35)),
         proximity_weight=float(planner_cfg.get("proximity_weight", 2.0)),
     )
     if static_map is not None:
         # Candidate preflight can evaluate hundreds of poses.  The occupancy
         # grid and distance field depend only on this navigation request.
-        planner.set_static_map(static_map, footprint_points=footprint_points, footprint_padding_m=padding)
+        planner.set_static_map(static_map)
     checked = []
     eligible = []
     for candidate in candidates:
         goal = (float(candidate["x"]), float(candidate["y"]), float(candidate["yaw"]))
         static_result = {"ok": True}
         if static_map is not None:
-            static_result = check_footprint_static_collision(static_map=static_map, footprint_points=footprint_points, x=goal[0], y=goal[1], yaw=goal[2], footprint_padding_m=padding)
+            static_result = check_footprint_static_collision(static_map=static_map, x=goal[0], y=goal[1])
         candidate = dict(candidate)
         candidate["static_ok"] = bool(static_result.get("ok", False))
         candidate["path_ok"] = False
@@ -455,7 +431,7 @@ def select_approach_goal(*, approach_config: ApproachConfig, target_xy: tuple[fl
     reachable = []
     for eligible_index, path in paths.items():
         checked_index, goal = eligible[eligible_index]
-        plan = build_navigation_plan(start_pose=start_pose, goal=goal, static_map=static_map, footprint_points=footprint_points, footprint_padding_m=padding, planner_cfg=planner_cfg, planner=planner, planned_points=path)
+        plan = build_navigation_plan(start_pose=start_pose, goal=goal, static_map=static_map, planner_cfg=planner_cfg, planner=planner, planned_points=path)
         if plan is None:
             continue
         checked[checked_index]["path_ok"] = True

@@ -146,6 +146,9 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         )
         self._timing_record_simulation_steps = False
         self._local_base_drivers = {}
+        self._static_map_cache = {}
+        self._static_map_debug_by_robot = {}
+        self._static_map_layout_epoch = 0
         super().__init__(world, task_cfg_path)
 
     @staticmethod
@@ -463,6 +466,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         raise ValueError("task config must define arena_file")
 
     def reset(self, need_preload: bool = True):
+        self.invalidate_static_map_cache("reset")
         self._finish_active_skill_timings("episode_reset")
         self._timing_record_simulation_steps = False
         try:
@@ -1204,6 +1208,86 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
     def get_local_base_driver(self, robot_name: str):
         return self._local_base_drivers.get(robot_name)
 
+    @staticmethod
+    def _freeze_static_map_config(value):
+        if isinstance(value, dict):
+            return tuple(
+                sorted(
+                    (str(key), SimBoxDualWorkFlow._freeze_static_map_config(item))
+                    for key, item in value.items()
+                )
+            )
+        if isinstance(value, (list, tuple)):
+            return tuple(SimBoxDualWorkFlow._freeze_static_map_config(item) for item in value)
+        try:
+            hash(value)
+        except TypeError:
+            return repr(value)
+        return value
+
+    def _static_map_revision(self):
+        collision_manager = getattr(self, "collision_scene_manager", None)
+        revision = getattr(collision_manager, "world_revision", None)
+        if isinstance(revision, (int, np.integer)) and not isinstance(revision, bool) and revision >= 0:
+            return ("collision_world", int(revision))
+        return ("layout_epoch", int(self._static_map_layout_epoch))
+
+    def invalidate_static_map_cache(self, reason: str = ""):
+        """Drop canonical maps after a layout, reset, or movable-object change."""
+        self._static_map_cache.clear()
+        self._static_map_debug_by_robot.clear()
+        self._static_map_layout_epoch += 1
+        LOGGER.debug(
+            "[local-navigation] invalidated static-map cache reason=%s layout_epoch=%d",
+            reason,
+            self._static_map_layout_epoch,
+        )
+
+    def get_or_export_static_map(self, *, robot, map_cfg: dict):
+        """Return a per-Navigate read-only copy of the canonical runtime map."""
+        from core.skills.navigation_geometry import StaticMap
+        from core.skills.static_map_exporter import IsaacStaticMapExporter
+
+        robot_name = str(getattr(robot, "name", "") or "")
+        robot_path = str(getattr(robot, "robot_prim_path", "") or "")
+        key = (
+            robot_name,
+            robot_path,
+            self._freeze_static_map_config(map_cfg),
+            self._static_map_revision(),
+        )
+        cached = self._static_map_cache.get(key)
+        if cached is None:
+            base_interface = robot.get_base_interface()
+            exporter = IsaacStaticMapExporter(
+                self,
+                robot,
+                base_interface["base_cfg"],
+                map_cfg=map_cfg,
+            )
+            canonical = exporter.export_map()
+            if not isinstance(canonical, StaticMap):
+                raise TypeError("IsaacStaticMapExporter.export_map() must return StaticMap")
+            debug = dict(exporter.last_export_debug)
+            self._static_map_cache[key] = (canonical, debug)
+            LOGGER.debug(
+                "[local-navigation] generated static map robot=%s revision=%s",
+                robot_name,
+                key[-1],
+            )
+        else:
+            canonical, debug = cached
+
+        self._static_map_debug_by_robot[robot_name] = dict(debug)
+        return StaticMap(
+            occupancy=np.array(canonical.occupancy, dtype=np.uint8, copy=True),
+            resolution=canonical.resolution,
+            origin=canonical.origin,
+        )
+
+    def get_static_map_debug(self, robot):
+        return dict(self._static_map_debug_by_robot.get(str(getattr(robot, "name", "") or ""), {}))
+
     def _destroy_local_base_drivers(self):
         for robot_name, driver in list(getattr(self, "_local_base_drivers", {}).items()):
             try:
@@ -1575,6 +1659,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         # episode_stats["current_times"] += 1
 
     def reset_after_failed_generation(self):
+        self.invalidate_static_map_cache("reset_after_failed_generation")
         self._finish_active_skill_timings("reset_after_failed_generation")
         self._timing_record_simulation_steps = False
         try:
@@ -1627,6 +1712,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
 
     def randomization(self, layout_path=None) -> bool:
         try:
+            self.invalidate_static_map_cache("randomization")
             if layout_path is None:
                 # Individual Reset
                 self.task.individual_reset()
@@ -1651,6 +1737,11 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
 
     def _skills_complete(self):
         return self._dag_skill_done(self.skills)
+
+    @staticmethod
+    def _skill_changes_navigation_collision(skill) -> bool:
+        skill_name = type(skill).__name__.lower()
+        return ("pick" in skill_name and "probe" not in skill_name) or "place" in skill_name
 
     def _dag_ready_to_start(self, node, nodes_by_id):
         return node["state"] == "pending" and all(
@@ -1800,6 +1891,8 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 else:
                     self._finish_skill_timing(skill, True)
                     node["state"] = "succeeded"
+                    if self._skill_changes_navigation_collision(skill):
+                        self.invalidate_static_map_cache(f"completed:{node['id']}")
 
             if hasattr(skill, "visualize_target"):
                 skill.visualize_target(self.world)
@@ -2945,6 +3038,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
 
     def randomization_from_mem(self, data) -> bool:
         try:
+            self.invalidate_static_map_cache("randomization_from_mem")
             cfg_ser, _, _ = data
             task_cfg = pickle.loads(cfg_ser)
             self.task_cfg = task_cfg

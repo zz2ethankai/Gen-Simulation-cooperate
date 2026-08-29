@@ -1041,14 +1041,12 @@ workflow 的 `_initialize_local_base_drivers`（:951-1027）初始化，navigate
 | `skill_xy_goal_tolerance`, `skill_yaw_goal_tolerance` | `float` | 否 | 同上 | 兼容别名；显式非 skill 前缀字段优先。 |
 | `waypoint_tolerance` | `float` | 否 | `0.25` | waypoint 到达判定距离（navigate.py:141）。 |
 | `runtime_timeout_sec` | `float` | 否 | `180.0` | 应 `> 0`（navigate.py:147；default_local_navigation.yaml:2）。 |
-| `scene_name` | `str` | 否 | task name | 地图与调试文件标识。 |
+| `scene_name` | `str` | 否 | task name | 调试文件标识；运行时地图不落盘。 |
 | `output_root` | `str` | 否 | `output/local_navigation/skills` | 调试文件根目录（navigate.py:149）。 |
 | `settle_linear_speed_tolerance` | `float` | 否 | `0.005` | 到达目标后允许的线速度，m/s。 |
 | `settle_angular_speed_tolerance` | `float` | 否 | `0.005` | 到达目标后允许的角速度，rad/s。 |
 | `settle_consecutive_steps` | `int` | 否 | `8` | 连续满足速度稳定判定才确认成功；必须 `>= 1`。 |
 | `allow_unmapped_navigation` | `bool` | 否 | `false` | 静态地图缺失/导出失败时是否继续（navigate.py:327）。 |
-| `occupancy_map_path` | `str` | 否 | 无 | 预生成占据图路径；与 `map_yaml_path` 二选一（local_navigation.py:388）。 |
-| `map_yaml_path` | `str` | 否 | 无 | `occupancy_map_path` 的兼容别名。 |
 
 settle 参数可从 `base_cfg.platform.local_navigation.settle` 或 `base_cfg.local_navigation.settle`
 配置，skill 层的 `settle_*` 字段优先。
@@ -1075,7 +1073,6 @@ floor 的 yaw 不会被叠加到目标上（navigate.py:187-194）。
 | `approach_min_distance` | `float` | 否 | `0.45` | **必须 `> 0`**。 |
 | `approach_max_distance` | `float` | 否 | `0.65` | **必须 `>= min_distance`**。 |
 | `approach_sample_count` | `int` | 否 | `512` | **必须 `> 0`**。 |
-| `approach_footprint_padding` | `float` / `null` | 否 | `null` | 非 null 时**必须 `>= 0`**。 |
 | `approach_sampling_random` | `bool` 或可转换标量 | 否 | `false` | bool/数值按真假转换；字符串仅 `1/true/yes/on` 视为 true。false 用 golden-angle，true 用随机采样。 |
 | `approach_sampling_seed` | `int` / `null` | 否 | `null` | 随机模式未给 seed 时从 `os.urandom` 生成。 |
 | `approach_arm` | `left` / `right` / `null` | 否 | `null` | 用 arm-base 可达性上下文调整 yaw。 |
@@ -1110,20 +1107,14 @@ planner/map/controller 子配置；skill 层的 `local_navigation` 嵌套 dict �
 
 | 字段 | 类型 | 必填 | 默认值 | 有效范围与语义 |
 | --- | --- | --- | --- | --- |
-| `map_output_dir` | `str` | 否 | `output/local_navigation_maps` | 地图输出目录（yaml:19）。 |
-| `map_resolution` | `float` | 否 | 导出 `0.02`，planner `0.05` | 地图导出分辨率 0.02 meter/cell（static_map_exporter.py:28）；planner 规划分辨率 0.05（yaml:5）。skill 层 `map_resolution` 只覆盖 planner 侧。 |
+| `map_resolution` | `float` | 否 | 导出 `0.02`，planner `0.05` | 运行时二值 ndarray 地图的分辨率；导出分辨率 0.02 meter/cell，planner 默认 0.05。skill 层 `map_resolution` 覆盖地图导出与 planner。 |
 | `map_z_min`, `map_z_max` | `float` | 否 | `0.0/1.50` | 高度过滤；`panda_omron_virtual.yaml` 覆盖 `map_z_max: 1.25`。语义要求 min `<=` max。 |
 | `map_bounds_padding_m` | `float` | 否 | `0.75` | 地图外扩边距。 |
-| `robot_clear_radius_m` | `float` | 否 | `0.70` | 机器人周围清障半径。 |
 | `map_border_obstacle_thickness_m` | `float` | 否 | `0.15` | 边界障碍厚度。 |
 | `map_min_obstacle_height_m` | `float` | 否 | `0.04` | 障碍最小高度。 |
-| `map_include_visual_wall_geometry` | `bool` | 否 | `true` | 是否纳入 visual wall geometry（static_map_exporter.py:36-38）。 |
-| `footprint_padding_m` | `float` | 否 | `0.0` | 机器人 footprint 外扩 padding。 |
-| `footprint_points` | `list[[x,y]]` | 否 | 平台默认 | `base_cfg.local_navigation.footprint_points`，至少 3 点；缺失时退回平台 `default_navigation_footprint_points`（local_navigation.py:61-66）。 |
 | `planner.map_resolution` | `float` | 否 | `0.05` | A* 栅格分辨率。 |
 | `planner.safety_distance_m` | `float` | 否 | `0.35` | 距障碍的安全距离，用于代价惩罚。 |
 | `planner.proximity_weight` | `float` | 否 | `2.0` | 近距离代价权重。 |
-| `planner.initial_padding_egress_distance_m` | `float` | 否 | `0.0` | 起始点退让距离。 |
 | `planner.max_approach_solutions` | `int` | 否 | `10` | approach 候选最多保留数（local_navigation.py:449）。 |
 | `controller.max_linear_velocity` | `float` | 否 | `0.35` | 线速度上限，m/s。 |
 | `controller.max_angular_velocity` | `float` | 否 | `0.8` | 角速度上限，rad/s。 |
@@ -1132,6 +1123,11 @@ planner/map/controller 子配置；skill 层的 `local_navigation` 嵌套 dict �
 | `controller.waypoint_tolerance_m` | `float` | 否 | `0.25` | waypoint 到达判定（`waypoint_tolerance` 覆盖）。 |
 | `controller.position_tolerance_m` / `controller.yaw_tolerance_rad` | `float` | 否 | `0.10/0.10` | 目标容差（`xy/yaw_goal_tolerance` 覆盖）。 |
 | `settle.linear_speed_tolerance` / `settle.angular_speed_tolerance` / `settle.consecutive_steps` | - | 否 | `0.005/0.005/8` | 稳定判定，见 8.1。 |
+
+地图由 `IsaacStaticMapExporter.export_map()` 在 Isaac 进程内直接生成并传递，不读取或写入 PGM、YAML、PNG 或 `.npy` 文件。
+接口是不可变的 `StaticMap(occupancy, resolution, origin)`：`occupancy` 为二维 `numpy.uint8`，仅含
+`0 = free` 和 `1 = occupied`，且数组只读。障碍唯一来自 USD collision geometry；机器人 `robot_prim_path`
+及其子树会被明确排除。地图缓存由 workflow 按机器人、地图配置和 layout/collision world revision 管理，reset、布局随机化以及 pick/place 完成后失效。
 
 ### 8.4 执行与成功判定
 

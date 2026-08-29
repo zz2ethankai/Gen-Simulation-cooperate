@@ -4288,6 +4288,5 @@ tasks:
         runtime_timeout_sec: 240.0
         map_z_min: 0.05
         map_z_max: 0.35
-        map_include_visual_wall_geometry: true
         output_root: output/local_navigation/skills
         scene_name: assets_addition_file_2_navigate_living_room
