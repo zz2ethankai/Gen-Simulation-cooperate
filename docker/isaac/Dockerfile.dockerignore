@@ -1,0 +1,9 @@
+**
+!docker/
+!docker/isaac/
+!docker/isaac/Dockerfile
+!docker/isaac/entrypoint.sh
+!docker/isaac/requirements.isaac.txt
+!InternDataAssets/
+!InternDataAssets/curobo/
+!InternDataAssets/curobo/**

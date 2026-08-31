@@ -271,5 +271,12 @@ class LocalBaseDriver:
 
 
 def build_local_base_driver(robot, *, world=None):
-    """Build the profile-independent direct body-twist executor."""
+    """Build the body-twist executor selected by the robot base profile."""
+    base_cfg = robot.get_base_interface()["base_cfg"]
+    platform_cfg = base_cfg.get("platform", {})
+    profile = str(platform_cfg.get("profile", "")).strip().lower().replace("-", "_")
+    if profile == "unitree_g1_decoupled_wbc":
+        from .g1_locomotion_driver import G1LocomotionDriver
+
+        return G1LocomotionDriver(robot, world=world)
     return LocalBaseDriver(robot, world=world)

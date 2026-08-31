@@ -344,6 +344,312 @@ class WaypointController:
         return body_vx, body_vy, wz, False, {"waypoint_index": self.waypoint_index, "waypoint_count": len(self.path), "distance_to_goal": distance, "yaw_error": yaw_error}
 
 
+ControllerResult = tuple[float, float, float, bool, dict[str, Any]]
+
+
+class PhasedWaypointController:
+    """Track each segment with turn, lateral-align, and forward phases."""
+
+    def __init__(
+        self, *, goal: tuple[float, float, float], terminal_approach_distance_m: float,
+        max_linear_velocity: float, terminal_max_linear_velocity: float, max_angular_velocity: float,
+        waypoint_tolerance_m: float, position_tolerance_m: float, yaw_tolerance_rad: float,
+        linear_gain: float, angular_gain: float, max_lateral_velocity: float = 0.20,
+        lateral_gain: float = 2.0, lateral_alignment_enter_m: float = 0.08,
+        lateral_alignment_exit_m: float = 0.04, turn_enter_heading_error_rad: float = 0.20,
+        turn_exit_heading_error_rad: float = 0.10,
+    ):
+        self.goal = tuple(float(value) for value in goal)
+        self.terminal_approach_distance_m = float(terminal_approach_distance_m)
+        self.max_linear_velocity = max(float(max_linear_velocity), 0.0)
+        self.terminal_max_linear_velocity = min(
+            max(float(terminal_max_linear_velocity), 0.0),
+            self.max_linear_velocity,
+        )
+        self.max_angular_velocity = max(float(max_angular_velocity), 0.0)
+        self.waypoint_tolerance_m = max(float(waypoint_tolerance_m), 0.0)
+        self.position_tolerance_m = max(float(position_tolerance_m), 0.0)
+        self.yaw_tolerance_rad = max(float(yaw_tolerance_rad), 0.0)
+        self.linear_gain = max(float(linear_gain), 0.0)
+        self.angular_gain = max(float(angular_gain), 0.0)
+        self.max_lateral_velocity = max(float(max_lateral_velocity), 0.0)
+        self.lateral_gain = max(float(lateral_gain), 0.0)
+        self.lateral_alignment_enter_m = max(float(lateral_alignment_enter_m), 0.0)
+        self.lateral_alignment_exit_m = max(float(lateral_alignment_exit_m), 0.0)
+        self.turn_enter_heading_error_rad = max(float(turn_enter_heading_error_rad), 0.0)
+        self.turn_exit_heading_error_rad = max(float(turn_exit_heading_error_rad), 0.0)
+        if (
+            not all(math.isfinite(value) for value in self.goal)
+            or not math.isfinite(self.terminal_approach_distance_m)
+            or self.terminal_approach_distance_m <= 0.0
+            or self.turn_exit_heading_error_rad > self.turn_enter_heading_error_rad
+            or self.lateral_alignment_exit_m > self.lateral_alignment_enter_m
+        ):
+            raise ValueError("Phased waypoint goal and motion tolerances are invalid")
+        self.path: list[dict[str, float]] = []
+        self.waypoint_index = 0
+        self.pre_goal_index = 0
+        self.phase = "track_path"
+        self.motion_mode = "turn_to_waypoint"
+        self.translation_target: tuple[float, float, float] | None = None
+        self.heading_error_to_waypoint = 0.0
+        self.lateral_error_to_path = 0.0
+        self.along_track_error = 0.0
+
+    def reset(self, path: list[dict[str, float]]) -> None:
+        self.path = [
+            {key: float(waypoint[key]) for key in ("x", "y", "yaw")}
+            for waypoint in path
+        ]
+        if not self.path:
+            raise ValueError("Phased waypoint path must not be empty")
+        goal_x, goal_y, goal_yaw = self.goal
+        pre_goal = (
+            goal_x - self.terminal_approach_distance_m * math.cos(goal_yaw),
+            goal_y - self.terminal_approach_distance_m * math.sin(goal_yaw),
+        )
+        self.pre_goal_index = min(
+            range(len(self.path)),
+            key=lambda index: math.hypot(
+                self.path[index]["x"] - pre_goal[0],
+                self.path[index]["y"] - pre_goal[1],
+            ),
+        )
+        self.waypoint_index = 0
+        self.phase = "track_path"
+        self.motion_mode = "turn_to_waypoint"
+        self.translation_target = None
+        self.heading_error_to_waypoint = 0.0
+        self.lateral_error_to_path = 0.0
+        self.along_track_error = 0.0
+
+    def _segment_heading(self, index: int) -> float:
+        target = self.path[index]
+        if index == 0:
+            return target["yaw"]
+        start = self.path[index - 1]
+        dx, dy = target["x"] - start["x"], target["y"] - start["y"]
+        return target["yaw"] if math.hypot(dx, dy) <= 1.0e-9 else math.atan2(dy, dx)
+
+    def _passed_waypoint(self, pose: tuple[float, float, float], index: int, tolerance: float) -> bool:
+        x, y, _ = pose
+        target = self.path[index]
+        heading = self._segment_heading(index)
+        dx, dy = target["x"] - x, target["y"] - y
+        along = math.cos(heading) * dx + math.sin(heading) * dy
+        lateral = -math.sin(heading) * dx + math.cos(heading) * dy
+        return along <= 0.0 and abs(lateral) <= tolerance
+
+    def _turn_command(self, yaw_error: float) -> tuple[float, float, float]:
+        wz = np.clip(
+            self.angular_gain * yaw_error,
+            -self.max_angular_velocity,
+            self.max_angular_velocity,
+        )
+        return 0.0, 0.0, float(wz)
+
+    def _translation_command(
+        self,
+        pose: tuple[float, float, float],
+        target: tuple[float, float],
+        heading: float,
+        *,
+        max_velocity: float | None = None,
+    ) -> tuple[float, float, float]:
+        x, y, yaw = pose
+        translation_target = (target[0], target[1], heading)
+        if self.translation_target != translation_target:
+            self.translation_target = translation_target
+            self.motion_mode = "turn_to_waypoint"
+        dx, dy = target[0] - x, target[1] - y
+        cos_heading, sin_heading = math.cos(heading), math.sin(heading)
+        self.along_track_error = cos_heading * dx + sin_heading * dy
+        self.lateral_error_to_path = -sin_heading * dx + cos_heading * dy
+        self.heading_error_to_waypoint = wrap_to_pi(heading - yaw)
+        if self.motion_mode == "turn_to_waypoint":
+            if abs(self.heading_error_to_waypoint) > self.turn_exit_heading_error_rad:
+                return self._turn_command(self.heading_error_to_waypoint)
+            self.motion_mode = "lateral_align"
+        elif abs(self.heading_error_to_waypoint) > self.turn_enter_heading_error_rad:
+            self.motion_mode = "turn_to_waypoint"
+            return self._turn_command(self.heading_error_to_waypoint)
+        if self.motion_mode == "lateral_align":
+            if abs(self.lateral_error_to_path) > self.lateral_alignment_exit_m:
+                velocity = np.clip(
+                    self.lateral_gain * self.lateral_error_to_path,
+                    -self.max_lateral_velocity,
+                    self.max_lateral_velocity,
+                )
+                return 0.0, float(velocity), 0.0
+            self.motion_mode = "walk_straight"
+        elif abs(self.lateral_error_to_path) > self.lateral_alignment_enter_m:
+            self.motion_mode = "lateral_align"
+            velocity = np.clip(
+                self.lateral_gain * self.lateral_error_to_path,
+                -self.max_lateral_velocity,
+                self.max_lateral_velocity,
+            )
+            return 0.0, float(velocity), 0.0
+        velocity_limit = self.max_linear_velocity if max_velocity is None else max_velocity
+        return min(velocity_limit, self.linear_gain * max(self.along_track_error, 0.0)), 0.0, 0.0
+
+    def _result(self, command: tuple[float, float, float], distance: float, yaw_error: float) -> ControllerResult:
+        debug = {
+            "phase": self.phase,
+            "motion_mode": self.motion_mode,
+            "heading_error_to_waypoint": self.heading_error_to_waypoint,
+            "lateral_error_to_path": self.lateral_error_to_path,
+            "along_track_error": self.along_track_error,
+            "waypoint_index": self.waypoint_index,
+            "waypoint_count": len(self.path),
+            "distance_to_goal": distance,
+            "yaw_error": yaw_error,
+        }
+        return *command, False, debug
+
+    def command(self, pose: tuple[float, float, float], goal: tuple[float, float, float]) -> ControllerResult:
+        if not self.path:
+            return 0.0, 0.0, 0.0, False, {"reason": "empty_path"}
+        x, y, yaw = (float(value) for value in pose)
+        goal_x, goal_y, goal_yaw = (float(value) for value in goal)
+        distance = math.hypot(goal_x - x, goal_y - y)
+        yaw_error = wrap_to_pi(goal_yaw - yaw)
+        if distance <= self.position_tolerance_m and abs(yaw_error) <= self.yaw_tolerance_rad:
+            self.phase = "done"
+            _, _, _, _, debug = self._result((0.0, 0.0, 0.0), distance, yaw_error)
+            return 0.0, 0.0, 0.0, True, debug
+
+        pose_values = (x, y, yaw)
+        for _ in range(3):
+            if self.phase == "track_path":
+                while self.waypoint_index < self.pre_goal_index:
+                    target = self.path[self.waypoint_index]
+                    target_distance = math.hypot(target["x"] - x, target["y"] - y)
+                    if target_distance > self.waypoint_tolerance_m and not self._passed_waypoint(
+                        pose_values, self.waypoint_index, self.waypoint_tolerance_m
+                    ):
+                        break
+                    self.waypoint_index += 1
+                target = self.path[self.waypoint_index]
+                target_distance = math.hypot(target["x"] - x, target["y"] - y)
+                if self.waypoint_index == self.pre_goal_index and (
+                    target_distance <= self.waypoint_tolerance_m
+                    or self._passed_waypoint(
+                        pose_values, self.waypoint_index, self.waypoint_tolerance_m
+                    )
+                ):
+                    self.phase = "align_final_approach"
+                    continue
+                command = self._translation_command(
+                    pose_values,
+                    (target["x"], target["y"]),
+                    self._segment_heading(self.waypoint_index),
+                )
+                return self._result(command, distance, yaw_error)
+
+            if self.phase == "align_final_approach":
+                if abs(yaw_error) > self.yaw_tolerance_rad:
+                    return self._result(self._turn_command(yaw_error), distance, yaw_error)
+                self.phase = "final_approach"
+                self.waypoint_index = min(self.pre_goal_index + 1, len(self.path) - 1)
+                continue
+
+            if self.phase == "final_approach":
+                tolerance = min(self.waypoint_tolerance_m, self.position_tolerance_m)
+                while self.waypoint_index < len(self.path) - 1:
+                    target = self.path[self.waypoint_index]
+                    target_distance = math.hypot(target["x"] - x, target["y"] - y)
+                    if target_distance > tolerance and not self._passed_waypoint(
+                        pose_values, self.waypoint_index, tolerance
+                    ):
+                        break
+                    self.waypoint_index += 1
+                target = self.path[self.waypoint_index]
+                if self.waypoint_index == len(self.path) - 1 and distance <= self.position_tolerance_m:
+                    self.phase = "align_final_pose"
+                    continue
+                command = self._translation_command(
+                    pose_values,
+                    (target["x"], target["y"]),
+                    self._segment_heading(self.waypoint_index),
+                    max_velocity=self.terminal_max_linear_velocity,
+                )
+                return self._result(command, distance, yaw_error)
+
+            if self.phase == "align_final_pose":
+                if distance <= self.position_tolerance_m:
+                    return self._result(self._turn_command(yaw_error), distance, yaw_error)
+                self.phase = "final_approach"
+                self.waypoint_index = max(self.pre_goal_index + 1, len(self.path) - 2)
+                self.waypoint_index = min(self.waypoint_index, len(self.path) - 1)
+                target = self.path[self.waypoint_index]
+                command = self._translation_command(
+                    pose_values,
+                    (target["x"], target["y"]),
+                    self._segment_heading(self.waypoint_index),
+                    max_velocity=self.terminal_max_linear_velocity,
+                )
+                return self._result(command, distance, yaw_error)
+
+        return self._result((0.0, 0.0, 0.0), distance, yaw_error)
+
+
+def build_navigation_controller(
+    *,
+    controller_cfg: dict[str, Any],
+    planner_cfg: dict[str, Any],
+    goal: tuple[float, float, float],
+    waypoint_tolerance_m: float,
+    position_tolerance_m: float,
+    yaw_tolerance_rad: float,
+):
+    """Build the configured waypoint controller without changing the default."""
+
+    controller_type = str(controller_cfg.get("controller_type", "waypoint")).strip()
+    common = {
+        "max_linear_velocity": float(controller_cfg.get("max_linear_velocity", 0.35)),
+        "max_angular_velocity": float(controller_cfg.get("max_angular_velocity", 0.8)),
+        "waypoint_tolerance_m": waypoint_tolerance_m,
+        "position_tolerance_m": position_tolerance_m,
+        "yaw_tolerance_rad": yaw_tolerance_rad,
+        "linear_gain": float(controller_cfg.get("linear_gain", 2.0)),
+        "angular_gain": float(controller_cfg.get("angular_gain", 2.0)),
+    }
+    if controller_type in {"", "waypoint"}:
+        return WaypointController(
+            **common,
+            rotate_first_error_rad=float(
+                controller_cfg.get("rotate_first_error_rad", 0.2)
+            ),
+        )
+    if controller_type != "phased_waypoint":
+        raise ValueError(f"Unsupported navigation controller_type: {controller_type}")
+    return PhasedWaypointController(
+        **common,
+        goal=goal,
+        terminal_approach_distance_m=float(
+            planner_cfg.get("terminal_approach_distance_m", 0.0)
+        ),
+        terminal_max_linear_velocity=float(
+            controller_cfg.get("terminal_max_linear_velocity", 0.15)
+        ),
+        max_lateral_velocity=float(controller_cfg.get("max_lateral_velocity", 0.20)),
+        lateral_gain=float(controller_cfg.get("lateral_gain", 2.0)),
+        lateral_alignment_enter_m=float(
+            controller_cfg.get("lateral_alignment_enter_m", 0.08)
+        ),
+        lateral_alignment_exit_m=float(
+            controller_cfg.get("lateral_alignment_exit_m", 0.04)
+        ),
+        turn_enter_heading_error_rad=float(
+            controller_cfg.get("turn_enter_heading_error_rad", 0.20)
+        ),
+        turn_exit_heading_error_rad=float(
+            controller_cfg.get("turn_exit_heading_error_rad", 0.10)
+        ),
+    )
+
+
 def build_navigation_plan(*, start_pose: tuple[float, float, float], goal: tuple[float, float, float], static_map: dict[str, Any] | None, footprint_points: list[list[float]], footprint_padding_m: float = 0.0, planner_cfg: dict[str, Any] | None = None, planner: GridAStarPlanner | None = None, planned_points: list[tuple[float, float]] | None = None) -> NavigationPlan | None:
     planner_cfg = planner_cfg or {}
     if planner is None:
@@ -354,7 +660,35 @@ def build_navigation_plan(*, start_pose: tuple[float, float, float], goal: tuple
         )
         if static_map is not None:
             planner.set_static_map(static_map, footprint_points=footprint_points, footprint_padding_m=footprint_padding_m)
-    points = planned_points if planned_points is not None else planner.plan((start_pose[0], start_pose[1]), (goal[0], goal[1]))
+    approach_distance = float(planner_cfg.get("terminal_approach_distance_m", 0.0))
+    if not math.isfinite(approach_distance) or approach_distance < 0.0:
+        raise ValueError("terminal_approach_distance_m must be non-negative and finite")
+    if planned_points is not None:
+        points = planned_points
+    elif approach_distance == 0.0:
+        points = planner.plan((start_pose[0], start_pose[1]), (goal[0], goal[1]))
+    else:
+        approach_step = float(
+            planner_cfg.get("terminal_approach_step_m", approach_distance)
+        )
+        if not math.isfinite(approach_step) or approach_step <= 0.0:
+            raise ValueError("terminal_approach_step_m must be positive and finite")
+        goal_x, goal_y, goal_yaw = goal
+        pre_goal = (
+            goal_x - approach_distance * math.cos(goal_yaw),
+            goal_y - approach_distance * math.sin(goal_yaw),
+        )
+        points = planner.plan((start_pose[0], start_pose[1]), pre_goal)
+        if points:
+            points = list(points)
+            sample_count = max(1, math.ceil(approach_distance / approach_step))
+            points.extend(
+                (
+                    pre_goal[0] + (goal_x - pre_goal[0]) * index / sample_count,
+                    pre_goal[1] + (goal_y - pre_goal[1]) * index / sample_count,
+                )
+                for index in range(1, sample_count + 1)
+            )
     if not points:
         return None
     poses = []

@@ -1,0 +1,87 @@
+tasks:
+- name: unitree_g1_navigate_scene4_kitchen_validation_task
+  asset_root: workflows/simbox/assets/custom/scene_4/01_kitchen
+  task: BananaBaseTask
+  task_id: 0
+  offset: null
+  render: true
+  arena_file: workflows/simbox/core/configs/arenas/unitree_g1_scene4_kitchen_navigation_arena.yaml
+  env_map:
+    envmap_lib: ../../../envmap_lib
+    apply_randomization: false
+    intensity_range: [5000, 5000]
+    rotation_range: [0, 0]
+  robots:
+  - name: unitree_g1
+    robot_config_file: workflows/simbox/core/configs/robots/unitree_g1.yaml
+    translation: [1.15, 1.60, 0.8]
+    euler: [0.0, 0.0, 0.0]
+    ignore_substring: [material, floor]
+  objects: []
+  regions:
+  - object: unitree_g1
+    target: floor
+    placement_mode: fixed_from_robot_start_position
+    random_type: A_on_B_region_sampler
+    random_config:
+      # Fixed placement reads the robot translation above; keep this inert
+      # sampler payload aligned with the other G1 navigation tasks.
+      pos_range: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+      yaw_rotation: [0.0, 0.0]
+  cameras:
+  - name: unitree_g1_ego
+    translation: [0.0, 0.0, 0.0]
+    orientation: [0.5, 0.5, -0.5, -0.5]
+    camera_axes: usd
+    camera_file: workflows/simbox/core/configs/cameras/realsense_d455_v3.yaml
+    parent: "${tasks.0.robots.0.name}/d435_link"
+    apply_randomization: false
+  - name: unitree_g1_global
+    translation: [2.0, 1.5, 4.5]
+    orientation: [1.0, 0.0, 0.0, 0.0]
+    camera_axes: usd
+    camera_file: workflows/simbox/core/configs/cameras/realsense_d455_v3.yaml
+    parent: ""
+    apply_randomization: false
+  data:
+    task_dir: unitree_g1_navigate_scene4_kitchen_validation
+    language_instruction: Navigate the Unitree G1 from the refrigerator to the shelf, then to the storage box, and return to the refrigerator.
+    detailed_language_instruction: Use only Navigate for three sequential legs. Stop and turn toward the shelf, then stop and turn toward the storage box, and finally return and face the refrigerator.
+    collect_info: unitree_g1_navigate_scene4_kitchen_validation
+    version: v1.0
+    update: true
+    video_fps: 50
+    max_episode_length: 7000
+  skills:
+  - unitree_g1:
+    - base:
+      - name: navigate
+        goal_x: 1.60
+        goal_y: 2.00
+        goal_yaw: 1.5707963267948966
+        xy_goal_tolerance: 0.30
+        yaw_goal_tolerance: 0.12
+        runtime_timeout_sec: 45.0
+        output_root: tmp/g1_scene4_kitchen_validation/navigation_skills
+        map_output_dir: tmp/g1_scene4_kitchen_validation/navigation_maps
+        scene_name: unitree_g1_scene4_kitchen_leg1_refrigerator_to_shelf
+      - name: navigate
+        goal_x: 3.05
+        goal_y: 1.30
+        goal_yaw: -1.5707963267948966
+        xy_goal_tolerance: 0.30
+        yaw_goal_tolerance: 0.12
+        runtime_timeout_sec: 45.0
+        output_root: tmp/g1_scene4_kitchen_validation/navigation_skills
+        map_output_dir: tmp/g1_scene4_kitchen_validation/navigation_maps
+        scene_name: unitree_g1_scene4_kitchen_leg2_shelf_to_storage_box
+      - name: navigate
+        goal_x: 1.15
+        goal_y: 1.60
+        goal_yaw: 3.141592653589793
+        xy_goal_tolerance: 0.30
+        yaw_goal_tolerance: 0.12
+        runtime_timeout_sec: 45.0
+        output_root: tmp/g1_scene4_kitchen_validation/navigation_skills
+        map_output_dir: tmp/g1_scene4_kitchen_validation/navigation_maps
+        scene_name: unitree_g1_scene4_kitchen_leg3_storage_box_to_refrigerator

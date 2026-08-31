@@ -5,6 +5,7 @@ from __future__ import annotations
 from .base_platform import MobileBasePlatform
 from .differential_drive_platform import DifferentialDrivePlatform
 from .ranger_mini_v3_platform import RangerMiniV3Platform
+from .unitree_g1_platform import UnitreeG1Platform
 from .virtual_base_platform import VirtualBasePlatform
 
 
@@ -22,6 +23,8 @@ def get_mobile_base_platform(base_cfg: dict) -> MobileBasePlatform:
         return DifferentialDrivePlatform()
     if RangerMiniV3Platform.matches(profile_name):
         return RangerMiniV3Platform()
+    if UnitreeG1Platform.matches(profile_name):
+        return UnitreeG1Platform()
     if VirtualBasePlatform.matches(profile_name):
         return VirtualBasePlatform()
     raise KeyError(f"Unsupported mobile base platform profile: {profile_name}")
@@ -31,6 +34,7 @@ __all__ = [
     "DifferentialDrivePlatform",
     "MobileBasePlatform",
     "RangerMiniV3Platform",
+    "UnitreeG1Platform",
     "VirtualBasePlatform",
     "get_mobile_base_platform",
 ]

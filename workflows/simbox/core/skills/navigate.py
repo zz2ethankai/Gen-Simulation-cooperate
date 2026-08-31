@@ -17,7 +17,7 @@ from omni.isaac.core.tasks import BaseTask
 
 try:
     from .local_navigation import (
-        WaypointController,
+        build_navigation_controller,
         build_navigation_plan,
         load_or_export_static_map,
         parse_approach_config,
@@ -31,7 +31,7 @@ except ImportError:
     local_navigation = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = local_navigation
     spec.loader.exec_module(local_navigation)
-    WaypointController = local_navigation.WaypointController
+    build_navigation_controller = local_navigation.build_navigation_controller
     build_navigation_plan = local_navigation.build_navigation_plan
     load_or_export_static_map = local_navigation.load_or_export_static_map
     parse_approach_config = local_navigation.parse_approach_config
@@ -302,15 +302,13 @@ class Navigate(BaseSkill):
             self.failure_reason = "local_plan_failed"
             self.error_message = "Local center-cell A* could not find a collision-free path"
             return False
-        self._controller = WaypointController(
-            max_linear_velocity=float(self.controller_cfg.get("max_linear_velocity", 0.35)),
-            max_angular_velocity=float(self.controller_cfg.get("max_angular_velocity", 0.8)),
+        self._controller = build_navigation_controller(
+            controller_cfg=self.controller_cfg,
+            planner_cfg=self.planner_cfg,
+            goal=(self.goal_x, self.goal_y, self.goal_yaw),
             waypoint_tolerance_m=self.waypoint_tolerance_m,
             position_tolerance_m=self.position_tolerance_m,
             yaw_tolerance_rad=self.yaw_tolerance_rad,
-            rotate_first_error_rad=float(self.controller_cfg.get("rotate_first_error_rad", 0.2)),
-            linear_gain=float(self.controller_cfg.get("linear_gain", 2.0)),
-            angular_gain=float(self.controller_cfg.get("angular_gain", 2.0)),
         )
         self._controller.reset(self._plan.path)
         driver.prepare_for_navigation()

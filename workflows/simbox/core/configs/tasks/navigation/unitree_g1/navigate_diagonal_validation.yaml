@@ -1,0 +1,64 @@
+tasks:
+- name: unitree_g1_navigate_a4_diagonal_task
+  asset_root: workflows/simbox/assets
+  task: BananaBaseTask
+  task_id: 0
+  offset: null
+  render: true
+  arena_file: workflows/simbox/core/configs/arenas/unitree_g1_navigate_floor_untextured_arena.yaml
+  env_map:
+    envmap_lib: envmap_lib
+    apply_randomization: false
+    intensity_range: [5000, 5000]
+    rotation_range: [0, 0]
+  robots:
+  - name: unitree_g1
+    robot_config_file: workflows/simbox/core/configs/robots/unitree_g1.yaml
+    translation: [0.0, 0.0, 0.8]
+    euler: [0.0, 0.0, 0.0]
+    ignore_substring: [material, floor, boundary]
+  objects: []
+  regions:
+  - object: unitree_g1
+    target: floor
+    placement_mode: fixed_from_robot_start_position
+    random_type: A_on_B_region_sampler
+    random_config:
+      pos_range: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+      yaw_rotation: [0.0, 0.0]
+  cameras:
+  - name: unitree_g1_ego
+    translation: [0.0, 0.0, 0.0]
+    orientation: [0.5, 0.5, -0.5, -0.5]
+    camera_axes: usd
+    camera_file: workflows/simbox/core/configs/cameras/realsense_d455_v3.yaml
+    parent: "${tasks.0.robots.0.name}/d435_link"
+    apply_randomization: false
+  - name: unitree_g1_global
+    translation: [0.5, 0.5, 4.0]
+    orientation: [1.0, 0.0, 0.0, 0.0]
+    camera_axes: usd
+    camera_file: workflows/simbox/core/configs/cameras/realsense_d455_v3.yaml
+    parent: ""
+    apply_randomization: false
+  data:
+    task_dir: unitree_g1_navigate_a4_diagonal
+    language_instruction: Navigate the Unitree G1 diagonally to the goal pose.
+    detailed_language_instruction: Use only Navigate to reach world pose (1.0, 1.0, pi/4) in an empty arena.
+    collect_info: unitree_g1_navigate_a4_diagonal
+    version: v1.0
+    update: true
+    video_fps: 50
+    max_episode_length: 4000
+  skills:
+  - unitree_g1:
+    - base:
+      - name: navigate
+        goal_x: 1.0
+        goal_y: 1.0
+        goal_yaw: 0.7853981633974483
+        xy_goal_tolerance: 0.12
+        yaw_goal_tolerance: 0.12
+        runtime_timeout_sec: 30.0
+        output_root: output/local_navigation/skills
+        scene_name: unitree_g1_navigate_a4_diagonal

@@ -1,0 +1,75 @@
+tasks:
+- name: unitree_g1_navigate_b1_single_obstacle_task
+  asset_root: workflows/simbox/assets
+  task: BananaBaseTask
+  task_id: 0
+  offset: null
+  render: true
+  arena_file: workflows/simbox/core/configs/arenas/unitree_g1_navigate_floor_untextured_arena.yaml
+  env_map:
+    envmap_lib: envmap_lib
+    apply_randomization: false
+    intensity_range: [5000, 5000]
+    rotation_range: [0, 0]
+  robots:
+  - name: unitree_g1
+    robot_config_file: workflows/simbox/core/configs/robots/unitree_g1.yaml
+    translation: [0.0, 0.0, 0.8]
+    euler: [0.0, 0.0, 0.0]
+    ignore_substring: [material, floor, boundary]
+  objects:
+  - name: detour_box_0
+    target_class: BoxObject
+    translation: [1.05, -0.18, 0.5]
+    euler: [0.0, 0.0, 0.0]
+    scale: [0.5, 0.5, 1.0]
+    color: [0.85, 0.2, 0.15]
+    collision_enabled: true
+    apply_randomization: false
+  regions:
+  - object: unitree_g1
+    target: floor
+    placement_mode: fixed_from_robot_start_position
+    random_type: A_on_B_region_sampler
+    random_config:
+      pos_range: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+      yaw_rotation: [0.0, 0.0]
+  cameras:
+  - name: unitree_g1_ego
+    # d435_link already carries the HUMANO head-camera mount position and pitch.
+    # Keep this local translation at zero; only the named global camera may move.
+    translation: [0.0, 0.0, 0.0]
+    orientation: [0.5, 0.5, -0.5, -0.5]
+    camera_axes: usd
+    camera_file: workflows/simbox/core/configs/cameras/realsense_d455_v3.yaml
+    parent: "${tasks.0.robots.0.name}/d435_link"
+    apply_randomization: false
+  - name: unitree_g1_global
+    translation: [1.2, 0.0, 5.5]
+    orientation: [1.0, 0.0, 0.0, 0.0]
+    camera_axes: usd
+    camera_file: workflows/simbox/core/configs/cameras/realsense_d455_v3.yaml
+    parent: ''
+    apply_randomization: false
+  data:
+    task_dir: unitree_g1_navigate_b1_single_obstacle
+    language_instruction: Navigate the Unitree G1 around one obstacle.
+    detailed_language_instruction: Use only Navigate to walk around the static box
+      and stop at the goal pose.
+    collect_info: unitree_g1_navigate_b1_single_obstacle
+    version: v1.0
+    update: true
+    video_fps: 50
+    max_episode_length: 5000
+  skills:
+  - unitree_g1:
+    - base:
+      - name: navigate
+        goal_x: 2.4
+        goal_y: 0.0
+        goal_yaw: 0.0
+        xy_goal_tolerance: 0.12
+        yaw_goal_tolerance: 0.12
+        runtime_timeout_sec: 45.0
+        output_root: output/local_navigation/skills
+        scene_name: unitree_g1_navigate_b1_single_obstacle

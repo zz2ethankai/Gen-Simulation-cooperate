@@ -3,6 +3,30 @@ from core.utils.transformation_utils import get_fk_solution, pose_to_6d
 from .lmdb_logger import LmdbLogger
 
 
+def resolve_video_sampling(physics_dt, requested_video_fps=None, *, rendering_dt=None):
+    """Resolve persisted video FPS and the matching workflow-step stride."""
+    if physics_dt <= 0:
+        raise ValueError(f"physics_dt must be positive, got {physics_dt}")
+
+    physics_fps = int(round(1.0 / physics_dt))
+    if requested_video_fps is None:
+        return physics_fps, 1
+
+    sample_dt = physics_dt if rendering_dt is None else rendering_dt
+    if sample_dt <= 0:
+        raise ValueError(f"rendering_dt must be positive, got {sample_dt}")
+    sample_fps = int(round(1.0 / sample_dt))
+
+    video_fps = int(requested_video_fps)
+    if video_fps <= 0 or video_fps != requested_video_fps:
+        raise ValueError(f"video_fps must be a positive integer, got {requested_video_fps}")
+    if sample_fps % video_fps != 0:
+        raise ValueError(
+            f"video_fps ({video_fps}) must divide sample_fps ({sample_fps}) exactly"
+        )
+    return video_fps, sample_fps // video_fps
+
+
 def _robot_has_keys(robot_infos, *keys):
     return all(key in robot_infos for key in keys)
 
@@ -40,25 +64,45 @@ def log_dual_obs(logger: LmdbLogger, obs, action_dict, controllers, base_bridges
                     logger.add_object_data(robot_name, f"{object_name}/{attr_name}", attr_value)
 
         base_bridge = base_bridges.get(robot_name)
+        base_action = None
         if base_bridge is not None and hasattr(base_bridge, "get_logging_action_snapshot"):
             base_action = base_bridge.get_logging_action_snapshot()
             logger.add_action_data(robot_name, "base_actions.vx_body", base_action["vx_body"])
             logger.add_action_data(robot_name, "base_actions.vy_body", base_action["vy_body"])
             logger.add_action_data(robot_name, "base_actions.wz_body", base_action["wz_body"])
-            logger.add_action_data(robot_name, "base_actions.requested_steering", base_action["requested_steering"])
-            logger.add_action_data(
-                robot_name,
-                "base_actions.requested_wheel_velocities",
-                base_action["requested_wheel_velocities"],
-            )
-            logger.add_action_data(
-                robot_name,
-                "base_actions.applied_wheel_velocities",
-                base_action.get("applied_wheel_velocities", base_action["requested_wheel_velocities"]),
-            )
+            if "joint_position_targets" in base_action:
+                logger.add_action_data(robot_name, "base_actions.locomotion_mode", base_action["locomotion_mode"])
+            else:
+                logger.add_action_data(robot_name, "base_actions.requested_steering", base_action["requested_steering"])
+                logger.add_action_data(
+                    robot_name,
+                    "base_actions.requested_wheel_velocities",
+                    base_action["requested_wheel_velocities"],
+                )
+                logger.add_action_data(
+                    robot_name,
+                    "base_actions.applied_wheel_velocities",
+                    base_action.get("applied_wheel_velocities", base_action["requested_wheel_velocities"]),
+                )
 
         # Add robots' action data (very very important)
         if _robot_has_keys(
+            robot_infos,
+            "states.body_joint.position",
+            "states.body_joint.velocity",
+            "states.base.position",
+            "states.base.orientation",
+        ) and base_action is not None and "joint_position_targets" in base_action:
+            logger.add_action_data(
+                robot_name, "master_actions.body_joint.position", base_action["joint_position_targets"]
+            )
+            logger.add_action_data(
+                robot_name, "master_actions.body_joint.velocity", base_action["joint_velocity_targets"]
+            )
+            logger.add_action_data(
+                robot_name, "master_actions.body_joint.effort", base_action["joint_efforts"]
+            )
+        elif _robot_has_keys(
             robot_infos,
             "states.left_joint.position",
             "states.right_joint.position",

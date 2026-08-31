@@ -10,7 +10,7 @@
 
 ## Validation Workflow
 
-- Use `/home/dyf/miniconda3/envs/anygrasp/bin/python` for scene-4 helper scripts and compile checks.
+- Do not use a personal host Python path as a repository default. Use `.venv/bin/python` for host-only utilities, use the Isaac Docker image for simulator code, and pass any specialized interpreter explicitly to the helper that needs it.
 - Start Isaac through `scripts/docker/up_simbox_isaac.sh` or the validation wrapper that calls it; avoid ad-hoc container startup.
 - For real validation, prefer the Scene-4 validation wrapper when present, or `scripts/docker/run_simbox_task.sh` for one task. Judge success from the validation summary, per-task logs, and skill snapshots.
 - A successful run needs `Task is successful, mode=plan_with_render` and no `[LmdbLogger] Episode failed`; a video or missing traceback is not enough.
@@ -109,3 +109,17 @@
 - Keep fixes scoped: do not change YAML to mask a code bug, and do not change code when the user explicitly asks for YAML-only repair.
 - Before risky rollback or checkpoint work, verify `git status --short`, branch, and `git log -1 --oneline`.
 - When saving a successful state, create a clear checkpoint commit and verify the final status. Include generated assets only when the user explicitly asks.
+
+## Repository-wide Editing Contract
+
+- Read `.agents/notes/2026-08-25-environment-architecture-coding-standards.md` before G1, locomotion, motion-planning, or data-generation work.
+- Keep changes surgical. Every changed line must trace to the approved task; do not refactor adjacent modules or add speculative compatibility layers.
+- Prefer the smallest existing extension point. Keep configuration and planning data immutable where practical; confine required simulator and controller mutation to explicit lifecycle methods.
+- Validate external configuration, asset paths, robot joint maps, tensor/action shapes, and recorded episode schemas at their boundaries. Fail with actionable context; do not silently swallow runtime failures.
+- Match repository Python style: Black and isort with line length 120, then flake8 and pylint. Comments should explain constraints or intent rather than restate code.
+- Preserve runtime path classes: `/workspace`, `/isaac-sim`, and `/opt/curobo` are container contracts; asset/task paths should be repository-relative. Do not bulk-replace absolute paths in documentation or isolated legacy tools.
+- Keep generated logs, plans, patches, and scratch data under the project-owned `.agents/`, `output/`, or `tmp/<task>/` locations. Never commit credentials or machine-private values.
+- Do not treat the existing Galaxea `Genie1` integration as Unitree G1. Add Unitree G1 through a separate robot definition/controller boundary unless verified shared code is genuinely robot-agnostic.
+- Keep humanoid gait generation separate from wheeled-base `Navigate`. Reuse orchestration and recording interfaces, but do not route walking through the 4WIS waypoint controller.
+- For a new behavior, first add a focused regression/unit test where feasible, then run targeted static checks and the smallest Docker/GPU smoke that proves the changed boundary.
+- A successful import, checkpoint load, command receipt, or rendered video is not task success. For generated episodes, require the workflow success marker and absence of LMDB episode failure.

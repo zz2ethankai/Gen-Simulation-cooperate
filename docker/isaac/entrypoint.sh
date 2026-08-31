@@ -21,6 +21,12 @@ do
   fi
 done
 
+g1_wbc_env_file="/workspace/docker/isaac/env.d/g1_wbc_onnxruntime.sh"
+if [ -f "${g1_wbc_env_file}" ]; then
+  source "${g1_wbc_env_file}"
+fi
+unset g1_wbc_env_file
+
 run_default_entry() {
   if [ "${INTERNDATA_AUTOSTART_LAUNCHER}" = "1" ]; then
     cd /workspace
@@ -86,6 +92,7 @@ mods = [
     "yaml",
     "sklearn",
     "transforms3d",
+    "onnxruntime",
     "curobo",
     "curobo.curobolib.lbfgs_step_cu",
     "curobo.curobolib.kinematics_fused_cu",

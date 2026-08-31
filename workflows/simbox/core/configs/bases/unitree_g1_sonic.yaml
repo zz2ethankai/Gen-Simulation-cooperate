@@ -1,0 +1,37 @@
+base_frame: pelvis
+command_timeout: 0.25
+debug_history_size: 4096
+platform:
+  profile: unitree_g1_decoupled_wbc
+  local_navigation:
+    settle:
+      # The balance policy has small measured base jitter after a walk. This is
+      # still two orders of magnitude below the commanded walking speed.
+      linear_speed_tolerance: 0.01
+      angular_speed_tolerance: 0.01
+      consecutive_steps: 8
+    footprint_points:
+      - [-0.30, -0.24]
+      - [-0.30, 0.24]
+      - [0.30, 0.24]
+      - [0.30, -0.24]
+    inflation_radius_m: 0.25
+    minimum_turning_radius_m: 0.0
+    max_steer_angle_ackermann: 0.0
+    controller_hard_limits:
+      max_velocity: [0.35, 0.20, 0.50]
+      min_velocity: [0.0, -0.20, -0.50]
+      max_accel: [0.30, 0.20, 0.50]
+      max_decel: [-0.40, -0.30, -0.70]
+  decoupled_wbc:
+    resource_root: InternDataAssets/assets/unitree_g1_sonic/wbc
+    balance_model: GR00T-WholeBodyControl-Balance.onnx
+    walk_model: GR00T-WholeBodyControl-Walk.onnx
+    control_dt: 0.02
+    yaw_target_horizon_sec: 0.5
+    walk_heading_tolerance_rad: 0.2
+    # WaypointController uses linear_gain=2.0 and xy_tol=0.12, so commands at
+    # or below 0.24 m/s belong to the terminal-position/final-heading region.
+    final_heading_linear_speed_threshold: 0.24
+    bootstrap_steps: 600
+    navigation_warmup_steps: 50

@@ -12,6 +12,7 @@ from core.robots.lift2 import Lift2
 from core.robots.panda_omron import PandaOmron
 from core.robots.panda_omron_virtual import PandaOmronVirtual
 from core.robots.split_aloha import SplitAloha, SplitAlohaActual
+from core.robots.unitree_g1 import UnitreeG1
 
 __all__ = [
     "TemplateRobot",
@@ -23,6 +24,7 @@ __all__ = [
     "PandaOmronVirtual",
     "SplitAlohaActual",
     "SplitAloha",
+    "UnitreeG1",
 ]
 
 def get_robot_cls(category_name):
