@@ -92,7 +92,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--place-probe-timeout-sec", type=int, default=1200)
     parser.add_argument("--pick-timeout-sec", type=int, default=1200)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--conda-env", default="interndata")
+    parser.add_argument(
+        "--simulator-backend",
+        choices=("docker", "conda"),
+        default="docker",
+        help="Simulator launcher used for every probe and Pick attempt.",
+    )
+    parser.add_argument("--conda-env", default="interndata-isaac6")
 
     parser.add_argument(
         "--candidate-id",
@@ -270,6 +276,14 @@ def _stack_id(prefix: str, path: Path) -> str:
     return f"{safe_prefix.strip('-') or 'workspace'}-{digest}"
 
 
+def _runner_command(simulator_backend: str) -> list[str]:
+    if simulator_backend == "docker":
+        return ["bash", "scripts/docker/up_simbox_isaac.sh"]
+    if simulator_backend == "conda":
+        return ["bash", "scripts/simbox/run_simbox_task.sh"]
+    raise ValueError(f"unsupported simulator backend: {simulator_backend}")
+
+
 def _shortlist_candidates(
     candidates: list[dict[str, Any]],
     preferred_radius_m: float,
@@ -319,6 +333,7 @@ def _run_probe(
     run_root: Path,
     timeout: int,
     conda_env: str,
+    simulator_backend: str,
     seed: int,
 
     required_arm: str | None,
@@ -372,7 +387,7 @@ def _run_probe(
     env.update(
         {
             "TASK_CONFIG": str(task_path),
-            "LAUNCH_TEMPLATE": "configs/de_workspace_probe_template.yaml",
+            "LAUNCH_TEMPLATE": "configs/simbox/de_workspace_probe_template.yaml",
             "GPU_ID": gpu,
             "RANDOM_NUM": "1",
             "RANDOM_SEED": str(seed),
@@ -384,6 +399,7 @@ def _run_probe(
             "SIMBOX_DEBUG_OUTPUT_DIR": str(case_dir / "simbox_debug"),
             "INTERNDATA_RANDOM_SEED": str(seed),
             "INTERNDATA_GPU": gpu,
+            "INTERNDATA_SIMULATOR_BACKEND": simulator_backend,
             "CONDA_ENV": conda_env,
             "PYTHONUNBUFFERED": "1",
         }
@@ -393,7 +409,7 @@ def _run_probe(
     terminated_after_results = False
     with log_path.open("w", encoding="utf-8") as stream:
         process = subprocess.Popen(
-            ["bash", "scripts/docker/up_simbox_isaac.sh"],
+            _runner_command(simulator_backend),
             cwd=REPO_ROOT,
             env=env,
             stdout=stream,
@@ -466,6 +482,7 @@ def run_pick_place_planning_probe(
     run_root: Path,
     timeout: int,
     conda_env: str,
+    simulator_backend: str,
     planning: dict[str, Any] | None,
     attach_prim_path_children: list[str],
     *,
@@ -500,6 +517,7 @@ def run_pick_place_planning_probe(
             "SEQ_OUTPUT_DIR": str(case_dir / "unused_seq"),
             "INTERNDATA_RANDOM_SEED": str(seed),
             "INTERNDATA_GPU": gpu,
+            "INTERNDATA_SIMULATOR_BACKEND": simulator_backend,
             "CONDA_ENV": conda_env,
             "PYTHONUNBUFFERED": "1",
         }
@@ -509,7 +527,7 @@ def run_pick_place_planning_probe(
     terminated_after_result = False
     with log_path.open("w", encoding="utf-8") as stream:
         process = subprocess.Popen(
-            ["bash", "scripts/simbox/run_simbox_task.sh"],
+            _runner_command(simulator_backend),
             cwd=REPO_ROOT,
             env=env,
             stdout=stream,
@@ -564,6 +582,7 @@ def _run_probe_queue(
     run_root: Path,
     timeout: int,
     conda_env: str,
+    simulator_backend: str,
     seed: int,
 
     stop_event: threading.Event,
@@ -591,6 +610,7 @@ def _run_probe_queue(
             run_root,
             timeout,
             conda_env,
+            simulator_backend,
             seed,
 
             required_arm,
@@ -644,6 +664,8 @@ def _run_pick(
     target: str,
     run_root: Path,
     timeout: int,
+    conda_env: str,
+    simulator_backend: str,
 ) -> dict[str, Any]:
     candidate_id = str(candidate["candidate_id"])
     case_dir = run_root / "picks" / candidate_id / f"seed_{seed}"
@@ -665,6 +687,8 @@ def _run_pick(
             "INTERNDATA_EPISODE_EVENT_PATH": str(event_path),
             "INTERNDATA_RANDOM_SEED": str(seed),
             "INTERNDATA_GPU": gpu,
+            "INTERNDATA_SIMULATOR_BACKEND": simulator_backend,
+            "CONDA_ENV": conda_env,
             "INTERNDATA_STACK_ID": _stack_id(
                 f"workspace-pick-{candidate_id}-s{seed}",
                 case_dir,
@@ -677,7 +701,7 @@ def _run_pick(
     log_path = case_dir / "stdout.log"
     with log_path.open("w", encoding="utf-8") as stream:
         process = subprocess.Popen(
-            ["bash", "scripts/docker/up_simbox_isaac.sh"],
+            _runner_command(simulator_backend),
             cwd=REPO_ROOT,
             env=env,
             stdout=stream,
@@ -900,6 +924,7 @@ def main() -> int:
         raise ValueError("--gpus must contain at least one GPU index")
     run_root = manifest_path.parent
     manifest["probe_contract"] = {
+        "simulator_backend": args.simulator_backend,
         "planning_gate": args.planning_gate,
         "seed": args.seed,
         "required_arm": args.arm,
@@ -921,7 +946,8 @@ def main() -> int:
     }
     _progress(
         f"geometry shortlist={len(candidates)}, GPUs={','.join(gpus)}, "
-        f"target={target}, required_arm={args.arm or 'legacy_both'}"
+        f"target={target}, required_arm={args.arm or 'legacy_both'}, "
+        f"backend={args.simulator_backend}"
     )
     stop_event = threading.Event()
     queues = {gpu: candidates[index :: len(gpus)] for index, gpu in enumerate(gpus)}
@@ -937,6 +963,7 @@ def main() -> int:
                 run_root,
                 args.probe_timeout_sec,
                 args.conda_env,
+                args.simulator_backend,
                 args.seed,
 
                 stop_event,
@@ -1021,6 +1048,7 @@ def main() -> int:
                     run_root,
                     args.place_probe_timeout_sec,
                     args.conda_env,
+                    args.simulator_backend,
                     planning,
                     attach_paths,
                     seed=args.seed,
@@ -1110,6 +1138,8 @@ def main() -> int:
             target,
             run_root,
             args.pick_timeout_sec,
+            args.conda_env,
+            args.simulator_backend,
         )
         attempts.append(attempt)
         _progress(
@@ -1137,6 +1167,8 @@ def main() -> int:
             target,
             run_root,
             args.pick_timeout_sec,
+            args.conda_env,
+            args.simulator_backend,
         )
         attempts.append(attempt)
         _progress(

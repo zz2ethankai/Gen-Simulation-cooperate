@@ -82,6 +82,8 @@ def test_probe_dry_run_copies_manifest_and_expands_defaults(tmp_path, capsys):
             str(output_dir),
             "--candidate-id",
             "candidate_004",
+            "--simulator-backend",
+            "conda",
             "--dry-run",
         ]
     )
@@ -95,6 +97,7 @@ def test_probe_dry_run_copies_manifest_and_expands_defaults(tmp_path, capsys):
     assert command[command.index("--arm") + 1] == "left"
     assert command[command.index("--gpus") + 1] == "2"
     assert command[command.index("--seed") + 1] == "7"
+    assert command[command.index("--simulator-backend") + 1] == "conda"
     assert command[command.index("--camera-eye") + 1 : command.index("--camera-eye") + 4] == [
         "1.0",
         "1.5",

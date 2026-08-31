@@ -292,9 +292,14 @@ def _probe_command(
     planning_config = (args.planning_config or DEFAULT_PLANNING_CONFIG).resolve()
     execution = settings.get("execution", {})
     conda_env = args.conda_env or (
-        execution.get("conda_env", "interndata")
+        execution.get("conda_env", "interndata-isaac6")
         if isinstance(execution, Mapping)
-        else "interndata"
+        else "interndata-isaac6"
+    )
+    simulator_backend = getattr(args, "simulator_backend", None) or (
+        execution.get("simulator_backend", "docker")
+        if isinstance(execution, Mapping)
+        else "docker"
     )
     command = [
         sys.executable,
@@ -303,6 +308,8 @@ def _probe_command(
         str(manifest_path),
         "--gpus",
         str(args.gpu),
+        "--simulator-backend",
+        str(simulator_backend),
         "--arm",
         str(arm),
         "--planning-config",

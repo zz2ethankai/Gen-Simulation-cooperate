@@ -1,5 +1,9 @@
 # InternDataEngine Agent、SimBox 与 CuRobo 能力迁移合并指南
 
+> **历史文档：** 本指南记录的是旧 `InternDataAssets/curobo` 迁移流程，不能作为
+> 当前 Isaac Sim 6/CuRobo v2 环境安装说明。当前运行入口和固定版本以仓库根目录
+> `README.md`、`README-CN.md` 及 `scripts/conda/` 为准。
+
 ## 1. 这份指南解决什么问题
 
 这份指南面向新安装或重新下载 InternDataEngine 的维护者，用于把当前开发仓库中已经形成的能力，安全地迁移到一个干净仓库中。

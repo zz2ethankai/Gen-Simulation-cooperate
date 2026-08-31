@@ -1054,6 +1054,7 @@ def test_agent_workspace_validation_requires_pick_and_place_gate(monkeypatch, tm
     selected = validate_workspace_manifest(
         manifest_path,
         gpu=0,
+        simulator_backend="conda",
         arm="left",
         attach_prim_path_children=["Aligned/collisions"],
         seed=4,
@@ -1063,6 +1064,8 @@ def test_agent_workspace_validation_requires_pick_and_place_gate(monkeypatch, tm
     assert captured["command"][gate_index + 1] == "pick-place"
     seed_index = captured["command"].index("--seed")
     assert captured["command"][seed_index + 1] == "4"
+    backend_index = captured["command"].index("--simulator-backend")
+    assert captured["command"][backend_index + 1] == "conda"
     assert selected == {"candidate_id": "candidate_0", "arm": "left"}
 
 
@@ -1157,6 +1160,7 @@ def test_common_workspace_selection_probes_same_pose_with_each_preselected_arm(
                 "target": value["target"]["name"],
                 "world_xy": local["world_xy"],
                 "attach": kwargs["attach_prim_path_children"],
+                "simulator_backend": kwargs["simulator_backend"],
                 "diagnostic_paths": kwargs["diagnostic_disable_curobo_obstacle_paths"],
             }
         )
@@ -1173,6 +1177,7 @@ def test_common_workspace_selection_probes_same_pose_with_each_preselected_arm(
         tmp_path / "selection",
         gpu=0,
         settings={
+            "execution": {"simulator_backend": "conda"},
             "debug": {
                 "workspace_probe": {
                     "disable_curobo_obstacle_paths": [
@@ -1192,6 +1197,7 @@ def test_common_workspace_selection_probes_same_pose_with_each_preselected_arm(
     assert {tuple(item["world_xy"]) for item in probes} == {(-0.6, 0.0)}
     assert probes[0]["attach"] == ["/World/cup/collision"]
     assert probes[1]["attach"] == ["/World/spoon/collision"]
+    assert all(item["simulator_backend"] == "conda" for item in probes)
     assert all(
         item["diagnostic_paths"] == ["/World/task_0/wall_south/collision_volume"]
         for item in probes

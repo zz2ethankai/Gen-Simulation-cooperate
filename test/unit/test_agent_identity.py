@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -25,6 +24,30 @@ from workflows.simbox.core.utils.episode_event_writer import emit_episode_saved
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROBOT_PROFILE = REPO_ROOT / "workflows/simbox/core/configs/robots/split_aloha.yaml"
+
+
+def test_cli_backend_override_becomes_effective_nested_runtime_setting(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(orchestrator_module, "_create_backend", lambda *_args: object())
+    monkeypatch.setattr(orchestrator_module, "TaskResolver", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(orchestrator_module, "RetentionManager", lambda *_args: object())
+    original = {
+        "execution": {"simulator_backend": "docker"},
+        "generation": {"random_num": 1, "seed": 0},
+    }
+
+    orchestrator = AgentOrchestrator(
+        settings=original,
+        simulator_backend="conda",
+        conda_env="interndata-isaac6",
+        run_root=tmp_path,
+    )
+
+    assert orchestrator.settings["execution"]["simulator_backend"] == "conda"
+    assert orchestrator.settings["execution"]["conda_env"] == "interndata-isaac6"
+    assert original["execution"]["simulator_backend"] == "docker"
 
 
 def _write_task(path: Path, *, name: str) -> Path:
@@ -151,16 +174,32 @@ def test_inventory_round_trip_uses_current_identity_schema(tmp_path: Path):
     assert read_inventory(index) == manifests
 
 
+@pytest.mark.parametrize(
+    ("simulator_backend", "expected_command"),
+    [
+        ("docker", ["bash", "scripts/docker/up_simbox_isaac.sh"]),
+        ("conda", ["bash", "scripts/simbox/run_simbox_task.sh"]),
+    ],
+)
 def test_simbox_subprocess_receives_complete_execution_identity(
     tmp_path: Path,
     monkeypatch,
+    simulator_backend,
+    expected_command,
 ):
     orchestrator = object.__new__(AgentOrchestrator)
     orchestrator.gpu = 3
     orchestrator.random_num = 1
-    orchestrator.conda_env = "interndata"
+    orchestrator.conda_env = "interndata-isaac6"
+    orchestrator.simulator_backend = simulator_backend
     orchestrator.timeout_sec = 30
-    orchestrator.settings = {"debug": {}}
+    orchestrator.settings = {
+        "debug": {},
+        "execution": {
+            "docker": {},
+            "conda": {},
+        },
+    }
     identity = ExecutionIdentity(
         run_id="run_1",
         variant_id="variant_1",
@@ -176,12 +215,17 @@ def test_simbox_subprocess_receives_complete_execution_identity(
     attempt_dir.mkdir()
     captured = {}
 
-    def fake_run(command, **kwargs):
-        captured["command"] = command
-        captured["env"] = kwargs["env"]
-        return SimpleNamespace(returncode=0)
+    class FakeProcess:
+        def __init__(self, command, **kwargs):
+            captured["command"] = command
+            captured["env"] = kwargs["env"]
 
-    monkeypatch.setattr(orchestrator_module.subprocess, "run", fake_run)
+        @staticmethod
+        def wait(timeout):
+            assert timeout == 30
+            return 0
+
+    monkeypatch.setattr(orchestrator_module.subprocess, "Popen", FakeProcess)
 
     return_code, timed_out, _, _ = orchestrator._run_simbox(
         config_path,
@@ -192,8 +236,9 @@ def test_simbox_subprocess_receives_complete_execution_identity(
 
     assert return_code == 0
     assert timed_out is False
-    assert captured["command"] == ["bash", "scripts/simbox/run_simbox_task.sh"]
+    assert captured["command"] == expected_command
     env = captured["env"]
+    assert env["INTERNDATA_SIMULATOR_BACKEND"] == simulator_backend
     assert env["INTERNDATA_SCREENSHOT_DIR"] == str(
         (attempt_dir / "screenshots").resolve()
     )
@@ -215,6 +260,8 @@ def test_simbox_subprocess_receives_complete_execution_identity(
         "INTERNDATA_SCENE_REVISION": "scene_1",
     }
     command = json.loads((attempt_dir / "command.json").read_text(encoding="utf-8"))
+    assert command["command"] == expected_command
+    assert command["env"]["INTERNDATA_SIMULATOR_BACKEND"] == simulator_backend
     assert command["env"]["INTERNDATA_SCREENSHOT_DIR"] == str(
         (attempt_dir / "screenshots").resolve()
     )

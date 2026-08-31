@@ -178,10 +178,12 @@ TaskRequest
 
 ## 5. 使用方法
 
-Agent 控制进程在服务器仓库根目录的 `interndata` Python 环境中运行；所有依赖
-Isaac Sim 和 CuRobo 的仿真、规划与验证任务均通过
-`scripts/docker/up_simbox_isaac.sh` 启动独立 Docker stack。没有宿主机仿真
-回退路径，Docker 不可用时运行会直接停止并生成基础设施诊断。
+Agent 控制进程可继续在服务器仓库根目录的轻量 `interndata` Python 环境中运行。
+依赖 Isaac Sim 和 CuRobo 的仿真、规划与验证默认通过
+`scripts/docker/up_simbox_isaac.sh` 启动独立 Docker stack；也可以显式选择
+`execution.simulator_backend: conda`，由
+`scripts/simbox/run_simbox_task.sh` 在完整的 `interndata-isaac6` 环境中运行。
+两条路径都固定使用 `InternDataAssets/curobov2`。
 
 首次使用或场景/资产变化后建立 inventory：
 
@@ -214,6 +216,18 @@ conda run -n interndata python -m agent run \
   --gpu 0 \
   --max-revisions 2
 ```
+
+使用本机 Conda 仿真后端：
+
+```bash
+conda run -n interndata python -m agent run \
+  --prompt "把白色杯子放到托盘里" \
+  --gpu 0 \
+  --simulator-backend conda \
+  --conda-env interndata-isaac6
+```
+
+`--conda-env` 指定的是完整仿真环境，不要求与启动 Agent 控制进程的环境相同。
 
 恢复中断运行：
 

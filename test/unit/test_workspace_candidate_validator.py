@@ -75,6 +75,7 @@ def test_pick_place_probe_api_passes_candidate_arm_and_contract(monkeypatch, tmp
         tmp_path / "run",
         30,
         "interndata",
+        "conda",
         planning,
         attach_paths,
         seed=4,
@@ -89,6 +90,8 @@ def test_pick_place_probe_api_passes_candidate_arm_and_contract(monkeypatch, tmp
     env = captured["process_kwargs"]["env"]
     assert env["GPU_ID"] == "2"
     assert env["RANDOM_SEED"] == "4"
+    assert env["INTERNDATA_SIMULATOR_BACKEND"] == "conda"
+    assert captured["command"] == ["bash", "scripts/simbox/run_simbox_task.sh"]
     assert result["feasible"] is True
     assert result["results_complete"] is True
     assert result["terminated_after_result"] is True
@@ -142,6 +145,7 @@ def test_pick_probe_api_passes_seed_to_runtime_and_artifact(monkeypatch, tmp_pat
         tmp_path / "run",
         30,
         "interndata",
+        "docker",
         4,
         "left",
         planning,
@@ -157,6 +161,7 @@ def test_pick_probe_api_passes_seed_to_runtime_and_artifact(monkeypatch, tmp_pat
     assert env["RANDOM_SEED"] == "4"
     assert env["INTERNDATA_RANDOM_SEED"] == "4"
     assert env["INTERNDATA_GPU"] == "3"
+    assert env["INTERNDATA_SIMULATOR_BACKEND"] == "docker"
     assert result["seed"] == 4
     pick_result = result["arms"]["left"]
     assert pick_result["seed"] == 4

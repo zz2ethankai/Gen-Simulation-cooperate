@@ -116,7 +116,8 @@ class AgentOrchestrator:
         *,
         gpu: int = 0,
         max_revisions: int = 2,
-        conda_env: str = "interndata",
+        conda_env: str = "interndata-isaac6",
+        simulator_backend: str | None = None,
         timeout_sec: int = 1800,
         model: str | None = None,
         inventory_path: Path = DEFAULT_INDEX_PATH,
@@ -124,10 +125,24 @@ class AgentOrchestrator:
         retain_experience: bool = True,
         settings: dict[str, Any] | None = None,
     ):
-        self.settings = settings or load_agent_settings()
+        self.settings = dict(settings or load_agent_settings())
         self.gpu = gpu
         self.max_revisions = max_revisions
         self.conda_env = conda_env
+        execution = dict(self.settings.get("execution", {}))
+        self.settings["execution"] = execution
+        self.simulator_backend = str(
+            simulator_backend
+            or execution.get("simulator_backend", "docker")
+        ).lower()
+        if self.simulator_backend not in {"docker", "conda"}:
+            raise ValueError(
+                "execution.simulator_backend must be 'docker' or 'conda'"
+            )
+        # Downstream workspace/layout validators receive the effective settings.
+        # Reflect CLI overrides there so nested probes use the same launcher.
+        execution["simulator_backend"] = self.simulator_backend
+        execution["conda_env"] = self.conda_env
         self.timeout_sec = timeout_sec
         self.inventory_path = inventory_path
         self.run_root = run_root
@@ -1074,7 +1089,12 @@ class AgentOrchestrator:
         data_dir = attempt_dir / "data"
         env = os.environ.copy()
         debug_cfg = self.settings.get("debug", {})
-        docker_cfg = self.settings.get("execution", {}).get("docker", {})
+        execution_cfg = self.settings.get("execution", {})
+        docker_cfg = execution_cfg.get("docker", {})
+        conda_cfg = execution_cfg.get("conda", {})
+        launcher_cfg = (
+            docker_cfg if self.simulator_backend == "docker" else conda_cfg
+        )
         env.update(
             {
                 "TASK_CONFIG": str(config_path),
@@ -1097,17 +1117,12 @@ class AgentOrchestrator:
                     (attempt_dir / "screenshots").resolve()
                 ),
                 "INTERNDATA_TASK_PATH": str(config_path),
+                "INTERNDATA_SIMULATOR_BACKEND": self.simulator_backend,
                 "INTERNDATA_STACK_ID": (
                     f"agent-{identity.run_id}-{identity.variant_id}-seed-{identity.seed}"
                 ),
-                "INTERNDATA_COMPOSE_FILE": str(
-                    docker_cfg.get("compose_file", "docker/docker-compose.yml")
-                ),
-                "INTERNDATA_DOCKER_METADATA_PATH": str(
-                    attempt_dir / "docker_runtime.json"
-                ),
                 "LAUNCH_TEMPLATE": str(
-                    docker_cfg.get(
+                    launcher_cfg.get(
                         "launcher_config",
                         "configs/de_plan_with_render_template.yaml",
                     )
@@ -1117,7 +1132,22 @@ class AgentOrchestrator:
                 "PYTHONUNBUFFERED": "1",
             }
         )
-        command = ["bash", "scripts/docker/up_simbox_isaac.sh"]
+        if self.simulator_backend == "docker":
+            env.update(
+                {
+                    "INTERNDATA_COMPOSE_FILE": str(
+                        docker_cfg.get(
+                            "compose_file", "docker/docker-compose.yml"
+                        )
+                    ),
+                    "INTERNDATA_DOCKER_METADATA_PATH": str(
+                        attempt_dir / "docker_runtime.json"
+                    ),
+                }
+            )
+            command = ["bash", "scripts/docker/up_simbox_isaac.sh"]
+        else:
+            command = ["bash", "scripts/simbox/run_simbox_task.sh"]
         (attempt_dir / "command.json").write_text(
             json.dumps(
                 {

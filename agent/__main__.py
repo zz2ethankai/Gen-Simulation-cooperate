@@ -38,7 +38,12 @@ def _common_kwargs(args: argparse.Namespace, settings: dict) -> dict:
             else execution.get("max_revisions", 2)
         ),
         "conda_env": str(
-            getattr(args, "conda_env", None) or execution.get("conda_env", "interndata")
+            getattr(args, "conda_env", None)
+            or execution.get("conda_env", "interndata-isaac6")
+        ),
+        "simulator_backend": (
+            getattr(args, "simulator_backend", None)
+            or execution.get("simulator_backend", "docker")
         ),
         "timeout_sec": int(
             getattr(args, "timeout_sec", None)
@@ -83,6 +88,11 @@ def build_parser(settings: dict) -> argparse.ArgumentParser:
         command.add_argument("--gpu", type=int)
         command.add_argument("--max-revisions", type=int)
         command.add_argument("--conda-env")
+        if name == "run":
+            command.add_argument(
+                "--simulator-backend",
+                choices=("docker", "conda"),
+            )
         command.add_argument("--timeout-sec", type=int)
         command.add_argument("--no-retain", action="store_true")
         if name == "plan":
@@ -102,6 +112,10 @@ def build_parser(settings: dict) -> argparse.ArgumentParser:
     resume.add_argument("--gpu", type=int)
     resume.add_argument("--max-revisions", type=int)
     resume.add_argument("--conda-env")
+    resume.add_argument(
+        "--simulator-backend",
+        choices=("docker", "conda"),
+    )
     resume.add_argument("--timeout-sec", type=int)
     resume.add_argument("--no-retain", action="store_true")
 
@@ -154,6 +168,7 @@ def build_parser(settings: dict) -> argparse.ArgumentParser:
     probe.add_argument("--arm", choices=("left", "right"))
     probe.add_argument("--planning-config", type=Path)
     probe.add_argument("--conda-env")
+    probe.add_argument("--simulator-backend", choices=("docker", "conda"))
     probe.add_argument("--gate", choices=("pick", "pick-place"), default="pick")
     probe.add_argument("--seed", type=int, default=default_seed)
     probe.add_argument("--timeout-sec", type=int, default=900)

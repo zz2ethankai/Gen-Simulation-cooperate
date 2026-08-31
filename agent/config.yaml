@@ -35,7 +35,8 @@ scene_ingest:
   support_fixture: central_work_table
 
 execution:
-  conda_env: interndata
+  simulator_backend: docker
+  conda_env: interndata-isaac6
   gpu: 0
   layout_gpus: [0, 1, 2, 3]
   timeout_sec: 1800
@@ -43,6 +44,8 @@ execution:
   retain_experience: true
   docker:
     compose_file: docker/docker-compose.yml
+    launcher_config: configs/de_plan_with_render_template.yaml
+  conda:
     launcher_config: configs/de_plan_with_render_template.yaml
 
 generation:

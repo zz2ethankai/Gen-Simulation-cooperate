@@ -15,6 +15,18 @@
 
 </div>
 
+## 📚 Contents
+
+- [💻 About](#about)
+- [🔥 Latest News](#latest-news)
+- [🚀 Quickstart](#quickstart)
+  - [🧰 Common asset setup](#common-asset-setup)
+  - [![Docker](https://img.shields.io/badge/-Docker-2496ED?logo=docker&logoColor=white&style=flat-square) Chapter 1 — Docker Only](#chapter-1-docker-only)
+  - [![Conda](https://img.shields.io/badge/-Conda-44A833?logo=anaconda&logoColor=white&style=flat-square) Chapter 2 — Conda](#chapter-2-conda)
+- [📄 License and Citation](#license-and-citation)
+
+<a id="about"></a>
+
 ## 💻 About
 
 <div align="center">
@@ -27,46 +39,39 @@ InternDataEngine is a synthetic data generation engine for embodied AI that powe
 - **More diverse data generation**: By leveraging the internal state of the simulation engine to extract high-quality ground truth, coupled with multi-dimensional domain randomization (e.g., layout, texture, structure, and lighting), the data distribution is significantly expanded. This approach produces precise and diverse operational data, while simultaneously exporting rich multimodal annotations such as bounding boxes, segmentation masks, and keypoints.
 - **More efficient large-scale production**: Nimbus-powered asynchronous pipelines that decouple planning, rendering, and storage, achieving 2–3× end-to-end throughput, cluster-level load balancing and fault tolerance for billion-scale data generation.
 
+<a id="latest-news"></a>
+
 ## 🔥 Latest News
 
 - **[2026/03]** We release the InternDataEngine codebase v1.0, which includes the core modules: InternData-A1 and Nimbus.
 
+<a id="quickstart"></a>
+
 ## 🚀 Quickstart
 
-The local Docker workflow depends on scene/robot assets under
-`InternDataAssets/` and the CuRobo v2 checkout at
-`InternDataAssets/curobov2`. Scene assets are downloaded from ModelScope;
-CuRobo v2 is managed separately by Git.
+The repository has two independent simulator chapters. Prepare the shared
+assets once, then follow exactly one runtime chapter for each machine.
 
-### 1. System prerequisites
+### Common asset setup
 
-- Linux host with an NVIDIA GPU and a working NVIDIA driver
-- Docker Engine with Compose v2
-- NVIDIA Container Toolkit
-- Python 3.10+ on the host for the asset download helper
-- Git
-- `7z` command line tool
-- Enough disk space for the selected assets, CuRobo checkout, Docker images,
-  and Isaac Sim caches.
-
-Quick checks:
+The shared host requirements are a Linux machine with an NVIDIA GPU and working
+driver, Python 3.10+, Git, `7z`, and enough disk for the selected assets and
+CuRobo checkout. Check the basics with:
 
 ```bash
 nvidia-smi
-docker compose version
-docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi
+python3 --version
+git --version
 7z
 ```
 
-On Ubuntu, install missing host tools with:
+On Ubuntu, install missing asset-download tools with:
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y git p7zip-full python3-pip
 python3 -m pip install -U modelscope
 ```
-
-### 2. Download assets
 
 Download and extract the ModelScope split archive from the repository root:
 
@@ -92,14 +97,13 @@ Clone the CuRobo v2 repository separately after the ModelScope download:
 
 ```bash
 git clone https://github.com/MaxDYF/curobo.git InternDataAssets/curobov2
+git -C InternDataAssets/curobov2 checkout 4ea77366ca48ee453e7df139e39fa6532af49f3b
 ```
 
 The runtime uses `InternDataAssets/curobov2` directly. It does not download or
 require the legacy `InternDataAssets/curobo` checkout.
 
-### 3. Verify the checkout
-
-Run these checks before building Docker images:
+Verify the shared checkout before entering either chapter:
 
 ```bash
 test -d InternDataAssets/assets
@@ -111,14 +115,34 @@ test -L workflows/simbox/assets
 test -L workflows/simbox/panda_drake
 ```
 
-If `docker/isaac/entrypoint.sh` is not executable on your checkout, fix it
-before building:
+<a id="chapter-1-docker-only"></a>
+
+## 🐳 Chapter 1 — Docker Only
+
+This chapter uses the reproducible production path through
+`scripts/docker/up_simbox_isaac.sh`. It does not require a host Isaac Sim or
+Conda simulator environment.
+
+### Prerequisites
+
+- Docker Engine with Compose v2
+- NVIDIA Container Toolkit
+- Enough disk space for Docker images and Isaac Sim caches
+
+Check the Docker runtime and GPU access:
+
+```bash
+docker compose version
+docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi
+```
+
+If the entrypoint is not executable, fix it before building:
 
 ```bash
 chmod +x docker/isaac/entrypoint.sh scripts/docker/up_simbox_isaac.sh
 ```
 
-### 4. Build and start
+### Build and run
 
 Build the Isaac image:
 
@@ -138,45 +162,12 @@ Stop the stack:
 scripts/docker/stop_all_docker.sh
 ```
 
-中文项目内文档：
-- [文档索引](./docs/README.md)（API 文档 / 开发文档 / 归档）
-- [数据生成 README / Quick Start](./docs/archive/data_generation/README.md)，包含单任务启动、配置分类、Docker 并行生成、资产替换和 SimBox skill 替换。
+Use `--launcher-config configs/de_pipe_template.yaml` for the pipeline template.
+Parallel workers should pass distinct `--stack-id` and `--gpu` values so their
+container names and Isaac cache directories remain isolated.
 
-For more details, please check [Documentation](https://internrobotics.github.io/InternDataEngine-Docs/).
-
-## Isaac Sim Deployment
-
-SimBox navigation runs inside Isaac through the local A* planner and mobile-base driver. The deployment uses one Isaac service and does not require ROS or Nav2.
-
-Prerequisites:
-
-- Docker Engine with Compose v2
-- NVIDIA Container Toolkit and a visible GPU on the host
-- Enough local disk space for Isaac caches under `.docker/isaac-sim/`
-
-Build the image from the repository root with:
-
-```bash
-docker compose -f docker/docker-compose.yml build
-```
-
-Start the default single-GPU container with:
-
-```bash
-scripts/docker/up_simbox_isaac.sh
-```
-
-To select a GPU and limit the Isaac CPU scheduling quota:
-
-```bash
-scripts/docker/up_simbox_isaac.sh --gpu 0 --isaac-cpus 16
-```
-
-`cpus` is a Docker CPU quota, not a physical-core pinning policy.
-
-Use `--launcher-config configs/de_pipe_template.yaml` for the pipeline template. Parallel workers should pass distinct `--stack-id` and `--gpu` values so their container names and Isaac cache directories remain isolated.
-
-For a persistent Isaac Bash development environment without automatically starting `launcher.py`, use the isolated developer entrypoint:
+For a persistent Isaac Bash development environment without automatically
+starting `launcher.py`, use the isolated developer entrypoint:
 
 ```bash
 scripts/docker/isaac_dev.sh shell --gpu 0 --build
@@ -185,7 +176,10 @@ scripts/docker/isaac_dev.sh exec -- python -c 'import torch; print(torch.__versi
 scripts/docker/isaac_dev.sh stop
 ```
 
-It reuses the existing Isaac image, GPU, repository, and CuRobo mounts, while keeping a separate `isaac-dev-*` container name and `output/isaac-dev/` cache.
+It reuses the existing Isaac image, GPU, repository, and CuRobo mounts, while
+keeping a separate `isaac-dev-*` container name and `output/isaac-dev/` cache.
+
+### Logs and stop
 
 Watch logs:
 
@@ -199,24 +193,106 @@ Stop the stack:
 scripts/docker/stop_all_docker.sh
 ```
 
-By default, this stop script only stops containers named `isaac` and `isaac-*`. To stop every running Docker container on the host,
-edit `DEFAULT_STOP_EVERY_RUNNING_CONTAINER="1"` at the top of the script.
-
-The `isaac` service autostarts `launcher.py` with the config selected by `scripts/docker/up_simbox_isaac.sh`.
-
+By default, this stop script only stops containers named `isaac` and `isaac-*`.
+The `isaac` service autostarts `launcher.py` with the selected launcher config.
+To stop every running Docker container on the host, set
+`DEFAULT_STOP_EVERY_RUNNING_CONTAINER="1"` at the top of the stop script.
 Generated data and logs are written to:
 
 - run logs: `output/simbox_plan_with_render/de_time_profile_*.log`
 - rendered episodes and LMDB exports: `output/simbox_plan_with_render/...`
 - Isaac container logs/cache mounts: `.docker/isaac-sim/`
 
-If you prefer to run from the `docker/` directory directly, the equivalent commands are:
+If you prefer to run from the `docker/` directory directly:
 
 ```bash
 cd docker
 docker compose build
 ../scripts/docker/up_simbox_isaac.sh
 ```
+
+<a id="chapter-2-conda"></a>
+
+## 🟢 Chapter 2 — Conda
+
+This chapter runs Isaac Sim natively from a maintained Conda environment. It
+uses Python 3.12, Isaac Sim 6.0.1, Torch 2.11/cu128, and the pinned CuRobo v2
+checkout at `InternDataAssets/curobov2`.
+
+### Prerequisites
+
+The native runtime requires Linux x86_64, glibc 2.35 or newer, an NVIDIA GPU,
+and Conda. Docker and the NVIDIA Container Toolkit are not required for this
+chapter. The host Python used to download assets may remain in a separate
+environment.
+
+### Install the simulator environment
+
+Create the pinned environment from the repository root:
+
+```bash
+scripts/conda/setup_isaac6_env.sh --env interndata-isaac6
+```
+
+This installs Python 3.12, Torch 2.11/cu128, Isaac Sim 6.0.1.0, the project
+runtime packages, and the dependencies declared by the pinned CuRobo v2
+checkout. CuRobo itself is imported directly from
+`InternDataAssets/curobov2`; an unrelated `nvidia-curobo` wheel is rejected.
+
+Verify or enter the environment:
+
+```bash
+CONDA_ENV=interndata-isaac6 source scripts/conda/activate_isaac6_env.sh
+python scripts/conda/verify_isaac6_env.py
+```
+
+### Preflight and run a task
+
+Run the package, source-identity, CUDA_HOME, and GPU preflight without starting
+Isaac:
+
+```bash
+TASK_CONFIG=workflows/simbox/core/configs/tasks/example/sort_the_rubbish.yaml \
+GPU_ID=0 \
+CONDA_ENV=interndata-isaac6 \
+CONDA_PREFLIGHT_ONLY=1 \
+scripts/simbox/run_simbox_task.sh
+```
+
+Run one task natively after the preflight passes:
+
+```bash
+TASK_CONFIG=workflows/simbox/core/configs/tasks/example/sort_the_rubbish.yaml \
+GPU_ID=0 \
+CONDA_ENV=interndata-isaac6 \
+scripts/simbox/run_simbox_task.sh
+```
+
+### Run through Agent
+
+The Agent control process can stay in its lightweight environment; select the
+native simulator explicitly and point it at the full Isaac environment:
+
+```bash
+conda run -n interndata python -m agent run \
+  --prompt "put the cup on the tray" \
+  --gpu 0 \
+  --simulator-backend conda \
+  --conda-env interndata-isaac6
+```
+
+The setup script supports `--dry-run`, and the task runner supports `DRY_RUN=1`
+and `CONDA_PREFLIGHT_ONLY=1` for server diagnostics. Docker remains the Agent
+default unless `--simulator-backend conda` (or
+`execution.simulator_backend: conda`) is selected.
+
+中文项目内文档：
+- [文档索引](./docs/README.md)（API 文档 / 开发文档 / 归档）
+- [数据生成 README / Quick Start](./docs/archive/data_generation/README.md)，包含单任务启动、配置分类、Docker 并行生成、资产替换和 SimBox skill 替换。
+
+For more details, please check [Documentation](https://internrobotics.github.io/InternDataEngine-Docs/).
+
+<a id="license-and-citation"></a>
 
 ## License and Citation
 All the code within this repo are under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/). Please consider citing our papers if it helps your research.

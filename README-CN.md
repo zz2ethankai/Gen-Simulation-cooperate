@@ -1,34 +1,36 @@
 # InternDataEngine
 
+## 📚 目录
+
+- [🚀 快速开始](#quickstart)
+  - [🧰 公共资产准备](#common-asset-setup)
+  - [Docker 第一章：Docker Only](#chapter-1-docker-only)
+  - [Conda 第二章：Conda](#chapter-2-conda)
+
 InternDataEngine 是面向具身智能的合成数据生成引擎，基于 NVIDIA Isaac Sim 和 Nimbus 运行。SimBox 移动操作中的导航由 Isaac 内部的本地 A* 规划器和移动底盘驱动执行，无需 ROS 或 Nav2。
 
-## 快速开始
 
-当前 Docker 工作流依赖 `InternDataAssets/` 下的场景/机器人资产，以及
-`InternDataAssets/curobov2` 下的 CuRobo v2。场景资产通过 ModelScope 获取，
-CuRobo v2 单独通过 Git 管理。
 
-### 1. 系统依赖
+## 🚀 快速开始
 
-- Linux 主机，NVIDIA GPU 和可用驱动
-- Docker Engine with Compose v2
-- NVIDIA Container Toolkit
-- 宿主机 Python 3.10+
-- Git
-- `7z` 命令行工具
-- 足够磁盘空间存放所需资产、CuRobo checkout、Docker 镜像和 Isaac Sim cache。
-  当前完整的 `InternDataAssets/` 资产目录约占 200 GB。
+仓库提供两个相互独立的仿真章节。公共资产只需准备一次，然后在每台机器上选择
+一个运行章节。
 
-快速检查：
+
+
+### 公共资产准备
+
+公共依赖为 Linux 主机、NVIDIA GPU 和可用驱动、Python 3.10+、Git、`7z`，
+以及足够的资产和 CuRobo 磁盘空间：
 
 ```bash
 nvidia-smi
-docker compose version
-docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi
+python3 --version
+git --version
 7z
 ```
 
-Ubuntu 上缺少工具时可安装：
+Ubuntu 缺少资产下载工具时：
 
 ```bash
 sudo apt-get update
@@ -36,39 +38,21 @@ sudo apt-get install -y git p7zip-full python3-pip
 python3 -m pip install -U modelscope
 ```
 
-### 2. 下载资产
-
-在仓库根目录运行：
+在仓库根目录下载并解压 ModelScope 资产：
 
 ```bash
 python3 scripts/download_modelscope.py --token <MODEL_SCOPE_TOKEN>
 ```
 
-脚本会下载 `MinMaxMex/InterndataAssets/InternDataAssets_7z` 分卷压缩包，
-解压出 `InternDataAssets/`，并在 SimBox 下创建场景和 `panda_drake` 的软链接。
-当前 ModelScope 压缩包只包含 `assets/custom`、`robots/` 下的机器人资产和
-`panda_drake`；其他场景/任务资产以及两个 CuRobo checkout 都不会上传：
-
-```text
-workflows/simbox/assets -> ../../InternDataAssets/assets
-workflows/simbox/panda_drake -> ../../InternDataAssets/panda_drake
-```
-
-如果本地已经存在 `InternDataAssets/`，脚本会拒绝覆盖。需要重新安装资产时，
-请先移动或删除旧目录。
-
-ModelScope 下载完成后，单独拉取 CuRobo v2：
+随后拉取固定版本的 CuRobo v2：
 
 ```bash
 git clone https://github.com/MaxDYF/curobo.git InternDataAssets/curobov2
+git -C InternDataAssets/curobov2 checkout 4ea77366ca48ee453e7df139e39fa6532af49f3b
 ```
 
-运行时直接使用 `InternDataAssets/curobov2`，不再下载或依赖旧的
-`InternDataAssets/curobo` checkout。
-
-### 3. 安装校验
-
-构建镜像前先确认：
+运行时只使用 `InternDataAssets/curobov2`，不依赖旧的
+`InternDataAssets/curobo`。检查资产和软链接：
 
 ```bash
 test -d InternDataAssets/assets
@@ -80,119 +64,139 @@ test -L workflows/simbox/assets
 test -L workflows/simbox/panda_drake
 ```
 
-如果入口脚本没有执行权限，先修复：
+
+
+## 🐳 第一章：Docker Only
+
+本章是生产默认路径，只通过
+`scripts/docker/up_simbox_isaac.sh` 运行，不需要宿主机 Isaac Sim 或 Conda
+仿真环境。
+
+### 前置条件
+
+- Docker Engine with Compose v2
+- NVIDIA Container Toolkit
+- 足够的 Docker 镜像和 Isaac Sim cache 磁盘空间
+
+检查 Docker 和 GPU：
+
+```bash
+docker compose version
+docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi
+```
+
+如果入口脚本没有执行权限：
 
 ```bash
 chmod +x docker/isaac/entrypoint.sh scripts/docker/up_simbox_isaac.sh
 ```
 
-### 执行配置文件功能解析
-
-填写`scripts/docker/up_simbox_isaac.sh` 中
-
-```
-DEFAULT_LAUNCHER_CONFIG="configs/de_plan_with_render_template.yaml"
-```
-
-每个配置详解如下,
-
-
-
-## Isaac Sim Docker 部署
-
-SimBox 导航在 Isaac 内部通过本地 A* 规划器和移动底盘驱动运行。Docker 部署只有一个 `isaac` 服务，不启动 ROS、Nav2 或额外 bridge 容器。
-
-构建镜像：
+### 构建与运行
 
 ```bash
 docker compose -f docker/docker-compose.yml build
-```
-
-启动默认单 GPU 容器（GPU `0`，默认配置为 `configs/de_plan_with_render_template.yaml`）：
-
-```bash
 scripts/docker/up_simbox_isaac.sh
 ```
 
-指定 GPU、CPU 配额或 launcher 配置：
+指定 GPU、CPU 配额或 pipeline 配置：
 
 ```bash
 scripts/docker/up_simbox_isaac.sh --gpu 0 --isaac-cpus 16
 scripts/docker/up_simbox_isaac.sh --launcher-config configs/de_pipe_template.yaml
 ```
 
-`cpus` 是 Docker CPU 配额，不是物理 CPU 核绑定。并行任务请为每个实例指定不同的 `--stack-id` 和 `--gpu`，以隔离容器名和 Isaac cache 目录：
+`cpus` 是 Docker CPU 配额，不是物理 CPU 核绑定。并行任务请使用不同的
+`--stack-id` 和 `--gpu`：
 
 ```bash
 scripts/docker/up_simbox_isaac.sh --stack-id worker0 --gpu 0
 scripts/docker/up_simbox_isaac.sh --stack-id worker1 --gpu 1
 ```
 
-### Isaac Bash 开发环境
+### 开发、日志与停止
 
-如果只需要进入 Isaac Sim 容器开发代码，不希望容器自动运行
-`launcher.py`，使用独立的开发入口：
+进入独立的 Isaac Bash 开发容器：
 
 ```bash
-# 构建镜像并进入 /workspace 的 Bash
 scripts/docker/isaac_dev.sh shell --gpu 0 --build
-
-# 后台启动，之后再进入
 scripts/docker/isaac_dev.sh start --gpu 0
-scripts/docker/isaac_dev.sh shell
-
-# 让脚本化工具在容器内执行命令
 scripts/docker/isaac_dev.sh exec -- python -c 'import torch; print(torch.__version__)'
-
-# 停止开发容器
 scripts/docker/isaac_dev.sh stop
 ```
 
-该入口复用现有 Isaac 镜像、GPU、代码和 CuRobo 挂载，但使用独立的
-`isaac-dev-*` 容器名和 `output/isaac-dev/` cache，不会启动任务生成器，
-也不会影响普通的 `isaac` 任务容器。
-
-## 查看日志
-
-默认容器：
+查看日志并停止任务：
 
 ```bash
 docker logs -f isaac
+scripts/docker/stop_all_docker.sh
 ```
 
-指定 `--stack-id worker0` 的容器示例：
-
-```bash
-docker logs -f isaac-worker0
-```
+默认只停止 `isaac` 和 `isaac-*` 容器。如确需停止宿主机上的所有 Docker
+容器，将停止脚本顶部的 `DEFAULT_STOP_EVERY_RUNNING_CONTAINER="1"` 打开后再执行。
 
 常见输出位置：
 
 - plan-with-render 日志：`output/simbox_plan_with_render*/de_time_profile_*.log`
 - 渲染数据和 LMDB：`output/simbox_plan_with_render*/`
-- Isaac cache/log 挂载：`.docker/isaac-sim/`
+- Isaac cache/log：`.docker/isaac-sim/`
 
-## 停止容器
 
-停止本项目启动的 Isaac 容器：
 
-```bash
-scripts/docker/stop_all_docker.sh
-```
+## 🟢 第二章：Conda
 
-默认只停止：
+本章在宿主机 Conda 环境中原生运行 Isaac Sim。它不需要 Docker 或 NVIDIA
+Container Toolkit，但要求 Linux x86_64、glibc 2.35+、NVIDIA GPU 和 Conda。
 
-- `isaac`
-- `isaac-*`
-
-如果确实要停止宿主机上所有正在运行的 Docker 容器，把脚本顶部改成：
+### 安装环境
 
 ```bash
-DEFAULT_STOP_EVERY_RUNNING_CONTAINER="1"
+scripts/conda/setup_isaac6_env.sh --env interndata-isaac6
 ```
 
-然后再运行：
+脚本安装 Python 3.12、Torch 2.11/cu128、Isaac Sim 6.0.1.0，以及项目和
+CuRobo v2 依赖。CuRobo 始终从 `InternDataAssets/curobov2` 导入，并拒绝
+`nvidia-curobo` wheel。
+
+### 激活、校验与预检
 
 ```bash
-scripts/docker/stop_all_docker.sh
+CONDA_ENV=interndata-isaac6 source scripts/conda/activate_isaac6_env.sh
+python scripts/conda/verify_isaac6_env.py
 ```
+
+不启动 Isaac，先检查版本、源码身份、`CUDA_HOME` 和 GPU：
+
+```bash
+TASK_CONFIG=workflows/simbox/core/configs/tasks/example/sort_the_rubbish.yaml \
+GPU_ID=0 \
+CONDA_ENV=interndata-isaac6 \
+CONDA_PREFLIGHT_ONLY=1 \
+scripts/simbox/run_simbox_task.sh
+```
+
+### 运行任务与 Agent
+
+预检通过后运行单个任务：
+
+```bash
+TASK_CONFIG=workflows/simbox/core/configs/tasks/example/sort_the_rubbish.yaml \
+GPU_ID=0 \
+CONDA_ENV=interndata-isaac6 \
+scripts/simbox/run_simbox_task.sh
+```
+
+Agent 控制进程可以继续使用轻量 `interndata` 环境；显式选择 Conda 仿真：
+
+```bash
+conda run -n interndata python -m agent run \
+  --prompt "把杯子放到托盘里" \
+  --gpu 0 \
+  --simulator-backend conda \
+  --conda-env interndata-isaac6
+```
+
+`setup_isaac6_env.sh --dry-run` 可查看安装步骤，任务入口支持
+`DRY_RUN=1` 和 `CONDA_PREFLIGHT_ONLY=1`。Agent 默认仍为 Docker，除非指定
+`--simulator-backend conda` 或设置 `execution.simulator_backend: conda`。
+
+更多 API、开发和历史文档见 [文档索引](./docs/README.md)。

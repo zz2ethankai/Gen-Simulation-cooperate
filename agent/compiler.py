@@ -837,10 +837,11 @@ def _write_workspace_diagnostics(
 def validate_workspace_manifest(
     manifest_path: Path,
     gpu: int,
-    conda_env: str = "interndata",
+    conda_env: str = "interndata-isaac6",
     candidate_id: str | None = None,
     stop_after_feasible: bool = True,
     *,
+    simulator_backend: str = "docker",
     arm: str | None = None,
     attach_prim_path_children: list[str] | None = None,
     planning_config: Path = DEFAULT_CONFIG_PATH,
@@ -866,6 +867,8 @@ def validate_workspace_manifest(
         raise CompileError("planning_gate must be pick or pick-place")
     if seed < 0:
         raise CompileError("workspace validation seed must be non-negative")
+    if simulator_backend not in {"docker", "conda"}:
+        raise CompileError("simulator_backend must be docker or conda")
     command = [
         "python",
         "scripts/simbox/validate_workspace_candidates.py",
@@ -873,6 +876,8 @@ def validate_workspace_manifest(
         str(manifest_path),
         "--gpus",
         str(gpu),
+        "--simulator-backend",
+        simulator_backend,
         "--conda-env",
         conda_env,
         "--arm",
@@ -952,8 +957,9 @@ def validate_next_workspace_candidate(
     manifest_path: Path,
     current_candidate_id: str,
     gpu: int,
-    conda_env: str = "interndata",
+    conda_env: str = "interndata-isaac6",
     *,
+    simulator_backend: str = "docker",
     arm: str | None = None,
     attach_prim_path_children: list[str] | None = None,
     planning_config: Path = DEFAULT_CONFIG_PATH,
@@ -974,6 +980,7 @@ def validate_next_workspace_candidate(
                 manifest_path,
                 gpu,
                 conda_env,
+                simulator_backend=simulator_backend,
                 candidate_id=candidate_id,
                 stop_after_feasible=False,
                 arm=arm,
@@ -1150,7 +1157,7 @@ def select_task_workspace_candidate(
     manifest: SceneCapabilityManifest,
     output_dir: Path,
     gpu: int,
-    conda_env: str = "interndata",
+    conda_env: str = "interndata-isaac6",
     settings: Mapping[str, Any] | None = None,
     excluded_candidate_ids: set[str] | None = None,
     seed: int = 0,
@@ -1158,6 +1165,14 @@ def select_task_workspace_candidate(
     """Select one base pose that passes every subtask's preselected-arm Probe."""
 
     effective_settings = dict(settings or load_agent_settings())
+    execution_settings = effective_settings.get("execution", {})
+    if not isinstance(execution_settings, Mapping):
+        raise CompileError("agent execution config must be a mapping")
+    simulator_backend = str(
+        execution_settings.get("simulator_backend", "docker")
+    ).strip().lower()
+    if simulator_backend not in {"docker", "conda"}:
+        raise CompileError("execution.simulator_backend must be docker or conda")
     debug_settings = effective_settings.get("debug", {})
     if not isinstance(debug_settings, Mapping):
         raise CompileError("agent debug config must be a mapping")
@@ -1214,6 +1229,7 @@ def select_task_workspace_candidate(
                     workspace_manifest_path,
                     gpu,
                     conda_env,
+                    simulator_backend=simulator_backend,
                     arm=execution_variant.arm_binding[subtask.subtask_id],
                     attach_prim_path_children=attach_paths,
                     diagnostic_disable_curobo_obstacle_paths=diagnostic_paths,
@@ -1240,6 +1256,7 @@ def select_task_workspace_candidate(
                         workspace_manifest_path,
                         gpu,
                         conda_env,
+                        simulator_backend=simulator_backend,
                         candidate_id=candidate_id,
                         stop_after_feasible=False,
                         arm=execution_variant.arm_binding[subtask.subtask_id],
@@ -1329,6 +1346,7 @@ def select_task_workspace_candidate(
                     probe_manifest,
                     gpu,
                     conda_env,
+                    simulator_backend=simulator_backend,
                     candidate_id=str(candidate["candidate_id"]),
                     stop_after_feasible=False,
                     arm=execution_variant.arm_binding[subtask.subtask_id],
