@@ -12,6 +12,7 @@ from nimbus.utils.config import save_config
 
 
 DEFAULT_LOG_TIMEZONE = "Asia/Shanghai"
+VELOCITY_TRACE_LOGGER_NAME = "de_velocity_trace"
 
 
 def _get_log_timezone():
@@ -28,6 +29,34 @@ def _get_log_timezone():
 
 def _format_log_timestamp(log_tz):
     return datetime.now(log_tz).strftime("%Y%m%d_%H%M%S_%f")
+
+
+def _configure_velocity_trace_logging(log_dir, timestamp, formatter):
+    """Send high-volume motion traces to a dedicated file.
+
+    The trace logger is deliberately non-propagating so per-step velocity
+    records do not get copied into the regular data-engine log.  A tagged
+    handler is replaced when logging is configured more than once in the
+    same process (for example in a worker restart), while unrelated handlers
+    remain untouched.
+    """
+
+    logger = logging.getLogger(VELOCITY_TRACE_LOGGER_NAME)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+    for handler in list(logger.handlers):
+        if not getattr(handler, "_interndata_velocity_trace", False):
+            continue
+        logger.removeHandler(handler)
+        handler.close()
+
+    detail_file = os.path.join(log_dir, f"de_velocity_trace_{timestamp}.log")
+    handler = logging.FileHandler(detail_file, mode="a")
+    handler._interndata_velocity_trace = True
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    return logger
 
 
 class LocalTimezoneFormatter(logging.Formatter):
@@ -80,6 +109,7 @@ def configure_logging(exp_name, name=None, config=None):
     formatter = LocalTimezoneFormatter("%(asctime)s - %(levelname)s - %(message)s", log_tz=log_tz)
     fh.setFormatter(formatter)
     logger.addHandler(fh)
+    _configure_velocity_trace_logging(log_dir, timestamp, formatter)
     logger.info("Start Data Engine")
 
     return logger

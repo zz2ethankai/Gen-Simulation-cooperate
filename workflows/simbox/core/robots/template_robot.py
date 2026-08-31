@@ -9,16 +9,18 @@ import time
 import traceback
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 from core.robots.base_robot import register_robot
-from omni.isaac.core.robots.robot import Robot
-from omni.isaac.core.utils.prims import create_prim, get_prim_at_path
-from omni.isaac.core.utils.transformations import (
+from isaacsim.core.api.robots.robot import Robot
+from isaacsim.core.utils.prims import create_prim, get_prim_at_path
+from isaacsim.core.utils.transformations import (
     get_relative_transform,
     pose_from_tf_matrix,
     tf_matrix_from_pose,
 )
+from isaacsim.core.utils.xforms import get_world_pose as get_prim_world_pose
 from scipy.interpolate import interp1d
 from pxr import Usd
 
@@ -27,6 +29,7 @@ from core.utils.joint_index_resolver import (
     resolve_configured_joint_groups,
     resolve_joint_names,
 )
+from core.runtime import BaseHoldStrategy
 
 
 LOGGER = logging.getLogger("de_logger")
@@ -78,6 +81,7 @@ class TemplateRobot(Robot):
         self._manipulation_base_hold_indices = np.asarray([], dtype=np.int64)
         self._manipulation_base_hold_positions = np.asarray([], dtype=float)
         self._manipulation_base_hold_saved_drive = None
+        self._base_hold_strategy = None
 
     @staticmethod
     def _resolve_usd_path(asset_root: str, path: str) -> str:
@@ -91,6 +95,18 @@ class TemplateRobot(Robot):
             return str(rooted.resolve())
         if configured.exists():
             return str(configured.resolve())
+
+        # Scene-4 task YAMLs were generated with paths such as
+        # ``../../../../example_assets/...``.  Those paths were meaningful in
+        # the asset-generation checkout, but the checked-in robot USDs live
+        # under ``workflows/simbox/example_assets`` in the SimBox container.
+        repo_root = Path(__file__).resolve().parents[4]
+        repo_relative = str(configured)
+        while repo_relative.startswith("../"):
+            repo_relative = repo_relative[3:]
+        packaged_asset = repo_root / "workflows" / "simbox" / repo_relative
+        if packaged_asset.exists():
+            return str(packaged_asset.resolve())
         return str(rooted.resolve())
 
     @staticmethod
@@ -127,6 +143,22 @@ class TemplateRobot(Robot):
         self.fr_base_path = f"{self.robot_prim_path}/{self.cfg['fr_base_path']}" if self.cfg.get("fr_base_path") else ""
         self.fr_hand_path = self.fr_ee_path
 
+    def get_armbase_world_pose(self, arm="left"):
+        """Return the active arm-base pose in the Isaac world frame."""
+        if arm == "left":
+            base_path = self.fl_base_path
+        elif arm == "right":
+            base_path = self.fr_base_path
+        else:
+            raise ValueError(f"unsupported arm {arm!r}")
+        translation, orientation = get_prim_world_pose(base_path)
+        return np.asarray(translation, dtype=np.float32), np.asarray(orientation, dtype=np.float32)
+
+    def get_armbase_world_transform(self, arm="left"):
+        """Return the active arm-base transform in the Isaac world frame."""
+        translation, orientation = self.get_armbase_world_pose(arm)
+        return tf_matrix_from_pose(translation, orientation)
+
     def _setup_gripper_keypoints(self):
         """Setup gripper keypoints. Override in subclass."""
         self.fl_gripper_keypoints = self.cfg["fl_gripper_keypoints"]
@@ -161,8 +193,10 @@ class TemplateRobot(Robot):
             self._gripper_ed_func = None
 
     def initialize(self, *args, **kwargs):
-        super().initialize()
-        self._articulation_view.initialize()
+        # Robot.initialize() owns articulation-view initialization in Isaac 6.
+        # Forward the active physics view instead of creating a second implicit
+        # view, and do not initialize _articulation_view a second time.
+        super().initialize(*args, **kwargs)
         self._resolve_runtime_joint_indices()
         self._setup_joint_velocities()
         self._setup_joint_homes()
@@ -320,125 +354,169 @@ class TemplateRobot(Robot):
             )
 
     def apply_action(self, joint_positions, joint_indices, *args, **kwargs):
+        """Apply the caller's arm/gripper action without adding base DOFs."""
+
         positions = np.asarray(joint_positions, dtype=float).reshape(-1)
         indices = np.asarray(joint_indices, dtype=np.int64).reshape(-1)
-        if self._manipulation_base_hold_active:
-            supplied = set(indices.tolist())
-            missing = [
-                (index, position)
-                for index, position in zip(
-                    self._manipulation_base_hold_indices,
-                    self._manipulation_base_hold_positions,
-                )
-                if int(index) not in supplied
-            ]
-            if missing:
-                indices = np.concatenate(
-                    [indices, np.asarray([item[0] for item in missing], dtype=np.int64)]
-                )
-                positions = np.concatenate(
-                    [positions, np.asarray([item[1] for item in missing], dtype=float)]
-                )
+        if positions.size != indices.size:
+            raise ValueError(
+                "TemplateRobot action position count must match joint index count"
+            )
         self._articulation_view.set_joint_position_targets(positions, joint_indices=indices)
+        self.reapply_manipulation_base_hold()
 
-    def enable_manipulation_base_hold(self) -> None:
-        """Hold profile-declared base and lift DOFs during manipulation."""
+    def _manipulation_base_hold_config(self):
+        """Return this robot's explicit base-hold configuration.
+
+        Concrete mobile robots may provide a small code-level default when
+        their hold contract is intrinsic to the asset.  Ordinary robots keep
+        the feature disabled unless their config opts in.
+        """
 
         config = self.cfg.get("manipulation_base_hold", {})
-        if not config or not bool(config.get("enabled", False)):
-            return
-        joint_names = list(config.get("joint_names", []))
-        if not joint_names:
-            raise ValueError(
-                f"robot {self.name} enables manipulation_base_hold without joint_names"
+        return config if isinstance(config, dict) else {}
+
+    def _get_manipulation_base_hold_strategy(self):
+        if self._base_hold_strategy is None:
+            self._base_hold_strategy = BaseHoldStrategy(
+                self._manipulation_base_hold_config(),
+                port=self,
             )
-        indices = np.asarray(
-            resolve_joint_names(
-                list(self.dof_names),
-                joint_names,
-                group=f"{self.name}.manipulation_base_hold",
-            ),
-            dtype=np.int64,
-        )
-        joint_state = self.get_joints_state()
-        positions = np.asarray(joint_state.positions[indices], dtype=float).copy()
+        return self._base_hold_strategy
 
-        articulation_controller = self.get_articulation_controller()
-        kps, kds = articulation_controller.get_gains()
-        max_efforts = articulation_controller.get_max_efforts()
-        kps = np.asarray(kps, dtype=float).copy()
-        kds = np.asarray(kds, dtype=float).copy()
-        if max_efforts is None:
-            raise RuntimeError(f"robot {self.name} does not expose articulation max efforts")
-        max_efforts = np.asarray(max_efforts, dtype=float).copy()
-
-        if self._manipulation_base_hold_saved_drive is None:
-            self._manipulation_base_hold_saved_drive = {
-                "indices": indices.copy(),
-                "kps": kps[indices].copy(),
-                "kds": kds[indices].copy(),
-                "max_efforts": max_efforts[indices].copy(),
-            }
-
-        stiffness = float(config.get("stiffness", 100000.0))
-        damping = float(config.get("damping", 3000.0))
-        max_effort = float(config.get("max_effort", 10000.0))
-        kps[indices] = stiffness
-        kds[indices] = damping
-        max_efforts[indices] = max_effort
-        articulation_controller.set_gains(kps=kps, kds=kds)
-        articulation_controller.set_max_efforts(max_efforts)
-        self._articulation_view.set_joint_position_targets(positions, joint_indices=indices)
-        self._articulation_view.set_joint_velocity_targets(
-            np.zeros_like(positions), joint_indices=indices
+    # BaseHoldPort implementation.  These methods deliberately sit on the
+    # robot boundary so the strategy remains independent of Isaac Sim types.
+    def resolve_joint_indices(self, joint_names):
+        return resolve_joint_names(
+            list(self.dof_names),
+            list(joint_names),
+            group=f"{self.name}.manipulation_base_hold",
         )
 
-        self._manipulation_base_hold_indices = indices
-        self._manipulation_base_hold_positions = positions
-        self._manipulation_base_hold_active = True
-        LOGGER.warning(
-            "[BaseHold] robot=%s joints=%s indices=%s targets=%s kp=%.1f kd=%.1f max_effort=%.1f",
-            self.name,
-            joint_names,
-            indices.tolist(),
-            np.round(positions, 6).tolist(),
-            stiffness,
-            damping,
-            max_effort,
-        )
+    def read_joint_positions(self, indices):
+        state = self._get_joints_state_compat()
+        positions = np.asarray(state.positions, dtype=float)
+        if positions.ndim > 1:
+            positions = positions[0]
+        return positions[np.asarray(indices, dtype=np.int64)].copy()
 
-    def suspend_manipulation_base_hold(self) -> bool:
-        """Restore navigation drive gains while a mobile-base skill is active."""
-        if not self._manipulation_base_hold_active:
-            return False
-        saved = self._manipulation_base_hold_saved_drive
-        if not isinstance(saved, dict):
-            raise RuntimeError(f"robot {self.name} has no saved base drive state")
-        indices = np.asarray(saved["indices"], dtype=np.int64)
+    def get_drive_state(self, indices):
         controller = self.get_articulation_controller()
         kps, kds = controller.get_gains()
         max_efforts = controller.get_max_efforts()
         if max_efforts is None:
             raise RuntimeError(f"robot {self.name} does not expose articulation max efforts")
-        kps = np.asarray(kps, dtype=float).copy()
-        kds = np.asarray(kds, dtype=float).copy()
-        max_efforts = np.asarray(max_efforts, dtype=float).copy()
-        kps[indices] = saved["kps"]
-        kds[indices] = saved["kds"]
-        max_efforts[indices] = saved["max_efforts"]
-        controller.set_gains(kps=kps, kds=kds)
-        controller.set_max_efforts(max_efforts)
-        self._manipulation_base_hold_active = False
-        return True
+        indices = np.asarray(indices, dtype=np.int64)
+        return (
+            np.asarray(kps, dtype=float).reshape(-1)[indices].copy(),
+            np.asarray(kds, dtype=float).reshape(-1)[indices].copy(),
+            np.asarray(max_efforts, dtype=float).reshape(-1)[indices].copy(),
+        )
+
+    def set_drive_state(self, indices, kps, kds, max_efforts):
+        controller = self.get_articulation_controller()
+        indices = np.asarray(indices, dtype=np.int64).reshape(-1)
+        kps = np.asarray(kps, dtype=float).reshape(-1)
+        kds = np.asarray(kds, dtype=float).reshape(-1)
+        max_efforts = np.asarray(max_efforts, dtype=float).reshape(-1)
+        if not (kps.size == kds.size == max_efforts.size == indices.size):
+            raise ValueError("base hold drive vectors must match joint indices")
+        current_kps, current_kds = controller.get_gains()
+        current_max_efforts = controller.get_max_efforts()
+        if current_max_efforts is None:
+            raise RuntimeError(f"robot {self.name} does not expose articulation max efforts")
+        current_kps = np.asarray(current_kps, dtype=float).reshape(-1).copy()
+        current_kds = np.asarray(current_kds, dtype=float).reshape(-1).copy()
+        current_max_efforts = np.asarray(current_max_efforts, dtype=float).reshape(-1).copy()
+        current_kps[indices] = kps
+        current_kds[indices] = kds
+        current_max_efforts[indices] = max_efforts
+        controller.set_gains(kps=current_kps, kds=current_kds)
+        controller.set_max_efforts(current_max_efforts)
+
+    def set_position_targets(self, indices, positions):
+        self._articulation_view.set_joint_position_targets(
+            np.asarray(positions, dtype=float).reshape(-1),
+            joint_indices=np.asarray(indices, dtype=np.int32).reshape(-1),
+        )
+
+    def set_velocity_targets(self, indices, velocities):
+        self._articulation_view.set_joint_velocity_targets(
+            np.asarray(velocities, dtype=float).reshape(-1),
+            joint_indices=np.asarray(indices, dtype=np.int32).reshape(-1),
+        )
+
+    def _sync_manipulation_base_hold_state(self):
+        strategy = self._get_manipulation_base_hold_strategy()
+        self._manipulation_base_hold_active = bool(strategy.active)
+        self._manipulation_base_hold_indices = np.asarray(strategy.indices, dtype=np.int64)
+        self._manipulation_base_hold_positions = np.asarray(strategy.target_positions, dtype=float)
+        saved_drive = strategy.saved_drive_state
+        self._manipulation_base_hold_saved_drive = (
+            None
+            if saved_drive is None
+            else {
+                "indices": self._manipulation_base_hold_indices.copy(),
+                "kps": np.asarray(saved_drive[0], dtype=float).copy(),
+                "kds": np.asarray(saved_drive[1], dtype=float).copy(),
+                "max_efforts": np.asarray(saved_drive[2], dtype=float).copy(),
+            }
+        )
+        return strategy
+
+    def enable_manipulation_base_hold(self) -> None:
+        """Hold profile-declared base and lift DOFs during manipulation."""
+
+        strategy = self._sync_manipulation_base_hold_state()
+        if not strategy.enable():
+            return
+        self._sync_manipulation_base_hold_state()
+        config = strategy.config
+        # Hold activation is an expected manipulation boundary, not a
+        # recovery or configuration warning. Keep the detailed audit visible
+        # at INFO while reserving WARNING for a failed hold operation.
+        LOGGER.info(
+            "[BaseHold] robot=%s joints=%s indices=%s targets=%s kp=%.1f kd=%.1f max_effort=%.1f",
+            self.name,
+            list(config.joint_names),
+            list(strategy.indices),
+            np.round(np.asarray(strategy.target_positions), 6).tolist(),
+            config.stiffness,
+            config.damping,
+            config.max_effort,
+        )
+
+    def suspend_manipulation_base_hold(self) -> bool:
+        """Restore navigation drive gains while a mobile-base skill is active."""
+        strategy = self._sync_manipulation_base_hold_state()
+        result = strategy.suspend()
+        self._sync_manipulation_base_hold_state()
+        return result
 
     def resume_manipulation_base_hold(self) -> None:
         """Hold the base at its current pose after navigation finishes."""
-        if self._manipulation_base_hold_saved_drive is None:
-            return
-        self.enable_manipulation_base_hold()
+        strategy = self._sync_manipulation_base_hold_state()
+        if strategy.resume():
+            self._sync_manipulation_base_hold_state()
+
+    def recapture_manipulation_base_hold(self) -> bool:
+        """Refresh an active hold after a reset or explicit base-pose write."""
+
+        strategy = self._sync_manipulation_base_hold_state()
+        result = strategy.recapture()
+        self._sync_manipulation_base_hold_state()
+        return result
+
+    def reapply_manipulation_base_hold(self) -> bool:
+        """Reapply hold gains and targets for an action/physics boundary."""
+
+        strategy = self._sync_manipulation_base_hold_state()
+        result = strategy.reapply()
+        self._sync_manipulation_base_hold_state()
+        return result
 
     def get_observations(self) -> dict:
-        joint_state = self.get_joints_state()
+        joint_state = self._get_joints_state_compat()
         qpos, qvel = joint_state.positions, joint_state.velocities
 
         T_base_ee_fl = get_relative_transform(get_prim_at_path(self.fl_ee_path), get_prim_at_path(self.fl_base_path))
@@ -456,6 +534,26 @@ class TemplateRobot(Robot):
 
         obs = self._build_observations(qpos, qvel, T_base_ee_fl, T_world_base)
         return obs
+
+    def _get_joints_state_compat(self):
+        """Read joint state across Isaac Sim 4.x and 6.x articulation wrappers."""
+        get_joints_state = getattr(self, "get_joints_state", None)
+        joint_state = get_joints_state() if callable(get_joints_state) else None
+        if joint_state is not None:
+            return joint_state
+
+        # Isaac Sim 6 can briefly return None from the aggregate
+        # ``get_joints_state`` view while the articulation is synchronizing.
+        # Its scalar position/velocity accessors remain the supported public
+        # fallback and expose the same data without relying on the old
+        # JointsState wrapper.
+        positions = self.get_joint_positions()
+        velocities = self.get_joint_velocities()
+        if positions is None or velocities is None:
+            raise RuntimeError(
+                f"robot {self.name} has no readable articulation joint state"
+            )
+        return SimpleNamespace(positions=positions, velocities=velocities)
 
     def _write_observation_failure_debug(self, exc: Exception, *, stage: str, qpos=None, qvel=None):
         payload = {

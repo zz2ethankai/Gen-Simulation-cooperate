@@ -117,6 +117,32 @@ def seg_array_to_uint16_png(seg_array):
     array = np.clip(array, 0, 65535)
     return array.astype(np.uint16)
 
+
+def _filter_missing_image_frames(value, step_ids):
+    """Drop unavailable camera frames while preserving their capture steps.
+
+    Isaac camera annotators can transiently return ``None`` while a render
+    target is warming up.  Those frames are valid logger input to retain in
+    memory, but they cannot be encoded as RGB/PNG data at save time.  Keep
+    every non-``None`` frame (including malformed frames, so the existing
+    validation errors remain visible) and return the matching original step
+    ids for metadata.
+    """
+    if len(step_ids) != len(value):
+        normalized_step_ids = list(range(len(value)))
+    else:
+        normalized_step_ids = [int(x) for x in step_ids]
+
+    frames = []
+    valid_step_ids = []
+    for step_id, frame in zip(normalized_step_ids, value):
+        if frame is None:
+            continue
+        frames.append(frame)
+        valid_step_ids.append(step_id)
+    return frames, valid_step_ids
+
+
 # pylint: disable=line-too-long,unused-argument
 class LmdbLogger(BaseLogger):
     def __init__(
@@ -261,10 +287,7 @@ class LmdbLogger(BaseLogger):
                     root_img_path.mkdir(parents=True, exist_ok=True)
 
                     step_ids = self.color_image_step_logger.get(robot_name, {}).get(key, [])
-                    if len(step_ids) != len(value):
-                        step_ids = list(range(len(value)))
-                    else:
-                        step_ids = [int(x) for x in step_ids]
+                    value, step_ids = _filter_missing_image_frames(value, step_ids)
                     meta_info["image_valid_step_ids"][key] = step_ids
 
                     meta_info["keys"][key] = []
@@ -283,10 +306,7 @@ class LmdbLogger(BaseLogger):
                     root_img_path.mkdir(parents=True, exist_ok=True)
 
                     step_ids = self.depth_image_step_logger.get(robot_name, {}).get(key, [])
-                    if len(step_ids) != len(value):
-                        step_ids = list(range(len(value)))
-                    else:
-                        step_ids = [int(x) for x in step_ids]
+                    value, step_ids = _filter_missing_image_frames(value, step_ids)
                     meta_info["image_valid_step_ids"][key] = step_ids
 
                     meta_info["keys"][key] = []
@@ -304,10 +324,7 @@ class LmdbLogger(BaseLogger):
                     root_img_path.mkdir(parents=True, exist_ok=True)
 
                     step_ids = self.seg_image_step_logger.get(robot_name, {}).get(key, [])
-                    if len(step_ids) != len(value):
-                        step_ids = list(range(len(value)))
-                    else:
-                        step_ids = [int(x) for x in step_ids]
+                    value, step_ids = _filter_missing_image_frames(value, step_ids)
                     meta_info["image_valid_step_ids"][key] = step_ids
 
                     meta_info["keys"][key] = []

@@ -1,6 +1,6 @@
 profile_id: lift2_floor_standing_v1
 target_class: Lift2
-path: lift2/robot_invisible.usd
+path: "InternDataAssets/robots/lift2/robot_invisible.usd"
 
 placement:
   family: floor_standing
@@ -30,7 +30,7 @@ base:
 arms:
   left:
     controller: Lift2
-    curobo_file: workflows/simbox/curobo/src/curobo/content/configs/robot/r5a_left_arm.yml
+    curobo_file: InternDataAssets/curobov2/curobo/content/custom/configs/robot/r5a_left_arm.yml
     command_joint_names: [fl_joint1, fl_joint2, fl_joint3, fl_joint4, fl_joint5, fl_joint6]
     trajectory_joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
     joint_indices: [10, 12, 14, 16, 18, 20]
@@ -64,7 +64,7 @@ arms:
           clip: [0.0, 0.1]
   right:
     controller: Lift2
-    curobo_file: workflows/simbox/curobo/src/curobo/content/configs/robot/r5a_right_arm.yml
+    curobo_file: InternDataAssets/curobov2/curobo/content/custom/configs/robot/r5a_right_arm.yml
     command_joint_names: [fr_joint1, fr_joint2, fr_joint3, fr_joint4, fr_joint5, fr_joint6]
     trajectory_joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
     joint_indices: [9, 11, 13, 15, 17, 19]

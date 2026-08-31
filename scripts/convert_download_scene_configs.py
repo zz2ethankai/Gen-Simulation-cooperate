@@ -34,15 +34,14 @@ DEFAULT_ARENA_OUT_NAME = "simbox_arena.yaml"
 DEFAULT_TASK_OUT_NAME = "simbox_task.yaml"
 DEFAULT_ROBOT_NAME = "split_aloha"
 DEFAULT_ROBOT_CONFIG_FILE = "workflows/simbox/core/configs/robots/split_aloha.yaml"
-DEFAULT_ROBOT_ASSET = Path("workflows/simbox/assets/split_aloha_mid_360/robot.usd")
+DEFAULT_ROBOT_ASSET = Path("InternDataAssets/robots/split_aloha_mid_360/robot.usd")
 DEFAULT_ENVMAP_LIB = "../../InternDataAssets/assets/envmap_lib"
 DEFAULT_NAV_WAYPOINT_CLEARANCE_M = 0.50
 DEFAULT_FLOOR_EDGE_MARGIN_M = 0.35
 INTERDATA_SCENE_DIR_NAME = "interndata_scene"
 
-SIMBOX_OBJECT_CLASSES = {
+SIMBOX_SUPPORTED_CLASSES = {
     "ArticulatedObject",
-    "BoxObject",
     "ConveyorObject",
     "GeometryObject",
     "PlaneObject",
@@ -969,7 +968,7 @@ def validate_arena_payload(payload: dict[str, Any], asset_root: Path) -> list[st
     errors: list[str] = []
     for idx, fixture in enumerate(payload.get("fixtures", [])):
         cls = fixture.get("target_class")
-        if cls not in SIMBOX_OBJECT_CLASSES:
+        if cls not in SIMBOX_SUPPORTED_CLASSES:
             errors.append(f"arena.fixtures[{idx}] unsupported target_class {cls!r}")
         if cls == "PlaneObject":
             if fixture.get("collision_enabled") is not True:
@@ -1019,7 +1018,7 @@ def validate_task_payload(payload: dict[str, Any], asset_root: Path, arena_paylo
 
     for idx, obj in enumerate(task.get("objects", [])):
         cls = obj.get("target_class")
-        if cls not in SIMBOX_OBJECT_CLASSES:
+        if cls not in SIMBOX_SUPPORTED_CLASSES:
             errors.append(f"objects[{idx}] unsupported target_class {cls!r}")
         rel_path = obj.get("path")
         if rel_path and not (asset_root / rel_path).exists():

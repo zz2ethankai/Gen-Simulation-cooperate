@@ -29,14 +29,15 @@ def _load_probe_module(monkeypatch):
     place_module = types.ModuleType("core.skills.place")
 
     class FakePlace:
-        def simple_generate_manip_cmds(self):
+        def generate_manip_cmds(self):
             self.super_called = True
             self.failure_reason = ""
-            self._pending_target_intent = {
+            self._target_intent = {
                 "selected_index": 4,
                 "preplace_position": np.array([0.1, 0.2, 0.3]),
                 "place_position": np.array([0.1, 0.2, 0.2]),
             }
+            self._selected_plan = {"candidate_index": 4}
             self.manip_list = [
                 SimpleNamespace(phase=SimpleNamespace(value="transit_preplace")),
                 SimpleNamespace(phase=SimpleNamespace(value="terminal_place_descent")),
@@ -71,17 +72,22 @@ def _probe(module, tmp_path, state, events):
         },
         object_state_events=events,
     )
-    probe.controller = SimpleNamespace(
-        collision_world_mode="physics_schema",
-        collision_scene_manager=manager,
+    runtime = SimpleNamespace(
         name="robot",
-        lr_name="left",
-        get_ee_pose=lambda: (np.zeros(3), np.array([1.0, 0.0, 0.0, 0.0])),
+        arm_name="left",
+        robot_port=SimpleNamespace(
+            collision_world_mode="physics_schema",
+            collision_scene_manager=manager,
+        ),
     )
+    probe._require_skill_runtime = lambda: runtime
+    hold_command = SimpleNamespace(phase=SimpleNamespace(value="measured_hold"))
+    probe.measured_hold_command = lambda: hold_command
     probe.failure_reason = ""
-    probe._pending_target_intent = None
+    probe._target_intent = None
+    probe._selected_plan = {}
     probe.manip_list = []
-    return probe, manager
+    return probe, manager, hold_command
 
 
 def test_place_probe_plans_only_after_real_attachment_event(monkeypatch, tmp_path):
@@ -95,9 +101,9 @@ def test_place_probe_plans_only_after_real_attachment_event(monkeypatch, tmp_pat
         "owner_arm": "left",
         "world_revision": 9,
     }
-    probe, manager = _probe(module, tmp_path, _State.ATTACHED, [event])
+    probe, manager, hold_command = _probe(module, tmp_path, _State.ATTACHED, [event])
 
-    probe.simple_generate_manip_cmds()
+    probe.generate_manip_cmds()
 
     result = json.loads((tmp_path / "place_probe.json").read_text(encoding="utf-8"))
     assert probe.super_called is True
@@ -111,17 +117,21 @@ def test_place_probe_plans_only_after_real_attachment_event(monkeypatch, tmp_pat
         "gripper_open",
     ]
     assert manager.records["object"].state is _State.ATTACHED
-    assert probe.manip_list[0][2] == "update_pose_cost_metric"
+    assert probe.manip_list == [hold_command]
+    assert result["planning"] == {"candidate_index": 4}
 
 
 def test_place_probe_never_forges_attached_state(monkeypatch, tmp_path):
     module = _load_probe_module(monkeypatch)
-    probe, manager = _probe(module, tmp_path, _State.WORLD_OBSTACLE, [])
+    probe, manager, hold_command = _probe(
+        module, tmp_path, _State.WORLD_OBSTACLE, []
+    )
 
-    probe.simple_generate_manip_cmds()
+    probe.generate_manip_cmds()
 
     result = json.loads((tmp_path / "place_probe.json").read_text(encoding="utf-8"))
     assert not hasattr(probe, "super_called")
     assert result["feasible"] is False
     assert result["failure_code"] == "PLACE_PROBE_OBJECT_NOT_ATTACHED"
     assert manager.records["object"].state is _State.WORLD_OBSTACLE
+    assert probe.manip_list == [hold_command]

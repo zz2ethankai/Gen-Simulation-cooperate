@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from core.controllers.base_controller import register_controller
+from core.controllers.controller_registry import register_controller
 from core.controllers.panda_omron_controller import PandaOmronController
 
 

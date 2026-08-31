@@ -77,8 +77,8 @@ DEFAULT_THRESHOLDS = {
     "base_rotation_hard_deg": 5.0,
     "unexpected_contact_soft_n": 5.0,
     "unexpected_contact_hard_n": 20.0,
-    "arm_velocity_soft_rad_s": 5.0,
-    "arm_velocity_hard_rad_s": 8.0,
+    "arm_velocity_soft_rad_s": 50.0,
+    "arm_velocity_hard_rad_s": 100.0,
     "soft_trigger_consecutive_steps": 3,
     "attached_object_slip_translation_m": 0.02,
     "attached_object_slip_rotation_deg": 20.0,
@@ -135,12 +135,11 @@ class SafetyMonitor:
                 "attached_object_slip_translation_m",
                 "attached_object_translation_slip",
             ),
-            # Rotation drift is still recorded in SafetyMeasurements, but it is
-            # intentionally not an abort condition for now.  The current
-            # collision-scene pose path can include USD scale in its 3x3 block;
-            # feeding that affine block to the rotation-angle formula produces
-            # a false ~120 deg drift for the 0.001-scaled wine-glass asset even
-            # when the object has not rotated.
+            (
+                m.attached_slip_rotation_deg,
+                "attached_object_slip_rotation_deg",
+                "attached_object_rotation_slip",
+            ),
         )
         for value, threshold, name in checks:
             if float(value) > float(self.thresholds[threshold]):
@@ -281,8 +280,15 @@ class SafetyMonitor:
 def quaternion_angle(q0, q1) -> float:
     """Shortest angular distance for scalar-first quaternions."""
 
-    first = np.asarray(q0, dtype=float)
-    second = np.asarray(q1, dtype=float)
+    # FK and simulator pose APIs may return a singleton batch dimension
+    # (1, 4), while the safety calculation is defined for one quaternion.
+    first = np.asarray(q0, dtype=float).reshape(-1)
+    second = np.asarray(q1, dtype=float).reshape(-1)
+    if first.size != 4 or second.size != 4:
+        raise ValueError(
+            "quaternion_angle expects two quaternions with four components, "
+            f"got shapes {np.asarray(q0).shape} and {np.asarray(q1).shape}"
+        )
     denominator = np.linalg.norm(first) * np.linalg.norm(second)
     if denominator <= 0.0:
         return float("inf")

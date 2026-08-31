@@ -1,7 +1,7 @@
 # PandaOmron virtual-base mobile manipulator configuration (canonical profile)
 profile_id: panda_omron_virtual_base_v1
 target_class: PandaOmronVirtual
-path: "panda_omron_virtual/robot.usd"
+path: "InternDataAssets/robots/panda_omron_virtual/robot.usd"
 
 placement:
   family: floor_standing
@@ -26,6 +26,9 @@ base:
   base_config_file: workflows/simbox/core/configs/bases/omron_virtual_base.yaml
   local_navigation_config_file: workflows/simbox/core/configs/navigation/default_local_navigation.yaml
   local_navigation:
+    approach:
+      min_distance: 0.45
+      max_distance: 0.65
     map:
       map_z_max: 1.25
   mobile_base_path: robot0_base/mobilebase0_base
@@ -43,7 +46,7 @@ base:
 arms:
   left:
     controller: PandaOmron
-    curobo_file: workflows/simbox/curobo/src/curobo/content/configs/robot/panda_omron_left_arm.yml
+    curobo_file: InternDataAssets/curobov2/curobo/content/custom/configs/robot/panda_omron_left_arm.yml
     command_joint_names: [robot0_joint1, robot0_joint2, robot0_joint3, robot0_joint4, robot0_joint5, robot0_joint6, robot0_joint7]
     trajectory_joint_names: [robot0_joint1, robot0_joint2, robot0_joint3, robot0_joint4, robot0_joint5, robot0_joint6, robot0_joint7]
     joint_indices: [3, 4, 5, 6, 7, 8, 9]
@@ -68,7 +71,7 @@ arms:
       joint_indices: [10]
       max_width: 0.08
       min_width: 0.0
-      tcp_offset: 0.1043
+      tcp_offset: 0.1034
       home: [0.04]
       keypoints:
         tool_head: [0.0, 0.0, 0.1034, 1]

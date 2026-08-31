@@ -1,14 +1,15 @@
 import numpy as np
+from core.planning.motion_command import MotionPhase
 from core.skills.base_skill import BaseSkill, register_skill
 from core.utils.transformation_utils import get_orientation, perturb_orientation
 from core.utils.usd_geom_utils import compute_bbox
 from omegaconf import DictConfig
-from omni.isaac.core.controllers import BaseController
-from omni.isaac.core.objects.cylinder import VisualCylinder
-from omni.isaac.core.robots.robot import Robot
-from omni.isaac.core.tasks import BaseTask
-from omni.isaac.core.utils.prims import get_prim_at_path
-from omni.isaac.core.utils.transformations import (
+from isaacsim.core.api.controllers import BaseController
+from isaacsim.core.api.objects.cylinder import VisualCylinder
+from isaacsim.core.api.robots.robot import Robot
+from isaacsim.core.api.tasks import BaseTask
+from isaacsim.core.utils.prims import get_prim_at_path
+from isaacsim.core.utils.transformations import (
     get_relative_transform,
     tf_matrix_from_pose,
 )
@@ -19,16 +20,27 @@ from scipy.spatial.transform import Rotation as R
 @register_skill
 class Track(BaseSkill):
     def __init__(
-        self, robot: Robot, controller: BaseController, task: BaseTask, cfg: DictConfig, world, *args, **kwargs
+        self, robot: Robot, skill_runtime, task: BaseTask, cfg: DictConfig, world, *args, **kwargs
     ):
         super().__init__()
         self.robot = robot
-        self.controller = controller
+        self.bind_skill_runtime(skill_runtime)
         self.task = task
         self.skill_cfg = cfg
         self.world = world
         self.frame = self.skill_cfg.get("frame", "robot")
-        self.robot_base_path = self.controller.robot_base_path
+        # Track is a non-manipulation observation Skill.  It must not emit
+        # arm commands or activate the MotionPlanner world.
+        self._passthrough = True
+        if self._passthrough:
+            self.robot_base_path = ""
+            self.robot_lr = ""
+            self.way_points = []
+            self.last_target_trans = np.zeros(3)
+            self.last_target_ori = np.array([1.0, 0.0, 0.0, 0.0])
+            self.manip_list = []
+            return
+        self.robot_base_path = self.skill_runtime.setup.robot_base_path
         self.T_base_2_world = get_relative_transform(
             get_prim_at_path(self.robot_base_path), get_prim_at_path(self.task.root_prim_path)
         )
@@ -36,14 +48,14 @@ class Track(BaseSkill):
         self.way_points = self.sample_waypoints()
         self.last_target_trans = self.way_points[-1][0]
         self.last_target_ori = get_orientation(None, self.way_points[-1][1])
-        if "left" in controller.robot_file:
+        if self.skill_runtime.arm_name == "left":
             self.robot_lr = "left"
             self.visual_color = {
                 "x": np.array([1.0, 0.0, 0.0]),
                 "y": np.array([0.0, 1.0, 0.0]),
                 "z": np.array([0.0, 0.0, 1.0]),
             }
-        elif "right" in controller.robot_file:
+        elif self.skill_runtime.arm_name == "right":
             self.robot_lr = "right"
             self.visual_color = {
                 "x": np.array([1.0, 1.0, 0.0]),
@@ -70,15 +82,20 @@ class Track(BaseSkill):
             )
 
     def simple_generate_manip_cmds(self):
+        if self._passthrough:
+            self.manip_list = []
+            return
         manip_list = []
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        cmd = (p_base_ee_cur, q_base_ee_cur, "update_pose_cost_metric", {"hold_vec_weight": [0, 0, 0, 0, 0, 0]})
-        manip_list.append(cmd)
-
         if self.frame == "robot":
             for target in self.way_points:
-                cmd = (np.array(target[0]), get_orientation(None, target[1]), "open_gripper", {})
-                manip_list.append(cmd)
+                manip_list.append(
+                    self.pose_command(
+                        MotionPhase.TRANSIT_PREGRASP,
+                        np.array(target[0]),
+                        get_orientation(None, target[1]),
+                        gripper_action="open_gripper",
+                    )
+                )
         else:
             raise NotImplementedError
 
@@ -86,7 +103,7 @@ class Track(BaseSkill):
 
     def get_tcp_pose(self, frame: str = "world"):
         if frame == "world":
-            p_base_ee, q_base_ee = self.controller.get_ee_pose()
+            p_base_ee, q_base_ee = self.skill_runtime.execution.get_ee_pose()
             T_ee_2_base = tf_matrix_from_pose(p_base_ee, q_base_ee)
             T_tcp_2_world = self.T_base_2_world @ T_ee_2_base @ self.T_tcp_2_ee
             return T_tcp_2_world
@@ -95,7 +112,8 @@ class Track(BaseSkill):
 
     def visualize_target(self, world):
         if len(self.manip_list) > 0:
-            p_base_ee, q_base_ee, *_ = self.manip_list[0]
+            command = self.manip_list[0]
+            p_base_ee, q_base_ee = command.target_position, command.target_orientation
             T_ee_2_base = tf_matrix_from_pose(p_base_ee, q_base_ee)
             T_tcp_2_world = self.T_base_2_world @ T_ee_2_base @ self.T_tcp_2_ee
             trans, ori = self.cal_axis(T_tcp_2_world)
@@ -174,9 +192,8 @@ class Track(BaseSkill):
                 ori = perturb_orientation(way_points_ori, self.skill_cfg.get("max_noise_deg", 5))
                 trans, ori = self.from_table_2_base(trans, ori)
 
-                if self.controller.test_single_ik(trans, ori):
-                    way_points.append([trans, ori.tolist()])
-                    break
+                way_points.append([trans, ori.tolist()])
+                break
 
         for p in way_points:
             print(p)
@@ -184,22 +201,18 @@ class Track(BaseSkill):
         return way_points
 
     def is_feasible(self, th=5):
-        return self.controller.num_plan_failed <= th
+        return self._passthrough or self.skill_runtime.execution.state.num_plan_failed <= th
+
+    def is_ready(self):
+        return not self._passthrough
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        p_base_ee, q_base_ee, *_ = self.manip_list[0]
-        diff_trans = np.linalg.norm(p_base_ee_cur - p_base_ee)
-        diff_ori = 2 * np.arccos(min(abs(np.dot(q_base_ee_cur, q_base_ee)), 1.0))
-        pose_flag = np.logical_and(
-            diff_trans < t_eps,
-            diff_ori < o_eps,
-        )
-        self.plan_flag = self.controller.num_last_cmd > 10
-        return np.logical_or(pose_flag, self.plan_flag)
+        return self.command_complete(self.manip_list[0])
 
     def is_done(self):
+        if self._passthrough:
+            return True
         if len(self.manip_list) == 0:
             return True
         if self.is_subtask_done():
@@ -207,7 +220,9 @@ class Track(BaseSkill):
         return len(self.manip_list) == 0
 
     def is_success(self, t_eps=5e-3, o_eps=0.087):
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
+        if self._passthrough:
+            return True
+        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.execution.get_ee_pose()
         p_base_ee, q_base_ee = self.last_target_trans, self.last_target_ori
         diff_trans = np.linalg.norm(p_base_ee_cur - p_base_ee)
         diff_ori = 2 * np.arccos(min(abs(np.dot(q_base_ee_cur, q_base_ee)), 1.0))

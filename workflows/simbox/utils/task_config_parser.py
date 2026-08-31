@@ -1,4 +1,11 @@
+from pathlib import Path
+
 from omegaconf import DictConfig, ListConfig, OmegaConf
+
+try:
+    from core.planning.config_contract import canonicalize_planning_config
+except ImportError:  # package import outside the Isaac ``simbox`` sys.path
+    from workflows.simbox.core.planning.config_contract import canonicalize_planning_config
 
 
 class AttrDict(dict):
@@ -26,16 +33,35 @@ class TaskConfigParser:
     """Shared utilities for workflow configuration parsing."""
 
     def __init__(self, task_cfg_path: str):
-        self.task_cfg_path = task_cfg_path
+        self.task_cfg_path = str(task_cfg_path)
+        self.config_path = Path(task_cfg_path).expanduser().resolve()
 
     def parse_tasks(self):
         yaml_conf = OmegaConf.load(self.task_cfg_path)
         task_cfgs = []
-        assert "tasks" in yaml_conf, f"Expected 'tasks' key in the task configuration file: {self.task_cfg_path}"
+        if "tasks" not in yaml_conf:
+            raise ValueError(
+                f"Expected 'tasks' key in the task configuration file: {self.task_cfg_path}"
+            )
         for task in yaml_conf["tasks"]:
             if isinstance(task, (DictConfig, ListConfig)):
                 cfg = OmegaConf.to_container(task, resolve=True)
             else:
                 cfg = task
+            if not isinstance(cfg, dict):
+                raise ValueError(
+                    f"Each task must resolve to a mapping in the task configuration file: "
+                    f"{self.task_cfg_path}"
+                )
+            # Normalize before the workflow sees the task.  This is the one
+            # config-boundary call site that can provide the real path used by
+            # warning de-duplication; runtime resets do not emit duplicate
+            # warnings for the same ``(path, field)`` pair.
+            cfg = canonicalize_planning_config(cfg, config_path=self.config_path)
+            metadata = cfg.get("metadata")
+            if isinstance(metadata, dict):
+                metadata.setdefault("source_yaml", str(self.config_path))
+            else:
+                cfg["metadata"] = {"source_yaml": str(self.config_path)}
             task_cfgs.append(_to_attr_dict(cfg))
         return task_cfgs

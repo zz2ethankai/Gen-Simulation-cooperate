@@ -2,6 +2,9 @@
 # flake8: noqa
 import json
 import time
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from typing import Any, Protocol
 
 import carb
 import IPython
@@ -13,17 +16,8 @@ import solver.kpam.SE3_utils as SE3_utils
 import solver.kpam.term_spec as term_spec
 import yaml
 from colored import fg
-from omni.isaac.core.utils.prims import (
-    create_prim,
-    get_prim_at_path,
-    is_prim_path_valid,
-)
-from omni.isaac.core.utils.transformations import (
-    get_relative_transform,
-    pose_from_tf_matrix,
-    tf_matrices_from_poses,
-)
-from omni.isaac.core.utils.xforms import get_world_pose
+from isaacsim.core.utils.prims import create_prim, is_prim_path_valid
+from isaacsim.core.utils.transformations import pose_from_tf_matrix, tf_matrices_from_poses
 from pydrake.all import *
 from scipy.spatial.transform import Rotation as R
 from solver.kpam.mp_builder import OptimizationBuilderkPAM
@@ -43,6 +37,63 @@ MOTION_DICT = {
 }
 
 
+@dataclass(frozen=True)
+class KPAMRobotFrame:
+    """The selected arm frame data consumed by :class:`KPAMPlanner`.
+
+    The planner used to mutate the simulator robot with selected frame paths
+    and keypoints.  A frame is a value object instead: setup chooses the arm
+    once and the planner only reads the resulting paths/keypoints.
+    """
+
+    base_path: str
+    ee_path: str
+    hand_path: str
+    gripper_keypoints: Mapping[str, Any]
+
+    @classmethod
+    def from_config(
+        cls,
+        *,
+        robot_config: Mapping[str, Any],
+        arm_name: str,
+        base_path: str,
+        ee_path: str,
+        hand_path: str,
+    ) -> "KPAMRobotFrame":
+        prefix = {"left": "fl", "right": "fr"}[str(arm_name)]
+        keypoint_config = robot_config[f"{prefix}_gripper_keypoints"]
+        keypoints = {
+            str(name): np.asarray(value, dtype=float)
+            for name, value in keypoint_config.items()
+        }
+        return cls(
+            base_path=str(base_path),
+            ee_path=str(ee_path),
+            hand_path=str(hand_path),
+            gripper_keypoints=keypoints,
+        )
+
+
+class KPAMPlannerQueryPort(Protocol):
+    """Narrow simulator queries required by :class:`KPAMPlanner`."""
+
+    get_joint_positions: Callable[[], Any]
+    get_world_pose: Callable[[str], Any]
+    get_prim_at_path: Callable[[str], Any]
+    get_relative_transform: Callable[[Any, Any], Any]
+
+
+@dataclass(frozen=True)
+class KPAMPlannerQueries:
+    """Concrete callback bundle for the planner's simulator queries."""
+
+    get_joint_positions: Callable[[], Any]
+    get_world_pose: Callable[[str], Any]
+    get_prim_at_path: Callable[[str], Any]
+    get_relative_transform: Callable[[Any, Any], Any]
+
+
 class KPAMPlanner:
     """
     A general class of keypoint-based trajectory optimization methods to solve
@@ -51,12 +102,27 @@ class KPAMPlanner:
     Mostly works with simple and kinematic tasks.
     """
 
-    def __init__(self, env, robot, object, cfg_path, obj_rot=0, controller=None, draw_points=False, stage=None):
+    def __init__(
+        self,
+        env,
+        object,
+        cfg_path,
+        *,
+        robot_name: str,
+        robot_config: Mapping[str, Any],
+        robot_frame: KPAMRobotFrame,
+        queries: KPAMPlannerQueryPort,
+        obj_rot=0,
+        draw_points=False,
+        stage=None,
+    ):
         self.env = env
-        self.robot = robot
         self.object = object
         self.cfg_path = cfg_path
-        self.controller = controller
+        self.robot_name = str(robot_name)
+        self.robot_config = dict(robot_config)
+        self.robot_frame = robot_frame
+        self.queries = queries
         self.obj_rot = obj_rot
         self.draw_points = draw_points
         self.stage = stage
@@ -66,10 +132,10 @@ class KPAMPlanner:
         self.joint_plan_success = False
         self.debug_info = {}
 
-        if "franka" in self.robot.name:
+        if "franka" in self.robot_name:
             self.ee_name = "panda_hand"
             self.robot_dof = 9
-        elif "split_aloha" in self.robot.name or "lift2" in self.robot.name:
+        elif "split_aloha" in self.robot_name or "lift2" in self.robot_name:
             self.ee_name = "link6"
             self.robot_dof = 8
             # self.ee_name = "panda_hand"
@@ -149,7 +215,7 @@ class KPAMPlanner:
             self.modify_actuation_motion = self.cfg["modify_actuation_motion"]
 
         self.plant, self.fk_context = build_plant(
-            robot_name=self.robot.name, init_qpos=self.robot.get_joint_positions()
+            robot_name=self.robot_name, init_qpos=self.queries.get_joint_positions()
         )
 
         self.reset_expert()
@@ -288,7 +354,7 @@ class KPAMPlanner:
         )
 
         # ========================= visualize keypoints =========================
-        # base2world=get_relative_transform(get_prim_at_path(self.robot.base_path), get_prim_at_path(self.robot.root_prim_path))
+        # The selected base frame is supplied in ``self.robot_frame``.
         # for traj_keyframe in self.traj_keyframes:
         #     draw.draw_points(
         #         [(base2world @ np.append(traj_keyframe[:3,3],1))[:3]],
@@ -320,22 +386,11 @@ class KPAMPlanner:
         return world2joint_pose
 
     def get_tool_keypoints(self):
-        if "left_arm" in self.controller.robot_file:
-            self.robot.hand_path = self.robot.fl_hand_path
-            self.robot.ee_path = self.robot.fl_ee_path
-            self.robot.gripper_keypoints = self.robot.fl_gripper_keypoints
-            self.robot.base_path = self.robot.fl_base_path
-        elif "right_arm" in self.controller.robot_file:
-            self.robot.hand_path = self.robot.fr_hand_path
-            self.robot.ee_path = self.robot.fr_ee_path
-            self.robot.gripper_keypoints = self.robot.fr_gripper_keypoints
-            self.robot.base_path = self.robot.fr_base_path
+        transform_matrix = self.get_transform_matrix_by_prim_path(self.robot_frame.hand_path)
 
-        transform_matrix = self.get_transform_matrix_by_prim_path(self.robot.hand_path)
-
-        tool_head = transform_matrix @ self.robot.gripper_keypoints["tool_head"]
-        tool_tail = transform_matrix @ self.robot.gripper_keypoints["tool_tail"]
-        tool_side = transform_matrix @ self.robot.gripper_keypoints["tool_side"]
+        tool_head = transform_matrix @ self.robot_frame.gripper_keypoints["tool_head"]
+        tool_tail = transform_matrix @ self.robot_frame.gripper_keypoints["tool_tail"]
+        tool_side = transform_matrix @ self.robot_frame.gripper_keypoints["tool_side"]
 
         tool_keypoints = {}
         tool_keypoints["tool_head"] = tool_head[:3]
@@ -346,7 +401,7 @@ class KPAMPlanner:
 
     def get_transform_matrix_by_prim_path(self, path):
         # return world to prim_path transform matrix
-        position, orientation = get_world_pose(path)
+        position, orientation = self.queries.get_world_pose(path)
         rotation_matrix = R.from_quat(orientation, scalar_first=True).as_matrix()
         transform_matrix = np.eye(4)
         transform_matrix[:3, :3] = rotation_matrix
@@ -388,14 +443,14 @@ class KPAMPlanner:
         return obejct_keypoints
 
     def get_robot_default_state(self):
-        transform_matrix = self.get_transform_matrix_by_prim_path(self.robot.base_path)
+        transform_matrix = self.get_transform_matrix_by_prim_path(self.robot_frame.base_path)
         return transform_matrix
 
     def get_robot_ee_pose(self):
-        return self.get_transform_matrix_by_prim_path(self.robot.ee_path)
+        return self.get_transform_matrix_by_prim_path(self.robot_frame.ee_path)
 
     def get_robot_tool_pose(self):
-        return self.get_transform_matrix_by_prim_path(self.robot.hand_path)
+        return self.get_transform_matrix_by_prim_path(self.robot_frame.hand_path)
 
     def get_object_link_pose(self):
         # return world to object link transform matrix
@@ -456,12 +511,12 @@ class KPAMPlanner:
         #                         [ 0.0000000e+00,  0.0000000e+00,  0.0000000e+00,  1.0000000e+00]],
         #                         dtype=np.float32)
 
-        if "split_aloha" in self.robot.name:
+        if "split_aloha" in self.robot_name:
             self.joint_positions = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.05, -0.05])
-        elif "lift2" in self.robot.name:
+        elif "lift2" in self.robot_name:
             self.joint_positions = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.04, 0.04])
-        elif "franka" in self.robot.name:
-            self.joint_positions = self.robot.get_joint_positions()
+        elif "franka" in self.robot_name:
+            self.joint_positions = self.queries.get_joint_positions()
         else:
             raise NotImplementedError
             # self.joint_positions = np.array([0, -np.pi / 4, 0, -3 * np.pi / 4, 0, np.pi / 2, 0.0, 0.0, 0.0])
@@ -697,8 +752,13 @@ class KPAMPlanner:
             constraints_debug.append(item)
 
         return {
-            "robot_name": self.robot.name,
-            "controller_robot_file": getattr(self.controller, "robot_file", None),
+            "robot_name": self.robot_name,
+            "robot_config": self.robot_config,
+            "robot_frame": {
+                "base_path": self.robot_frame.base_path,
+                "ee_path": self.robot_frame.ee_path,
+                "hand_path": self.robot_frame.hand_path,
+            },
             "ee_name": self.ee_name,
             "robot_dof": self.robot_dof,
             "base_pose_world_from_arm_base": self.base_pose,
@@ -713,9 +773,9 @@ class KPAMPlanner:
             "tool_rel_pose_in_hand": self.tool_rel_pose,
             "link2base": link2base,
             "object_axes": {
-                "object_link0_contact_axis": getattr(self.object, "object_link0_contact_axis", None),
-                "object_link0_rot_axis": getattr(self.object, "object_link0_rot_axis", None),
-                "object_base_front_axis": getattr(self.object, "object_base_front_axis", None),
+                "object_link0_contact_axis": self.object.object_link0_contact_axis,
+                "object_link0_rot_axis": self.object.object_link0_rot_axis,
+                "object_base_front_axis": self.object.object_base_front_axis,
             },
             "joint_positions_seed_base": self.joint_positions.copy(),
             "constraints": constraints_debug,
@@ -780,8 +840,9 @@ class KPAMPlanner:
         # 'tolerance': 0.01}]
 
         constraint_dicts = self.parse_constraints()
-        link2base = get_relative_transform(
-            get_prim_at_path(self.object.object_link_path), get_prim_at_path(self.robot.base_path)
+        link2base = self.queries.get_relative_transform(
+            self.queries.get_prim_at_path(self.object.object_link_path),
+            self.queries.get_prim_at_path(self.robot_frame.base_path),
         )
         self.debug_info = self._build_kpam_debug_info(constraint_dicts, link2base)
         # need to parse the kpam config file and create a kpam problem
@@ -1131,10 +1192,9 @@ if __name__ == "__main__":
 
     import numpy as np
 
-    # from omni.isaac.franka.controllers.pick_place_controller import PickPlaceController
     from gensim_testing_v2.tasks.close_microwave import CloseMicrowave
-    from omni.isaac.core import World
-    from omni.isaac.core.utils.types import ArticulationAction
+    from isaacsim.core.api import World
+    from isaacsim.core.utils.types import ArticulationAction
 
     # from solver.planner import KPAMPlanner
 

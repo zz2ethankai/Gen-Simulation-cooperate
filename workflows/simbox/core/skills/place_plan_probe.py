@@ -29,9 +29,10 @@ class PlacePlanProbe(Place):
     """Plan Place after Pick has physically attached the object, without placing it."""
 
     def _attachment_evidence(self) -> tuple[dict[str, Any] | None, str | None]:
-        if getattr(self.controller, "collision_world_mode", "") != "physics_schema":
+        runtime = self._require_skill_runtime()
+        if getattr(runtime.robot_port, "collision_world_mode", "") != "physics_schema":
             return None, "PLACE_PROBE_REQUIRES_PHYSICS_SCHEMA"
-        manager = getattr(self.controller, "collision_scene_manager", None)
+        manager = runtime.robot_port.collision_scene_manager
         if manager is None:
             return None, "PLACE_PROBE_COLLISION_MANAGER_MISSING"
         object_name = self.pick_obj.name
@@ -40,8 +41,8 @@ class PlacePlanProbe(Place):
         state = getattr(raw_state, "value", raw_state)
         if record is None or state != "attached":
             return None, "PLACE_PROBE_OBJECT_NOT_ATTACHED"
-        robot = str(self.controller.name)
-        arm = str(self.controller.lr_name)
+        robot = str(runtime.name)
+        arm = str(runtime.arm_name)
         if (record.owner_robot, record.owner_arm) != (robot, arm):
             return None, "PLACE_PROBE_ATTACHMENT_OWNER_MISMATCH"
         events = [
@@ -70,7 +71,7 @@ class PlacePlanProbe(Place):
                 "schema_version": 1,
                 "probe": "place_planning",
                 "candidate_id": str(self.skill_cfg["candidate_id"]),
-                "arm": str(self.controller.lr_name),
+                "arm": str(self._require_skill_runtime().arm_name),
                 "objects": [str(value) for value in self.skill_cfg["objects"]],
             }
         )
@@ -82,12 +83,9 @@ class PlacePlanProbe(Place):
         temporary.replace(result_path)
 
     def _hold_current_pose(self) -> None:
-        position, orientation = self.controller.get_ee_pose()
-        self.manip_list = [
-            (position, orientation, "update_pose_cost_metric", {"hold_vec_weight": None})
-        ]
+        self.manip_list = [self.measured_hold_command()]
 
-    def simple_generate_manip_cmds(self):
+    def generate_manip_cmds(self):
         attachment, failure_code = self._attachment_evidence()
         if failure_code is not None:
             self.failure_reason = failure_code
@@ -102,7 +100,7 @@ class PlacePlanProbe(Place):
             self._hold_current_pose()
             return
 
-        super().simple_generate_manip_cmds()
+        super().generate_manip_cmds()
         planned_phases = [
             command.phase.value
             for command in self.manip_list
@@ -111,8 +109,7 @@ class PlacePlanProbe(Place):
         required_phases = {"transit_preplace", "terminal_place_descent"}
         feasible = not self.failure_reason and required_phases.issubset(planned_phases)
         failure_code = None if feasible else self.failure_reason or "PLACE_PROBE_DID_NOT_PLAN"
-        target = _json_value(self._pending_target_intent or {})
-        planning = getattr(self, "_pending_place_plan_evaluation", None)
+        target = _json_value(self._target_intent or {})
         self._write_result(
             {
                 "feasible": feasible,
@@ -120,7 +117,7 @@ class PlacePlanProbe(Place):
                 "attachment": attachment,
                 "planned_phases": planned_phases,
                 "selected_target": target,
-                "planning": _json_value(vars(planning)) if planning is not None else None,
+                "planning": _json_value(self._selected_plan),
             }
         )
         self._hold_current_pose()

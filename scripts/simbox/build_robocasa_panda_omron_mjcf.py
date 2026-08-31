@@ -138,13 +138,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("InternDataAssets/assets/panda_omron/source/panda_omron.xml"),
+        default=Path("InternDataAssets/robots/panda_omron/source/panda_omron.xml"),
         help="Output MJCF XML path.",
     )
     parser.add_argument(
         "--metadata-output",
         type=Path,
-        default=Path("InternDataAssets/assets/panda_omron/source/source_metadata.json"),
+        default=Path("InternDataAssets/robots/panda_omron/source/source_metadata.json"),
         help="Output metadata JSON path.",
     )
     return parser.parse_args()

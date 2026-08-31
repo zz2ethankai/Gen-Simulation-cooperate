@@ -2,9 +2,9 @@ from pathlib import Path
 import math
 import shutil
 import numpy as np
-from omni.isaac.core.utils.prims import get_prim_at_path
-from omni.isaac.core.utils.transformations import get_relative_transform
-from omni.isaac.sensor import Camera
+from isaacsim.core.utils.prims import get_prim_at_path
+from isaacsim.core.utils.transformations import get_relative_transform
+from isaacsim.sensors.camera import Camera
 
 
 _topdown_camera_counter = 0
@@ -123,6 +123,29 @@ def _get_annotator(camera: Camera, annotator_name: str):
     return custom_annotators.get(annotator_name)
 
 
+def _get_current_frame(camera: Camera):
+    get_current_frame = getattr(camera, "get_current_frame", None)
+    if not callable(get_current_frame):
+        return None
+    try:
+        frame = get_current_frame()
+    except Exception:
+        return None
+    return frame if isinstance(frame, dict) else None
+
+
+def _get_annotator_data(camera: Camera, annotator_name: str):
+    frame = _get_current_frame(camera)
+    if frame is not None and annotator_name in frame:
+        data = frame[annotator_name]
+        if data is not None:
+            return data
+    annotator = _get_annotator(camera, annotator_name)
+    if annotator is None:
+        return None
+    return annotator.get_data()
+
+
 def _get_frame(frame):
     if isinstance(frame, np.ndarray) and frame.size > 0:
         return frame[:, :, :3]
@@ -131,34 +154,41 @@ def _get_frame(frame):
 
 def _get_depth(depth):
     if isinstance(depth, np.ndarray) and depth.size > 0:
-        return depth
+        if depth.ndim == 3 and depth.shape[-1] == 1:
+            return depth[..., 0]
+        if depth.ndim == 2:
+            return depth
     return None
 
 
 def _get_rgb_image(camera: Camera):
     output_mode = getattr(camera, "output_mode", "rgb")
     if output_mode == "rgb":
+        frame = _get_current_frame(camera)
+        if frame is not None and "rgb" in frame:
+            frame_data = _get_frame(frame["rgb"])
+            if frame_data is not None:
+                return frame_data
         return _get_frame(camera.get_rgba())
     if output_mode == "diffuse_albedo":
-        annotator = _get_annotator(camera, "DiffuseAlbedo")
-        if annotator is None:
-            return None
-        return _get_frame(annotator.get_data())
+        return _get_frame(_get_annotator_data(camera, "DiffuseAlbedo"))
     raise NotImplementedError(f"Unsupported output mode: {output_mode}")
 
 
 def _get_depth_image(camera: Camera):
-    annotator = _get_annotator(camera, "distance_to_image_plane")
-    if annotator is None:
-        return None
-    return _get_depth(annotator.get_data())
+    frame = _get_current_frame(camera)
+    if frame is not None and "distance_to_image_plane" in frame:
+        frame_data = _get_depth(frame["distance_to_image_plane"])
+        if frame_data is not None:
+            return frame_data
+    get_depth = getattr(camera, "get_depth", None)
+    if callable(get_depth):
+        return _get_depth(get_depth())
+    return _get_depth(_get_annotator_data(camera, "distance_to_image_plane"))
 
 
 def _get_object_mask(camera: Camera):
-    annotator = _get_annotator(camera, "semantic_segmentation")
-    if annotator is None:
-        return None
-    annotation_data = annotator.get_data()
+    annotation_data = _get_annotator_data(camera, "semantic_segmentation")
     if (
         not isinstance(annotation_data, dict)
         or "data" not in annotation_data
@@ -175,10 +205,7 @@ def _get_object_mask(camera: Camera):
 
 
 def _get_bbox(camera: Camera, bbox_type: str):
-    annotator = _get_annotator(camera, bbox_type)
-    if annotator is None:
-        return None
-    annotation_data = annotator.get_data()
+    annotation_data = _get_annotator_data(camera, bbox_type)
     if (
         not isinstance(annotation_data, dict)
         or "data" not in annotation_data
@@ -192,10 +219,7 @@ def _get_bbox(camera: Camera, bbox_type: str):
 
 
 def _get_motion_vectors(camera: Camera):
-    annotator = _get_annotator(camera, "motion_vectors")
-    if annotator is None:
-        return None
-    annotation_data = annotator.get_data()
+    annotation_data = _get_annotator_data(camera, "motion_vectors")
     if isinstance(annotation_data, np.ndarray) and annotation_data.size > 0:
         return annotation_data
     return None

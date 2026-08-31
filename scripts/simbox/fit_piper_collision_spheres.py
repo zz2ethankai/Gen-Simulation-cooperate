@@ -45,7 +45,7 @@ def parse_args():
         "--robot-config",
         type=Path,
         default=Path(
-            "workflows/simbox/curobo/src/curobo/content/configs/robot/"
+            "InternDataAssets/curobov2/curobo/content/custom/configs/robot/"
             "piper100_right_arm.yml"
         ),
     )
@@ -53,7 +53,7 @@ def parse_args():
         "--output",
         type=Path,
         default=Path(
-            "workflows/simbox/curobo/src/curobo/content/configs/robot/spheres/"
+            "InternDataAssets/curobov2/curobo/content/custom/configs/robot/spheres/"
             "piper100_collision_audited_20260720.yml"
         ),
     )
@@ -122,7 +122,7 @@ def main():
     config_path = _resolve(args.robot_config)
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     kinematics = config["robot_cfg"]["kinematics"]
-    asset_root = ROOT / "workflows/simbox/curobo/src/curobo/content/assets"
+    asset_root = ROOT / "InternDataAssets/curobov2/curobo/content/custom/assets"
     meshes = helper._load_link_meshes((asset_root / kinematics["urdf_path"]).resolve())
     rng = np.random.default_rng(20260720)
     result = {}

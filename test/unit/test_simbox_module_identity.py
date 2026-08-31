@@ -10,6 +10,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_dual_workflow_does_not_double_load_core_runtime_types():
     source = (ROOT / "workflows/simbox_dual_workflow.py").read_text(encoding="utf-8")
+    execution_source = (
+        ROOT / "workflows/simbox/core/execution/curobo_execution.py"
+    ).read_text(encoding="utf-8")
 
     # Loading the same source as both ``core.*`` and
     # ``workflows.simbox.core.*`` creates distinct dataclass/Enum identities.
@@ -19,22 +22,40 @@ def test_dual_workflow_does_not_double_load_core_runtime_types():
     assert "from core.planning.motion_command import MotionPhase, MotionPhaseCommand" in source
     assert "from core.execution.safety_monitor import (" in source
     assert "from core.execution.execution_supervisor import ExecutionSupervisor" in source
-    assert "if command is not controller._active_phase_command:" in source
-    assert "arm_velocity = velocity[controller.arm_indices]" in source
+    assert "if command is self.state.active_phase_command:" in execution_source
+    assert "arm_velocity = velocity[arm_indices]" in source
     assert "arm_velocity_rad_s=float(" in source
 
 
 def test_phase_identity_uses_object_reference_not_reusable_python_id():
     source = (
-        ROOT / "workflows/simbox/core/controllers/template_controller.py"
+        ROOT / "workflows/simbox/core/execution/curobo_execution.py"
     ).read_text(encoding="utf-8")
-    assert "self._active_phase_command = command" in source
-    assert "command is self._active_phase_command" in source
+    assert "self.state.active_phase_command = command" in source
+    assert "command is self.state.active_phase_command" in source
     assert "_active_phase_command_token" not in source
 
 
-def test_topdown_capture_uses_runtime_artifact_directory_not_task_name():
-    source = (ROOT / "workflows/simbox_dual_workflow.py").read_text(encoding="utf-8")
+def test_controller_layout_separates_shared_curobo_code_from_robot_adapters():
+    controllers = ROOT / "workflows/simbox/core/controllers"
+    curobo = controllers / "curobo"
+
+    assert (curobo / "controller.py").is_file()
+    assert (controllers / "../execution/curobo_execution.py").resolve().is_file()
+    assert (curobo / "scene_setup.py").is_file()
+    assert (controllers / "controller_registry.py").is_file()
+    assert (controllers / "panda_omron_controller.py").is_file()
+    assert not (controllers / "template_controller.py").exists()
+    assert not (controllers / "controller_execution.py").exists()
+
+
+def test_topdown_screenshots_route_to_runtime_artifacts_not_task_directories():
+    source = (ROOT / "workflows/simbox_dual_workflow.py").read_text(
+        encoding="utf-8"
+    )
 
     assert 'os.environ.get("INTERNDATA_SCREENSHOT_DIR")' in source
-    assert 'capture_topdown_screenshot(self.task_cfg["data"]["task_dir"])' not in source
+    assert 'os.environ.get("OUTPUT_DIR")' in source
+    assert '"SEQ_OUTPUT_DIR"' in source
+    assert '/ "screenshots"' in source
+    assert "topdown capture requires INTERNDATA_SCREENSHOT_DIR" in source

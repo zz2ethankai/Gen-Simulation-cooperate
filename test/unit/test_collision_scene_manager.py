@@ -20,8 +20,11 @@ from core.planning.collision_scene_manager import (  # noqa: E402
     CollisionObjectState,
     CollisionSceneError,
     CollisionSceneManager,
-    validate_exact_exclusions,
+    PlannerScenePort,
 )
+from core.planning.domain_types import PlannerRuntimeProfile  # noqa: E402
+from core.planning.planner_runtime import PlannerRuntime  # noqa: E402
+import core.planning.native_bridge as native_bridge  # noqa: E402
 
 
 def _cube(stage, path, *, enabled=True):
@@ -31,7 +34,7 @@ def _cube(stage, path, *, enabled=True):
     return prim
 
 
-def _task(stage):
+def _task(stage, *, cfg=None):
     stage.DefinePrim("/World/task_0/sink_table_named_asset", "Xform")
     _cube(stage, "/World/task_0/sink_table_named_asset/collider")
     UsdGeom.Mesh.Define(stage, "/World/task_0/sink_table_named_asset/visual").CreatePointsAttr([])
@@ -49,7 +52,64 @@ def _task(stage):
         },
         objects={"movable_b": types.SimpleNamespace(prim_path="/World/task_0/movable_b")},
         distractors={},
+        cfg=cfg or {},
     )
+
+
+def _scene_port(
+    *,
+    arm="left",
+    checker=None,
+    obstacle_names=None,
+    check_current_start_state=None,
+    has_attached_collision_spheres=None,
+):
+    """Build the narrow scene dependency used by the manager tests."""
+
+    if checker is None:
+        checker = types.SimpleNamespace(
+            get_obstacle=lambda _path: object(),
+            enable_obstacle=lambda *_args: None,
+            update_obstacle_pose=lambda *_args: None,
+        )
+    if obstacle_names is None:
+        obstacle_names = [
+            "/World/task_0/sink_table_named_asset/collider",
+            "/World/task_0/movable_b/collider",
+        ]
+    checker.get_obstacle_names = lambda: list(obstacle_names)
+    checker.check_obstacle_exists = lambda name: name in obstacle_names
+    kinematics = types.SimpleNamespace(
+        config=types.SimpleNamespace(
+            kinematics_config=types.SimpleNamespace(
+                get_number_of_spheres=lambda _link_name: 8
+            )
+        )
+    )
+    planner = types.SimpleNamespace(
+        scene_collision_checker=checker,
+        kinematics=kinematics,
+        update_world=lambda world: setattr(planner, "world", world),
+    )
+    planner_runtime = PlannerRuntime(planner=planner, scene_revision=0)
+    port = PlannerScenePort(
+        name="robot",
+        lr_name=arm,
+        reference_prim_path="/World/task_0",
+        robot_ee_path="/World/task_0",
+        tensor_args=types.SimpleNamespace(to_device=lambda value: value),
+        robot=types.SimpleNamespace(),
+        runtime=planner_runtime,
+        check_current_start_state=check_current_start_state,
+        attach_collision_object=lambda _paths: None,
+        detach_attachment=lambda: None,
+        has_attached_collision_spheres=(
+            has_attached_collision_spheres
+            if has_attached_collision_spheres is not None
+            else (lambda: False)
+        ),
+    )
+    return port, planner, checker
 
 
 def test_discovery_uses_enabled_collision_api_not_names_or_visual_meshes():
@@ -67,24 +127,22 @@ def test_diagnostic_curobo_disable_is_exact_and_restored_after_failure():
     stage = Usd.Stage.CreateInMemory()
     manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
     calls = []
-    world_collision = types.SimpleNamespace(
-        enable_obstacle=lambda path, enabled: calls.append((path, enabled))
+    checker = types.SimpleNamespace(
+        get_obstacle=lambda _path: object(),
+        enable_obstacle=lambda path, enabled: calls.append((path, enabled)),
+        update_obstacle_pose=lambda *_args: None,
     )
-    controller = types.SimpleNamespace(
-        name="robot",
-        lr_name="right",
-        motion_gen=types.SimpleNamespace(world_collision=world_collision),
+    port, _planner, _checker = _scene_port(
+        arm="right", checker=checker, obstacle_names=manager.collision_prim_paths
     )
+    manager.bind_scene_port(port)
+    calls.clear()
     key = ("robot", "right")
-    manager.controllers[key] = controller
-    manager.controller_enabled[key] = {
-        path: True for path in manager.collision_prim_paths
-    }
     selected = manager.collision_prim_paths[0]
 
     with pytest.raises(RuntimeError, match="planning failed"):
-        with manager.diagnostic_curobo_obstacles_disabled(controller, [selected]):
-            assert manager.controller_enabled[key][selected] is True
+        with manager.diagnostic_curobo_obstacles_disabled(port, [selected]):
+            assert manager.controller_enabled[key][selected] is False
             raise RuntimeError("planning failed")
 
     assert calls == [(selected, False), (selected, True)]
@@ -95,100 +153,51 @@ def test_diagnostic_curobo_disable_rejects_unknown_path_before_mutation():
     stage = Usd.Stage.CreateInMemory()
     manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
     calls = []
-    controller = types.SimpleNamespace(
-        name="robot",
-        lr_name="right",
-        motion_gen=types.SimpleNamespace(
-            world_collision=types.SimpleNamespace(
-                enable_obstacle=lambda path, enabled: calls.append((path, enabled))
-            )
-        ),
+    checker = types.SimpleNamespace(
+        get_obstacle=lambda _path: object(),
+        enable_obstacle=lambda path, enabled: calls.append((path, enabled)),
+        update_obstacle_pose=lambda *_args: None,
     )
-    key = ("robot", "right")
-    manager.controllers[key] = controller
-    manager.controller_enabled[key] = {
-        path: True for path in manager.collision_prim_paths
-    }
+    port, _planner, _checker = _scene_port(
+        arm="right", checker=checker, obstacle_names=manager.collision_prim_paths
+    )
+    manager.bind_scene_port(port)
+    calls.clear()
 
-    with pytest.raises(CollisionSceneError, match="not exact CuRobo world obstacles"):
+    with pytest.raises(CollisionSceneError, match="not exact planner-world obstacles"):
         with manager.diagnostic_curobo_obstacles_disabled(
-            controller, ["/World/task_0/not_a_collider"]
+            port, ["/World/task_0/not_a_collider"]
         ):
             pass
 
     assert calls == []
 
 
-def test_place_descent_planning_world_is_exact_and_restored():
+def test_diagnostic_physics_and_curobo_disable_restores_authored_state(monkeypatch):
     stage = Usd.Stage.CreateInMemory()
     manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
     calls = []
-    controller = types.SimpleNamespace(
-        name="robot",
-        lr_name="right",
-        motion_gen=types.SimpleNamespace(
-            world_collision=types.SimpleNamespace(
-                enable_obstacle=lambda path, enabled: calls.append((path, enabled))
-            )
-        ),
+    checker = types.SimpleNamespace(
+        get_obstacle=lambda _path: object(),
+        enable_obstacle=lambda path, enabled: calls.append((path, enabled)),
+        update_obstacle_pose=lambda *_args: None,
     )
-    key = ("robot", "right")
-    manager.controllers[key] = controller
-    manager.controller_enabled[key] = {
-        path: True for path in manager.collision_prim_paths
-    }
-    target = manager.records["movable_b"]
-    target.state = CollisionObjectState.ATTACHED
-    target.owner_robot = "robot"
-    target.owner_arm = "right"
-    support_paths = manager.records["sink_table_named_asset"].collision_prim_paths
-
-    with manager.placement_descent_planning_world(
-        "movable_b", "sink_table_named_asset", "robot", "right"
-    ) as paths:
-        assert list(paths) == support_paths
-
-    assert calls == [
-        *[(path, False) for path in support_paths],
-        *[(path, True) for path in reversed(support_paths)],
-    ]
-    assert manager.controller_enabled[key] == {
-        path: True for path in manager.collision_prim_paths
-    }
-
-
-def test_diagnostic_physics_and_curobo_disable_restores_both_after_failure():
-    stage = Usd.Stage.CreateInMemory()
-    manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
-    manager.records["movable_b"].mobility = "static"
-    calls = []
-    controller = types.SimpleNamespace(
-        name="robot",
-        lr_name="right",
-        motion_gen=types.SimpleNamespace(
-            world_collision=types.SimpleNamespace(
-                enable_obstacle=lambda path, enabled: calls.append((path, enabled))
-            )
-        ),
+    port, _planner, _checker = _scene_port(
+        arm="right", checker=checker, obstacle_names=manager.collision_prim_paths
     )
-    key = ("robot", "right")
-    manager.controllers[key] = controller
-    manager.controller_enabled[key] = {
-        path: True for path in manager.collision_prim_paths
-    }
+    manager.bind_scene_port(port)
+    calls.clear()
+    monkeypatch.setattr(manager, "sync_dynamic_poses", lambda *_args, **_kwargs: [])
     selected = manager.collision_prim_paths[0]
     collision_attr = UsdPhysics.CollisionAPI(
         stage.GetPrimAtPath(selected)
     ).GetCollisionEnabledAttr()
-    assert collision_attr.Get() is True
-    assert collision_attr.HasAuthoredValueOpinion()
 
     with pytest.raises(RuntimeError, match="planning failed"):
         with manager.diagnostic_physics_and_curobo_obstacles_disabled(
-            controller, [selected]
+            port, [selected]
         ):
             assert collision_attr.Get() is False
-            assert manager.controller_enabled[key][selected] is True
             raise RuntimeError("planning failed")
 
     assert collision_attr.Get() is True
@@ -196,80 +205,218 @@ def test_diagnostic_physics_and_curobo_disable_restores_both_after_failure():
     assert calls == [(selected, False), (selected, True)]
 
 
-def test_diagnostic_collision_entities_resolve_to_all_exact_paths():
+def test_diagnostic_physics_restore_preserves_unauthored_default(monkeypatch):
     stage = Usd.Stage.CreateInMemory()
     manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
-
-    assert manager.resolve_diagnostic_collision_entities(
-        ["sink_table_named_asset", "movable_b"]
-    ) == {
-        "sink_table_named_asset": ["/World/task_0/sink_table_named_asset/collider"],
-        "movable_b": ["/World/task_0/movable_b/collider"],
-    }
-    with pytest.raises(CollisionSceneError, match="not registered world entities"):
-        manager.resolve_diagnostic_collision_entities(["missing"])
-
-
-def test_diagnostic_physics_restore_preserves_unauthored_collision_default():
-    stage = Usd.Stage.CreateInMemory()
-    task = _task(stage)
-    selected = "/World/task_0/sink_table_named_asset/collider"
+    selected = manager.collision_prim_paths[0]
     collision_attr = UsdPhysics.CollisionAPI(
         stage.GetPrimAtPath(selected)
     ).GetCollisionEnabledAttr()
     collision_attr.Clear()
-    assert not collision_attr.HasAuthoredValueOpinion()
-    manager = CollisionSceneManager(stage, task, {"strict": True})
-    manager.records["movable_b"].mobility = "static"
-    controller = types.SimpleNamespace(
-        name="robot",
-        lr_name="right",
-        motion_gen=types.SimpleNamespace(
-            world_collision=types.SimpleNamespace(
-                enable_obstacle=lambda _path, _enabled: None
-            )
-        ),
+    port, _planner, _checker = _scene_port(
+        arm="right", obstacle_names=manager.collision_prim_paths
     )
-    key = ("robot", "right")
-    manager.controllers[key] = controller
-    manager.controller_enabled[key] = {
-        path: True for path in manager.collision_prim_paths
-    }
+    manager.bind_scene_port(port)
+    monkeypatch.setattr(manager, "sync_dynamic_poses", lambda *_args, **_kwargs: [])
 
-    with manager.diagnostic_physics_and_curobo_obstacles_disabled(
-        controller, [selected]
-    ):
+    with manager.diagnostic_physics_and_curobo_obstacles_disabled(port, [selected]):
         assert collision_attr.Get() is False
 
     assert collision_attr.Get() is True
     assert not collision_attr.HasAuthoredValueOpinion()
 
 
-def test_exact_exclusions_require_absolute_path_and_reason():
-    with pytest.raises(ValueError, match="complete absolute"):
-        validate_exact_exclusions([{"prim_path": "sink/collider", "reason": "known duplicate"}])
-    with pytest.raises(ValueError, match="non-empty reason"):
-        validate_exact_exclusions([{"prim_path": "/World/sink/collider", "reason": ""}])
-    assert validate_exact_exclusions(
-        [{"prim_path": "/World/sink/collider", "reason": "duplicate proxy"}]
-    ) == {"/World/sink/collider": "duplicate proxy"}
+def test_diagnostic_collision_entities_resolve_all_exact_paths():
+    stage = Usd.Stage.CreateInMemory()
+    manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
+
+    assert manager.resolve_diagnostic_collision_entities(
+        ["sink_table_named_asset", "movable_b"]
+    ) == {
+        "sink_table_named_asset": [
+            "/World/task_0/sink_table_named_asset/collider"
+        ],
+        "movable_b": ["/World/task_0/movable_b/collider"],
+    }
+    with pytest.raises(CollisionSceneError, match="not registered world entities"):
+        manager.resolve_diagnostic_collision_entities(["missing"])
 
 
-def test_exact_exclusion_must_match_collider_inside_registered_entity():
+def test_diagnostic_physics_overlay_presyncs_and_skips_disabled_path(monkeypatch):
+    stage = Usd.Stage.CreateInMemory()
+    manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
+    selected = manager.records["movable_b"].collision_prim_paths[0]
+    sync_states = []
+    monkeypatch.setattr(
+        manager,
+        "sync_dynamic_poses",
+        lambda *_args, **_kwargs: sync_states.append(
+            set(manager._diagnostic_physics_disabled_paths)
+        ),
+    )
+    port, _planner, _checker = _scene_port(
+        arm="right", obstacle_names=manager.collision_prim_paths
+    )
+    manager.bind_scene_port(port)
+
+    with manager.diagnostic_physics_and_curobo_obstacles_disabled(port, [selected]):
+        assert sync_states == [set()]
+        calls = []
+        monkeypatch.setattr(
+            manager,
+            "_world_matrix",
+            lambda path: calls.append(path) or np.eye(4),
+        )
+        manager._sync_record_poses(manager.records["movable_b"], force=True)
+        assert selected not in calls
+
+    assert not manager._diagnostic_physics_disabled_paths
+
+
+def test_attached_slip_ignore_axis_is_scale_safe(monkeypatch):
+    manager = CollisionSceneManager.__new__(CollisionSceneManager)
+    manager.records = {
+        "object": types.SimpleNamespace(
+            state=CollisionObjectState.ATTACHED,
+            owner_robot="robot",
+            owner_arm="left",
+            tracking_prim_path="/World/object",
+            root_prim_path="/World/object",
+        )
+    }
+    manager.scene_ports = {
+        ("robot", "left"): types.SimpleNamespace(robot_ee_path="/World/ee")
+    }
+    manager._attached_relative_pose = {"object": np.eye(4)}
+    angle = np.deg2rad(90.0)
+    object_world = np.eye(4)
+    object_world[:3, :3] = np.diag([0.001, 0.002, 0.003]) @ np.array(
+        [
+            [np.cos(angle), -np.sin(angle), 0.0],
+            [np.sin(angle), np.cos(angle), 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+    monkeypatch.setattr(
+        manager,
+        "_world_matrix",
+        lambda path: object_world if path == "/World/object" else np.eye(4),
+    )
+
+    manager._slip_ignore_axis = {"object": np.array([0.0, 0.0, 1.0])}
+    translation, rotation = manager.get_attached_object_slip("object")
+
+    assert translation == pytest.approx(0.0)
+    assert rotation == pytest.approx(0.0)
+
+
+def test_affine_rotation_extraction_ignores_asset_scale():
+    manager = CollisionSceneManager.__new__(CollisionSceneManager)
+    angle = np.deg2rad(35.0)
+    rotation = np.array(
+        [
+            [np.cos(angle), -np.sin(angle), 0.0],
+            [np.sin(angle), np.cos(angle), 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+    transform = np.eye(4)
+    transform[:3, :3] = np.diag([0.001, 0.002, 0.003]) @ rotation
+    extracted = manager._rotation_from_affine(transform)
+    assert np.allclose(extracted, rotation, atol=1e-6)
+
+
+def test_planning_exclusions_resolve_exact_task_entity_names():
+    stage = Usd.Stage.CreateInMemory()
+    task = _task(stage, cfg={"planning": {"planning_exclusions": ["sink_table_named_asset"]}})
+    manager = CollisionSceneManager(stage, task, {"strict": True})
+    assert manager._planning_exclusion_names == ("sink_table_named_asset",)
+
+
+def test_planning_exclusion_does_not_use_substring_or_prim_path():
     stage = Usd.Stage.CreateInMemory()
     task = _task(stage)
-    _cube(stage, "/World/unrelated/collider")
-    with pytest.raises(CollisionSceneError, match="do not name enabled Stage colliders"):
-        CollisionSceneManager(
-            stage,
-            task,
-            {
-                "strict": True,
-                "exact_exclusions": [
-                    {"prim_path": "/World/unrelated/collider", "reason": "not in task entities"}
-                ],
-            },
-        )
+    with pytest.raises(CollisionSceneError, match="does not name.*collision entity"):
+        CollisionSceneManager(stage, task, {"strict": True, "planning_exclusions": ["sink"]})
+
+
+def test_planning_exclusion_disables_all_colliders_for_exact_record():
+    stage = Usd.Stage.CreateInMemory()
+    task = _task(stage, cfg={"planning": {"planning_exclusions": ["sink_table_named_asset"]}})
+    second = _cube(stage, "/World/task_0/sink_table_named_asset/collider_two")
+    assert second.IsValid()
+    manager = CollisionSceneManager(stage, task, {"strict": True})
+    key = ("robot", "right")
+    updates = []
+    checker = types.SimpleNamespace(
+        get_obstacle=lambda _path: object(),
+        enable_obstacle=lambda path, enabled: updates.append((path, enabled)),
+    )
+    controller, _planner, _checker = _scene_port(
+        arm=key[1], checker=checker, obstacle_names=manager.collision_prim_paths
+    )
+    manager.bind_scene_port(controller)
+
+    manager.apply_controller_planning_exclusions(controller)
+
+    excluded = manager.records["sink_table_named_asset"].collision_prim_paths
+    assert set(updates) == {(path, False) for path in excluded}
+    assert all(not manager.controller_enabled[key][path] for path in excluded)
+
+
+def test_floor_collision_api_must_be_native_addressable_before_episode_reset():
+    """Schema discovery cannot outrun the native world's exact name set."""
+
+    stage = Usd.Stage.CreateInMemory()
+    task = _task(stage)
+    stage.DefinePrim("/World/task_0/floor", "Xform")
+    _cube(stage, "/World/task_0/floor/collision_volume")
+    task.fixtures["floor"] = types.SimpleNamespace(prim_path="/World/task_0/floor")
+
+    manager = CollisionSceneManager(stage, task, {"strict": True})
+    floor_path = "/World/task_0/floor/collision_volume"
+    assert floor_path in manager.collision_prim_paths
+
+    missing_checker = types.SimpleNamespace(
+        get_obstacle_names=lambda: [
+            path for path in manager.collision_prim_paths if path != floor_path
+        ],
+        enable_obstacle=lambda *_args: None,
+    )
+    missing_port, _planner, _checker = _scene_port(
+        checker=missing_checker,
+        obstacle_names=[
+            path for path in manager.collision_prim_paths if path != floor_path
+        ],
+    )
+    with pytest.raises(CollisionSceneError, match="missing=.*collision_volume"):
+        manager.bind_scene_port(missing_port)
+
+    manager = CollisionSceneManager(stage, task, {"strict": True})
+    updates = []
+    complete_checker = types.SimpleNamespace(
+        get_obstacle_names=lambda: list(manager.collision_prim_paths),
+        enable_obstacle=lambda path, enabled: updates.append((path, enabled)),
+        update_obstacle_pose=lambda *_args: None,
+    )
+    port, _planner, _checker = _scene_port(
+        checker=complete_checker,
+        obstacle_names=manager.collision_prim_paths,
+    )
+    manager.bind_scene_port(port)
+    manager.reset_episode()
+
+    assert (floor_path, True) in updates
+
+
+def test_duplicate_task_entity_name_is_rejected_before_exclusion_resolution():
+    stage = Usd.Stage.CreateInMemory()
+    task = _task(stage, cfg={"planning": {"planning_exclusions": ["sink_table_named_asset"]}})
+    task.objects["sink_table_named_asset"] = types.SimpleNamespace(
+        prim_path="/World/task_0/movable_b"
+    )
+    with pytest.raises(CollisionSceneError, match="multiple records"):
+        CollisionSceneManager(stage, task, {"strict": True})
 
 
 def test_strict_mode_rejects_collision_api_on_unsupported_prim():
@@ -471,13 +618,10 @@ def test_invariants_allow_only_explicit_terminal_support_disable():
     stage = Usd.Stage.CreateInMemory()
     manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
     key = ("robot", "right")
-    manager.controllers[key] = types.SimpleNamespace(
-        has_attached_collision_spheres=lambda: True
+    controller, _planner, _checker = _scene_port(
+        arm=key[1], has_attached_collision_spheres=lambda: True
     )
-    manager.controller_enabled[key] = {
-        path: True for path in manager.collision_prim_paths
-    }
-    manager._temporary_disabled[key] = set()  # pylint: disable=protected-access
+    manager.bind_scene_port(controller)
     manager._transition(  # pylint: disable=protected-access
         "movable_b", CollisionObjectState.ACTIVE_TARGET_TRANSIT, *key
     )
@@ -524,23 +668,6 @@ def test_placed_object_can_enter_and_restore_terminal_retreat_identity():
     assert manager.records["movable_b"].state == CollisionObjectState.PLACED_WORLD
 
 
-def test_active_physics_object_state_blocks_legacy_activation():
-    stage = Usd.Stage.CreateInMemory()
-    manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
-    controller = types.SimpleNamespace(name="robot", lr_name="right")
-    manager.controllers[("robot", "right")] = controller
-    manager.controller_enabled[("robot", "right")] = {
-        path: True for path in manager.collision_prim_paths
-    }
-    manager._temporary_disabled[("robot", "right")] = set()  # pylint: disable=protected-access
-    manager._transition(  # pylint: disable=protected-access
-        "movable_b", CollisionObjectState.ACTIVE_TARGET_TRANSIT, "robot", "right"
-    )
-
-    with pytest.raises(CollisionSceneError, match="cannot activate legacy"):
-        manager.prepare_controller_for_legacy(controller)
-
-
 def test_attached_owner_lookup_and_carry_validation_are_exact(monkeypatch):
     stage = Usd.Stage.CreateInMemory()
     manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
@@ -570,23 +697,19 @@ def test_world_collision_diagnostic_isolates_entity_and_restores_enabled_state()
         else:
             enabled.discard(path)
 
-    controller = types.SimpleNamespace(
-        name=key[0],
-        lr_name=key[1],
-        motion_gen=types.SimpleNamespace(
-            world_model=types.SimpleNamespace(get_obstacle=lambda _path: object()),
-            world_collision=types.SimpleNamespace(enable_obstacle=enable_obstacle),
-        ),
+    checker = types.SimpleNamespace(
+        get_obstacle=lambda _path: object(),
+        enable_obstacle=enable_obstacle,
+    )
+    controller, _planner, _checker = _scene_port(
+        arm=key[1],
+        checker=checker,
         check_current_start_state=lambda: (
             collision_path not in enabled,
             None if collision_path not in enabled else "Start state is colliding with world",
         ),
     )
-    manager.controllers[key] = controller
-    manager.controller_enabled[key] = {
-        path: True for path in manager.collision_prim_paths
-    }
-    manager._temporary_disabled[key] = set()  # pylint: disable=protected-access
+    manager.bind_scene_port(controller)
 
     result = manager.diagnose_controller_world_collision(controller)
 
@@ -598,54 +721,33 @@ def test_world_collision_diagnostic_isolates_entity_and_restores_enabled_state()
     assert all(manager.controller_enabled[key].values())
 
 
-def test_physics_sync_and_export_skip_legacy_controllers(monkeypatch, tmp_path):
+def test_physics_sync_and_export_use_bound_scene_ports(monkeypatch, tmp_path):
     stage = Usd.Stage.CreateInMemory()
     manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
-    physics = types.SimpleNamespace(
-        name="robot",
-        lr_name="left",
-        collision_world_mode="physics_schema",
-        reference_prim_path="/World/task_0",
-        tensor_args=object(),
-        motion_gen=types.SimpleNamespace(
-            world_collision=types.SimpleNamespace(update_obstacle_pose=lambda *_args: None)
-        ),
+    checker = types.SimpleNamespace(
+        get_obstacle=lambda _path: object(),
+        update_obstacle_pose=lambda *_args: None,
     )
-    legacy = types.SimpleNamespace(
-        name="robot",
-        lr_name="right",
-        collision_world_mode="legacy_stage_scan",
-        reference_prim_path="/World/task_0",
-        tensor_args=object(),
-        motion_gen=types.SimpleNamespace(
-            world_collision=types.SimpleNamespace(
-                update_obstacle_pose=lambda *_args: pytest.fail(
-                    "legacy controller must not receive Physics pose sync"
-                )
-            )
-        ),
-    )
-    manager.controllers[("robot", "left")] = physics
-    manager.controllers[("robot", "right")] = legacy
+    physics, _planner, _checker = _scene_port(arm="left", checker=checker)
+    manager.bind_scene_port(physics)
 
     class Helper:
         @staticmethod
-        def get_collision_prim_pose(_path, reference_prim_path=None):
-            del reference_prim_path
-            return [1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0]
+        def get_pose(path, inverse=False):
+            if inverse:
+                return np.eye(4)
+            assert path.endswith("/collider")
+            return np.eye(4)
 
-    manager._usd_helper = Helper()  # pylint: disable=protected-access
+    manager._usd_parser = Helper()  # pylint: disable=protected-access
     fake_curobo = types.ModuleType("curobo")
     fake_types = types.ModuleType("curobo.types")
-    fake_math = types.ModuleType("curobo.types.math")
-    fake_math.Pose = types.SimpleNamespace(
-        from_list=lambda value, _tensor_args: tuple(value)
+    fake_types.Pose = types.SimpleNamespace(
+        from_matrix=lambda value: np.asarray(value)
     )
-    fake_types.math = fake_math
     fake_curobo.types = fake_types
     monkeypatch.setitem(sys.modules, "curobo", fake_curobo)
     monkeypatch.setitem(sys.modules, "curobo.types", fake_types)
-    monkeypatch.setitem(sys.modules, "curobo.types.math", fake_math)
 
     root = stage.GetPrimAtPath("/World/task_0/movable_b")
     UsdGeom.Xformable(root).AddTranslateOp().Set((0.1, 0.0, 0.0))
@@ -675,7 +777,50 @@ def test_contact_force_reduction_preserves_filter_identity_across_sensors():
     np.testing.assert_allclose(maxima, [5.0, 10.0])
 
 
-def test_old_usd_helper_api_builds_exact_name_bbox_world(monkeypatch):
+def test_robot_contact_can_exclude_only_the_expected_active_object():
+    class View:
+        def get_contact_force_matrix(self):
+            return np.asarray([[[3.0, 4.0, 0.0], [0.0, 0.0, 12.0]]])
+
+    manager = CollisionSceneManager.__new__(CollisionSceneManager)
+    manager.records = {
+        "apple": types.SimpleNamespace(collision_prim_paths=["/World/apple/collider"]),
+        "table": types.SimpleNamespace(collision_prim_paths=["/World/table/collider"]),
+    }
+    manager._robot_environment_contact_views = {("robot", "left"): [View()]}
+    manager._robot_contact_debug_reported = set()
+
+    assert manager.get_unexpected_robot_contact_force("robot", "left") == 12.0
+    assert (
+        manager.get_unexpected_robot_contact_force(
+            "robot", "left", allowed_entity="apple"
+        )
+        == 12.0
+    )
+
+    class TargetOnlyView:
+        def get_contact_force_matrix(self):
+            return np.asarray([[[3.0, 4.0, 0.0], [0.0, 0.0, 0.0]]])
+
+    manager._robot_environment_contact_views = {("robot", "left"): [TargetOnlyView()]}
+    assert (
+        manager.get_unexpected_robot_contact_force(
+            "robot", "left", allowed_entity="apple"
+        )
+        == 0.0
+    )
+
+
+def test_pending_detach_window_is_explicit():
+    manager = CollisionSceneManager.__new__(CollisionSceneManager)
+    manager._pending_detach = {"apple"}
+
+    assert manager.is_pending_detach("apple")
+    assert not manager.is_pending_detach("table")
+    assert not manager.is_pending_detach(None)
+
+
+def test_native_usd_parser_builds_exact_name_bbox_world(monkeypatch):
     stage = Usd.Stage.CreateInMemory()
     manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
 
@@ -692,18 +837,10 @@ def test_old_usd_helper_api_builds_exact_name_bbox_world(monkeypatch):
         def get_collision_check_world(self):
             return self
 
-    fake_curobo = types.ModuleType("curobo")
-    fake_geom = types.ModuleType("curobo.geom")
-    fake_geom_types = types.ModuleType("curobo.geom.types")
-    fake_geom_types.Cuboid = FakeCuboid
-    fake_geom_types.WorldConfig = FakeWorldConfig
-    fake_geom.types = fake_geom_types
-    fake_curobo.geom = fake_geom
-    monkeypatch.setitem(sys.modules, "curobo", fake_curobo)
-    monkeypatch.setitem(sys.modules, "curobo.geom", fake_geom)
-    monkeypatch.setitem(sys.modules, "curobo.geom.types", fake_geom_types)
+    monkeypatch.setattr(native_bridge, "Cuboid", FakeCuboid)
+    monkeypatch.setattr(native_bridge, "SceneCfg", FakeWorldConfig)
 
-    manager._usd_helper = types.SimpleNamespace()  # pylint: disable=protected-access
+    manager._usd_parser = types.SimpleNamespace()  # pylint: disable=protected-access
     result = manager.build_world_config("/World/task_0")
 
     assert [obstacle.name for obstacle in result.cuboid] == manager.collision_prim_paths
@@ -711,7 +848,7 @@ def test_old_usd_helper_api_builds_exact_name_bbox_world(monkeypatch):
     assert all(min(obstacle.dims) > 0.0 for obstacle in result.cuboid)
 
 
-def test_bbox_proxy_uses_sibling_reference_and_applies_scale_once(monkeypatch):
+def test_native_bbox_proxy_uses_sibling_reference_and_applies_scale_once(monkeypatch):
     stage = Usd.Stage.CreateInMemory()
     reference = UsdGeom.Xform.Define(stage, "/World/robot_base")
     reference.AddTranslateOp().Set((2.5, 1.0, 0.7))
@@ -730,15 +867,7 @@ def test_bbox_proxy_uses_sibling_reference_and_applies_scale_once(monkeypatch):
             self.pose = kwargs["pose"]
             self.dims = kwargs["dims"]
 
-    fake_curobo = types.ModuleType("curobo")
-    fake_geom = types.ModuleType("curobo.geom")
-    fake_geom_types = types.ModuleType("curobo.geom.types")
-    fake_geom_types.Cuboid = FakeCuboid
-    fake_geom.types = fake_geom_types
-    fake_curobo.geom = fake_geom
-    monkeypatch.setitem(sys.modules, "curobo", fake_curobo)
-    monkeypatch.setitem(sys.modules, "curobo.geom", fake_geom)
-    monkeypatch.setitem(sys.modules, "curobo.geom.types", fake_geom_types)
+    monkeypatch.setattr(native_bridge, "Cuboid", FakeCuboid)
 
     manager = CollisionSceneManager.__new__(CollisionSceneManager)
     manager.stage = stage
@@ -750,7 +879,7 @@ def test_bbox_proxy_uses_sibling_reference_and_applies_scale_once(monkeypatch):
     np.testing.assert_allclose(proxy.dims, [4.0, 2.8, 0.02], atol=1e-6)
 
 
-def test_old_usd_helper_api_computes_relative_dynamic_pose(monkeypatch):
+def test_native_usd_parser_computes_relative_dynamic_pose(monkeypatch):
     stage = Usd.Stage.CreateInMemory()
     manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
     reference_from_world = np.eye(4)
@@ -777,20 +906,24 @@ def test_old_usd_helper_api_computes_relative_dynamic_pose(monkeypatch):
 
     fake_curobo = types.ModuleType("curobo")
     fake_types = types.ModuleType("curobo.types")
-    fake_math = types.ModuleType("curobo.types.math")
-    fake_math.Pose = FakePose
-    fake_types.math = fake_math
+    fake_types.Pose = FakePose
     fake_curobo.types = fake_types
     monkeypatch.setitem(sys.modules, "curobo", fake_curobo)
     monkeypatch.setitem(sys.modules, "curobo.types", fake_types)
-    monkeypatch.setitem(sys.modules, "curobo.types.math", fake_math)
 
-    manager._usd_helper = Helper()  # pylint: disable=protected-access
-    controller = types.SimpleNamespace(
+    manager._usd_parser = Helper()  # pylint: disable=protected-access
+    controller, _planner, _checker = _scene_port()
+    controller = PlannerScenePort(
+        name=controller.name,
+        lr_name=controller.lr_name,
         reference_prim_path="/World/robot_base",
-        tensor_args=types.SimpleNamespace(to_device=lambda value: value),
+        robot_ee_path=controller.robot_ee_path,
+        tensor_args=controller.tensor_args,
+        robot=controller.robot,
+        runtime=controller.runtime,
+        check_current_start_state=controller.check_current_start_state,
     )
-    result = manager._controller_obstacle_pose(  # pylint: disable=protected-access
+    result = manager._port_obstacle_pose(  # pylint: disable=protected-access
         controller, "/World/task_0/movable_b/collider"
     )
 
@@ -806,40 +939,39 @@ def test_dynamic_pose_sync_does_not_rebuild_collision_geometry(monkeypatch):
     pose_calls = []
 
     class Helper:
-        def get_collision_prim_pose(self, path, reference_prim_path=None):
-            pose_calls.append((path, reference_prim_path))
-            return [1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0]
+        def get_pose(self, path, inverse=False):
+            pose_calls.append((path, inverse))
+            if inverse:
+                return np.eye(4)
+            pose = np.eye(4)
+            pose[:3, 3] = [1.0, 2.0, 3.0]
+            return pose
 
-        def get_obstacles_from_collision_prims(self, *_args, **_kwargs):
+        def get_obstacles_from_stage(self, *_args, **_kwargs):
             raise AssertionError("dynamic pose sync must not rebuild geometry")
 
     updates = []
-    world_collision = types.SimpleNamespace(
+    scene_collision_checker = types.SimpleNamespace(
+        get_obstacle=lambda _path: object(),
         update_obstacle_pose=lambda path, pose: updates.append((path, pose))
     )
-    controller = types.SimpleNamespace(
-        reference_prim_path="/World/task_0",
-        tensor_args=object(),
-        motion_gen=types.SimpleNamespace(world_collision=world_collision),
+    controller, _planner, _checker = _scene_port(
+        arm="right", checker=scene_collision_checker
     )
-    manager.controllers[("robot", "right")] = controller
-    manager._usd_helper = Helper()  # pylint: disable=protected-access
+    manager.bind_scene_port(controller)
+    manager._usd_parser = Helper()  # pylint: disable=protected-access
 
     fake_curobo = types.ModuleType("curobo")
     fake_types = types.ModuleType("curobo.types")
-    fake_math = types.ModuleType("curobo.types.math")
-
     class FakePose:
         @staticmethod
-        def from_list(value, _tensor_args):
-            return tuple(value)
+        def from_matrix(value):
+            return np.asarray(value)
 
-    fake_math.Pose = FakePose
-    fake_types.math = fake_math
+    fake_types.Pose = FakePose
     fake_curobo.types = fake_types
     monkeypatch.setitem(sys.modules, "curobo", fake_curobo)
     monkeypatch.setitem(sys.modules, "curobo.types", fake_types)
-    monkeypatch.setitem(sys.modules, "curobo.types.math", fake_math)
 
     root = stage.GetPrimAtPath("/World/task_0/movable_b")
     UsdGeom.Xformable(root).AddTranslateOp().Set((0.1, 0.0, 0.0))
@@ -847,89 +979,22 @@ def test_dynamic_pose_sync_does_not_rebuild_collision_geometry(monkeypatch):
 
     assert changed == ["movable_b"]
     assert pose_calls == [
-        ("/World/task_0/movable_b/collider", "/World/task_0")
+        ("/World/task_0", True),
+        ("/World/task_0/movable_b/collider", False),
     ]
-    assert updates == [
-        (
-            "/World/task_0/movable_b/collider",
-            (1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0),
-        )
-    ]
+    assert len(updates) == 1
+    assert updates[0][0] == "/World/task_0/movable_b/collider"
+    np.testing.assert_allclose(updates[0][1], np.array([[1.0, 0.0, 0.0, 1.0],
+                                                         [0.0, 1.0, 0.0, 2.0],
+                                                         [0.0, 0.0, 1.0, 3.0],
+                                                         [0.0, 0.0, 0.0, 1.0]]))
 
 
-def test_diagnostic_physics_overlay_presyncs_then_skips_disabled_path(monkeypatch):
+def test_dynamic_pose_sync_skips_placement_contact_objects():
     stage = Usd.Stage.CreateInMemory()
-    task = _task(stage)
-    manager = CollisionSceneManager(stage, task, {"strict": True})
-    selected = manager.records["movable_b"].collision_prim_paths[0]
-    pose_calls = []
+    manager = CollisionSceneManager(stage, _task(stage), {"strict": True})
+    manager.records["movable_b"].state = CollisionObjectState.PLACEMENT_CONTACT
+    root = stage.GetPrimAtPath("/World/task_0/movable_b")
+    UsdGeom.Xformable(root).AddTranslateOp().Set((0.25, 0.0, 0.0))
 
-    class Helper:
-        def get_collision_prim_pose(self, path, reference_prim_path=None):
-            collision_attr = UsdPhysics.CollisionAPI(
-                stage.GetPrimAtPath(path)
-            ).GetCollisionEnabledAttr()
-            if collision_attr.Get() is False:
-                raise ValueError(f"disabled collider reached helper: {path}")
-            pose_calls.append((path, reference_prim_path))
-            return [1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0]
-
-    obstacle_updates = []
-    enabled_calls = []
-    world_collision = types.SimpleNamespace(
-        update_obstacle_pose=lambda path, pose: obstacle_updates.append((path, pose)),
-        enable_obstacle=lambda path, enabled: enabled_calls.append((path, enabled)),
-    )
-    controller = types.SimpleNamespace(
-        name="robot",
-        lr_name="right",
-        reference_prim_path="/World/task_0",
-        tensor_args=object(),
-        motion_gen=types.SimpleNamespace(world_collision=world_collision),
-    )
-    key = ("robot", "right")
-    manager.controllers[key] = controller
-    manager.controller_enabled[key] = {
-        path: True for path in manager.collision_prim_paths
-    }
-    manager._usd_helper = Helper()  # pylint: disable=protected-access
-
-    fake_curobo = types.ModuleType("curobo")
-    fake_types = types.ModuleType("curobo.types")
-    fake_math = types.ModuleType("curobo.types.math")
-
-    class FakePose:
-        @staticmethod
-        def from_list(value, _tensor_args):
-            return tuple(value)
-
-    fake_math.Pose = FakePose
-    fake_types.math = fake_math
-    fake_curobo.types = fake_types
-    monkeypatch.setitem(sys.modules, "curobo", fake_curobo)
-    monkeypatch.setitem(sys.modules, "curobo.types", fake_types)
-    monkeypatch.setitem(sys.modules, "curobo.types.math", fake_math)
-
-    with manager.diagnostic_physics_and_curobo_obstacles_disabled(
-        controller, [selected]
-    ):
-        assert (
-            UsdPhysics.CollisionAPI(stage.GetPrimAtPath(selected))
-            .GetCollisionEnabledAttr()
-            .Get()
-            is False
-        )
-        assert manager.sync_dynamic_poses(
-            step_id=5, interval_steps=1, force=True
-        ) == []
-
-    assert pose_calls == [(selected, "/World/task_0")]
-    assert [path for path, _ in obstacle_updates] == [selected]
-    assert enabled_calls == [(selected, False), (selected, True)]
-    assert (
-        UsdPhysics.CollisionAPI(stage.GetPrimAtPath(selected))
-        .GetCollisionEnabledAttr()
-        .Get()
-        is True
-    )
-    assert not manager._diagnostic_physics_disabled_paths  # pylint: disable=protected-access
+    assert manager.sync_dynamic_poses(step_id=1, interval_steps=1) == []

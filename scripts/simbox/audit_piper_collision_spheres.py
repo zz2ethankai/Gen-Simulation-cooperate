@@ -97,7 +97,7 @@ def _audit_config(path: Path, samples_per_link: int, limit: float, pose_samples:
         sphere_source = sphere_document["collision_spheres"]
     else:
         sphere_path = path
-    content_assets = ROOT / "InternDataAssets/curobo/src/curobo/content/assets"
+    content_assets = ROOT / "InternDataAssets/curobov2/curobo/content/custom/assets"
     urdf_path = (content_assets / kinematics["urdf_path"]).resolve()
     meshes = _load_link_meshes(urdf_path)
     link_results = {}
@@ -154,8 +154,14 @@ def _audit_config(path: Path, samples_per_link: int, limit: float, pose_samples:
 def main():
     args = parse_args()
     configs = args.robot_config or [
-        Path("workflows/simbox/curobo/src/curobo/content/configs/robot/piper100_left_arm.yml"),
-        Path("workflows/simbox/curobo/src/curobo/content/configs/robot/piper100_right_arm.yml"),
+        Path(
+            "InternDataAssets/curobov2/curobo/content/custom/configs/robot/"
+            "piper100_left_arm.yml"
+        ),
+        Path(
+            "InternDataAssets/curobov2/curobo/content/custom/configs/robot/"
+            "piper100_right_arm.yml"
+        ),
     ]
     results = [
         _audit_config(_resolve(path), args.samples_per_link, args.max_uncovered_m, args.joint_pose_samples)

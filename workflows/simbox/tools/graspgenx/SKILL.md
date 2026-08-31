@@ -433,24 +433,45 @@ The bridge between a GraspGenX grasp and a cuRobo plan is small and reusable:
 2. **Collision-filter first.** Score each grasp's *gripper mesh* against the
    table/bin/neighbors/target with fcl and **hand cuRobo only the collision-free
    grasps** — cuRobo never plans to a geometrically colliding grasp.
-3. **Plan.** Build the goal with `curobo_compat.grasp_goals(...)` (returns a
-   `curobo.types.Pose` or, on the lab fork, a `GoalToolPose`) and call
+3. **Plan.** Build a native-v2 `GoalToolPose` goalset and call
    `MotionPlanner.plan_grasp(...)`. Pass **all** top-K feasible grasps at once
    and cuRobo picks the most reachable; it returns approach→grasp→lift (falling
-   back to approach+grasp when no feasible retraction exists). `curobo_compat.py`
-   papers over the two `plan_grasp` signatures.
+   back to approach+grasp when no feasible retraction exists).
 
 Minimal shape of the handoff (see `e2e_grasp_demo.py` / `clutter_task.py`):
 
 ```python
 from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
-from curobo_compat import grasp_goals
+from curobo.types import GoalToolPose
 
 # grasps_world: (K,4,4) from GraspGenX, already filtered to collision-free
 tool_poses = [world_grasp @ grasp_to_tool_transform for world_grasp in grasps_world]
-goal = grasp_goals(tool_poses, target_link=tool_frame)   # Pose / GoalToolPose
+positions, quaternions = zip(
+    *(matrix_to_xyz_quat_wxyz(pose) for pose in tool_poses)
+)
+goal = GoalToolPose(
+    tool_frames=[tool_frame],
+    position=positions.reshape(1, 1, 1, len(tool_poses), 3),
+    quaternion=quaternions.reshape(1, 1, 1, len(tool_poses), 4),
+)
 result = planner.plan_grasp(goal, start_state)           # approach → grasp → lift
 ```
+
+### SimBox native CuRobo v2 contract
+
+The SimBox integration uses the vendored native v2 API directly:
+
+- `TemplateController.planner` is native `MotionPlanner` for ordinary transit,
+  place, home, and single-goal queries.
+- `TemplateController.batch_planner` is native `BatchMotionPlanner` only for
+  evaluating multiple grasp candidates. Ordinary single goals are not padded
+  with duplicated targets.
+- Every pose goal is native `GoalToolPose` with shape
+  `[batch, horizon, tool_links, goalset, 3/4]`.
+- Attach uses the native planner `attachment_manager` and explicit collision
+  Prim paths from `attach_collision_prim_paths`.
+- `legacy_stage_scan`, when explicitly selected in SimBox configuration, is
+  only an old collision-world scan mode; it is not a second CuRobo planner API.
 
 ### ⚠️ Real-world requirements & limitations
 

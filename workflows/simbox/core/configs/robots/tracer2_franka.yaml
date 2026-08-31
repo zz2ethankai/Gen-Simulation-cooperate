@@ -2,7 +2,7 @@
 # Single-arm 7-DOF with planar base joints (x, y, yaw)
 profile_id: tracer2_franka_mobile_v1
 target_class: Tracer2Franka
-path: "tracer2_franka/robot.usd"
+path: "InternDataAssets/robots/tracer2_franka/robot.usd"
 
 placement:
   family: floor_standing
@@ -30,7 +30,7 @@ base:
 arms:
   left:
     controller: Tracer2Franka
-    curobo_file: InternDataAssets/curobo/src/curobo/content/configs/robot/franka_mobile.yml
+    curobo_file: InternDataAssets/curobov2/curobo/content/custom/configs/robot/franka_mobile.yml
     command_joint_names: [panda_joint1, panda_joint2, panda_joint3, panda_joint4, panda_joint5, panda_joint6, panda_joint7]
     trajectory_joint_names: [panda_joint1, panda_joint2, panda_joint3, panda_joint4, panda_joint5, panda_joint6, panda_joint7]
     joint_indices: [3, 4, 5, 6, 7, 8, 9]

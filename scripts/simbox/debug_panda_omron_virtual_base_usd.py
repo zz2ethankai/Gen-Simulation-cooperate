@@ -20,7 +20,7 @@ BASE_DOF_NAMES = (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--usd", default="InternDataAssets/assets/panda_omron_virtual/robot.usd")
+    parser.add_argument("--usd", default="InternDataAssets/robots/panda_omron_virtual/robot.usd")
     parser.add_argument("--output", default="output/debug_panda_omron_virtual/virtual_base_result.json")
     parser.add_argument("--physics-dt", type=float, default=1.0 / 60.0)
     parser.add_argument("--settle-steps", type=int, default=60)

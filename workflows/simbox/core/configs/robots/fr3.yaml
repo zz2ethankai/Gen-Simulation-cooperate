@@ -1,6 +1,6 @@
 profile_id: fr3_support_mounted_v1
 target_class: FR3
-path: workflows/simbox/assets/franka/robot.usd
+path: "InternDataAssets/robots/franka/robot.usd"
 
 placement:
   family: support_mounted
@@ -22,7 +22,7 @@ base:
 arms:
   left:
     controller: FR3
-    curobo_file: workflows/simbox/curobo/src/curobo/content/configs/robot/fr3_left_arm.yml
+    curobo_file: InternDataAssets/curobov2/curobo/content/custom/configs/robot/fr3_left_arm.yml
     command_joint_names: [panda_joint1, panda_joint2, panda_joint3, panda_joint4, panda_joint5, panda_joint6, panda_joint7]
     trajectory_joint_names: [panda_joint1, panda_joint2, panda_joint3, panda_joint4, panda_joint5, panda_joint6, panda_joint7]
     joint_indices: [0, 1, 2, 3, 4, 5, 6]

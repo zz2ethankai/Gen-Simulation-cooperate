@@ -30,6 +30,7 @@ parse_approach_config = _LOCAL_NAV_MODULE.parse_approach_config
 sample_approach_candidates = _LOCAL_NAV_MODULE.sample_approach_candidates
 GridAStarPlanner = _LOCAL_NAV_MODULE.GridAStarPlanner
 WaypointController = _LOCAL_NAV_MODULE.WaypointController
+StaticMap = _LOCAL_NAV_MODULE.StaticMap
 
 
 class _FakeVirtualRobot:
@@ -100,15 +101,37 @@ class _FakeVirtualRobot:
 
 
 class LocalNavigationTests(unittest.TestCase):
+    def test_static_map_is_binary_and_read_only(self):
+        source = np.zeros((3, 4), dtype=np.uint8)
+        static_map = StaticMap(source, 0.1, (1.0, 2.0, 0.0))
+        self.assertEqual(static_map.occupancy.dtype, np.uint8)
+        self.assertFalse(static_map.occupancy.flags.writeable)
+        source[0, 0] = 1
+        self.assertEqual(static_map.occupancy[0, 0], 0)
+        with self.assertRaises((TypeError, ValueError)):
+            StaticMap(np.zeros((3, 4), dtype=np.float32), 0.1, (0.0, 0.0, 0.0))
+        with self.assertRaises(ValueError):
+            StaticMap(np.full((3, 4), 2, dtype=np.uint8), 0.1, (0.0, 0.0, 0.0))
+        with self.assertRaises(TypeError):
+            check_footprint_static_collision(
+                static_map={"occupancy": np.zeros((3, 4), dtype=np.uint8)},
+                x=0.0,
+                y=0.0,
+            )
+
     def test_approach_sampling_is_opt_in_and_faces_target(self):
-        self.assertIsNone(parse_approach_config({}))
+        self.assertIsNone(parse_approach_config({}, {}))
         config = parse_approach_config(
             {
                 "approach": "apple",
-                "approach_min_distance": 0.5,
-                "approach_max_distance": 0.8,
                 "approach_sample_count": 8,
-            }
+            },
+            {
+                "approach": {
+                    "min_distance": 0.5,
+                    "max_distance": 0.8,
+                }
+            },
         )
         self.assertIsNotNone(config)
         candidates = sample_approach_candidates(config, (1.0, 2.0))
@@ -121,37 +144,31 @@ class LocalNavigationTests(unittest.TestCase):
                 places=6,
             )
 
-    def test_center_collision_ignores_footprint_padding(self):
-        image = np.full((20, 20), 254, dtype=np.uint8)
-        image[10, 10] = 0
-        static_map = {"image": image, "resolution": 0.1, "origin": [0.0, 0.0, 0.0]}
-        footprint = [[-0.05, -0.05], [-0.05, 0.05], [0.05, 0.05], [0.05, -0.05]]
+    def test_center_collision_uses_binary_occupancy(self):
+        occupancy = np.zeros((20, 20), dtype=np.uint8)
+        occupancy[10, 10] = 1
+        static_map = StaticMap(occupancy, 0.1, (0.0, 0.0, 0.0))
         blocked = check_footprint_static_collision(
             static_map=static_map,
-            footprint_points=footprint,
             x=1.0,
-            # PGM row 10 corresponds to world y=0.86 with the current
+            # Image row 10 corresponds to world y=0.86 with the current
             # image-pixel rounding convention.
             y=0.86,
         )
         self.assertFalse(blocked["ok"])
         clear = check_footprint_static_collision(
             static_map=static_map,
-            footprint_points=footprint,
             x=0.8,
             y=0.86,
-            footprint_padding_m=0.2,
         )
         self.assertTrue(clear["ok"])
 
     def test_path_collision_checks_discrete_waypoints_only(self):
-        image = np.full((30, 30), 254, dtype=np.uint8)
-        image[15, 10:20] = 0
-        static_map = {"image": image, "resolution": 0.1, "origin": [0.0, 0.0, 0.0]}
-        footprint = [[-0.04, -0.04], [-0.04, 0.04], [0.04, 0.04], [0.04, -0.04]]
+        occupancy = np.zeros((30, 30), dtype=np.uint8)
+        occupancy[15, 10:20] = 1
+        static_map = StaticMap(occupancy, 0.1, (0.0, 0.0, 0.0))
         result = check_path_static_collision(
             static_map=static_map,
-            footprint_points=footprint,
             path_poses=[
                 {"x": 0.5, "y": 1.36, "yaw": 0.0},
                 {"x": 2.5, "y": 1.36, "yaw": 0.0},
@@ -159,7 +176,6 @@ class LocalNavigationTests(unittest.TestCase):
         )
         self.assertTrue(result["ok"])
         self.assertEqual(result["sampled_pose_count"], 2)
-        self.assertEqual(result["interpolated_pose_count"], 0)
 
     def test_candidate_selection_requires_path_success(self):
         candidates = [
@@ -171,18 +187,13 @@ class LocalNavigationTests(unittest.TestCase):
         self.assertEqual(selected["x"], 2.0)
 
     def test_approach_preflight_reuses_one_static_planner(self):
-        static_map = {
-            "image": np.full((20, 20), 254, dtype=np.uint8),
-            "resolution": 0.1,
-            "origin": [0.0, 0.0, 0.0],
-        }
+        static_map = StaticMap(np.zeros((20, 20), dtype=np.uint8), 0.1, (0.0, 0.0, 0.0))
         candidates = [
             {"x": 0.5, "y": 0.5, "yaw": 0.0, "distance_to_target": 0.5},
             {"x": 0.6, "y": 0.5, "yaw": 0.0, "distance_to_target": 0.6},
         ]
         successful_plan = SimpleNamespace(path=[{"x": 0.0, "y": 0.0, "yaw": 0.0}])
-        with patch.object(_LOCAL_NAV_MODULE, "resolve_footprint_points", return_value=[[-0.1, -0.1], [0.1, 0.1]]), patch.object(
-            _LOCAL_NAV_MODULE, "sample_approach_candidates", return_value=candidates
+        with patch.object(_LOCAL_NAV_MODULE, "sample_approach_candidates", return_value=candidates
         ), patch.object(
             _LOCAL_NAV_MODULE, "check_footprint_static_collision", return_value={"ok": True}
         ), patch.object(
@@ -193,11 +204,14 @@ class LocalNavigationTests(unittest.TestCase):
                 1: [(0.0, 0.0), (0.6, 0.5)],
             }
             goal, debug = _LOCAL_NAV_MODULE.select_approach_goal(
-                approach_config=ApproachConfig(target_name="tray"),
+                approach_config=ApproachConfig(
+                    target_name="tray",
+                    min_distance=0.45,
+                    max_distance=0.65,
+                ),
                 target_xy=(1.0, 1.0),
                 start_pose=(0.0, 0.0, 0.0),
                 static_map=static_map,
-                base_cfg={},
             )
 
         self.assertEqual(goal, (0.5, 0.5, 0.0))
@@ -210,15 +224,12 @@ class LocalNavigationTests(unittest.TestCase):
         self.assertTrue(debug["selected"]["path_ok"])
 
     def test_astar_routes_around_occupied_wall(self):
-        image = np.full((30, 30), 254, dtype=np.uint8)
-        image[:, 15] = 0
-        image[2:8, 15] = 254
-        static_map = {"image": image, "resolution": 0.1, "origin": [0.0, 0.0, 0.0]}
+        occupancy = np.zeros((30, 30), dtype=np.uint8)
+        occupancy[:, 15] = 1
+        occupancy[2:8, 15] = 0
+        static_map = StaticMap(occupancy, 0.1, (0.0, 0.0, 0.0))
         planner = GridAStarPlanner(safety_distance_m=0.0)
-        planner.set_static_map(
-            static_map,
-            footprint_points=[[-0.05, -0.05], [-0.05, 0.05], [0.05, 0.05], [0.05, -0.05]],
-        )
+        planner.set_static_map(static_map)
 
         path = planner.plan((0.5, 1.5), (2.5, 1.5))
 
@@ -227,20 +238,19 @@ class LocalNavigationTests(unittest.TestCase):
         self.assertTrue(any(abs(point[1] - 1.5) > 0.1 for point in path))
 
     def test_astar_preserves_intermediate_grid_waypoints(self):
-        image = np.full((30, 30), 254, dtype=np.uint8)
-        image[14:17, 14:17] = 0
-        static_map = {"image": image, "resolution": 0.1, "origin": [0.0, 0.0, 0.0]}
+        occupancy = np.zeros((30, 30), dtype=np.uint8)
+        occupancy[14:17, 14:17] = 1
+        static_map = StaticMap(occupancy, 0.1, (0.0, 0.0, 0.0))
         planner = GridAStarPlanner(safety_distance_m=0.0)
-        planner.set_static_map(static_map, footprint_points=[[-0.02, -0.02], [0.02, 0.02]])
+        planner.set_static_map(static_map)
         path = planner.plan((0.5, 0.5), (2.5, 2.5))
         self.assertIsNotNone(path)
         self.assertGreater(len(path), 2)
 
     def test_multi_goal_astar_stops_after_requested_solution_count(self):
-        image = np.full((30, 30), 254, dtype=np.uint8)
-        static_map = {"image": image, "resolution": 0.1, "origin": [0.0, 0.0, 0.0]}
+        static_map = StaticMap(np.zeros((30, 30), dtype=np.uint8), 0.1, (0.0, 0.0, 0.0))
         planner = GridAStarPlanner(safety_distance_m=0.0)
-        planner.set_static_map(static_map, footprint_points=[[-0.02, -0.02], [0.02, 0.02]])
+        planner.set_static_map(static_map)
 
         paths = planner.plan_to_goals(
             (0.5, 0.5),
@@ -252,10 +262,9 @@ class LocalNavigationTests(unittest.TestCase):
         self.assertTrue(set(paths).issubset({0, 1, 2}))
 
     def test_multi_goal_astar_accepts_approach_yaw(self):
-        image = np.full((20, 20), 254, dtype=np.uint8)
-        static_map = {"image": image, "resolution": 0.1, "origin": [0.0, 0.0, 0.0]}
+        static_map = StaticMap(np.zeros((20, 20), dtype=np.uint8), 0.1, (0.0, 0.0, 0.0))
         planner = GridAStarPlanner(safety_distance_m=0.0)
-        planner.set_static_map(static_map, footprint_points=[[-0.02, -0.02], [0.02, 0.02]])
+        planner.set_static_map(static_map)
 
         paths = planner.plan_to_goals((0.5, 0.5), [(1.5, 1.5, 0.7), (1.0, 0.5, -1.2)], max_solutions=2)
 
@@ -265,12 +274,7 @@ class LocalNavigationTests(unittest.TestCase):
     def test_navigation_plan_preserves_measured_start_yaw(self):
         start_pose = (0.0, 0.0, -0.7)
         goal = (1.0, 0.0, 1.2)
-        static_map = {
-            "image": np.full((20, 20), 254, dtype=np.uint8),
-            "resolution": 0.1,
-            "origin": [-1.0, -1.0, 0.0],
-        }
-        footprint = [[-0.2, -0.1], [-0.2, 0.1], [0.2, 0.1], [0.2, -0.1]]
+        static_map = StaticMap(np.zeros((20, 20), dtype=np.uint8), 0.1, (-1.0, -1.0, 0.0))
         with patch.object(GridAStarPlanner, "plan", return_value=[(0.0, 0.0), (1.0, 0.0)]), patch(
             "simbox_local_navigation.check_path_static_collision", return_value={"ok": True}
         ) as check_path:
@@ -278,7 +282,6 @@ class LocalNavigationTests(unittest.TestCase):
                 start_pose=start_pose,
                 goal=goal,
                 static_map=static_map,
-                footprint_points=footprint,
                 planner_cfg={"safety_distance_m": 0.0},
             )
 

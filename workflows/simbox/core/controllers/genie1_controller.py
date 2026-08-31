@@ -1,19 +1,38 @@
 """Genie1 dual-arm controller – template-based."""
 
-import numpy as np
-from core.controllers.base_controller import register_controller
-from core.controllers.template_controller import TemplateController
+from core.controllers.controller_registry import ArmSpec, register_controller
+from core.controllers.curobo.controller import TemplateController
 
 
 # pylint: disable=unused-argument
 @register_controller
 class Genie1Controller(TemplateController):
-    def _get_default_ignore_substring(self):
-        return ["material", "Plane", "conveyor", "scene", "table", "fluid"]
-
-    def _get_sort_path_weights(self):
-        """Genie1: weight joints 4 and 5 (index 4,5) by 3.0 for path selection."""
-        return [1.0, 1.0, 1.0, 1.0, 3.0, 3.0, 1.0]
-
-    def mobile_move(self, target: np.ndarray, joint_indices: np.ndarray = None, initial_position: np.ndarray = None):
-        raise NotImplementedError
+    arm_spec = ArmSpec(
+        planner_joints={
+            "left": (
+                "idx21_arm_l_joint1", "idx22_arm_l_joint2", "idx23_arm_l_joint3",
+                "idx24_arm_l_joint4", "idx25_arm_l_joint5", "idx26_arm_l_joint6",
+                "idx27_arm_l_joint7",
+            ),
+            "right": (
+                "idx61_arm_r_joint1", "idx62_arm_r_joint2", "idx63_arm_r_joint3",
+                "idx64_arm_r_joint4", "idx65_arm_r_joint5", "idx66_arm_r_joint6",
+                "idx67_arm_r_joint7",
+            ),
+        },
+        control_joints={
+            "left": (
+                "idx21_arm_l_joint1", "idx22_arm_l_joint2", "idx23_arm_l_joint3",
+                "idx24_arm_l_joint4", "idx25_arm_l_joint5", "idx26_arm_l_joint6",
+                "idx27_arm_l_joint7",
+            ),
+            "right": (
+                "idx61_arm_r_joint1", "idx62_arm_r_joint2", "idx63_arm_r_joint3",
+                "idx64_arm_r_joint4", "idx65_arm_r_joint5", "idx66_arm_r_joint6",
+                "idx67_arm_r_joint7",
+            ),
+        },
+        default_ignore_substring=("material", "Plane", "conveyor", "scene", "table", "fluid"),
+        gripper_home=(1.0,),
+        sort_path_weights=(1.0, 1.0, 1.0, 1.0, 3.0, 3.0, 1.0),
+    )

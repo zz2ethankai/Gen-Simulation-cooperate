@@ -6,9 +6,9 @@ import os
 import numpy as np
 from core.robots.base_robot import register_robot
 from core.robots.template_robot import TemplateRobot
-from omni.isaac.core.utils.prims import get_prim_at_path
-from omni.isaac.core.utils.transformations import tf_matrix_from_pose
-from omni.isaac.core.utils.xforms import get_world_pose as get_prim_world_pose
+from isaacsim.core.utils.prims import get_prim_at_path
+from isaacsim.core.utils.transformations import tf_matrix_from_pose
+from isaacsim.core.utils.xforms import get_world_pose as get_prim_world_pose
 from pxr import PhysxSchema, UsdPhysics
 
 
@@ -28,6 +28,7 @@ class SplitAlohaActual(TemplateRobot):
         self._wheel_collision_paths = []
         self._disabled_collision_paths = []
         self._wheel_physics_material_path = None
+        self._gripper_physics_material_path = None
         self._wheel_joint_paths = []
         self._steering_joint_paths = []
         super().__init__(*args, **kwargs)
@@ -36,6 +37,61 @@ class SplitAlohaActual(TemplateRobot):
         self.base_wheel_joint_names = list(self.base_cfg.get("wheel_joint_names", []))
         self._setup_mobile_base_interface()
         self._configure_mobile_base_wheel_drives()
+        self._configure_gripper_physics_material()
+
+    def _configure_gripper_physics_material(self):
+        """Apply the optional material used by the validated grasp pipeline."""
+
+        static_friction = self.cfg.get("gripper_static_friction", None)
+        if static_friction is None:
+            return
+        dynamic_friction = self.cfg.get("gripper_dynamic_friction", static_friction)
+        try:
+            static_friction = float(static_friction)
+            dynamic_friction = float(dynamic_friction)
+        except (TypeError, ValueError):
+            raise ValueError("SplitAloha gripper friction values must be numeric") from None
+        if (
+            not math.isfinite(static_friction)
+            or not math.isfinite(dynamic_friction)
+            or static_friction < 0.0
+            or dynamic_friction < 0.0
+        ):
+            raise ValueError("SplitAloha gripper friction values must be finite and non-negative")
+
+        try:
+            from omni.physx.scripts import physicsUtils, utils
+        except ImportError:
+            return
+
+        stage = get_prim_at_path(self.robot_prim_path).GetStage()
+        material_path = f"{self.robot_prim_path}/Looks/gripper_physics_material"
+        material_prim = get_prim_at_path(material_path)
+        if not material_prim.IsValid():
+            utils.addRigidBodyMaterial(
+                stage,
+                material_path,
+                staticFriction=static_friction,
+                dynamicFriction=dynamic_friction,
+                restitution=0.0,
+            )
+        else:
+            material_api = UsdPhysics.MaterialAPI.Apply(material_prim)
+            material_api.CreateStaticFrictionAttr().Set(static_friction)
+            material_api.CreateDynamicFrictionAttr().Set(dynamic_friction)
+        self._gripper_physics_material_path = material_path
+
+        for arm in ("fl", "fr"):
+            for relative_path in self.cfg.get(f"{arm}_filter_paths", []):
+                collision_path = f"{self.robot_prim_path}/{str(relative_path).strip('/')}/collisions"
+                collision_prim = get_prim_at_path(collision_path)
+                if not collision_prim.IsValid():
+                    continue
+                physicsUtils.add_physics_material_to_prim(
+                    stage,
+                    collision_prim,
+                    material_path,
+                )
 
     def _setup_joint_indices(self):
         self.left_joint_indices = self.cfg["left_joint_indices"]
@@ -359,6 +415,7 @@ class SplitAloha(SplitAlohaActual):
         self._set_initial_positions()
         self._configure_mobile_base_wheel_drives()
         self._reset_virtual_base_joint_state(require_ready=True)
+        self.recapture_manipulation_base_hold()
 
     def _setup_manipulator_joint_indices(self):
         dof_names = list(self._articulation_view.dof_names)
@@ -500,7 +557,21 @@ class SplitAloha(SplitAlohaActual):
             )
 
     def _set_initial_positions(self):
+        if self.lift_indices and self.lift_home:
+            lift_joint_path = f"{self.robot_prim_path}/{self.base_cfg['lift_joint_path']}"
+            lift_drive = UsdPhysics.DriveAPI.Get(
+                get_prim_at_path(lift_joint_path),
+                "linear",
+            )
+            lift_drive.CreateTargetPositionAttr().Set(float(self.lift_home[0]))
         super()._set_initial_positions()
+        if self.lift_indices and self.lift_home:
+            lift_positions = np.asarray(self.lift_home, dtype=np.float32).reshape(1, -1)
+            lift_indices = np.asarray(self.lift_indices, dtype=np.int32)
+            self._articulation_view.set_joint_position_targets(
+                lift_positions,
+                joint_indices=lift_indices,
+            )
         positions = self.left_joint_home + self.right_joint_home + self.left_gripper_home + self.right_gripper_home
         indices = (
             self.left_joint_indices
@@ -555,6 +626,7 @@ class SplitAloha(SplitAlohaActual):
         self._set_initial_positions()
         self._configure_mobile_base_wheel_drives()
         self._reset_virtual_base_joint_state(require_ready=True)
+        self.recapture_manipulation_base_hold()
 
     def apply_action(self, joint_positions, joint_indices, *args, **kwargs):
         positions = np.asarray(joint_positions, dtype=np.float32).reshape(1, -1)
@@ -573,6 +645,7 @@ class SplitAloha(SplitAlohaActual):
         self._articulation_view.set_joint_position_targets(positions, joint_indices=indices)
         self._active_manipulator_joint_positions = positions.copy()
         self._active_manipulator_joint_indices = indices.copy()
+        self.reapply_manipulation_base_hold()
 
     def _reapply_active_manipulator_position_target(self):
         if self._active_manipulator_joint_positions is None or self._active_manipulator_joint_indices is None:

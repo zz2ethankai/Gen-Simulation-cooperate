@@ -22,6 +22,8 @@ def filter_collisions(
 
     """
 
+    global_paths = list(global_paths or [])
+
     physx_scene = PhysxSchema.PhysxSceneAPI(stage.GetPrimAtPath(physicsscene_path))
 
     # We invert the collision group filters for more efficient collision filtering across environments
@@ -56,11 +58,12 @@ def filter_collisions(
             for global_path in global_paths:
                 global_includes_rel.targetPathList.Append(global_path)
 
-            # filteredGroups rel
-            global_filtered_groups = Sdf.RelationshipSpec(global_collision_group, "physics:filteredGroups", False)
-            # We are using inverted collision group filtering, which means objects by default don't collide across
-            # groups. We need to add this group as a filtered group, so that objects within this group collide with
-            # each other.
+            # Leave the same-group relation in place for the inverted
+            # collision filter; cross-group relations below enable global
+            # objects to collide with each configured prim group.
+            global_filtered_groups = Sdf.RelationshipSpec(
+                global_collision_group, "physics:filteredGroups", False
+            )
             global_filtered_groups.targetPathList.Append(global_collision_group_path)
 
         # set collision groups and filters
@@ -91,9 +94,8 @@ def filter_collisions(
 
             # filteredGroups rel
             filtered_groups = Sdf.RelationshipSpec(collision_group, "physics:filteredGroups", False)
-            # We are using inverted collision group filtering, which means objects by default don't collide across
-            # groups. We need to add this group as a filtered group, so that objects within this group collide with
-            # each other.
+            # Match Isaac Sim's native Cloner: preserve same-group collisions
+            # explicitly when the scene uses inverted collision filtering.
             filtered_groups.targetPathList.Append(collision_group_path)
             if len(global_paths) > 0:
                 filtered_groups.targetPathList.Append(global_collision_group_path)

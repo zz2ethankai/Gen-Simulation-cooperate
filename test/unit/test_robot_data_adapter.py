@@ -16,6 +16,16 @@ sys.modules.setdefault("cv2", types.ModuleType("cv2"))
 from core.loggers.utils import log_dual_obs  # noqa: E402
 
 
+def _runtime(gripper_state):
+    return types.SimpleNamespace(
+        execution=types.SimpleNamespace(
+            execution_status=lambda: types.SimpleNamespace(
+                gripper_state=gripper_state
+            )
+        )
+    )
+
+
 class FakeLogger:
     def __init__(self, adapter):
         self.robot_data_adapters = {"robot_0": adapter}
@@ -55,8 +65,8 @@ def test_dual_arm_action_schema_is_driven_by_profile_adapter():
     logger = FakeLogger(adapter)
     controllers = {
         "robot_0": {
-            "left": types.SimpleNamespace(_gripper_state=1.0),
-            "right": types.SimpleNamespace(_gripper_state=-1.0),
+            "left": _runtime(1.0),
+            "right": _runtime(-1.0),
         }
     }
     observations = {
@@ -106,7 +116,7 @@ def test_single_arm_adapter_preserves_unprefixed_dataset_schema():
         }
     }
     logger = FakeLogger(adapter)
-    controllers = {"robot_0": {"left": types.SimpleNamespace(_gripper_state=1.0)}}
+    controllers = {"robot_0": {"left": _runtime(1.0)}}
     observations = {
         "robots": {
             "robot_0": {

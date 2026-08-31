@@ -41,6 +41,9 @@ execution:
   timeout_sec: 1800
   max_revisions: 2
   retain_experience: true
+  docker:
+    compose_file: docker/docker-compose.yml
+    launcher_config: configs/de_plan_with_render_template.yaml
 
 generation:
   enabled: true
@@ -77,7 +80,7 @@ planning:
     strict: true
     exact_exclusions: []
   pick_place:
-    terminal_step_m: 0.010
+    terminal_step_m: 0.005
     max_terminal_distance_m: 0.10
     place_settle_steps: 10
     return_to_episode_initial: true

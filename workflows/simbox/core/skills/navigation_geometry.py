@@ -10,19 +10,51 @@ import random
 from typing import Any
 
 import numpy as np
-import yaml
 
-from workflows.simbox.core.mobile.platforms import get_mobile_base_platform
+
+@dataclass(frozen=True, slots=True)
+class StaticMap:
+    """Immutable binary occupancy map in image coordinates."""
+
+    occupancy: np.ndarray
+    resolution: float
+    origin: tuple[float, float, float]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.occupancy, np.ndarray):
+            raise TypeError("StaticMap.occupancy must be a numpy.ndarray")
+        if self.occupancy.ndim != 2:
+            raise ValueError("StaticMap.occupancy must be a 2-D array")
+        if self.occupancy.dtype != np.uint8:
+            raise ValueError("StaticMap.occupancy must have dtype numpy.uint8")
+        if not np.all((self.occupancy == 0) | (self.occupancy == 1)):
+            raise ValueError("StaticMap.occupancy must contain only 0 (free) and 1 (occupied)")
+
+        resolution = float(self.resolution)
+        if not math.isfinite(resolution) or resolution <= 0.0:
+            raise ValueError("StaticMap.resolution must be finite and positive")
+        if not isinstance(self.origin, (tuple, list)) or len(self.origin) != 3:
+            raise ValueError("StaticMap.origin must contain exactly three values")
+        origin = tuple(float(value) for value in self.origin)
+        if not all(math.isfinite(value) for value in origin):
+            raise ValueError("StaticMap.origin must contain finite values")
+
+        # Frozen dataclasses do not freeze ndarray buffers.  Own the input and
+        # make the stored array read-only so cached maps cannot be changed by a
+        # planner or a navigation skill.
+        occupancy = np.array(self.occupancy, dtype=np.uint8, copy=True, order="C")
+        occupancy.setflags(write=False)
+        object.__setattr__(self, "occupancy", occupancy)
+        object.__setattr__(self, "resolution", resolution)
+        object.__setattr__(self, "origin", origin)
 
 
 @dataclass(frozen=True)
 class ApproachConfig:
     target_name: str
-    min_distance: float = 0.85
-    max_distance: float = 1.30
+    min_distance: float
+    max_distance: float
     sample_count: int = 256
-    static_free_value_min: int = 250
-    footprint_padding_m: float | None = None
     sampling_random: bool = False
     sampling_seed: int | None = None
     arm: str | None = None
@@ -35,16 +67,18 @@ def wrap_to_pi(yaw: float) -> float:
     return (float(yaw) + math.pi) % (2.0 * math.pi) - math.pi
 
 
-def parse_approach_config(cfg: dict[str, Any]) -> ApproachConfig | None:
+def parse_approach_config(
+    cfg: dict[str, Any],
+    navigation_cfg: dict[str, Any],
+) -> ApproachConfig | None:
     target_name = str(cfg.get("approach", "") or "").strip()
     if not target_name:
         return None
 
-    min_distance = float(cfg.get("approach_min_distance", 0.45))
-    max_distance = float(cfg.get("approach_max_distance", 0.65))
+    approach_cfg = navigation_cfg["approach"]
+    min_distance = float(approach_cfg["min_distance"])
+    max_distance = float(approach_cfg["max_distance"])
     sample_count = int(cfg.get("approach_sample_count", 512))
-    footprint_padding_m = cfg.get("approach_footprint_padding", None)
-    footprint_padding_m = None if footprint_padding_m is None else float(footprint_padding_m)
     sampling_random = _as_bool(cfg.get("approach_sampling_random", False))
     sampling_seed = cfg.get("approach_sampling_seed", None)
     sampling_seed = None if sampling_seed is None else int(sampling_seed)
@@ -55,13 +89,14 @@ def parse_approach_config(cfg: dict[str, Any]) -> ApproachConfig | None:
     if sampling_random and sampling_seed is None:
         sampling_seed = int.from_bytes(os.urandom(8), byteorder="big", signed=False)
     if min_distance <= 0.0:
-        raise ValueError("approach_min_distance must be positive")
+        raise ValueError("base.local_navigation.approach.min_distance must be positive")
     if max_distance < min_distance:
-        raise ValueError("approach_max_distance must be >= approach_min_distance")
+        raise ValueError(
+            "base.local_navigation.approach.max_distance must be >= "
+            "base.local_navigation.approach.min_distance"
+        )
     if sample_count <= 0:
         raise ValueError("approach_sample_count must be positive")
-    if footprint_padding_m is not None and footprint_padding_m < 0.0:
-        raise ValueError("approach_footprint_padding must be non-negative")
     if object_armbase_xy is not None and arm is None:
         raise ValueError("approach_object_armbase_xy requires approach_arm to be 'left' or 'right'")
     if armbase_tolerance_m < 0.0:
@@ -73,7 +108,6 @@ def parse_approach_config(cfg: dict[str, Any]) -> ApproachConfig | None:
         min_distance=min_distance,
         max_distance=max_distance,
         sample_count=sample_count,
-        footprint_padding_m=footprint_padding_m,
         sampling_random=sampling_random,
         sampling_seed=sampling_seed,
         arm=arm,
@@ -131,81 +165,23 @@ def _candidate_angle(index: int) -> float:
     return (float(index) * golden_angle) % (2.0 * math.pi)
 
 
-def resolve_mobile_footprint_points(base_cfg: dict[str, Any]) -> list[list[float]]:
-    platform_cfg = base_cfg.get("platform", {}) if isinstance(base_cfg, dict) else {}
-    navigation_cfg = platform_cfg.get("local_navigation", {}) if isinstance(platform_cfg, dict) else {}
-    points = _normalize_footprint_points(
-        navigation_cfg.get("footprint_points") if isinstance(navigation_cfg, dict) else None
-    )
-    if points:
-        return points
-    return get_mobile_base_platform(base_cfg).default_navigation_footprint_points(base_cfg)
-
-
-def resolve_approach_footprint_padding_m(base_cfg: dict[str, Any], config: ApproachConfig) -> float:
-    if config.footprint_padding_m is not None:
-        return float(config.footprint_padding_m)
-    navigation_cfg = base_cfg.get("local_navigation", {}) if isinstance(base_cfg, dict) else {}
-    if isinstance(navigation_cfg, dict):
-        if "footprint_padding_m" in navigation_cfg:
-            return max(float(navigation_cfg.get("footprint_padding_m", 0.0)), 0.0)
-        shared_costmap = navigation_cfg.get("costmap", {})
-        if isinstance(shared_costmap, dict) and "footprint_padding" in shared_costmap:
-            return max(float(shared_costmap.get("footprint_padding", 0.0)), 0.0)
-    return 0.0
-
-
-def load_static_map(map_yaml_path: str) -> dict[str, Any]:
-    with open(map_yaml_path, "r", encoding="utf-8") as handle:
-        map_yaml = yaml.safe_load(handle) or {}
-    image_path = str(map_yaml.get("image", "")).strip()
-    if not image_path:
-        raise ValueError(f"map yaml {map_yaml_path} is missing image")
-    if not os.path.isabs(image_path):
-        image_path = os.path.join(os.path.dirname(map_yaml_path), image_path)
-
-    image = _load_pgm_image(image_path)
-    origin = list(map_yaml.get("origin", [0.0, 0.0, 0.0]))
-    return {
-        "yaml_path": str(map_yaml_path),
-        "image_path": image_path,
-        "image": image,
-        "resolution": float(map_yaml.get("resolution", 0.0)),
-        "origin": [float(origin[0]), float(origin[1]), float(origin[2] if len(origin) > 2 else 0.0)],
-        "occupied_thresh": float(map_yaml.get("occupied_thresh", 0.65)),
-        "free_thresh": float(map_yaml.get("free_thresh", 0.25)),
-    }
-
-
 def check_footprint_static_collision(
     *,
-    static_map: dict[str, Any],
-    footprint_points: list[list[float]],
+    static_map: StaticMap,
     x: float,
     y: float,
-    yaw: float = 0.0,
-    free_value_min: int = 250,
-    footprint_padding_m: float = 0.0,
 ) -> dict[str, Any]:
-    """Check the map cell under the robot center.
-
-    The local-navigation reference implementation treats the occupancy map as
-    a point-robot map.  ``footprint_points``, yaw, and padding remain accepted
-    so existing callers and debug artifacts stay compatible, but they are not
-    used to inflate or rasterize the robot body.
-    """
-    image = np.asarray(static_map["image"])
-    resolution = float(static_map["resolution"])
-    origin = list(static_map["origin"])
-    if resolution <= 0.0:
-        raise ValueError("static map resolution must be positive")
-    height, width = image.shape[:2]
+    """Check the binary occupancy cell under the point robot center."""
+    if not isinstance(static_map, StaticMap):
+        raise TypeError("static_map must be a StaticMap")
+    occupancy = static_map.occupancy
+    height, width = occupancy.shape
     pixel_x, pixel_y = _world_to_image_pixel(
         float(x),
         float(y),
-        origin_x=float(origin[0]),
-        origin_y=float(origin[1]),
-        resolution=resolution,
+        origin_x=static_map.origin[0],
+        origin_y=static_map.origin[1],
+        resolution=static_map.resolution,
         height=height,
     )
     if not (0 <= pixel_x < width and 0 <= pixel_y < height):
@@ -214,53 +190,30 @@ def check_footprint_static_collision(
             "reason": "center_out_of_bounds",
             "sampled_cells": 0,
             "blocked_cells": 0,
-            "footprint_blocked_cells": 0,
-            "padding_blocked_cells": 0,
-            "unknown_cells": 0,
             "out_of_bounds_vertices": 1,
-            "footprint_padding_m": 0.0,
-            "footprint_padding_cells": 0,
-            "footprint_world": [],
         }
-    value = image[pixel_y, pixel_x]
-    unknown_cells = int(value < 0) if np.issubdtype(image.dtype, np.signedinteger) else 0
-    blocked_cells = int(value < int(free_value_min))
-    ok = blocked_cells == 0 and unknown_cells == 0
+    blocked_cells = int(occupancy[pixel_y, pixel_x] == 1)
+    ok = blocked_cells == 0
     return {
         "ok": bool(ok),
         "reason": "" if ok else "static_center_collision",
         "sampled_cells": 1,
-        "unpadded_sampled_cells": 1,
         "blocked_cells": blocked_cells,
-        "footprint_blocked_cells": blocked_cells,
-        "padding_blocked_cells": 0,
-        "unknown_cells": unknown_cells,
         "out_of_bounds_vertices": 0,
-        "padding_out_of_bounds": False,
-        "footprint_padding_m": 0.0,
-        "footprint_padding_cells": 0,
-        "footprint_world": [],
     }
 
 
 def check_path_static_collision(
     *,
-    static_map: dict[str, Any],
-    footprint_points: list[list[float]],
+    static_map: StaticMap,
     path_poses: list[dict[str, Any]],
-    free_value_min: int = 250,
-    footprint_padding_m: float = 0.0,
-    initial_padding_egress_distance_m: float = 0.0,
 ) -> dict[str, Any]:
     """Check each discrete A* waypoint at the robot center."""
+    if not isinstance(static_map, StaticMap):
+        raise TypeError("static_map must be a StaticMap")
     blocked_results = []
     normalized_poses = [_path_pose(pose) for pose in path_poses or []]
     sampled_pose_count = 0
-    interpolated_pose_count = 0
-    ignored_initial_padding_pose_count = 0
-    initial_egress_exited = False
-    initial_pose = normalized_poses[0] if normalized_poses else None
-    initial_egress_distance = max(float(initial_padding_egress_distance_m), 0.0)
 
     def check_sample(
         pose: dict[str, float],
@@ -269,35 +222,13 @@ def check_path_static_collision(
         segment_index: int | None,
         segment_fraction: float,
     ):
-        nonlocal sampled_pose_count, interpolated_pose_count
-        nonlocal ignored_initial_padding_pose_count, initial_egress_exited
+        nonlocal sampled_pose_count
         sampled_pose_count += 1
         result = check_footprint_static_collision(
             static_map=static_map,
-            footprint_points=footprint_points,
             x=pose["x"],
             y=pose["y"],
-            yaw=pose["yaw"],
-            free_value_min=free_value_min,
-            footprint_padding_m=footprint_padding_m,
         )
-        if initial_pose is not None and not initial_egress_exited:
-            distance_from_start = math.hypot(
-                pose["x"] - initial_pose["x"],
-                pose["y"] - initial_pose["y"],
-            )
-            if distance_from_start > initial_egress_distance:
-                initial_egress_exited = True
-            elif (
-                not bool(result.get("ok", False))
-                and int(result.get("footprint_blocked_cells", 0)) == 0
-                and int(result.get("padding_blocked_cells", 0)) > 0
-                and int(result.get("unknown_cells", 0)) == 0
-                and int(result.get("out_of_bounds_vertices", 0)) == 0
-                and not bool(result.get("padding_out_of_bounds", False))
-            ):
-                ignored_initial_padding_pose_count += 1
-                return
         if not bool(result.get("ok", False)):
             blocked_results.append(
                 {
@@ -311,13 +242,7 @@ def check_path_static_collision(
                     "segment_fraction": float(segment_fraction),
                     "reason": str(result.get("reason", "")),
                     "blocked_cells": int(result.get("blocked_cells", 0)),
-                    "footprint_blocked_cells": int(result.get("footprint_blocked_cells", 0)),
-                    "padding_blocked_cells": int(result.get("padding_blocked_cells", 0)),
-                    "unknown_cells": int(result.get("unknown_cells", 0)),
                     "out_of_bounds_vertices": int(result.get("out_of_bounds_vertices", 0)),
-                    "padding_out_of_bounds": bool(result.get("padding_out_of_bounds", False)),
-                    "footprint_padding_m": float(result.get("footprint_padding_m", footprint_padding_m)),
-                    "footprint_padding_cells": int(result.get("footprint_padding_cells", 0)),
                 }
             )
 
@@ -333,15 +258,10 @@ def check_path_static_collision(
         "ok": len(blocked_results) == 0,
         "num_poses": int(len(normalized_poses)),
         "sampled_pose_count": int(sampled_pose_count),
-        "interpolated_pose_count": int(interpolated_pose_count),
-        "ignored_initial_padding_pose_count": int(ignored_initial_padding_pose_count),
         "blocked_pose_count": int(len(blocked_results)),
         "first_blocked_index": int(blocked_results[0]["index"]) if blocked_results else None,
         "first_blocked_result": blocked_results[0] if blocked_results else {},
         "blocked_summary": blocked_results[:20],
-        "free_value_min": int(free_value_min),
-        "footprint_padding_m": 0.0,
-        "initial_padding_egress_distance_m": initial_egress_distance,
     }
 
 
@@ -351,45 +271,6 @@ def _path_pose(pose: dict[str, Any]) -> dict[str, float]:
         "y": float(pose.get("y", 0.0)),
         "yaw": wrap_to_pi(float(pose.get("yaw", 0.0))),
     }
-
-
-def _path_segment_sample_count(
-    *,
-    static_map: dict[str, Any],
-    footprint_points: list[list[float]],
-    previous_pose: dict[str, float],
-    pose: dict[str, float],
-) -> int:
-    resolution = float(static_map["resolution"])
-    if resolution <= 0.0:
-        raise ValueError("static map resolution must be positive")
-    translation_distance = math.hypot(pose["x"] - previous_pose["x"], pose["y"] - previous_pose["y"])
-    yaw_delta = abs(wrap_to_pi(pose["yaw"] - previous_pose["yaw"]))
-    footprint_radius = max((math.hypot(float(px), float(py)) for px, py in footprint_points), default=0.0)
-    # A footprint vertex may travel both due to translation and rotation. Keep
-    # that sweep below half a map cell so a gap between planner poses cannot
-    # skip an occupied static-map cell.
-    max_sweep_step_m = resolution * 0.5
-    sweep_distance = translation_distance + footprint_radius * yaw_delta
-    return max(1, int(math.ceil(sweep_distance / max_sweep_step_m)))
-
-
-def transform_footprint_points(
-    footprint_points: list[list[float]],
-    *,
-    x: float,
-    y: float,
-    yaw: float,
-) -> list[list[float]]:
-    cos_yaw = math.cos(float(yaw))
-    sin_yaw = math.sin(float(yaw))
-    return [
-        [
-            float(x) + float(px) * cos_yaw - float(py) * sin_yaw,
-            float(y) + float(px) * sin_yaw + float(py) * cos_yaw,
-        ]
-        for px, py in footprint_points
-    ]
 
 
 def choose_best_reachable_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -502,19 +383,6 @@ def write_candidates_debug(path: str, payload: dict[str, Any]):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, ensure_ascii=False)
-
-
-def _normalize_footprint_points(points) -> list[list[float]]:
-    if not isinstance(points, (list, tuple)):
-        return []
-    normalized = []
-    for point in points:
-        if not isinstance(point, (list, tuple)) or len(point) < 2:
-            continue
-        normalized.append([float(point[0]), float(point[1])])
-    if len(normalized) < 3:
-        return []
-    return normalized
 
 
 def _as_bool(value) -> bool:
@@ -631,23 +499,6 @@ def _mobile_xy_to_armbase_xy(
     return arm_x, arm_y
 
 
-def _load_pgm_image(path: str) -> np.ndarray:
-    try:
-        import cv2  # type: ignore[import-not-found]
-
-        image = cv2.imread(path, cv2.IMREAD_UNCHANGED)
-        if image is not None:
-            if image.ndim == 3:
-                image = image[:, :, 0]
-            return np.asarray(image)
-    except Exception:
-        pass
-
-    from PIL import Image
-
-    return np.asarray(Image.open(path))
-
-
 def _world_to_image_pixel(
     world_x: float,
     world_y: float,
@@ -660,81 +511,3 @@ def _world_to_image_pixel(
     col = int(round((float(world_x) - origin_x) / resolution))
     map_row = int(round((float(world_y) - origin_y) / resolution))
     return col, int(height - 1 - map_row)
-
-
-def _polygon_mask(*, height: int, width: int, polygon: list[tuple[int, int]]) -> np.ndarray:
-    mask = np.zeros((height, width), dtype=bool)
-    if len(polygon) < 3:
-        return mask
-    min_col = max(0, min(point[0] for point in polygon))
-    max_col = min(width - 1, max(point[0] for point in polygon))
-    min_row = max(0, min(point[1] for point in polygon))
-    max_row = min(height - 1, max(point[1] for point in polygon))
-    if min_col > max_col or min_row > max_row:
-        return mask
-    poly = [(float(col), float(row)) for col, row in polygon]
-    for row in range(min_row, max_row + 1):
-        for col in range(min_col, max_col + 1):
-            if _point_in_polygon(float(col) + 0.5, float(row) + 0.5, poly):
-                mask[row, col] = True
-    return mask
-
-
-def _dilate_mask(mask: np.ndarray, padding_cells: int) -> np.ndarray:
-    padding_cells = int(padding_cells)
-    if padding_cells <= 0:
-        return mask
-    height, width = mask.shape[:2]
-    rows, cols = np.nonzero(mask)
-    if len(rows) == 0:
-        return mask.copy()
-    padded = mask.copy()
-    for row, col in zip(rows, cols):
-        min_row = max(0, int(row) - padding_cells)
-        max_row = min(height - 1, int(row) + padding_cells)
-        min_col = max(0, int(col) - padding_cells)
-        max_col = min(width - 1, int(col) + padding_cells)
-        for out_row in range(min_row, max_row + 1):
-            row_delta_sq = (out_row - int(row)) * (out_row - int(row))
-            for out_col in range(min_col, max_col + 1):
-                delta_sq = row_delta_sq + (out_col - int(col)) * (out_col - int(col))
-                if delta_sq <= padding_cells * padding_cells:
-                    padded[out_row, out_col] = True
-    return padded
-
-
-def _padding_out_of_bounds(
-    polygon: list[tuple[int, int]],
-    *,
-    width: int,
-    height: int,
-    padding_cells: int,
-) -> bool:
-    if padding_cells <= 0:
-        return False
-    return any(
-        col - padding_cells < 0
-        or col + padding_cells >= width
-        or row - padding_cells < 0
-        or row + padding_cells >= height
-        for col, row in polygon
-    )
-
-
-def _point_in_polygon(x: float, y: float, polygon: list[tuple[float, float]]) -> bool:
-    inside = False
-    j = len(polygon) - 1
-    for i, point_i in enumerate(polygon):
-        xi, yi = point_i
-        xj, yj = polygon[j]
-        intersects = ((yi > y) != (yj > y)) and (
-            x < (xj - xi) * (y - yi) / ((yj - yi) if not math.isclose(yj, yi) else 1.0e-12) + xi
-        )
-        if intersects:
-            inside = not inside
-        j = i
-    return inside
-
-
-def _out_of_bounds_vertices(polygon: list[tuple[int, int]], *, width: int, height: int) -> int:
-    return sum(1 for col, row in polygon if col < 0 or col >= width or row < 0 or row >= height)

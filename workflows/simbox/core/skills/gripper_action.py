@@ -1,18 +1,19 @@
 import numpy as np
+from core.planning.motion_command import MotionPhase
 from core.skills.base_skill import BaseSkill, register_skill
 from omegaconf import DictConfig
-from omni.isaac.core.controllers import BaseController
-from omni.isaac.core.robots.robot import Robot
-from omni.isaac.core.tasks import BaseTask
+from isaacsim.core.api.controllers import BaseController
+from isaacsim.core.api.robots.robot import Robot
+from isaacsim.core.api.tasks import BaseTask
 
 
 # pylint: disable=unused-argument
 @register_skill
 class Gripper_Action(BaseSkill):
-    def __init__(self, robot: Robot, controller: BaseController, task: BaseTask, cfg: DictConfig, *args, **kwargs):
+    def __init__(self, robot: Robot, skill_runtime, task: BaseTask, cfg: DictConfig, *args, **kwargs):
         super().__init__()
         self.robot = robot
-        self.controller = controller
+        self.bind_skill_runtime(skill_runtime)
         self.task = task
         self.skill_cfg = cfg
         self._gripper_state = self.skill_cfg["gripper_state"]
@@ -23,32 +24,33 @@ class Gripper_Action(BaseSkill):
     def simple_generate_manip_cmds(self):
         manip_list = []
 
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
+        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.execution.get_ee_pose()
         if self._gripper_state == 1:  # Open
-            cmd = (p_base_ee_cur, q_base_ee_cur, "open_gripper", {}, self.skill_cfg.get("vel", None))
+            phase = MotionPhase.GRIPPER_OPEN
+            action = "open_gripper"
         elif self._gripper_state == -1:  # Close
-            cmd = (p_base_ee_cur, q_base_ee_cur, "close_gripper", {}, self.skill_cfg.get("vel", None))
+            phase = MotionPhase.GRIPPER_CLOSE
+            action = "close_gripper"
         else:
             raise NotImplementedError
 
-        manip_list.extend([cmd] * self.skill_cfg.get("wait_steps", 10))
+        cmd = self.pose_command(
+            phase,
+            p_base_ee_cur,
+            q_base_ee_cur,
+            gripper_action=action,
+            replan_allowed=False,
+            dwell_steps=int(self.skill_cfg.get("wait_steps", 10)),
+        )
+        manip_list.append(cmd)
         self.manip_list = manip_list
 
     def is_feasible(self, th=5):
-        return self.controller.num_plan_failed <= th
+        return self.skill_runtime.execution.state.num_plan_failed <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        p_base_ee, q_base_ee, *_ = self.manip_list[0]
-        diff_trans = np.linalg.norm(p_base_ee_cur - p_base_ee)
-        diff_ori = 2 * np.arccos(min(abs(np.dot(q_base_ee_cur, q_base_ee)), 1.0))
-        pose_flag = np.logical_and(
-            diff_trans < t_eps,
-            diff_ori < o_eps,
-        )
-        self.plan_flag = self.controller.num_last_cmd > 10
-        return np.logical_or(pose_flag, self.plan_flag)
+        return self.command_complete(self.manip_list[0])
 
     def is_done(self):
         if len(self.manip_list) == 0:

@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-import os
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
@@ -57,6 +57,28 @@ class CollisionObjectRecord:
         return value
 
 
+@dataclass(frozen=True)
+class PlannerScenePort:
+    """Explicit scene-facing controller dependencies.
+
+    The manager stores this port, never a controller façade.  Runtime and
+    operation callbacks are supplied by composition at bind time.
+    """
+
+    name: str
+    lr_name: str
+    reference_prim_path: str
+    robot_ee_path: str
+    tensor_args: Any
+    robot: Any
+    runtime: Any
+    check_current_start_state: Callable[[], tuple[bool, Any]] | None = None
+    attach_collision_object: Callable[[Sequence[str]], Any] | None = None
+    detach_attachment: Callable[[], Any] | None = None
+    has_attached_collision_spheres: Callable[[], bool] | None = None
+    collision_world_mode: str = "physics_schema"
+
+
 _ALLOWED_TRANSITIONS = {
     CollisionObjectState.WORLD_OBSTACLE: {
         CollisionObjectState.ACTIVE_TARGET_TRANSIT,
@@ -98,26 +120,6 @@ def _cfg_get(cfg: Any, key: str, default=None):
     return default
 
 
-def validate_exact_exclusions(values: Iterable[Any] | None) -> dict[str, str]:
-    """Validate exact, reasoned exclusions and return path -> reason."""
-
-    result: dict[str, str] = {}
-    for value in values or []:
-        if not hasattr(value, "get"):
-            raise ValueError("exact_exclusions entries must contain prim_path and reason")
-        path = str(value.get("prim_path", "")).strip()
-        reason = str(value.get("reason", "")).strip()
-        sdf_path = Sdf.Path(path)
-        if not path or not sdf_path.IsAbsolutePath() or not sdf_path.IsPrimPath():
-            raise ValueError(f"exact exclusion must use a complete absolute Prim path: {path!r}")
-        if not reason:
-            raise ValueError(f"exact exclusion requires a non-empty reason: {path}")
-        if path in result:
-            raise ValueError(f"duplicate exact exclusion: {path}")
-        result[path] = reason
-    return result
-
-
 class CollisionSceneManager:
     """Own the exact mapping between Stage Physics colliders and CuRobo worlds."""
 
@@ -135,7 +137,42 @@ class CollisionSceneManager:
         self.mode = str(_cfg_get(self.config, "mode", "physics_schema"))
         if self.mode != "physics_schema":
             raise ValueError(f"CollisionSceneManager only supports physics_schema, got {self.mode!r}")
-        self.exclusions = validate_exact_exclusions(_cfg_get(self.config, "exact_exclusions", []))
+        self.geometry_mode = str(
+            _cfg_get(self.config, "geometry_mode", "bbox")
+        ).strip().lower()
+        if self.geometry_mode not in {"bbox", "native"}:
+            raise ValueError(
+                "collision_world.geometry_mode must be 'bbox' or 'native', "
+                f"got {self.geometry_mode!r}"
+            )
+        planning_exclusions = _cfg_get(self.config, "planning_exclusions", [])
+        if not isinstance(planning_exclusions, list):
+            raise ValueError("planning_exclusions must be a YAML list of exact entity names")
+        names: list[str] = []
+        seen_names: set[str] = set()
+        for value in planning_exclusions:
+            if not isinstance(value, str):
+                raise ValueError("planning_exclusions entries must be exact entity-name strings")
+            name = value.strip()
+            if (
+                value != name
+                or not name
+                or name in {".", ".."}
+                or name.startswith("/")
+                or "/" in name
+                or "\\" in name
+                or any(char.isspace() for char in name)
+                or any(char in name for char in "*?[]{}()")
+            ):
+                raise ValueError(
+                    "planning exclusion must be one exact task entity name, not a "
+                    f"path, substring, or glob: {value!r}"
+                )
+            if name in seen_names:
+                raise ValueError(f"duplicate planning exclusion: {name}")
+            seen_names.add(name)
+            names.append(name)
+        self._planning_exclusion_names = tuple(names)
         self.dynamic_translation_replan_m = float(
             _cfg_get(execution_safety_config, "dynamic_translation_replan_m", 0.01)
         )
@@ -146,40 +183,46 @@ class CollisionSceneManager:
         self.records: dict[str, CollisionObjectRecord] = {}
         self.attach_prim_paths: dict[str, list[str]] = {}
         self.path_to_entity: dict[str, str] = {}
-        self.controllers: dict[tuple[str, str], Any] = {}
+        self.scene_ports: dict[tuple[str, str], PlannerScenePort] = {}
         self.controller_enabled: dict[tuple[str, str], dict[str, bool]] = {}
         self._controller_reference_matrices: dict[tuple[str, str], np.ndarray] = {}
         self.controller_audits: dict[str, dict[str, list[str]]] = {}
         self._temporary_disabled: dict[tuple[str, str], set[str]] = {}
+        self._diagnostic_forced_disabled: dict[tuple[str, str], set[str]] = {}
         self._diagnostic_physics_disabled_paths: set[str] = set()
         self._pending_detach: set[str] = set()
         self._retreating_placed: set[str] = set()
         self._attached_relative_pose: dict[str, np.ndarray] = {}
-        # supervisor so the exact Prim/frame used by the slip metric is
-        # visible.
-        self._debug_slip_counts: dict[str, int] = {}
-        self._debug_last_slip_angles: dict[str, float] = {}
         self._slip_ignore_axis: dict[str, np.ndarray | None] = {}
         self.object_state_events: list[dict[str, Any]] = []
         self.world_revision = 0
         self._step_id = 0
         self._pose_matrices: dict[str, np.ndarray] = {}
+        self._tracking_pose_matrices: dict[str, np.ndarray] = {}
+        # Last native-frame pose sent for each exact collider/controller.  A
+        # planner materialized after dynamic synchronization replays this
+        # cache before its first query instead of relying on the original
+        # world snapshot alone.
+        self._native_pose_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self._robot_environment_contact_views: dict[tuple[str, str], list[Any]] = {}
+        self._robot_contact_debug_reported: set[tuple[str, str]] = set()
         self._finger_environment_contact_views: dict[tuple[str, str], list[Any]] = {}
         self._object_environment_contact_views: dict[str, list[Any]] = {}
         self._object_environment_filter_paths: dict[str, list[str]] = {}
-        self._usd_helper = None
+        self._object_contact_debug_reported: set[tuple[str, str | None]] = set()
+        self._usd_parser = None
         self._discover()
 
     def _helper(self):
-        if self._usd_helper is None:
+        if self._usd_parser is None:
             # Lazy import keeps Physics-schema discovery unit-testable outside
-            # the Isaac/CuRobo Python environment.
-            from curobo.util.usd_helper import UsdHelper
+            # the Isaac/CuRobo Python environment while using the native v2
+            # USD parser directly.
+            from core.planning.native_bridge import UsdSceneParser
 
-            self._usd_helper = UsdHelper()
-            self._usd_helper.load_stage(self.stage)
-        return self._usd_helper
+            self._usd_parser = UsdSceneParser()
+            self._usd_parser.load_stage(self.stage)
+        return self._usd_parser
 
     @staticmethod
     def _entity_root(entity: Any) -> str | None:
@@ -191,28 +234,32 @@ class CollisionSceneManager:
 
     @staticmethod
     def _parse_slip_ignore_axis(value: Any) -> np.ndarray | None:
-        """Resolve a config-declared rotational-symmetry axis to a unit vector.
+        """Resolve a rotational-symmetry axis declared by an object profile."""
 
-        ``"x"``/``"y"``/``"z"`` name a local axis; a length-3 sequence is used
-        directly.  ``None`` keeps the full 3D relative-rotation comparison.
-        """
         if value is None:
             return None
         if isinstance(value, str):
-            named = {"x": [1.0, 0.0, 0.0], "y": [0.0, 1.0, 0.0], "z": [0.0, 0.0, 1.0]}.get(
-                str(value).strip().lower()
-            )
-            if named is None:
-                raise CollisionSceneError(f"unknown attach_slip_ignore_axis: {value!r}")
-            return np.asarray(named, dtype=float)
+            axis = {
+                "x": [1.0, 0.0, 0.0],
+                "y": [0.0, 1.0, 0.0],
+                "z": [0.0, 0.0, 1.0],
+            }.get(value.strip().lower())
+            if axis is None:
+                raise CollisionSceneError(
+                    f"unknown attach_slip_ignore_axis: {value!r}"
+                )
+            return np.asarray(axis, dtype=float)
         axis = np.asarray(value, dtype=float).reshape(-1)
         if axis.shape != (3,):
             raise CollisionSceneError(
-                f"attach_slip_ignore_axis must be a local axis name or 3-vector: {value!r}"
+                "attach_slip_ignore_axis must be a local axis name or 3-vector: "
+                f"{value!r}"
             )
         norm = float(np.linalg.norm(axis))
         if norm <= 0.0:
-            raise CollisionSceneError(f"attach_slip_ignore_axis must be non-zero: {value!r}")
+            raise CollisionSceneError(
+                f"attach_slip_ignore_axis must be non-zero: {value!r}"
+            )
         return axis / norm
 
     @staticmethod
@@ -307,6 +354,80 @@ class CollisionSceneManager:
         visit(getattr(self.task, "cfg", {}).get("skills", []))
         return result
 
+    def _configured_entity(self, entity_name: str) -> Any | None:
+        for name, entity in self._iter_entities():
+            if name == str(entity_name):
+                return entity
+        return None
+
+    def _configured_entity_cfg(self, entity_name: str) -> Any:
+        """Look up raw task metadata when an Isaac wrapper drops it."""
+
+        task_cfg = getattr(self.task, "cfg", {}) or {}
+        candidates = list(task_cfg.get("objects", []) or [])
+        arena_cfg = task_cfg.get("arena", {}) or {}
+        candidates.extend(list(arena_cfg.get("fixtures", []) or []))
+        for candidate in candidates:
+            if str(_cfg_get(candidate, "name", "")) == str(entity_name):
+                return candidate
+        entity = self._configured_entity(entity_name)
+        return getattr(entity, "cfg", {}) or {}
+
+    def get_source_support_entity(self, entity_name: str) -> str | None:
+        """Return the configured source fixture for a movable object.
+
+        Pick's post-grasp lift starts while many tabletop assets are still in
+        contact with their source support.  The support is configuration
+        metadata, not a manipulation target, so expose it explicitly to the
+        phase-level safety monitor instead of treating every environment
+        contact as unexpected.
+        """
+
+        cfg = self._configured_entity_cfg(entity_name)
+        parent_fixture = str(_cfg_get(cfg, "parent_fixture", "") or "").strip()
+        if not parent_fixture:
+            task_cfg = getattr(self.task, "cfg", {}) or {}
+            for region in task_cfg.get("regions", []) or []:
+                if str(_cfg_get(region, "object", "")) != str(entity_name):
+                    continue
+                parent_fixture = str(
+                    _cfg_get(
+                        region,
+                        "parent_fixture",
+                        _cfg_get(
+                            region,
+                            "support_target_fixture",
+                            _cfg_get(region, "target", ""),
+                        ),
+                    )
+                    or ""
+                ).strip()
+                break
+        if parent_fixture and parent_fixture in self.records:
+            return parent_fixture
+        return None
+
+    def support_collision_paths(self, support_entity: str | None) -> set[str]:
+        """Resolve a fixture and its explicit support-plane descendants."""
+
+        if not support_entity:
+            return set()
+        support_names = {str(support_entity)}
+        for name, entity in self._iter_entities():
+            cfg = self._configured_entity_cfg(name)
+            parent_fixture = str(_cfg_get(cfg, "parent_fixture", "") or "").strip()
+            role = str(_cfg_get(cfg, "role", "") or "").lower()
+            if parent_fixture == str(support_entity) and (
+                role == "support_collision_plane" or "support_plane" in name
+            ):
+                support_names.add(name)
+        paths: set[str] = set()
+        for name in support_names:
+            record = self.records.get(name)
+            if record is not None:
+                paths.update(record.collision_prim_paths)
+        return paths
+
     def _rigid_body_paths(self, record: CollisionObjectRecord) -> list[str]:
         paths: set[str] = set()
         root_path = Sdf.Path(record.root_prim_path)
@@ -344,8 +465,14 @@ class CollisionSceneManager:
 
     def _discover(self) -> None:
         discovered_paths: set[str] = set()
-        matched_exclusions: set[str] = set()
+        discovered_path_owners: dict[str, tuple[str, str]] = {}
+        discovered_entity_names: set[str] = set()
         for entity_name, entity in self._iter_entities():
+            if entity_name in discovered_entity_names:
+                raise CollisionSceneError(
+                    f"task entity name resolves to multiple records: {entity_name}"
+                )
+            discovered_entity_names.add(entity_name)
             root_path = self._entity_root(entity)
             if not root_path:
                 if self.strict:
@@ -362,9 +489,6 @@ class CollisionSceneManager:
                 path = str(prim.GetPath())
                 enabled = UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Get()
                 if enabled is False:
-                    continue
-                if path in self.exclusions:
-                    matched_exclusions.add(path)
                     continue
                 enabled_collision_prims.append(prim)
 
@@ -410,8 +534,19 @@ class CollisionSceneManager:
             for prim in collider_prims:
                 path = str(prim.GetPath())
                 if path in discovered_paths:
+                    previous_entity, previous_root = discovered_path_owners[path]
+                    LOGGER.error(
+                        "[CollisionWorldDuplicate] path=%s previous_entity=%s "
+                        "previous_root=%s current_entity=%s current_root=%s",
+                        path,
+                        previous_entity,
+                        previous_root,
+                        entity_name,
+                        root_path,
+                    )
                     raise CollisionSceneError(f"collision Prim belongs to multiple entities: {path}")
                 discovered_paths.add(path)
+                discovered_path_owners[path] = (entity_name, root_path)
 
             if not collider_prims:
                 if self._explicitly_noncollidable(entity):
@@ -486,15 +621,31 @@ class CollisionSceneManager:
             self._slip_ignore_axis[entity_name] = self._parse_slip_ignore_axis(
                 getattr(entity, "attach_slip_ignore_axis", None)
             )
+            self._tracking_pose_matrices[entity_name] = self._world_matrix(
+                tracking_prim_path
+            )
             for path in paths:
                 self.path_to_entity[path] = entity_name
                 self._pose_matrices[path] = self._world_matrix(path)
 
-        missing_exclusions = sorted(set(self.exclusions) - matched_exclusions)
-        if missing_exclusions:
-            raise CollisionSceneError(f"exact exclusions do not name enabled Stage colliders: {missing_exclusions}")
         if not self.records:
             raise CollisionSceneError("physics_schema discovered no collision entities")
+        for entity_name in self._planning_exclusion_names:
+            matches = [
+                record
+                for record in self.records.values()
+                if record.entity_name == entity_name
+            ]
+            if not matches:
+                raise CollisionSceneError(
+                    "planning_exclusions entry does not name a collision entity record: "
+                    f"{entity_name}"
+                )
+            if len(matches) != 1:
+                raise CollisionSceneError(
+                    "planning_exclusions entry resolves to multiple collision records: "
+                    f"{entity_name}"
+                )
         for entity_name in self._configured_manipulation_entities():
             if entity_name not in self.records:
                 raise CollisionSceneError(
@@ -519,250 +670,103 @@ class CollisionSceneManager:
         return np.asarray(matrix, dtype=float).reshape(4, 4)
 
     @staticmethod
-    def _rotation_only(matrix: np.ndarray) -> np.ndarray:
-        """Extract the closest proper rotation from a possibly scaled matrix."""
+    def _rotation_from_affine(matrix: np.ndarray) -> np.ndarray:
+        """Extract the closest proper rotation from an affine transform.
 
-        rotation = np.asarray(matrix, dtype=float)[:3, :3]
-        u, _, vt = np.linalg.svd(rotation)
-        result = u @ vt
-        if np.linalg.det(result) < 0.0:
-            u[:, -1] *= -1.0
-            result = u @ vt
-        return result
+        USD collision assets can carry non-unit or non-uniform scale in the
+        same 3x3 block as their orientation.  Computing an angle directly
+        from that affine block turns ordinary scale into large false rotation
+        drift.  The polar factor is the nearest orthonormal rotation and is
+        stable for the rigid transforms used by the scene manager.
+        """
+
+        linear = np.asarray(matrix, dtype=float).reshape(4, 4)[:3, :3]
+        if not np.all(np.isfinite(linear)):
+            raise CollisionSceneError("non-finite affine transform rotation block")
+        left, _, right_transpose = np.linalg.svd(linear)
+        rotation = left @ right_transpose
+        if np.linalg.det(rotation) < 0.0:
+            left[:, -1] *= -1.0
+            rotation = left @ right_transpose
+        return rotation
 
     @property
     def collision_prim_paths(self) -> list[str]:
         return [path for record in self.records.values() for path in record.collision_prim_paths]
 
-    @contextmanager
-    def _curobo_obstacles_temporarily_disabled(
-        self, controller: Any, prim_paths: Iterable[str]
-    ):
-        paths, enabled = self._validate_curobo_obstacle_paths(
-            controller, prim_paths
-        )
-
-        previous = {path: bool(enabled[path]) for path in paths}
-        changed: list[str] = []
-        try:
-            for path in paths:
-                if previous[path]:
-                    controller.motion_gen.world_collision.enable_obstacle(path, False)
-                    changed.append(path)
-            yield tuple(paths)
-        finally:
-            for path in reversed(changed):
-                controller.motion_gen.world_collision.enable_obstacle(
-                    path, previous[path]
-                )
-
-    @contextmanager
-    def diagnostic_curobo_obstacles_disabled(
-        self, controller: Any, prim_paths: Iterable[str]
-    ):
-        """Temporarily disable exact CuRobo obstacles for a diagnostic probe."""
-
-        with self._curobo_obstacles_temporarily_disabled(
-            controller, prim_paths
-        ) as paths:
-            yield paths
-
-    @contextmanager
-    def placement_descent_planning_world(
-        self, entity_name: str, support_entity: str, robot: str, arm: str
-    ):
-        """Expose the same CuRobo contact world used by terminal Place descent."""
-
-        record = self.records.get(entity_name)
-        if record is None or record.state != CollisionObjectState.ATTACHED:
-            raise CollisionSceneError(
-                f"placement planning requires ATTACHED object: {entity_name}"
-            )
-        owner = self._controller_key(robot, arm)
-        if (record.owner_robot, record.owner_arm) != owner:
-            raise CollisionSceneError(
-                f"placement planning owner mismatch for {entity_name}: {owner}"
-            )
-        support = self.records.get(support_entity)
-        if support is None:
-            raise CollisionSceneError(
-                f"placement support is absent from collision world: {support_entity}"
-            )
-        controller = self.controllers[owner]
-        with self._curobo_obstacles_temporarily_disabled(
-            controller, support.collision_prim_paths
-        ) as paths:
-            yield paths
-
-    def _validate_curobo_obstacle_paths(
-        self, controller: Any, prim_paths: Iterable[str]
-    ) -> tuple[list[str], dict[str, bool]]:
-        """Validate exact paths against one bound controller's CuRobo world."""
-
-        if isinstance(prim_paths, (str, bytes)):
-            raise CollisionSceneError(
-                "CuRobo obstacle paths must be a collection of exact paths"
-            )
-        paths = [str(value).strip() for value in prim_paths]
-        if any(not value for value in paths):
-            raise CollisionSceneError("CuRobo obstacle paths must be non-empty")
-        if len(paths) != len(set(paths)):
-            raise CollisionSceneError("CuRobo obstacle paths must be unique")
-        for path in paths:
-            sdf_path = Sdf.Path(path)
-            if not sdf_path.IsAbsolutePath() or not sdf_path.IsPrimPath():
-                raise CollisionSceneError(
-                    f"CuRobo obstacle path must be an absolute Prim path: {path!r}"
-                )
-
-        key = (str(controller.name), str(controller.lr_name))
-        if self.controllers.get(key) is not controller:
-            raise CollisionSceneError(
-                f"CuRobo obstacle change requires a bound controller: {key}"
-            )
-        enabled = self.controller_enabled.get(key)
-        if enabled is None:
-            raise CollisionSceneError(
-                f"CuRobo obstacle change has no controller world state: {key}"
-            )
-        missing = sorted(set(paths) - set(enabled))
-        if missing:
-            raise CollisionSceneError(
-                f"paths are not exact CuRobo world obstacles: {missing}"
-            )
-        return paths, enabled
-
-    def resolve_diagnostic_collision_entities(
-        self, entity_names: Iterable[str]
-    ) -> dict[str, list[str]]:
-        """Resolve exact collider paths for registered task entities."""
-
-        if isinstance(entity_names, (str, bytes)):
-            raise CollisionSceneError(
-                "diagnostic collision entities must be a collection of names"
-            )
-        names = [str(value).strip() for value in entity_names]
-        if any(not value for value in names):
-            raise CollisionSceneError(
-                "diagnostic collision entity names must be non-empty"
-            )
-        if len(names) != len(set(names)):
-            raise CollisionSceneError(
-                "diagnostic collision entity names must be unique"
-            )
-        missing = sorted(set(names) - set(self.records))
-        if missing:
-            raise CollisionSceneError(
-                f"diagnostic collision entities are not registered world entities: {missing}"
-            )
-        return {name: list(self.records[name].collision_prim_paths) for name in names}
-
-    @contextmanager
-    def diagnostic_physics_and_curobo_obstacles_disabled(
-        self, controller: Any, prim_paths: Iterable[str]
-    ):
-        """Temporarily disable exact obstacles in both PhysX and CuRobo.
-
-        Intended only for planning-only A/B diagnosis. Every path must already
-        be an exact obstacle in the bound controller's authoritative CuRobo
-        world. CollisionAPI values and authored-value state are restored in a
-        ``finally`` block alongside the prior CuRobo enabled state.
-        """
-
-        paths, enabled = self._validate_curobo_obstacle_paths(
-            controller, prim_paths
-        )
-        overlapping = sorted(
-            set(paths).intersection(self._diagnostic_physics_disabled_paths)
-        )
-        if overlapping:
-            raise CollisionSceneError(
-                f"diagnostic Physics collision overlay is already active: {overlapping}"
-            )
-
-        # Cache every dynamic obstacle pose while all selected Physics
-        # colliders are still enabled. Pick planning synchronizes again after
-        # entering this context; that later pass must skip only this overlay.
-        self.sync_dynamic_poses(self._step_id, interval_steps=1, force=True)
-        physics_attrs: dict[str, tuple[Any, Any, bool]] = {}
-        for path in paths:
-            prim = self.stage.GetPrimAtPath(path)
-            if (
-                not prim
-                or not prim.IsValid()
-                or not prim.HasAPI(UsdPhysics.CollisionAPI)
-            ):
-                raise CollisionSceneError(
-                    f"diagnostic path is not a live Physics collider: {path}"
-                )
-            attr = UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr()
-            physics_attrs[path] = (
-                attr,
-                attr.Get(),
-                bool(attr.HasAuthoredValueOpinion()),
-            )
-
-        previous_curobo = {path: bool(enabled[path]) for path in paths}
-        changed_physics: list[str] = []
-        changed_curobo: list[str] = []
-        try:
-            self._diagnostic_physics_disabled_paths.update(paths)
-            for path in paths:
-                attr, _, _ = physics_attrs[path]
-                attr.Set(False)
-                changed_physics.append(path)
-                if previous_curobo[path]:
-                    controller.motion_gen.world_collision.enable_obstacle(path, False)
-                    changed_curobo.append(path)
-            yield tuple(paths)
-        finally:
-            restore_error: BaseException | None = None
-            for path in reversed(changed_curobo):
-                try:
-                    controller.motion_gen.world_collision.enable_obstacle(
-                        path, previous_curobo[path]
-                    )
-                except BaseException as exc:  # preserve after completing restoration
-                    restore_error = restore_error or exc
-            for path in reversed(changed_physics):
-                attr, original_value, was_authored = physics_attrs[path]
-                try:
-                    if was_authored:
-                        attr.Set(original_value)
-                    else:
-                        attr.Clear()
-                except BaseException as exc:  # preserve after completing restoration
-                    restore_error = restore_error or exc
-            self._diagnostic_physics_disabled_paths.difference_update(paths)
-            if restore_error is not None:
-                raise restore_error
-
     def build_world_config(self, reference_prim_path: str):
         helper = self._helper()
         exact_loader = getattr(helper, "get_obstacles_from_collision_prims", None)
-        if callable(exact_loader):
+        # The pre-native-v2 implementation deliberately used one oriented
+        # cuboid per exact CollisionAPI path.  Feeding a high-poly USD Mesh
+        # (for example, the ball asset has roughly 44k triangles) into every
+        # rollout is much slower.  Keep that fast conservative representation
+        # as the default and require an explicit ``geometry_mode: native`` for
+        # full mesh collision fidelity.
+        if self.geometry_mode == "native" and callable(exact_loader):
             world = exact_loader(
                 self.collision_prim_paths,
                 reference_prim_path=reference_prim_path,
             )
         else:
-            from curobo.geom.types import WorldConfig
+            stage_loader = getattr(helper, "get_obstacles_from_stage", None)
+            if self.geometry_mode == "native" and callable(stage_loader):
+                world = stage_loader(
+                    only_paths=self.collision_prim_paths,
+                    reference_prim_path=reference_prim_path,
+                )
+                allowed = set(self.collision_prim_paths)
+                for field in ("cuboid", "sphere", "mesh", "cylinder", "capsule"):
+                    obstacles = getattr(world, field, None)
+                    if obstacles is not None:
+                        setattr(
+                            world,
+                            field,
+                            [obstacle for obstacle in obstacles if obstacle.name in allowed],
+                        )
+                parsed_names = {
+                    obstacle.name
+                    for obstacle in getattr(world, "objects", [])
+                    if obstacle.name in allowed
+                }
+                missing = sorted(allowed - parsed_names)
+                if missing:
+                    raise CollisionSceneError(
+                        "native v2 USD parser did not produce exact collision geometry: "
+                        f"{missing}"
+                    )
+                world.objects = [
+                    obstacle
+                    for field in ("sphere", "cuboid", "capsule", "mesh", "cylinder", "voxel")
+                    for obstacle in (getattr(world, field, None) or [])
+                ]
+                LOGGER.info(
+                    "[CollisionWorld] native USD parser loaded %d exact-path geometries",
+                    len(parsed_names),
+                )
+            else:
+                # Fast/default mode, and unit-test doubles or non-Isaac
+                # environments without a native loader, all use the same
+                # exact-path proxy representation.
+                from core.planning.native_bridge import SceneCfg
 
-            proxies = [
-                self._bbox_collision_proxy(path, reference_prim_path)
-                for path in self.collision_prim_paths
-            ]
-            world = WorldConfig(cuboid=proxies)
-            LOGGER.warning(
-                "[CollisionWorld] old UsdHelper using %d exact-path oriented bbox proxies",
-                len(proxies),
-            )
+                proxies = [
+                    self._bbox_collision_proxy(path, reference_prim_path)
+                    for path in self.collision_prim_paths
+                ]
+                world = SceneCfg(cuboid=proxies)
+                LOGGER.info(
+                    "[CollisionWorld] using %d exact-path oriented bbox proxies "
+                    "(geometry_mode=%s)",
+                    len(proxies),
+                    self.geometry_mode,
+                )
         return world.get_collision_check_world()
 
     def _bbox_collision_proxy(self, prim_path: str, reference_prim_path: str):
-        """Create a conservative exact-name proxy for an old UsdHelper."""
+        """Create a conservative exact-name proxy for a native USD scene."""
 
-        from curobo.geom.types import Cuboid
+        from core.planning.native_bridge import Cuboid
 
         prim = self.stage.GetPrimAtPath(prim_path)
         reference = self.stage.GetPrimAtPath(reference_prim_path)
@@ -788,12 +792,23 @@ class CollisionSceneManager:
         prim_world = cache.GetLocalToWorldTransform(prim)
         reference_world = cache.GetLocalToWorldTransform(reference)
         relative = prim_world * reference_world.GetInverse()
-        transform = Gf.Transform(relative)
-        scale = transform.GetScale()
-        dims = [
-            abs(float(local_dims[index]) * float(scale[index]))
-            for index in range(3)
-        ]
+        # ``Gf.Transform.GetScale`` clamps very small scales to 1e-10.  The
+        # legacy assets used here legitimately produce relative scales below
+        # that threshold after USD unit conversion, so using it collapses a
+        # valid collider into a near-zero CuRobo cuboid.  Measure each local
+        # axis directly from the affine matrix and normalize a copy only for
+        # extracting the orientation.
+        axis_rows = [relative.GetRow3(index) for index in range(3)]
+        scale = [float(row.GetLength()) for row in axis_rows]
+        if not all(np.isfinite(value) and value > 0.0 for value in scale):
+            raise CollisionSceneError(
+                f"cannot build collision proxy with invalid scale: {prim_path} {scale}"
+            )
+        rotation_matrix = Gf.Matrix4d(relative)
+        for index, row in enumerate(axis_rows):
+            rotation_matrix.SetRow3(index, row / scale[index])
+        transform = Gf.Transform(rotation_matrix.GetOrthonormalized())
+        dims = [abs(float(local_dims[index]) * scale[index]) for index in range(3)]
         if min(dims) <= 0.0:
             raise CollisionSceneError(
                 f"cannot build collision proxy with non-positive dimensions: {prim_path} {dims}"
@@ -801,6 +816,23 @@ class CollisionSceneManager:
         center_reference = relative.Transform(center)
         quaternion = transform.GetRotation().GetQuat()
         imaginary = quaternion.GetImaginary()
+        if (
+            os.environ.get("SIMBOX_DEBUG_COLLISION_GEOMETRY") == "1"
+            or os.environ.get("CUROBO_DEBUG_WORLD_COLLISION") == "1"
+        ):
+            LOGGER.warning(
+                "[CollisionGeometryDebug] path=%s reference=%s prim_type=%s "
+                "local_min=%s local_max=%s relative_scale=%s dims=%s "
+                "center_reference=%s",
+                prim_path,
+                reference_prim_path,
+                prim.GetTypeName(),
+                [float(value) for value in minimum],
+                [float(value) for value in maximum],
+                scale,
+                dims,
+                [float(value) for value in center_reference],
+            )
         return Cuboid(
             name=prim_path,
             pose=[
@@ -815,61 +847,89 @@ class CollisionSceneManager:
             dims=dims,
         )
 
-    def _controller_obstacle_pose(self, controller: Any, prim_path: str):
-        """Return a CuRobo Pose across old and new UsdHelper APIs."""
+    def _port_obstacle_pose(self, port: PlannerScenePort, prim_path: str):
+        """Return a native CuRobo Pose in the planner reference frame."""
 
-        from curobo.types.math import Pose
+        from curobo.types import Pose
 
         helper = self._helper()
-        exact_pose = getattr(helper, "get_collision_prim_pose", None)
-        if callable(exact_pose):
-            value = exact_pose(
-                prim_path, reference_prim_path=controller.reference_prim_path
-            )
-            return Pose.from_list(value, controller.tensor_args)
         reference_from_world = np.asarray(
-            helper.get_pose(controller.reference_prim_path, inverse=True), dtype=float
+            helper.get_pose(port.reference_prim_path, inverse=True), dtype=float
         )
         world_from_prim = np.asarray(helper.get_pose(prim_path), dtype=float)
         reference_from_prim = reference_from_world @ world_from_prim
         return Pose.from_matrix(
-            controller.tensor_args.to_device(reference_from_prim)
+            port.tensor_args.to_device(reference_from_prim)
         )
 
-    def bind_controller(self, controller: Any) -> None:
-        key = (str(controller.name), str(controller.lr_name))
-        if key in self.controllers:
-            raise CollisionSceneError(f"controller already registered: {key}")
-        self.controllers[key] = controller
-        self.controller_enabled[key] = {path: True for path in self.collision_prim_paths}
-        self._controller_reference_matrices[key] = self._world_matrix(
-            controller.reference_prim_path
-        )
-        self._temporary_disabled[key] = set()
-        capacity = int(
-            controller.motion_gen.robot_cfg.kinematics.kinematics_config.get_number_of_spheres(
-                "attached_object"
-            )
-        )
-        for entity_name in self._configured_manipulation_entities():
-            record = self.records.get(entity_name)
-            if record is None:
-                continue
-            attach_count = len(self.attach_prim_paths.get(entity_name, []))
-            if attach_count > capacity:
-                raise CollisionSceneError(
-                    "attached sphere capacity is smaller than the target's exact collider count: "
-                    f"controller={key} entity={entity_name} "
-                    f"attach_prims={attach_count} capacity={capacity}"
+    def bind_scene_port(self, port: PlannerScenePort) -> None:
+        if not isinstance(port, PlannerScenePort):
+            raise TypeError("CollisionSceneManager requires a PlannerScenePort")
+        if port.collision_world_mode == "physics_schema":
+            missing_callbacks = [
+                name
+                for name, callback in (
+                    ("attach_collision_object", port.attach_collision_object),
+                    ("detach_attachment", port.detach_attachment),
+                    (
+                        "has_attached_collision_spheres",
+                        port.has_attached_collision_spheres,
+                    ),
                 )
-        self.audit_controller(controller)
+                if callback is None
+            ]
+            if missing_callbacks:
+                raise CollisionSceneError(
+                    "physics_schema PlannerScenePort is missing required callbacks: "
+                    f"{missing_callbacks}"
+                )
+        key = (str(port.name), str(port.lr_name))
+        if key in self.scene_ports:
+            raise CollisionSceneError(f"controller already registered: {key}")
+        self.scene_ports[key] = port
+        try:
+            self.world_revision = max(self.world_revision, int(port.runtime.scene_revision))
+            self.controller_enabled[key] = {path: True for path in self.collision_prim_paths}
+            self._native_pose_cache[key] = {}
+            self._controller_reference_matrices[key] = self._world_matrix(
+                port.reference_prim_path
+            )
+            self._temporary_disabled[key] = set()
+            self._diagnostic_forced_disabled[key] = set()
+            planner = port.runtime.native_planner
+            if planner is None:
+                raise CollisionSceneError(f"controller has no native CuRobo planner: {key}")
+            capacity = int(
+                planner.kinematics.config.kinematics_config.get_number_of_spheres(
+                    "attached_object"
+                )
+            )
+            for entity_name in self._configured_manipulation_entities():
+                record = self.records.get(entity_name)
+                if record is None:
+                    continue
+                attach_count = len(self.attach_prim_paths.get(entity_name, []))
+                if attach_count > capacity:
+                    raise CollisionSceneError(
+                        "attached sphere capacity is smaller than the target's exact collider count: "
+                        f"controller={key} entity={entity_name} "
+                        f"attach_prims={attach_count} capacity={capacity}"
+                    )
+            self.audit_controller(port)
+        except Exception:
+            self.scene_ports.pop(key, None)
+            self.controller_enabled.pop(key, None)
+            self._native_pose_cache.pop(key, None)
+            self._controller_reference_matrices.pop(key, None)
+            self._temporary_disabled.pop(key, None)
+            self._diagnostic_forced_disabled.pop(key, None)
+            raise
 
     def _physics_controller_keys(self) -> list[tuple[str, str]]:
         return [
             key
-            for key, controller in self.controllers.items()
-            if getattr(controller, "collision_world_mode", "physics_schema")
-            == "physics_schema"
+            for key, controller in self.scene_ports.items()
+            if controller.collision_world_mode == "physics_schema"
         ]
 
     def get_attached_entity(self, robot: str, arm: str) -> str | None:
@@ -910,74 +970,43 @@ class CollisionSceneManager:
         self.assert_invariants()
         return record
 
-    def prepare_controller_for_legacy(self, controller: Any) -> None:
-        """Reject a mode switch that would orphan Physics-owned object state."""
-
-        active = sorted(
-            record.entity_name
-            for record in self.records.values()
-            if record.state
-            in {
-                CollisionObjectState.ACTIVE_TARGET_TRANSIT,
-                CollisionObjectState.ACTIVE_TARGET_APPROACH,
-                CollisionObjectState.ATTACHED,
-                CollisionObjectState.PLACEMENT_CONTACT,
-            }
-        )
-        if active or self._pending_detach:
-            raise CollisionSceneError(
-                "cannot activate legacy collision world while Physics-schema object state is active: "
-                f"active={active} pending_detach={sorted(self._pending_detach)}"
-            )
-        key = self._controller_key(controller.name, controller.lr_name)
-        self._restore_temporary(key)
-
-    def resume_controller_physics_world(self, controller: Any) -> None:
-        """Register the freshly rebuilt exact Physics world for one controller."""
-
-        key = self._controller_key(controller.name, controller.lr_name)
-        self.controller_enabled[key] = {
-            path: True for path in self.collision_prim_paths
-        }
-        self._controller_reference_matrices[key] = self._world_matrix(
-            controller.reference_prim_path
-        )
-        self._temporary_disabled[key].clear()
-        self.audit_controller(controller)
-        self.assert_invariants()
-
-    def refresh_controller_reference_world(self, controller: Any, force: bool = False) -> bool:
+    def refresh_controller_reference_world(self, port: PlannerScenePort, force: bool = False) -> bool:
         """Refresh every obstacle pose after the mobile planning reference moves."""
 
-        key = self._controller_key(controller.name, controller.lr_name)
-        current = self._world_matrix(controller.reference_prim_path)
+        key = self._controller_key(port.name, port.lr_name)
+        current = self._world_matrix(port.reference_prim_path)
         previous = self._controller_reference_matrices.get(key)
         if not force and previous is not None and np.allclose(
             current, previous, atol=1e-6, rtol=0.0
         ):
             return False
+        poses = {}
         for path in self.collision_prim_paths:
-            controller.motion_gen.world_collision.update_obstacle_pose(
-                path, self._controller_obstacle_pose(controller, path)
-            )
+            obstacle_pose = self._port_obstacle_pose(port, path)
+            poses[path] = obstacle_pose
+            self._native_pose_cache.setdefault(key, {})[path] = obstacle_pose
+        port.runtime.update_obstacle_poses(poses, revision=self.world_revision + 1)
         self._controller_reference_matrices[key] = current
-        self.world_revision += 1
+        self._adopt_world_revision()
         LOGGER.info(
             "[CollisionWorld] refreshed moving reference controller=%s/%s obstacles=%d world_revision=%d",
-            controller.name,
-            controller.lr_name,
+            port.name,
+            port.lr_name,
             len(self.collision_prim_paths),
             self.world_revision,
         )
         return True
 
-    def diagnose_controller_world_collision(self, controller: Any) -> dict[str, Any]:
+    def diagnose_controller_world_collision(self, port: PlannerScenePort) -> dict[str, Any]:
         """Identify which entity groups invalidate the controller's live start state."""
 
-        key = self._controller_key(controller.name, controller.lr_name)
-        check_start = getattr(controller, "check_current_start_state", None)
-        if not callable(check_start):
-            return {"available": False, "reason": "controller_check_unavailable"}
+        key = self._controller_key(port.name, port.lr_name)
+        check_start = port.check_current_start_state
+        if check_start is None:
+            raise CollisionSceneError(
+                "PlannerScenePort is missing check_current_start_state callback: "
+                f"{key}"
+            )
 
         original = dict(self.controller_enabled[key])
         enabled_paths = [
@@ -1015,17 +1044,32 @@ class CollisionSceneManager:
             "colliding_entities": colliding_entities,
         }
 
-    def initialize_contact_views(self) -> None:
+    def initialize_contact_views(self, physics_sim_view=None) -> None:
         """Create PhysX views for non-finger robot links against all world colliders."""
 
-        from omni.isaac.core.prims import RigidContactView
+        from isaacsim.core.api.sensors import RigidContactView
+        from isaacsim.core.api.simulation_context import SimulationContext
+
+        # Isaac Sim 6 does not reliably attach a newly-created tensor view to
+        # the current USD stage.  All contact sensors must share the view
+        # finalized by World.reset()/Scene._finalize().
+        if physics_sim_view is None:
+            simulation_context = SimulationContext.instance()
+            if simulation_context is not None:
+                # This is the deprecated tensor view consumed by
+                # isaacsim.core.api.sensors.RigidContactView.  Do not use
+                # SimulationManager.get_physics_simulation_view(), which is
+                # Isaac Sim 6's separate Warp view.
+                physics_sim_view = simulation_context.physics_sim_view
+        if physics_sim_view is None:
+            raise CollisionSceneError("PhysX simulation view is not initialized")
 
         self._robot_environment_contact_views.clear()
         self._finger_environment_contact_views.clear()
         self._object_environment_contact_views.clear()
         self._object_environment_filter_paths.clear()
 
-        for key, controller in self.controllers.items():
+        for key, controller in self.scene_ports.items():
             robot = controller.robot
             paths = (
                 robot.fl_forbid_collision_paths
@@ -1038,7 +1082,7 @@ class CollisionSceneManager:
                     prim_paths_expr=path,
                     filter_paths_expr=self.collision_prim_paths,
                 )
-                view.initialize()
+                view.initialize(physics_sim_view=physics_sim_view)
                 views.append(view)
             if not views and self.strict:
                 raise CollisionSceneError(f"no forbidden-link contact views configured for {key}")
@@ -1057,7 +1101,7 @@ class CollisionSceneManager:
                     prim_paths_expr=path,
                     filter_paths_expr=self.collision_prim_paths,
                 )
-                view.initialize()
+                view.initialize(physics_sim_view=physics_sim_view)
                 finger_views.append(view)
             if not finger_views and self.strict:
                 raise CollisionSceneError(f"no finger contact views configured for {key}")
@@ -1089,7 +1133,7 @@ class CollisionSceneManager:
                     prim_paths_expr=sensor_path,
                     filter_paths_expr=filters,
                 )
-                view.initialize()
+                view.initialize(physics_sim_view=physics_sim_view)
                 views.append(view)
             self._object_environment_contact_views[entity_name] = views
             self._object_environment_filter_paths[entity_name] = filters
@@ -1107,19 +1151,60 @@ class CollisionSceneManager:
             maxima = np.maximum(maxima, np.max(magnitudes, axis=0))
         return maxima
 
-    def get_unexpected_robot_contact_force(self, robot: str, arm: str) -> float:
+    def get_unexpected_robot_contact_force(
+        self,
+        robot: str,
+        arm: str,
+        allowed_entity: str | None = None,
+    ) -> float:
+        """Return robot/environment contact excluding one expected entity."""
+
+        key = (str(robot), str(arm))
+        filters = self.collision_prim_paths
+        allowed_paths = (
+            set(self.records[allowed_entity].collision_prim_paths)
+            if allowed_entity in self.records
+            else set()
+        )
+        allowed_indices = {
+            index for index, path in enumerate(filters) if path in allowed_paths
+        }
+        other_indices = [
+            index for index in range(len(filters)) if index not in allowed_indices
+        ]
         maximum = 0.0
-        for view in self._robot_environment_contact_views.get((str(robot), str(arm)), []):
+        top_contacts: list[tuple[float, str]] = []
+        for view in self._robot_environment_contact_views.get(key, []):
             try:
                 values = np.asarray(view.get_contact_force_matrix(), dtype=float)
                 if values.size:
-                    maximum = max(maximum, float(np.max(np.linalg.norm(values, axis=-1))))
+                    magnitudes = np.linalg.norm(values, axis=-1).reshape(-1, len(filters))
+                    all_maxima = np.max(magnitudes, axis=0)
+                    maxima = all_maxima[other_indices] if other_indices else np.zeros(0)
+                    maximum = max(maximum, float(np.max(maxima)) if maxima.size else 0.0)
+                    top_contacts.extend(
+                        (float(force), str(path))
+                        for index, (force, path) in enumerate(zip(all_maxima, filters))
+                        if index in other_indices
+                        if float(force) > 0.0
+                    )
             except Exception as exc:  # pragma: no cover - Isaac runtime failure path
                 if self.strict:
                     raise CollisionSceneError(
                         f"failed to read robot/environment contact view for {robot}/{arm}: {exc}"
                     ) from exc
                 LOGGER.exception("[CollisionWorld] contact view read failed for %s/%s", robot, arm)
+        if maximum > 0.0 and key not in self._robot_contact_debug_reported:
+            self._robot_contact_debug_reported.add(key)
+            LOGGER.warning(
+                "[CollisionWorld] robot contact detail robot=%s arm=%s allowed=%s "
+                "maximum=%s top=%s",
+                robot,
+                arm,
+                allowed_entity,
+                maximum,
+                sorted(top_contacts, reverse=True)[:8],
+            )
         return maximum
 
     def get_object_environment_contact_forces(
@@ -1140,11 +1225,7 @@ class CollisionSceneManager:
                 ) from exc
             LOGGER.exception("[CollisionWorld] object contact view failed for %s", entity_name)
             return 0.0, 0.0
-        support_paths = (
-            set(self.records[support_entity].collision_prim_paths)
-            if support_entity in self.records
-            else set()
-        )
+        support_paths = self.support_collision_paths(support_entity)
         allowed_indices = [index for index, path in enumerate(filters) if path in support_paths]
         other_indices = [index for index, path in enumerate(filters) if path not in support_paths]
         allowed = (
@@ -1153,6 +1234,26 @@ class CollisionSceneManager:
         unexpected = (
             float(np.max(maxima[other_indices])) if other_indices else 0.0
         )
+        debug_key = (str(entity_name), str(support_entity) if support_entity else None)
+        if unexpected > 0.0 and debug_key not in self._object_contact_debug_reported:
+            ranked = sorted(
+                (
+                    (float(force), str(path))
+                    for index, (force, path) in enumerate(zip(maxima, filters))
+                    if index in other_indices and float(force) > 0.0
+                ),
+                reverse=True,
+            )[:8]
+            self._object_contact_debug_reported.add(debug_key)
+            LOGGER.warning(
+                "[CollisionWorld] object contact detail entity=%s support=%s "
+                "allowed=%s unexpected=%s top=%s",
+                entity_name,
+                support_entity,
+                allowed,
+                unexpected,
+                ranked,
+            )
         return allowed, unexpected
 
     def get_finger_environment_contact_forces(
@@ -1196,94 +1297,246 @@ class CollisionSceneManager:
         if initial is None:
             raise CollisionSceneError(f"attached pose baseline missing: {entity_name}")
         owner = self._controller_key(record.owner_robot, record.owner_arm)
-        ee_world = self._world_matrix(self.controllers[owner].robot_ee_path)
+        ee_world = self._world_matrix(self.scene_ports[owner].robot_ee_path)
         object_world = self._world_matrix(
             record.tracking_prim_path or record.root_prim_path
         )
         current = object_world @ np.linalg.inv(ee_world)
         translation = float(np.linalg.norm(current[3, :3] - initial[3, :3]))
-        initial_rotation = self._rotation_only(initial)
-        current_rotation = self._rotation_only(current)
+        current_rotation = self._rotation_from_affine(current)
+        initial_rotation = self._rotation_from_affine(initial)
         ignore_axis = self._slip_ignore_axis.get(entity_name)
         if ignore_axis is not None:
             baseline_axis = initial_rotation @ ignore_axis
             current_axis = current_rotation @ ignore_axis
-            baseline_norm = float(np.linalg.norm(baseline_axis))
-            current_norm = float(np.linalg.norm(current_axis))
             cosine = float(
                 np.clip(
                     float(baseline_axis @ current_axis)
-                    / max(baseline_norm * current_norm, 1e-12),
+                    / max(
+                        float(np.linalg.norm(baseline_axis))
+                        * float(np.linalg.norm(current_axis)),
+                        1e-12,
+                    ),
                     -1.0,
                     1.0,
                 )
             )
         else:
-            # relative_rotation = current[:3, :3] @ initial[:3, :3].T
             relative_rotation = current_rotation @ initial_rotation.T
-            cosine = float(np.clip((np.trace(relative_rotation) - 1.0) * 0.5, -1.0, 1.0))
-        # return translation, float(np.degrees(np.arccos(cosine)))
-        angle_deg = float(np.degrees(np.arccos(cosine)))
-
-        if os.environ.get("SIMBOX_DEBUG_ATTACH_POSE") == "1":
-            count = self._debug_slip_counts.get(entity_name, 0) + 1
-            previous = self._debug_last_slip_angles.get(entity_name)
-            self._debug_slip_counts[entity_name] = count
-            self._debug_last_slip_angles[entity_name] = angle_deg
-            # Print the first few samples, large changes, and then an
-            # occasional heartbeat.  This captures an attach-time 90-degree
-            # jump without logging every physics step.
-            should_log = (
-                count <= 3
-                or previous is None
-                or abs(angle_deg - previous) >= 1.0
-                or count % 50 == 0
+            cosine = float(
+                np.clip((np.trace(relative_rotation) - 1.0) * 0.5, -1.0, 1.0)
             )
-            if should_log:
-                tracking_path = record.tracking_prim_path or record.root_prim_path
-                LOGGER.warning(
-                    "[AttachPoseDebug] entity=%s sample=%d tracking=%s ee=%s "
-                    "translation=%.9f rotation_deg=%.6f cosine=%.9f ignore_axis=%s",
-                    entity_name,
-                    count,
-                    tracking_path,
-                    self.controllers[owner].robot_ee_path,
-                    translation,
-                    angle_deg,
-                    cosine,
-                    np.array2string(ignore_axis, precision=6) if ignore_axis is not None else "None",
-                )
-                LOGGER.warning(
-                    "[AttachPoseDebug] baseline_relative=\n%s\n"
-                    "[AttachPoseDebug] current_relative=\n%s",
-                    np.array2string(initial, precision=6, suppress_small=True),
-                    np.array2string(current, precision=6, suppress_small=True),
-                )
-                if ignore_axis is not None:
-                    LOGGER.warning(
-                        "[AttachPoseDebug] baseline_axis=%s current_axis=%s "
-                        "norms=(%.6f, %.6f) axis_angle_deg=%.6f",
-                        np.array2string(baseline_axis, precision=6),
-                        np.array2string(current_axis, precision=6),
-                        baseline_norm,
-                        current_norm,
-                        angle_deg,
-                    )
-        return translation, angle_deg
+        return translation, float(np.degrees(np.arccos(cosine)))
 
     def _controller_key(self, robot: str, arm: str) -> tuple[str, str]:
         key = (str(robot), str(arm))
-        if key not in self.controllers:
+        if key not in self.scene_ports:
             raise CollisionSceneError(f"unknown collision-world controller: {key}")
         return key
 
+    def _adopt_world_revision(self) -> int:
+        """Publish the manager revision through every bound scene port."""
+
+        self.world_revision = max(
+            [self.world_revision + 1]
+            + [int(port.runtime.scene_revision) for port in self.scene_ports.values()]
+        )
+        for port in self.scene_ports.values():
+            port.runtime.adopt_scene_revision(self.world_revision)
+        return self.world_revision
+
+    def unbind_scene_port(self, port_or_key: PlannerScenePort | tuple[str, str]) -> None:
+        """Remove a controller scene port."""
+
+        key = (
+            (str(port_or_key.name), str(port_or_key.lr_name))
+            if isinstance(port_or_key, PlannerScenePort)
+            else (str(port_or_key[0]), str(port_or_key[1]))
+        )
+        port = self.scene_ports.get(key)
+        self.scene_ports.pop(key, None)
+        self.controller_enabled.pop(key, None)
+        self._native_pose_cache.pop(key, None)
+        self._controller_reference_matrices.pop(key, None)
+        self._temporary_disabled.pop(key, None)
+        self._diagnostic_forced_disabled.pop(key, None)
+
+    unregister_scene_port = unbind_scene_port
+
+    def has_native_obstacle(self, port: PlannerScenePort, path: str) -> bool:
+        """Check one exact collider through the unique typed scene owner."""
+
+        return port.runtime.has_obstacle(str(path))
+
     def _set_enabled(self, key: tuple[str, str], paths: Iterable[str], enabled: bool) -> None:
-        controller = self.controllers[key]
+        port = self.scene_ports[key]
+        requested_paths = tuple(str(path) for path in paths)
+        missing = tuple(path for path in requested_paths if not port.runtime.has_obstacle(path))
+        if missing:
+            raise CollisionSceneError(
+                "CuRobo obstacle missing before enable change: "
+                f"{key} missing={list(missing)}"
+            )
+        changed = False
+        for path in requested_paths:
+            effective = bool(enabled) and path not in self._diagnostic_forced_disabled.get(key, set())
+            port.runtime.set_obstacle_enabled(path, effective)
+            changed = changed or self.controller_enabled[key].get(path, True) != effective
+            self.controller_enabled[key][path] = effective
+        if changed:
+            self._adopt_world_revision()
+
+    def _validate_diagnostic_paths(
+        self, port: PlannerScenePort, prim_paths: Iterable[str]
+    ) -> tuple[tuple[str, str], list[str]]:
+        if isinstance(prim_paths, (str, bytes)):
+            raise CollisionSceneError(
+                "diagnostic obstacle paths must be a collection of exact paths"
+            )
+        paths = [str(value).strip() for value in prim_paths]
+        if any(not path for path in paths) or len(paths) != len(set(paths)):
+            raise CollisionSceneError(
+                "diagnostic obstacle paths must be non-empty and unique"
+            )
         for path in paths:
-            if controller.motion_gen.world_model.get_obstacle(path) is None:
-                raise CollisionSceneError(f"CuRobo obstacle missing before enable change: {key} {path}")
-            controller.motion_gen.world_collision.enable_obstacle(path, bool(enabled))
-            self.controller_enabled[key][path] = bool(enabled)
+            sdf_path = Sdf.Path(path)
+            if not sdf_path.IsAbsolutePath() or not sdf_path.IsPrimPath():
+                raise CollisionSceneError(
+                    f"diagnostic obstacle path must be an absolute Prim path: {path!r}"
+                )
+        key = self._controller_key(port.name, port.lr_name)
+        if self.scene_ports.get(key) is not port:
+            raise CollisionSceneError(
+                f"diagnostic obstacle change requires the bound scene port: {key}"
+            )
+        missing = sorted(set(paths) - set(self.controller_enabled.get(key, {})))
+        if missing:
+            raise CollisionSceneError(
+                f"paths are not exact planner-world obstacles: {missing}"
+            )
+        return key, paths
+
+    def resolve_diagnostic_collision_entities(
+        self, entity_names: Iterable[str]
+    ) -> dict[str, list[str]]:
+        if isinstance(entity_names, (str, bytes)):
+            raise CollisionSceneError(
+                "diagnostic collision entities must be a collection of names"
+            )
+        names = [str(value).strip() for value in entity_names]
+        if any(not name for name in names) or len(names) != len(set(names)):
+            raise CollisionSceneError(
+                "diagnostic collision entity names must be non-empty and unique"
+            )
+        missing = sorted(set(names) - set(self.records))
+        if missing:
+            raise CollisionSceneError(
+                "diagnostic collision entities are not registered world entities: "
+                f"{missing}"
+            )
+        return {
+            name: list(self.records[name].collision_prim_paths) for name in names
+        }
+
+    @contextmanager
+    def diagnostic_curobo_obstacles_disabled(
+        self, port: PlannerScenePort, prim_paths: Iterable[str]
+    ):
+        """Disable exact planner obstacles for one probe and always roll back."""
+
+        key, paths = self._validate_diagnostic_paths(port, prim_paths)
+        previous = {
+            path: bool(self.controller_enabled[key].get(path, True)) for path in paths
+        }
+        self._diagnostic_forced_disabled[key].update(paths)
+        try:
+            self._set_enabled(key, paths, False)
+            yield tuple(paths)
+        finally:
+            self._diagnostic_forced_disabled[key].difference_update(paths)
+            for path in reversed(paths):
+                self._set_enabled(key, [path], previous[path])
+
+    @contextmanager
+    def diagnostic_physics_and_curobo_obstacles_disabled(
+        self, port: PlannerScenePort, prim_paths: Iterable[str]
+    ):
+        """Disable exact PhysX and planner obstacles with authored-state rollback."""
+
+        key, paths = self._validate_diagnostic_paths(port, prim_paths)
+        overlapping = sorted(
+            set(paths).intersection(self._diagnostic_physics_disabled_paths)
+        )
+        if overlapping:
+            raise CollisionSceneError(
+                "diagnostic Physics collision overlay is already active: "
+                f"{overlapping}"
+            )
+        self.sync_dynamic_poses(self._step_id, interval_steps=1, force=True)
+        physics_attrs: dict[str, tuple[Any, Any, bool]] = {}
+        for path in paths:
+            prim = self.stage.GetPrimAtPath(path)
+            if not prim or not prim.IsValid() or not prim.HasAPI(UsdPhysics.CollisionAPI):
+                raise CollisionSceneError(
+                    f"diagnostic path is not a live Physics collider: {path}"
+                )
+            attr = UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr()
+            physics_attrs[path] = (attr, attr.Get(), bool(attr.HasAuthoredValueOpinion()))
+        previous = {
+            path: bool(self.controller_enabled[key].get(path, True)) for path in paths
+        }
+        self._diagnostic_physics_disabled_paths.update(paths)
+        self._diagnostic_forced_disabled[key].update(paths)
+        try:
+            for path in paths:
+                physics_attrs[path][0].Set(False)
+            self._set_enabled(key, paths, False)
+            yield tuple(paths)
+        finally:
+            restore_error: BaseException | None = None
+            self._diagnostic_forced_disabled[key].difference_update(paths)
+            for path in reversed(paths):
+                try:
+                    self._set_enabled(key, [path], previous[path])
+                except BaseException as exc:
+                    restore_error = restore_error or exc
+            for path in reversed(paths):
+                attr, value, authored = physics_attrs[path]
+                try:
+                    attr.Set(value) if authored else attr.Clear()
+                except BaseException as exc:
+                    restore_error = restore_error or exc
+            self._diagnostic_physics_disabled_paths.difference_update(paths)
+            if restore_error is not None:
+                raise restore_error
+
+    def apply_controller_planning_exclusions(self, port: PlannerScenePort) -> None:
+        """Disable every native obstacle belonging to each exact task entity."""
+
+        if not self._planning_exclusion_names:
+            return
+        key = self._controller_key(port.name, port.lr_name)
+        ignored: list[str] = []
+        for entity_name in self._planning_exclusion_names:
+            record = self.records.get(entity_name)
+            if record is None:
+                raise CollisionSceneError(
+                    "planning_exclusions entry does not name a collision entity record: "
+                    f"{entity_name}"
+                )
+            paths = list(record.collision_prim_paths)
+            self._set_enabled(key, paths, False)
+            self._temporary_disabled[key].update(paths)
+            ignored.extend(paths)
+        if ignored:
+            LOGGER.info(
+                "[CollisionWorld] applied native-v2 planning exclusions "
+                "controller=%s/%s names=%s paths=%s",
+                port.name,
+                port.lr_name,
+                list(self._planning_exclusion_names),
+                ignored,
+            )
 
     def _transition(
         self,
@@ -1334,7 +1587,7 @@ class CollisionSceneManager:
             record.owner_arm = None
         old = record.state
         record.state = state
-        self.world_revision += 1
+        self._adopt_world_revision()
         self.object_state_events.append(
             {
                 "step_id": self._step_id,
@@ -1373,7 +1626,7 @@ class CollisionSceneManager:
         # world obstacles while adding attached collision spheres.
         self._set_enabled(owner, record.collision_prim_paths, True)
         try:
-            attached = self.controllers[owner].attach_objects(attach_paths)
+            attached = self.scene_ports[owner].attach_collision_object(attach_paths)
         except Exception:
             # Preserve the ACTIVE_TARGET_APPROACH invariant on any CuRobo
             # attach failure; the execution supervisor can then hold/abort
@@ -1385,39 +1638,15 @@ class CollisionSceneManager:
             for key in self._physics_controller_keys():
                 self._set_enabled(key, record.collision_prim_paths, key != owner)
             raise CollisionSceneError(f"CuRobo attach failed: {entity_name}")
-        # attach_objects_to_robot disables the selected consolidated attach
+        # The native attachment manager disables the selected consolidated
         # proxy. Explicitly disable every other exact world collider of the
         # same entity as part of the identity switch.
         self._set_enabled(owner, record.collision_prim_paths, False)
-        ee_world = self._world_matrix(self.controllers[owner].robot_ee_path)
+        ee_world = self._world_matrix(self.scene_ports[owner].robot_ee_path)
         object_world = self._world_matrix(
             record.tracking_prim_path or record.root_prim_path
         )
         self._attached_relative_pose[entity_name] = object_world @ np.linalg.inv(ee_world)
-        if os.environ.get("SIMBOX_DEBUG_ATTACH_POSE") == "1":
-            self._debug_slip_counts[entity_name] = 0
-            self._debug_last_slip_angles.pop(entity_name, None)
-            LOGGER.warning(
-                "[AttachPoseDebug] baseline entity=%s owner=%s/%s tracking=%s ee=%s "
-                "attach_paths=%s ignore_axis=%s",
-                entity_name,
-                robot,
-                arm,
-                record.tracking_prim_path or record.root_prim_path,
-                self.controllers[owner].robot_ee_path,
-                attach_paths,
-                np.array2string(self._slip_ignore_axis.get(entity_name), precision=6)
-                if self._slip_ignore_axis.get(entity_name) is not None
-                else "None",
-            )
-            LOGGER.warning(
-                "[AttachPoseDebug] baseline_object_world=\n%s\n"
-                "[AttachPoseDebug] baseline_ee_world=\n%s\n"
-                "[AttachPoseDebug] baseline_relative=\n%s",
-                np.array2string(object_world, precision=6, suppress_small=True),
-                np.array2string(ee_world, precision=6, suppress_small=True),
-                np.array2string(self._attached_relative_pose[entity_name], precision=6, suppress_small=True),
-            )
         self._transition(entity_name, CollisionObjectState.ATTACHED, robot, arm, "attach")
         self.assert_invariants()
 
@@ -1439,8 +1668,63 @@ class CollisionSceneManager:
         self.begin_placement_contact(entity_name, robot, arm)
         support = self.records[support_entity]
         owner = self._controller_key(robot, arm)
-        self._set_enabled(owner, support.collision_prim_paths, False)
-        self._temporary_disabled[owner].update(support.collision_prim_paths)
+        # Only remember paths changed by this placement transaction.  A
+        # support can also be disabled by a persistent planning exclusion;
+        # that state must not be re-enabled by candidate cleanup.
+        paths = tuple(
+            path
+            for path in self.support_collision_paths(support_entity)
+            if self.controller_enabled[owner].get(path, True)
+        )
+        if paths:
+            self._set_enabled(owner, paths, False)
+            self._temporary_disabled[owner].update(paths)
+
+    def restore_placement_support(
+        self,
+        entity_name: str,
+        support_entity: str,
+        robot: str,
+        arm: str,
+    ) -> None:
+        """Restore support colliders after a candidate place query.
+
+        Candidate validation may temporarily disable the support in the
+        controller's planning world while the carried object enters its
+        placement volume.  This cleanup restores only paths changed by this
+        transaction and leaves the carried object in ``ATTACHED`` state;
+        execution will enter ``PLACEMENT_CONTACT`` again when the terminal
+        place phase actually begins.
+        """
+
+        entity = self.records.get(str(entity_name))
+        support = self.records.get(str(support_entity))
+        if entity is None:
+            raise CollisionSceneError(
+                f"unknown carried object during placement cleanup: {entity_name}"
+            )
+        if support is None:
+            raise CollisionSceneError(
+                f"unknown placement support during planning cleanup: {support_entity}"
+            )
+        owner = self._controller_key(robot, arm)
+        paths = tuple(
+            path
+            for path in self.support_collision_paths(support_entity)
+            if path in self._temporary_disabled.get(owner, set())
+            and not self.controller_enabled[owner].get(path, True)
+        )
+        if paths:
+            self._set_enabled(owner, paths, True)
+            self._temporary_disabled[owner].difference_update(paths)
+        if entity.state == CollisionObjectState.PLACEMENT_CONTACT:
+            self._transition(
+                entity_name,
+                CollisionObjectState.ATTACHED,
+                robot,
+                arm,
+                "placement_query_cleanup",
+            )
 
     def begin_terminal_retreat(self, entity_name: str, robot: str, arm: str) -> None:
         record = self.records[entity_name]
@@ -1469,7 +1753,7 @@ class CollisionSceneManager:
     def detach_target(self, entity_name: str, robot: str, arm: str) -> None:
         record = self.records[entity_name]
         owner = self._controller_key(robot, arm)
-        self.controllers[owner].detach_obj()
+        self.scene_ports[owner].detach_attachment()
         self._pending_detach.add(entity_name)
         self._attached_relative_pose.pop(entity_name, None)
         self._restore_temporary(owner)
@@ -1477,6 +1761,11 @@ class CollisionSceneManager:
         # during the configured physics settle window.  No robot motion is
         # allowed in that bookkeeping phase.
         self._set_enabled(owner, record.collision_prim_paths, False)
+
+    def is_pending_detach(self, entity_name: str | None) -> bool:
+        """Return whether an object is inside its post-detach settle window."""
+
+        return entity_name is not None and str(entity_name) in self._pending_detach
 
     def finalize_detach_target(self, entity_name: str, robot: str, arm: str) -> None:
         """Read the settled Stage pose, then restore the object to every world."""
@@ -1511,7 +1800,22 @@ class CollisionSceneManager:
 
     def _sync_record_poses(self, record: CollisionObjectRecord, force: bool = False) -> bool:
         changed = False
-        significant = False
+        tracking_path = record.tracking_prim_path or record.root_prim_path
+        tracking_matrix = self._world_matrix(tracking_path)
+        previous_tracking = self._tracking_pose_matrices.get(record.entity_name)
+        tracking_translation_delta = 0.0
+        tracking_rotation_delta_deg = 0.0
+        if previous_tracking is not None:
+            tracking_translation_delta = float(
+                np.linalg.norm(tracking_matrix[3, :3] - previous_tracking[3, :3])
+            )
+            relative_rotation = self._rotation_from_affine(tracking_matrix) @ self._rotation_from_affine(previous_tracking).T
+            cosine = float(
+                np.clip((np.trace(relative_rotation) - 1.0) * 0.5, -1.0, 1.0)
+            )
+            tracking_rotation_delta_deg = float(np.degrees(np.arccos(cosine)))
+        self._tracking_pose_matrices[record.entity_name] = tracking_matrix
+
         for path in record.collision_prim_paths:
             if path in self._diagnostic_physics_disabled_paths:
                 continue
@@ -1519,25 +1823,47 @@ class CollisionSceneManager:
             previous = self._pose_matrices.get(path)
             if not force and previous is not None and np.allclose(matrix, previous, atol=1e-6, rtol=0.0):
                 continue
-            if previous is not None:
-                translation_delta = float(np.linalg.norm(matrix[3, :3] - previous[3, :3]))
-                relative_rotation = self._rotation_only(matrix) @ self._rotation_only(previous).T
-                cosine = float(np.clip((np.trace(relative_rotation) - 1.0) * 0.5, -1.0, 1.0))
-                rotation_delta_deg = float(np.degrees(np.arccos(cosine)))
-                significant = significant or (
-                    translation_delta > self.dynamic_translation_replan_m
-                    or rotation_delta_deg > self.dynamic_rotation_replan_deg
-                )
             self._pose_matrices[path] = matrix
             changed = True
             for key in self._physics_controller_keys():
-                controller = self.controllers[key]
-                controller.motion_gen.world_collision.update_obstacle_pose(
-                    path, self._controller_obstacle_pose(controller, path)
+                controller = self.scene_ports[key]
+                obstacle_pose = self._port_obstacle_pose(controller, path)
+                controller.runtime.update_obstacle_pose(
+                    path, obstacle_pose, revision=self.world_revision + 1
                 )
+                self._native_pose_cache.setdefault(key, {})[path] = obstacle_pose
         if changed:
             record.pose_revision += 1
-            self.world_revision += 1
+            self._adopt_world_revision()
+        significant = (
+            previous_tracking is not None
+            and not force
+            and (
+                tracking_translation_delta > self.dynamic_translation_replan_m
+                or tracking_rotation_delta_deg > self.dynamic_rotation_replan_deg
+            )
+        )
+        if significant:
+            velocity = None
+            entity = self._configured_entity(record.entity_name)
+            get_linear_velocity = getattr(entity, "get_linear_velocity", None)
+            if callable(get_linear_velocity):
+                try:
+                    velocity = np.asarray(get_linear_velocity(), dtype=float).reshape(-1).tolist()
+                except Exception:  # pragma: no cover - simulator-only diagnostic
+                    velocity = None
+            LOGGER.warning(
+                "[CollisionWorld] significant dynamic pose entity=%s tracking_path=%s "
+                "translation_delta_m=%.6f rotation_delta_deg=%.3f "
+                "world_position=%s linear_velocity=%s updated_colliders=%d",
+                record.entity_name,
+                tracking_path,
+                tracking_translation_delta,
+                tracking_rotation_delta_deg,
+                np.asarray(tracking_matrix[3, :3], dtype=float).round(6).tolist(),
+                velocity,
+                int(changed),
+            )
         return significant if not force else changed
 
     def sync_dynamic_poses(self, step_id: int, interval_steps: int = 5, force: bool = False) -> list[str]:
@@ -1546,18 +1872,32 @@ class CollisionSceneManager:
             return []
         changed = []
         for record in self.records.values():
-            if record.mobility == "static" or record.state == CollisionObjectState.ATTACHED:
+            # ATTACHED and PLACEMENT_CONTACT objects are represented by the
+            # controller's attached collision spheres, not as world obstacles.
+            # In particular, the carried object naturally moves during the
+            # terminal placement descent; syncing its disabled world collider
+            # would falsely request a dynamic-obstacle replan every few steps.
+            if record.mobility == "static" or record.state in {
+                CollisionObjectState.ATTACHED,
+                CollisionObjectState.PLACEMENT_CONTACT,
+            }:
                 continue
             if self._sync_record_poses(record, force=force):
                 changed.append(record.entity_name)
         return changed
 
-    def audit_controller(self, controller: Any) -> None:
+    def audit_controller(self, port: PlannerScenePort) -> None:
         expected = set(self.collision_prim_paths)
-        actual = {str(obstacle.name) for obstacle in controller.motion_gen.world_model.objects}
+        try:
+            actual = set(port.runtime.obstacle_names())
+        except Exception as exc:
+            raise CollisionSceneError(
+                f"Physics/CuRobo collider audit cannot enumerate native world for "
+                f"{port.name}/{port.lr_name}: {exc}"
+            ) from exc
         missing = sorted(expected - actual)
         unexpected = sorted(actual - expected)
-        key = f"{controller.name}/{controller.lr_name}"
+        key = f"{port.name}/{port.lr_name}"
         self.controller_audits[key] = {
             "missing_in_curobo": missing,
             "unexpected_in_curobo": unexpected,
@@ -1579,7 +1919,7 @@ class CollisionSceneManager:
                     raise CollisionSceneError(f"attached object remains world-enabled: {record.entity_name}")
                 if (
                     record.entity_name not in self._pending_detach
-                    and not self.controllers[owner].has_attached_collision_spheres()
+                    and not self.scene_ports[owner].has_attached_collision_spheres()
                 ):
                     raise CollisionSceneError(
                         f"attached object has no active collision spheres: {record.entity_name}"
@@ -1606,13 +1946,16 @@ class CollisionSceneManager:
     def reset_episode(self) -> None:
         """Restore every entity to a world obstacle after simulator reset."""
 
+        self._diagnostic_physics_disabled_paths.clear()
+        for paths in self._diagnostic_forced_disabled.values():
+            paths.clear()
         for record in self.records.values():
             if record.state in {
                 CollisionObjectState.ATTACHED,
                 CollisionObjectState.PLACEMENT_CONTACT,
             } and record.owner_robot:
                 key = self._controller_key(record.owner_robot, record.owner_arm)
-                self.controllers[key].detach_obj()
+                self.scene_ports[key].detach_attachment()
             record.state = CollisionObjectState.WORLD_OBSTACLE
             record.owner_robot = None
             record.owner_arm = None
@@ -1624,9 +1967,41 @@ class CollisionSceneManager:
         self._pending_detach.clear()
         self._retreating_placed.clear()
         self._attached_relative_pose.clear()
-        self.world_revision += 1
+        self._adopt_world_revision()
         self.sync_dynamic_poses(0, interval_steps=1, force=True)
         self.assert_invariants()
+
+    def sync_after_task_state_restore(self, *, label: str = "task_state_restore") -> list[str]:
+        """Publish exact post-reset USD poses to every bound planning scene.
+
+        Fixed rigid bodies are restored after the normal physics warmup.  That
+        restore happens after ``reset_episode`` has already synchronized the
+        initial world, so force one final collider-pose pass here.  Include
+        static records as well as dynamic records: the task restore contract
+        is world-pose based and must not leave a stale static collider in the
+        native scene.  The existing attachment/world-state transitions remain
+        untouched.
+        """
+
+        self._adopt_world_revision()
+        changed: list[str] = []
+        for record in self.records.values():
+            if record.state in {
+                CollisionObjectState.ATTACHED,
+                CollisionObjectState.PLACEMENT_CONTACT,
+            }:
+                continue
+            if self._sync_record_poses(record, force=True):
+                changed.append(record.entity_name)
+        self.assert_invariants()
+        LOGGER.info(
+            "[CollisionWorld] post-reset task state synchronized label=%s "
+            "changed_entities=%s world_revision=%d",
+            label,
+            changed,
+            self.world_revision,
+        )
+        return changed
 
     def refresh_after_task_reset(self) -> None:
         """Re-discover colliders after a task reload and rebuild bound worlds.
@@ -1641,13 +2016,16 @@ class CollisionSceneManager:
         # Clear any attachment left by the failed episode before replacing the
         # world.  This is intentionally done against the currently bound
         # controllers, before their old records are discarded below.
-        for key, controller in self.controllers.items():
-            if getattr(controller, "collision_world_mode", "physics_schema") != "physics_schema":
+        for key, controller in self.scene_ports.items():
+            if controller.collision_world_mode != "physics_schema":
                 continue
-            has_attached = getattr(controller, "has_attached_collision_spheres", None)
-            detach = getattr(controller, "detach_obj", None)
-            if not callable(has_attached) or not callable(detach):
-                continue
+            has_attached = controller.has_attached_collision_spheres
+            detach = controller.detach_attachment
+            if has_attached is None or detach is None:
+                raise CollisionSceneError(
+                    "physics_schema PlannerScenePort is missing attachment reset callbacks: "
+                    f"{key}"
+                )
             try:
                 if has_attached():
                     detach()
@@ -1663,13 +2041,18 @@ class CollisionSceneManager:
         self.attach_prim_paths.clear()
         self.path_to_entity.clear()
         self._pose_matrices.clear()
+        self._tracking_pose_matrices.clear()
         self.controller_enabled.clear()
         self._controller_reference_matrices.clear()
         self.controller_audits.clear()
         self._temporary_disabled.clear()
+        self._diagnostic_forced_disabled.clear()
+        self._diagnostic_physics_disabled_paths.clear()
+        self._native_pose_cache.clear()
         self._pending_detach.clear()
         self._retreating_placed.clear()
         self._attached_relative_pose.clear()
+        self._slip_ignore_axis.clear()
         self.object_state_events.clear()
         self._robot_environment_contact_views.clear()
         self._finger_environment_contact_views.clear()
@@ -1682,46 +2065,35 @@ class CollisionSceneManager:
         # calls TemplateController.reset().  That reset calls update() and
         # audit_controller(), so doing this afterwards would audit a stale
         # world and reproduce ATTACH_COLLISION_PRIM_NOT_IN_CUROBO_WORLD.
-        for key, controller in self.controllers.items():
-            if getattr(controller, "collision_world_mode", "physics_schema") != "physics_schema":
+        for key, controller in self.scene_ports.items():
+            if controller.collision_world_mode != "physics_schema":
                 continue
             self.controller_enabled[key] = {
                 path: True for path in self.collision_prim_paths
             }
             self._temporary_disabled[key] = set()
+            self._diagnostic_forced_disabled[key] = set()
             self._controller_reference_matrices[key] = self._world_matrix(
                 controller.reference_prim_path
             )
 
             world = self.build_world_config(controller.reference_prim_path)
-            motion_gen = getattr(controller, "motion_gen", None)
-            if motion_gen is None:
+            planner = controller.runtime.native_planner
+            if planner is None:
                 raise CollisionSceneError(
-                    f"controller has no CuRobo motion generator during task reset: {key}"
+                    f"controller has no native CuRobo planner during task reset: {key}"
                 )
-            clear_cache = getattr(motion_gen, "clear_world_cache", None)
-            if callable(clear_cache):
-                clear_cache()
-            update_world = getattr(motion_gen, "update_world", None)
-            if not callable(update_world):
-                raise CollisionSceneError(
-                    f"controller cannot rebuild CuRobo world during task reset: {key}"
-                )
-            update_world(world)
-            controller.world_cfg = world
-            controller.world_model = motion_gen.world_collision
-            signature_fn = getattr(controller, "_make_world_update_signature", None)
-            if callable(signature_fn):
-                controller._world_update_signature = signature_fn(world)
+            # The scene port owns the revision-bearing runtime update.
+            controller.runtime.update_world(world)
             self.audit_controller(controller)
 
-        self.world_revision += 1
+        self._adopt_world_revision()
 
     def export(self, episode_dir: str | Path) -> None:
         directory = Path(episode_dir)
         directory.mkdir(parents=True, exist_ok=True)
         for key in self._physics_controller_keys():
-            controller = self.controllers[key]
+            controller = self.scene_ports[key]
             self.audit_controller(controller)
         audit = {
             "mode": self.mode,
@@ -1730,9 +2102,7 @@ class CollisionSceneManager:
             "collision_prim_count": len(self.collision_prim_paths),
             "records": [record.to_dict() for record in self.records.values()],
             "attach_prim_paths": dict(self.attach_prim_paths),
-            "exact_exclusions": [
-                {"prim_path": path, "reason": reason} for path, reason in self.exclusions.items()
-            ],
+            "planning_exclusions": list(self._planning_exclusion_names),
             "schema_exclusions": [
                 {"prim_path": path, "reason": reason}
                 for path, reason in self.schema_exclusions.items()

@@ -1,26 +1,20 @@
 """Lift2 mobile manipulator controller – template-based."""
 
-from core.controllers.base_controller import register_controller
-from core.controllers.template_controller import TemplateController
+from core.controllers.controller_registry import ArmSpec, register_controller
+from core.controllers.curobo.controller import TemplateController
 
 
 # pylint: disable=unused-argument
 @register_controller
 class Lift2Controller(TemplateController):
-    def _get_default_ignore_substring(self):
-        return ["material", "Plane", "conveyor", "scene", "table", "fluid"]
-
-    def forward(self, manip_cmd, eps=5e-3):
-        ee_trans, ee_ori = manip_cmd[0:2]
-        gripper_fn = manip_cmd[2]
-        params = manip_cmd[3]
-        assert hasattr(self, gripper_fn)
-        method = getattr(self, gripper_fn)
-        if gripper_fn in ["in_plane_rotation", "mobile_move", "dummy_forward", "joint_ctrl", "observe_hold"]:
-            return method(**params)
-        elif gripper_fn in ["update_pose_cost_metric", "update_specific"]:
-            method(**params)
-            return self.ee_forward(ee_trans, ee_ori, eps=eps, skip_plan=True)
-        else:
-            method(**params)
-            return self.ee_forward(ee_trans, ee_ori, eps=eps)
+    arm_spec = ArmSpec(
+        planner_joints=("joint1", "joint2", "joint3", "joint4", "joint5", "joint6"),
+        control_joints={
+            "left": ("fl_joint1", "fl_joint2", "fl_joint3", "fl_joint4", "fl_joint5", "fl_joint6"),
+            "right": ("fr_joint1", "fr_joint2", "fr_joint3", "fr_joint4", "fr_joint5", "fr_joint6"),
+        },
+        default_ignore_substring=("material", "Plane", "conveyor", "scene", "table", "fluid"),
+        gripper_home=(1.0,),
+        gripper_clip_max=0.1,
+        grasp_approach_axis=0,
+    )

@@ -4,24 +4,15 @@ import random
 from copy import deepcopy
 
 import numpy as np
+from core.planning.motion_command import MotionPhase
 from core.skills.base_skill import BaseSkill, register_skill
 from core.utils.asset_path_utils import resolve_asset_path
 from core.utils.constants import CUROBO_BATCH_SIZE
-from core.utils.plan_utils import (
-    select_index_by_priority_dual,
-    select_index_by_priority_single,
-)
 from core.utils.transformation_utils import poses_from_tf_matrices
 from omegaconf import DictConfig
-from omni.isaac.core.controllers import BaseController
-from omni.isaac.core.robots.robot import Robot
-from omni.isaac.core.tasks import BaseTask
-from omni.isaac.core.utils.prims import get_prim_at_path
-from omni.isaac.core.utils.transformations import (
-    get_relative_transform,
-    tf_matrix_from_pose,
-)
-from omni.isaac.core.utils.xforms import get_world_pose
+from isaacsim.core.api.robots.robot import Robot
+from isaacsim.core.api.tasks import BaseTask
+from isaacsim.core.utils.transformations import tf_matrix_from_pose
 from omni.timeline import get_timeline_interface
 from scipy.spatial.transform import Rotation as R
 
@@ -29,10 +20,19 @@ from scipy.spatial.transform import Rotation as R
 # pylint: disable=unused-argument
 @register_skill
 class Dynamicpick(BaseSkill):
-    def __init__(self, robot: Robot, controller: BaseController, task: BaseTask, cfg: DictConfig, *args, **kwargs):
+    def __init__(
+        self,
+        robot: Robot,
+        skill_runtime,
+        task: BaseTask,
+        cfg: DictConfig,
+        *args,
+        **kwargs,
+    ):
         super().__init__()
         self.robot = robot
-        self.controller = controller
+        self.bind_skill_runtime(skill_runtime)
+        self._require_skill_runtime()
         self.task = task
         self.skill_cfg = cfg
         object_name = self.skill_cfg["objects"][0]
@@ -47,11 +47,13 @@ class Dynamicpick(BaseSkill):
         usd_path = resolve_asset_path(self.task.asset_root, object_cfg)
         grasp_pose_path = usd_path.replace("Aligned_obj.usd", "Aligned_grasp_sparse.npy")
         sparse_grasp_poses = np.load(grasp_pose_path)
-        lr_arm = "right" if "right" in self.controller.robot_file else "left"
+        lr_arm = self.skill_runtime.arm_name
         self.T_obj_ee, self.scores = self.robot.pose_post_process_fn(
             sparse_grasp_poses, lr_arm=lr_arm, grasp_scale=self.grasp_scale, tcp_offset=self.tcp_offset
         )
-        self.robot_name = self.controller.robot_file.split("/")[-1].split(".yml")[0]
+        self.robot_name = getattr(
+            self.skill_runtime, "robot_name", getattr(self.skill_runtime, "name", robot.name)
+        )
         self.object_name = object_name
 
         # !!! keyposes should be generated after previous skill is done
@@ -64,20 +66,8 @@ class Dynamicpick(BaseSkill):
         self.process_valid = True
         self.obj_init_trans = deepcopy(self.pick_obj.get_local_pose()[0])
 
-    @staticmethod
-    def _get_world_pose_from_path(prim_path):
-        return get_world_pose(prim_path)
-
     def _get_armbase_world_tf(self):
-        armbase_tf_getter = getattr(self.robot, "get_armbase_world_transform", None)
-        if callable(armbase_tf_getter):
-            return armbase_tf_getter()
-        reference_prim_path = str(getattr(self.controller, "reference_prim_path", "")).strip()
-        if reference_prim_path:
-            return tf_matrix_from_pose(*self._get_world_pose_from_path(reference_prim_path))
-        return get_relative_transform(
-            get_prim_at_path(self.controller.reference_prim_path), get_prim_at_path(self.task.root_prim_path)
-        )
+        return self.skill_runtime.execution.get_pick_armbase_transform()
 
     def _get_object_world_tf(self):
         if self.meet_pose_o2w is not None:
@@ -88,25 +78,59 @@ class Dynamicpick(BaseSkill):
         return tf_matrix_from_pose(*self.pick_obj.get_local_pose())
 
     def simple_generate_manip_cmds(self):
-        pass
+        """Build the initial typed sequence without freezing a moving target.
+
+        ``is_ready`` may replace this preview after it computes
+        ``meet_pose_o2w`` for the conveyor intercept.  Keeping generation in
+        ``predict_manip_cmds`` ensures both paths emit the same typed phase
+        commands and preserve the dynamic-target callback semantics.
+        """
+
+        self.predict_manip_cmds()
+        return self.manip_list
+
+    def _preview_pose(self, position, orientation, start_arm_positions=None, *, ds_ratio=1):
+        """Preview a typed pose plan without executing a reflected command."""
+
+        start_state = None
+        if start_arm_positions is not None:
+            positions = np.asarray(self.robot.get_joints_state().positions, dtype=float).copy()
+            positions[self.skill_runtime.robot_port.arm_indices] = np.asarray(
+                start_arm_positions, dtype=float
+            ).reshape(-1)
+            start_state = self.skill_runtime.arm_joint_state(
+                type("JointStateSnapshot", (), {"positions": positions})()
+            )
+        result = self.skill_runtime.plan_pose(
+            position,
+            orientation,
+            start_state=start_state,
+            active_target=self.object_name,
+        )
+        if not result.success or result.trajectory is None:
+            self.skill_runtime.execution.state.num_plan_failed = 1000
+            return 0.0, start_arm_positions
+        path = result.trajectory
+        waypoints = len(path) if path is not None else 1
+        stride = max(1, int(ds_ratio))
+        duration = (
+            waypoints
+            * self.skill_runtime.robot_port.interpolation_dt
+            / float(getattr(self.skill_runtime, "time_dilation_factor", 1.0))
+            / stride
+        )
+        return duration, np.asarray(path.positions[-1], dtype=float)
 
     def predict_manip_cmds(self):
+        # Prediction can be refreshed when the conveyor intercept is known;
+        # timing must describe the latest sequence rather than accumulate
+        # across the initial preview and the dynamic-target refresh.
+        self.cmd_time = 0.0
         manip_list = []
 
-        # Update
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        ignore_substring = deepcopy(self.controller.ignore_substring)
-        ignore_substring += self.task.ignore_objects
-        self.controller.update_specific(ignore_substring, self.controller.reference_prim_path)
-        cmd = (
-            p_base_ee_cur,
-            q_base_ee_cur,
-            "update_specific",
-            {"ignore_substring": ignore_substring, "reference_prim_path": self.controller.reference_prim_path},
-        )
-        manip_list.append(cmd)
+        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.execution.get_ee_pose()
 
-        cmd_time, expected_js = self.controller.pre_forward(p_base_ee_cur, q_base_ee_cur, ds_ratio=2)
+        cmd_time, expected_js = self._preview_pose(p_base_ee_cur, q_base_ee_cur)
         self.cmd_time += cmd_time
 
         # Pre grasp
@@ -132,76 +156,61 @@ class Dynamicpick(BaseSkill):
             )
             T_base_ee_grasps[:, 2, 3] += pos_adjust_z
         T_base_ee_pregrasps = deepcopy(T_base_ee_grasps)
-        self.controller.update_specific(
-            ignore_substring=ignore_substring, reference_prim_path=self.controller.reference_prim_path
-        )
 
-        if "r5a" in self.controller.robot_file:
-            T_base_ee_pregrasps[:, :3, 3] -= T_base_ee_pregrasps[:, :3, 0] * self.skill_cfg.get("pre_grasp_offset", 0.1)
-        else:
-            T_base_ee_pregrasps[:, :3, 3] -= T_base_ee_pregrasps[:, :3, 2] * self.skill_cfg.get("pre_grasp_offset", 0.1)
+        approach_axis = getattr(self.skill_runtime, "grasp_approach_axis", 2)
+        T_base_ee_pregrasps[:, :3, 3] -= (
+            T_base_ee_pregrasps[:, :3, approach_axis]
+            * self.skill_cfg.get("pre_grasp_offset", 0.1)
+        )
 
         p_base_ee_pregrasps, q_base_ee_pregrasps = poses_from_tf_matrices(T_base_ee_pregrasps)
         p_base_ee_grasps, q_base_ee_grasps = poses_from_tf_matrices(T_base_ee_grasps)
 
-        if self.controller.use_batch:
-            # Check if the input arrays are exactly the same
-            if np.array_equal(p_base_ee_pregrasps, p_base_ee_grasps) and np.array_equal(
-                q_base_ee_pregrasps, q_base_ee_grasps
-            ):
-                # Inputs are identical, compute only once to avoid redundant computation
-                result = self.controller.test_batch_forward(p_base_ee_grasps, q_base_ee_grasps)
-                index = select_index_by_priority_single(result)
-            else:
-                # Inputs are different, compute separately
-                pre_result = self.controller.test_batch_forward(p_base_ee_pregrasps, q_base_ee_pregrasps)
-                result = self.controller.test_batch_forward(p_base_ee_grasps, q_base_ee_grasps)
-                index = select_index_by_priority_dual(pre_result, result)
-        else:
-            for index in range(T_base_ee_grasps.shape[0]):
-                p_base_ee_pregrasp, q_base_ee_pregrasp = p_base_ee_pregrasps[index], q_base_ee_pregrasps[index]
-                p_base_ee_grasp, q_base_ee_grasp = p_base_ee_grasps[index], q_base_ee_grasps[index]
-                test_mode = self.skill_cfg.get("test_mode", "forward")
-                if test_mode == "forward":
-                    result_pre = self.controller.test_single_forward(p_base_ee_pregrasp, q_base_ee_pregrasp)
-                elif test_mode == "ik":
-                    result_pre = self.controller.test_single_ik(p_base_ee_pregrasp, q_base_ee_pregrasp)
-                else:
-                    raise NotImplementedError
-                if self.skill_cfg.get("pre_grasp_offset", 0.1) > 0:
-                    if test_mode == "forward":
-                        result = self.controller.test_single_forward(p_base_ee_grasp, q_base_ee_grasp)
-                    elif test_mode == "ik":
-                        result = self.controller.test_single_ik(p_base_ee_grasp, q_base_ee_grasp)
-                    else:
-                        raise NotImplementedError
-                    if result == 1 and result_pre == 1:
-                        print("pick plan success")
-                        break
-                else:
-                    if result_pre == 1:
-                        print("pick plan success")
-                        break
+        # Candidate ranking is a typed planner concern.  Execution consumes
+        # the selected pose from measured state and owns collision validation.
+        index = 0
 
         # Pre-grasp
-        cmd = (p_base_ee_pregrasps[index], q_base_ee_pregrasps[index], "open_gripper", {})
-        manip_list.append(cmd)
-        cmd_time, expected_js = self.controller.pre_forward(
+        object_name = getattr(self.pick_obj, "name", None)
+        manip_list.append(
+            self.pose_command(
+                MotionPhase.TRANSIT_PREGRASP,
+                p_base_ee_pregrasps[index],
+                q_base_ee_pregrasps[index],
+                gripper_action="open_gripper",
+                active_object=object_name,
+            )
+        )
+        cmd_time, expected_js = self._preview_pose(
             p_base_ee_pregrasps[index], q_base_ee_pregrasps[index], expected_js, ds_ratio=2
         )
         self.cmd_time += cmd_time
 
         # Grasp
-        cmd = (p_base_ee_grasps[index], q_base_ee_grasps[index], "open_gripper", {})
-        manip_list.append(cmd)
-        cmd_time, expected_js = self.controller.pre_forward(
+        manip_list.append(
+            self.pose_command(
+                MotionPhase.TERMINAL_GRASP_APPROACH,
+                p_base_ee_grasps[index],
+                q_base_ee_grasps[index],
+                gripper_action="open_gripper",
+                active_object=object_name,
+            )
+        )
+        cmd_time, expected_js = self._preview_pose(
             p_base_ee_grasps[index], q_base_ee_grasps[index], expected_js, ds_ratio=2
         )
         self.cmd_time += cmd_time
-        cmd = (p_base_ee_grasps[index], q_base_ee_grasps[index], "close_gripper", {})
-        manip_list.extend(
-            [cmd] * self.skill_cfg.get("gripper_change_steps", 40)
-        )  # here we use 40 steps to make sure the gripper is fully closed
+        manip_list.append(
+            self.pose_command(
+                MotionPhase.GRIPPER_CLOSE,
+                p_base_ee_grasps[index],
+                q_base_ee_grasps[index],
+                gripper_action="close_gripper",
+                active_object=object_name,
+                replan_allowed=False,
+                dwell_steps=int(self.skill_cfg.get("gripper_change_steps", 40)),
+            )
+        )
 
         # Post grasp
         post_grasp_offset = np.random.uniform(
@@ -210,8 +219,16 @@ class Dynamicpick(BaseSkill):
         if post_grasp_offset:
             p_base_ee_postgrasps = deepcopy(p_base_ee_grasps)
             p_base_ee_postgrasps[index][2] += post_grasp_offset
-            cmd = (p_base_ee_postgrasps[index], q_base_ee_grasps[index], "close_gripper", {})
-            manip_list.append(cmd)
+            manip_list.append(
+                self.pose_command(
+                    MotionPhase.POST_GRASP_LIFT,
+                    p_base_ee_postgrasps[index],
+                    q_base_ee_grasps[index],
+                    gripper_action="close_gripper",
+                    active_object=object_name,
+                    allow_target_finger_contact=True,
+                )
+            )
 
         self.manip_list = manip_list
         self.cmd_time += self.time_bias
@@ -320,7 +337,11 @@ class Dynamicpick(BaseSkill):
             object_position, object_orientation = get_obj_world_pose()
         else:
             object_position, object_orientation = self.pick_obj.get_local_pose()
-        ee_init_position = deepcopy(self.controller.T_world_ee_init[0:3, 3])
+        initial_position, initial_orientation = self.skill_runtime.setup.T_world_ee_init
+        T_world_ee_init = self._get_armbase_world_tf() @ tf_matrix_from_pose(
+            initial_position, initial_orientation
+        )
+        ee_init_position = deepcopy(T_world_ee_init[0:3, 3])
         x = object_position[0] - ee_init_position[0]
         self.obj_velocity = self.task.conveyor_velocity
         if (self.obj_velocity < 0 and x < 0.5) or (self.obj_velocity > 0 and x > -0.5):
@@ -368,20 +389,11 @@ class Dynamicpick(BaseSkill):
         return contact, indices
 
     def is_feasible(self, th=10):
-        return self.controller.num_plan_failed <= th
+        return int(self.skill_runtime.execution.state.num_plan_failed) <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        p_base_ee, q_base_ee, *_ = self.manip_list[0]
-        diff_trans = np.linalg.norm(p_base_ee_cur - p_base_ee)
-        diff_ori = 2 * np.arccos(min(abs(np.dot(q_base_ee_cur, q_base_ee)), 1.0))
-        pose_flag = np.logical_and(
-            diff_trans < t_eps,
-            diff_ori < o_eps,
-        )
-        self.plan_flag = self.controller.num_last_cmd > 10
-        return np.logical_or(pose_flag, self.plan_flag)
+        return self.skill_runtime.execution.is_phase_command_complete(self.manip_list[0])
 
     def is_done(self):
         if not self.is_ready():

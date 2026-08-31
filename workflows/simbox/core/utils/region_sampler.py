@@ -3,6 +3,7 @@ from copy import deepcopy
 
 import numpy as np
 from core.utils.usd_geom_utils import compute_bbox
+from core.utils.rigid_pose import upright_world_orientation
 from scipy.spatial.transform import Rotation as R
 
 
@@ -13,16 +14,22 @@ class RandomRegionSampler:
         tgt_z_max = bbox_tgt.max[2]
         bbox_obj = compute_bbox(obj.prim)
         obj_z_min = bbox_obj.min[2]
-        tgt_trans = tgt.get_local_pose()[0]
+        tgt_trans = tgt.get_world_pose()[0]
         obj_trans = deepcopy(tgt_trans)
         obj_trans[0] += x_bias
         obj_trans[1] += y_bias
-        obj_trans[2] = tgt_z_max + (obj.get_local_pose()[0][2] - obj_z_min) - 0.005 + z_bias
-        obj_ori = obj.get_local_pose()[1]
+        obj_trans[2] = tgt_z_max + (obj.get_world_pose()[0][2] - obj_z_min) - 0.005 + z_bias
+        obj_ori = obj.get_world_pose()[1]
         return obj_trans, obj_ori
 
     @staticmethod
-    def A_on_B_region_sampler(obj, tgt, pos_range, yaw_rotation):
+    def A_on_B_region_sampler(
+        obj,
+        tgt,
+        pos_range,
+        yaw_rotation=(0.0, 0.0),
+        keep_upright=False,
+    ):
         # Translation
         shift = np.random.uniform(*pos_range)
         bbox_obj = compute_bbox(obj.prim)
@@ -34,13 +41,22 @@ class RandomRegionSampler:
         place_pos[0] = tgt_center[0]
         place_pos[1] = tgt_center[1]
         place_pos[2] = (
-            tgt_z_max + (obj.get_local_pose()[0][2] - obj_z_min) + 0.001
+            tgt_z_max + (obj.get_world_pose()[0][2] - obj_z_min) + 0.001
         )  # add a small value to avoid penetration
         place_pos += shift
         # Orientation
         yaw = np.random.uniform(*yaw_rotation)
         dr = R.from_euler("xyz", [0.0, 0.0, yaw], degrees=True)
-        r = R.from_quat(obj.get_local_pose()[1], scalar_first=True)
+        if keep_upright:
+            # Region metadata uses this flag for tabletop rigid bodies such
+            # as apples and oranges.  Preserve their existing yaw while
+            # removing roll/pitch accumulated by a previous physics reset;
+            # otherwise the dynamic body can immediately roll off the
+            # support surface before Pick planning starts.
+            base_orientation = upright_world_orientation(obj.get_world_pose()[1])
+        else:
+            base_orientation = obj.get_world_pose()[1]
+        r = R.from_quat(base_orientation, scalar_first=True)
         orientation = (dr * r).as_quat(scalar_first=True)
         return place_pos, orientation
 
@@ -64,7 +80,7 @@ class RandomRegionSampler:
         # Orientation
         yaw = np.random.uniform(*yaw_rotation)
         dr = R.from_euler("xyz", [0.0, 0.0, yaw], degrees=True)
-        r = R.from_quat(obj.get_local_pose()[1], scalar_first=True)
+        r = R.from_quat(obj.get_world_pose()[1], scalar_first=True)
         orientation = (dr * r).as_quat(scalar_first=True)
         return place_pos, orientation
 
@@ -87,7 +103,7 @@ class RandomRegionSampler:
         # Orientation
         yaw = np.random.uniform(*yaw_rotation)
         dr = R.from_euler("xyz", [0.0, 0.0, yaw], degrees=True)
-        r = R.from_quat(obj.get_local_pose()[1], scalar_first=True)
+        r = R.from_quat(obj.get_world_pose()[1], scalar_first=True)
         orientation = (dr * r).as_quat(scalar_first=True)
         return place_pos, orientation
 
@@ -114,7 +130,7 @@ class RandomRegionSampler:
         # Orientation
         yaw = np.random.uniform(*yaw_rotation)
         dr = R.from_euler("xyz", [0.0, 0.0, yaw], degrees=True)
-        r = R.from_quat(obj.get_local_pose()[1], scalar_first=True)
+        r = R.from_quat(obj.get_world_pose()[1], scalar_first=True)
         orientation = (dr * r).as_quat(scalar_first=True)
         return place_pos, orientation
 
@@ -142,6 +158,6 @@ class RandomRegionSampler:
         # Orientation
         yaw = np.random.uniform(*yaw_rotation)
         dr = R.from_euler("xyz", [0.0, 0.0, yaw], degrees=True)
-        r = R.from_quat(obj.get_local_pose()[1], scalar_first=True)
+        r = R.from_quat(obj.get_world_pose()[1], scalar_first=True)
         orientation = (dr * r).as_quat(scalar_first=True)
         return place_pos, orientation

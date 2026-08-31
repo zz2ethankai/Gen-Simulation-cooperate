@@ -13,6 +13,9 @@ tasks:
     arena_file: workflows/simbox/core/configs/arenas/pick_randomized_arena.yaml
     # arena_file: workflows/simbox/core/configs/arenas/scene_arena.yaml
 
+    planning:
+      planning_exclusions: ["table"]
+
     neglect_collision_names: ["table"]
 
     env_map:

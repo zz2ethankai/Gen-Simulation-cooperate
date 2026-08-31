@@ -27,9 +27,8 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SIMBOX_ROOT = REPO_ROOT / "workflows" / "simbox"
 
-SIMBOX_OBJECT_CLASSES = {
+SIMBOX_SUPPORTED_CLASSES = {
     "ArticulatedObject",
-    "BoxObject",
     "ConveyorObject",
     "GeometryObject",
     "PlaneObject",
@@ -311,7 +310,7 @@ def validate_task(
             errors.append(f"robots[{idx}] path not found: {rel_path}")
     for idx, obj in enumerate(objects):
         cls = obj.get("target_class")
-        if cls not in SIMBOX_OBJECT_CLASSES:
+        if cls not in SIMBOX_SUPPORTED_CLASSES:
             errors.append(f"objects[{idx}] unsupported target_class {cls!r}")
         rel_path = obj.get("path")
         if rel_path and not (asset_root / rel_path).exists():
@@ -319,7 +318,7 @@ def validate_task(
         errors.extend(validate_texture_ref(asset_root, f"objects[{idx}]", obj))
     for idx, fixture in enumerate(fixtures):
         cls = fixture.get("target_class")
-        if cls not in SIMBOX_OBJECT_CLASSES:
+        if cls not in SIMBOX_SUPPORTED_CLASSES:
             errors.append(f"arena.fixtures[{idx}] unsupported target_class {cls!r}")
         rel_path = fixture.get("path")
         if rel_path and not (asset_root / rel_path).exists():

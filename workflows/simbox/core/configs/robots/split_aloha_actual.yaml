@@ -2,7 +2,7 @@
 # Deprecated: the active SplitAloha configuration uses the virtual-base asset.
 profile_id: split_aloha_actual_4wis_v1
 target_class: SplitAlohaActual
-path: "split_aloha_mid_360/robot.usd"
+path: "InternDataAssets/robots/split_aloha_mid_360/robot.usd"
 
 placement:
   family: floor_standing
@@ -23,13 +23,17 @@ base:
   # Mobile-navigation fields (optional; fixed/table bases omit them).
   base_config_file: workflows/simbox/core/configs/bases/ranger_mini_v3.yaml
   local_navigation_config_file: workflows/simbox/core/configs/navigation/default_local_navigation.yaml
+  local_navigation:
+    approach:
+      min_distance: 0.35
+      max_distance: 0.55
   steering_joint_names: [fl_steering_joint, fr_steering_joint, rl_steering_joint, rr_steering_joint]
   wheel_joint_names: [fl_wheel, fr_wheel, rl_wheel, rr_wheel]
 
 arms:
   left:
     controller: SplitAloha
-    curobo_file: workflows/simbox/curobo/src/curobo/content/configs/robot/piper100_left_arm.yml
+    curobo_file: InternDataAssets/curobov2/curobo/content/custom/configs/robot/piper100_left_arm.yml
     command_joint_names: [fl_joint1, fl_joint2, fl_joint3, fl_joint4, fl_joint5, fl_joint6]
     trajectory_joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
     joint_indices: [1, 8, 15, 18, 20, 22]
@@ -67,7 +71,7 @@ arms:
     base_mount_orientation: [1.0, 0.0, 0.0, 0.0]
   right:
     controller: SplitAloha
-    curobo_file: workflows/simbox/curobo/src/curobo/content/configs/robot/piper100_right_arm.yml
+    curobo_file: InternDataAssets/curobov2/curobo/content/custom/configs/robot/piper100_right_arm.yml
     command_joint_names: [fr_joint1, fr_joint2, fr_joint3, fr_joint4, fr_joint5, fr_joint6]
     trajectory_joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
     joint_indices: [2, 9, 16, 19, 21, 23]

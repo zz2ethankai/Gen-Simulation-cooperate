@@ -1,11 +1,11 @@
 import pickle
 
 import numpy as np
-from omni.isaac.core.articulations.articulation import Articulation
-from omni.isaac.core.robots.robot import Robot
-from omni.isaac.core.utils.numpy.transformations import get_local_from_world
-from omni.isaac.core.utils.prims import get_prim_at_path, get_prim_parent
-from omni.isaac.core.utils.xforms import get_world_pose
+from isaacsim.core.prims import SingleArticulation as Articulation
+from isaacsim.core.api.robots.robot import Robot
+from isaacsim.core.utils.numpy.transformations import get_local_from_world
+from isaacsim.core.utils.prims import get_prim_at_path, get_prim_parent
+from isaacsim.core.utils.xforms import get_world_pose
 from pxr import Gf, Usd, UsdGeom
 
 from workflows.utils.utils import get_link
@@ -33,7 +33,7 @@ class WorldRecorder:
         for robot_name, robot in robots.items():
             if not isinstance(robot, Robot):
                 raise TypeError(
-                    f"Robot '{robot_name}' must be an instance of omni.isaac.core.robots.robot.Robot "
+                    f"Robot '{robot_name}' must be an instance of isaacsim.core.api.robots.robot.Robot "
                     f"or its subclass, got {type(robot).__name__} instead."
                 )
 

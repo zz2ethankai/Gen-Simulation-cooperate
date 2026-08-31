@@ -2,30 +2,36 @@ import os
 from copy import deepcopy
 
 import numpy as np
+from core.planning.motion_command import MotionPhase
 from core.skills.base_skill import BaseSkill, register_skill
 from core.utils.asset_path_utils import resolve_asset_path
 from omegaconf import DictConfig, OmegaConf
-from omni.isaac.core.controllers import BaseController
-from omni.isaac.core.robots.robot import Robot
-from omni.isaac.core.tasks import BaseTask
-from omni.isaac.core.utils.prims import get_prim_at_path
-from omni.isaac.core.utils.transformations import (
-    get_relative_transform,
+from isaacsim.core.api.robots.robot import Robot
+from isaacsim.core.api.tasks import BaseTask
+from isaacsim.core.utils.transformations import (
     pose_from_tf_matrix,
     tf_matrix_from_pose,
 )
-from omni.isaac.core.utils.xforms import get_world_pose
 
 
 # pylint: disable=unused-argument
 @register_skill
 class Dexpick(BaseSkill):
-    def __init__(self, robot: Robot, controller: BaseController, task: BaseTask, cfg: DictConfig, *args, **kwargs):
+    def __init__(
+        self,
+        robot: Robot,
+        skill_runtime,
+        task: BaseTask,
+        cfg: DictConfig,
+        *args,
+        **kwargs,
+    ):
         super().__init__()
         self.robot = robot
-        self.controller = controller
+        self.bind_skill_runtime(skill_runtime)
+        self._require_skill_runtime()
         self.task = task
-        if kwargs:
+        if "world" in kwargs:
             self.world = kwargs["world"]
         self.skill_cfg = cfg
         object_name = self.skill_cfg["objects"][0]
@@ -46,26 +52,13 @@ class Dexpick(BaseSkill):
             self.pick_pose_idx = cfg.get("pick_pose_idx", 0)
             self.pose_ee2o = self.pick_poses[self.pick_pose_idx]
         self.manip_list = []
-        if "left" in self.controller.robot_file:
-            self.robot_ee_path = self.robot.fl_ee_path
-            self.robot_base_path = self.robot.fl_base_path
-            lr_arm = "left"
-        elif "right" in self.controller.robot_file:
-            self.robot_ee_path = self.robot.fr_ee_path
-            self.robot_base_path = self.robot.fr_base_path
-            lr_arm = "right"
-        else:
-            raise NotImplementedError
+        lr_arm = self.skill_runtime.arm_name
         self.pickcontact_view = task.pickcontact_views[robot.name][lr_arm][object_name]
         self.process_valid = True
         self.obj_init_trans = deepcopy(self.object.get_local_pose()[0])
 
-    @staticmethod
-    def _get_world_pose_from_path(prim_path):
-        return get_world_pose(prim_path)
-
     def _get_armbase_world_tf(self):
-        return tf_matrix_from_pose(*self._get_world_pose_from_path(self.robot_base_path))
+        return self.skill_runtime.execution.get_pick_armbase_transform()
 
     def _get_object_world_tf(self):
         get_obj_world_pose = getattr(self.object, "get_world_pose", None)
@@ -75,19 +68,6 @@ class Dexpick(BaseSkill):
 
     def simple_generate_manip_cmds(self):
         manip_list = []
-
-        # Update
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        ignore_substring = deepcopy(self.controller.ignore_substring + self.skill_cfg.get("ignore_substring", []))
-        ignore_substring.append(self.object.name)
-        ignore_substring += self.task.ignore_objects
-        cmd = (
-            p_base_ee_cur,
-            q_base_ee_cur,
-            "update_specific",
-            {"ignore_substring": ignore_substring, "reference_prim_path": self.controller.reference_prim_path},
-        )
-        manip_list.append(cmd)
 
         T_world_base = self._get_armbase_world_tf()
 
@@ -102,29 +82,43 @@ class Dexpick(BaseSkill):
         pre_grasp_offset = self.skill_cfg.get("pre_grasp_offset", 0.1)
         if pre_grasp_offset:
             T_base_ee_pregrasp = T_base_ee_grasp.copy()
-            if "r5a" in self.controller.robot_file:
-                T_base_ee_pregrasp[0:3, 3] -= T_base_ee_pregrasp[0:3, 0] * pre_grasp_offset
-            else:
-                T_base_ee_pregrasp[0:3, 3] -= T_base_ee_pregrasp[0:3, 2] * pre_grasp_offset
+            approach_axis = getattr(self.skill_runtime, "grasp_approach_axis", 2)
+            T_base_ee_pregrasp[0:3, 3] -= (
+                T_base_ee_pregrasp[0:3, approach_axis] * pre_grasp_offset
+            )
 
-            cmd = (*pose_from_tf_matrix(T_base_ee_pregrasp), "open_gripper", {})
-            manip_list.append(cmd)
+            p_pre, q_pre = pose_from_tf_matrix(T_base_ee_pregrasp)
+            manip_list.append(
+                self.pose_command(
+                    MotionPhase.TRANSIT_PREGRASP,
+                    p_pre,
+                    q_pre,
+                    gripper_action="open_gripper",
+                    active_object=getattr(self.object, "name", None),
+                )
+            )
 
         # Grasp
-        cmd = (p_base_ee_grasp, q_base_ee_grasp, "open_gripper", {})
-        manip_list.append(cmd)
-        cmd = (p_base_ee_grasp, q_base_ee_grasp, "close_gripper", {})
-        manip_list.extend(
-            [cmd] * self.skill_cfg.get("gripper_change_steps", 40)
-        )  # here we use 40 steps to make sure the gripper is fully closed
-        ignore_substring = deepcopy(self.controller.ignore_substring + self.skill_cfg.get("ignore_substring", []))
-        cmd = (
-            p_base_ee_grasp,
-            q_base_ee_grasp,
-            "update_specific",
-            {"ignore_substring": ignore_substring, "reference_prim_path": self.controller.reference_prim_path},
+        manip_list.append(
+            self.pose_command(
+                MotionPhase.TERMINAL_GRASP_APPROACH,
+                p_base_ee_grasp,
+                q_base_ee_grasp,
+                gripper_action="open_gripper",
+                active_object=getattr(self.object, "name", None),
+            )
         )
-        manip_list.append(cmd)
+        manip_list.append(
+            self.pose_command(
+                MotionPhase.GRIPPER_CLOSE,
+                p_base_ee_grasp,
+                q_base_ee_grasp,
+                gripper_action="close_gripper",
+                active_object=getattr(self.object, "name", None),
+                replan_allowed=False,
+                dwell_steps=int(self.skill_cfg.get("gripper_change_steps", 40)),
+            )
+        )
 
         # Post grasp
         post_grasp_offset = np.random.uniform(
@@ -133,8 +127,16 @@ class Dexpick(BaseSkill):
         if post_grasp_offset:
             p_base_ee_postgrasp = deepcopy(p_base_ee_grasp)
             p_base_ee_postgrasp[2] += post_grasp_offset
-            cmd = (p_base_ee_postgrasp, q_base_ee_grasp, "close_gripper", {})
-            manip_list.append(cmd)
+            manip_list.append(
+                self.pose_command(
+                    MotionPhase.POST_GRASP_LIFT,
+                    p_base_ee_postgrasp,
+                    q_base_ee_grasp,
+                    gripper_action="close_gripper",
+                    active_object=getattr(self.object, "name", None),
+                    allow_target_finger_contact=True,
+                )
+            )
 
         self.manip_list = manip_list
 
@@ -145,20 +147,11 @@ class Dexpick(BaseSkill):
         return contact, indices
 
     def is_feasible(self, th=10):
-        return self.controller.num_plan_failed <= th
+        return int(self.skill_runtime.execution.state.num_plan_failed) <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        p_base_ee, q_base_ee, *_ = self.manip_list[0]
-        diff_trans = np.linalg.norm(p_base_ee_cur - p_base_ee)
-        diff_ori = 2 * np.arccos(min(abs(np.dot(q_base_ee_cur, q_base_ee)), 1.0))
-        pose_flag = np.logical_and(
-            diff_trans < t_eps,
-            diff_ori < o_eps,
-        )
-        self.plan_flag = self.controller.num_last_cmd > 10
-        return np.logical_or(pose_flag, self.plan_flag)
+        return self.skill_runtime.execution.is_phase_command_complete(self.manip_list[0])
 
     def is_done(self):
         if len(self.manip_list) == 0:

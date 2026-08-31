@@ -184,6 +184,7 @@ _BASE_NAVIGATION_FIELDS = {
     "local_navigation_config_file",
     "local_navigation",
     "mobile_base_path",
+    "lift_joint_path",
     "steering_joint_names",
     "wheel_joint_names",
     "left_wheel_joint_names",
@@ -929,7 +930,10 @@ def project_runtime_config(
         for key, value in arm.extra.items():
             if key in {"base_mount_translation", "base_mount_orientation"}:
                 config[f"{short_prefix}_{key}"] = copy.deepcopy(value)
-            elif key.startswith(("arm_drive_", "gripper_drive_")):
+            elif key.startswith(("arm_drive_", "gripper_drive_")) or key in {
+                "gripper_static_friction",
+                "gripper_dynamic_friction",
+            }:
                 config[key] = copy.deepcopy(value)
             else:
                 config[f"{short_prefix}_{key}"] = copy.deepcopy(value)

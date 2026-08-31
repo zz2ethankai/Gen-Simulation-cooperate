@@ -18,7 +18,7 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
 def set_semantic_label(prim: Prim, label):
-    from omni.isaac.core.utils.semantics import add_update_semantics
+    from isaacsim.core.utils.semantics import add_update_semantics
 
     if prim.GetTypeName() == "Mesh":
         add_update_semantics(prim, semantic_label=label, type_label="class")
@@ -28,7 +28,7 @@ def set_semantic_label(prim: Prim, label):
 
 
 def set_plane_semantic_label(prim: Prim, label):
-    from omni.isaac.core.utils.semantics import add_update_semantics
+    from isaacsim.core.utils.semantics import add_update_semantics
 
     if prim.GetTypeName() == "Plane":
         add_update_semantics(prim, semantic_label=label, type_label="class")
@@ -38,7 +38,7 @@ def set_plane_semantic_label(prim: Prim, label):
 
 
 def set_robot_semantic_label(robot: Prim, parent_name: str):
-    from omni.isaac.core.utils.semantics import add_update_semantics
+    from isaacsim.core.utils.semantics import add_update_semantics
 
     if robot.GetTypeName() == "Mesh":
         prim_path = str(robot.GetPrimPath())

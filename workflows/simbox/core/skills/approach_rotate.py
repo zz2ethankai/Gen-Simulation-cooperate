@@ -1,14 +1,13 @@
 # pylint: skip-file
-import warnings
-
 import numpy as np
+from core.planning.motion_command import MotionPhase
 from core.skills.base_skill import BaseSkill, register_skill
 from omegaconf import DictConfig
-from omni.isaac.core.controllers import BaseController
-from omni.isaac.core.robots.robot import Robot
-from omni.isaac.core.tasks import BaseTask
-from omni.isaac.core.utils.prims import get_prim_at_path
-from omni.isaac.core.utils.transformations import (
+from isaacsim.core.api.controllers import BaseController
+from isaacsim.core.api.robots.robot import Robot
+from isaacsim.core.api.tasks import BaseTask
+from isaacsim.core.utils.prims import get_prim_at_path
+from isaacsim.core.utils.transformations import (
     get_relative_transform,
     pose_from_tf_matrix,
     tf_matrix_from_pose,
@@ -19,26 +18,19 @@ from scipy.spatial.transform import Rotation as R
 # pylint: disable=unused-argument
 @register_skill
 class Approach_Rotate(BaseSkill):
-    def __init__(self, robot: Robot, controller: BaseController, task: BaseTask, cfg: DictConfig, *args, **kwargs):
+    def __init__(self, robot: Robot, skill_runtime, task: BaseTask, cfg: DictConfig, *args, **kwargs):
         super().__init__()
         self.robot = robot
-        self.controller = controller
+        self.bind_skill_runtime(skill_runtime)
         self.task = task
         self.name = cfg["name"]
         self.move_obj = task.objects[cfg["objects"][0]]
         self.approach_obj = task.objects[cfg["objects"][1]]
         self.skill_cfg = cfg
-        if "dummy_forward" in cfg:
-            warnings.warn(
-                "approach_rotate.dummy_forward is deprecated and ignored; "
-                "remove it from the task configuration.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
         self.rotate_cfg = self.skill_cfg.get("rotate", None)
 
         self.T_world_base = get_relative_transform(
-            get_prim_at_path(self.controller.robot_base_path), get_prim_at_path(self.task.root_prim_path)
+            get_prim_at_path(self.skill_runtime.setup.robot_base_path), get_prim_at_path(self.task.root_prim_path)
         )
 
         self.manip_list = []
@@ -48,37 +40,22 @@ class Approach_Rotate(BaseSkill):
 
     def simple_generate_manip_cmds(self):
         manip_list = []
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        cmd = (
-            p_base_ee_cur,
-            q_base_ee_cur,
-            "update_pose_cost_metric",
-            {"hold_vec_weight": self.skill_cfg.get("hold_vec_weight", None)},
-        )
-        manip_list.append(cmd)
-        ignore_substring = self.controller.ignore_substring + self.skill_cfg.get("ignore_substring", [])
-        cmd = (
-            p_base_ee_cur,
-            q_base_ee_cur,
-            "update_specific",
-            {"ignore_substring": ignore_substring, "reference_prim_path": self.controller.reference_prim_path},
-        )
-        manip_list.append(cmd)
-
         self.p_base_ee_tgt, self.q_base_ee_tgt = self.getTgtPose()
-        cmd = (
-            self.p_base_ee_tgt,
-            self.q_base_ee_tgt,
-            "close_gripper",
-            {},
+        manip_list.append(
+            self.pose_command(
+                MotionPhase.TRANSIT_PREGRASP,
+                self.p_base_ee_tgt,
+                self.q_base_ee_tgt,
+                gripper_action="close_gripper",
+                active_object=getattr(self.move_obj, "name", None),
+            )
         )
-        manip_list.append(cmd)
 
         self.manip_list = manip_list
 
     def getTgtPose(self):
 
-        T_world_ee_cur = self.T_world_base @ tf_matrix_from_pose(*self.controller.get_ee_pose())
+        T_world_ee_cur = self.T_world_base @ tf_matrix_from_pose(*self.skill_runtime.execution.get_ee_pose())
         T_world_move_obj_cur = tf_matrix_from_pose(*self.move_obj.get_world_pose())
 
         if self.skill_cfg.get("obj_axis_offset", None):
@@ -156,20 +133,11 @@ class Approach_Rotate(BaseSkill):
         return q_world_move_obj_tgt
 
     def is_feasible(self, th=5):
-        return self.controller.num_plan_failed <= th
+        return self.skill_runtime.execution.state.num_plan_failed <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        p_base_ee, q_base_ee, *_ = self.manip_list[0]
-        diff_pos = np.linalg.norm(p_base_ee_cur - p_base_ee)
-        diff_ori = 2 * np.arccos(min(abs(np.dot(q_base_ee_cur, q_base_ee)), 1.0))
-        pose_flag = np.logical_and(
-            diff_pos < t_eps,
-            diff_ori < o_eps,
-        )
-        self.plan_flag = self.controller.num_last_cmd > 10
-        return np.logical_or(pose_flag, self.plan_flag)
+        return self.command_complete(self.manip_list[0])
 
     def is_done(self):
         if len(self.manip_list) == 0:
@@ -179,7 +147,7 @@ class Approach_Rotate(BaseSkill):
         return len(self.manip_list) == 0
 
     def is_success(self):
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
+        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.execution.get_ee_pose()
         distance = np.linalg.norm(p_base_ee_cur - self.p_base_ee_tgt)
         flag = (distance < self.success_threshold_move) and (len(self.manip_list) == 0)
         if self.rotate_cfg:

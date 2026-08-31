@@ -1,24 +1,25 @@
 from copy import deepcopy
 
 import numpy as np
+from core.planning.motion_command import MotionPhase
 from core.skills.base_skill import BaseSkill, register_skill
 from omegaconf import DictConfig
-from omni.isaac.core.controllers import BaseController
-from omni.isaac.core.robots.robot import Robot
-from omni.isaac.core.tasks import BaseTask
-from omni.isaac.core.utils.prims import get_prim_at_path
-from omni.isaac.core.utils.transformations import get_relative_transform
+from isaacsim.core.api.robots.robot import Robot
+from isaacsim.core.api.tasks import BaseTask
+from isaacsim.core.utils.prims import get_prim_at_path
+from isaacsim.core.utils.transformations import get_relative_transform
+from isaacsim.core.utils.xforms import get_world_pose
 from scipy.spatial.transform import Rotation as R
-from solver.planner import KPAMPlanner
+from solver.planner import KPAMPlanner, KPAMPlannerQueries, KPAMRobotFrame
 
 
 # pylint: disable=unused-argument
 @register_skill
 class Close(BaseSkill):
-    def __init__(self, robot: Robot, controller: BaseController, task: BaseTask, cfg: DictConfig, *args, **kwargs):
+    def __init__(self, robot: Robot, skill_runtime, task: BaseTask, cfg: DictConfig, *args, **kwargs):
         super().__init__()
         self.robot = robot
-        self.controller = controller
+        self.bind_skill_runtime(skill_runtime)
         self.task = task
         self.stage = task.stage
         self.name = cfg["name"]
@@ -38,7 +39,7 @@ class Close(BaseSkill):
         if self.skill_cfg.get("obj_info_path", None):
             self.art_obj.update_articulated_info(self.skill_cfg["obj_info_path"])
 
-        lr_arm = "left" if "left" in self.controller.robot_file else "right"
+        lr_arm = self.skill_runtime.arm_name
         self.fingers_link_contact_view = task.artcontact_views[robot.name][lr_arm][art_obj_name + "_fingers_link"]
         self.fingers_base_contact_view = task.artcontact_views[robot.name][lr_arm][art_obj_name + "_fingers_base"]
         self.forbid_collision_contact_view = task.artcontact_views[robot.name][lr_arm][
@@ -49,12 +50,28 @@ class Close(BaseSkill):
         self.success_mode = self.planner_setting.get("success_mode", "zero")
 
     def setup_kpam(self):
+        robot_config = self.skill_runtime.robot_port.robot.cfg
+        robot_frame = KPAMRobotFrame.from_config(
+            robot_config=robot_config,
+            arm_name=self.skill_runtime.arm_name,
+            base_path=self.skill_runtime.setup.robot_base_path,
+            ee_path=self.skill_runtime.setup.robot_ee_path,
+            hand_path=self.skill_runtime.setup.robot_ee_path,
+        )
+        queries = KPAMPlannerQueries(
+            get_joint_positions=self.robot.get_joint_positions,
+            get_world_pose=get_world_pose,
+            get_prim_at_path=get_prim_at_path,
+            get_relative_transform=get_relative_transform,
+        )
         self.planner = KPAMPlanner(
             env=self.world,
-            robot=self.robot,
             object=self.art_obj,
             cfg_path=self.planner_setting,
-            controller=self.controller,
+            robot_name=self.robot.name,
+            robot_config=robot_config,
+            robot_frame=robot_frame,
+            queries=queries,
             draw_points=self.draw,
             stage=self.stage,
         )
@@ -71,7 +88,8 @@ class Close(BaseSkill):
             return
 
         T_world_base = get_relative_transform(
-            get_prim_at_path(self.robot.base_path), get_prim_at_path(self.task.root_prim_path)
+            get_prim_at_path(self.skill_runtime.setup.robot_base_path),
+            get_prim_at_path(self.task.root_prim_path),
         )
         self.traj_keyframes = traj_keyframes
         self.sample_times = sample_times
@@ -80,38 +98,30 @@ class Close(BaseSkill):
                 self.draw.draw_points([(T_world_base @ np.append(keypose[:3, 3], 1))[:3]], [(0, 0, 0, 1)], [7])
         manip_list = []
 
-        # Update
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        ignore_substring = deepcopy(self.controller.ignore_substring + self.skill_cfg.get("ignore_substring", []))
-        cmd = (
-            p_base_ee_cur,
-            q_base_ee_cur,
-            "update_specific",
-            {"ignore_substring": ignore_substring, "reference_prim_path": self.controller.reference_prim_path},
-        )
-        manip_list.append(cmd)
-
         for i in range(len(self.traj_keyframes)):
             p_base_ee_tgt = self.traj_keyframes[i][:3, 3]
             q_base_ee_tgt = R.from_matrix(self.traj_keyframes[i][:3, :3]).as_quat(scalar_first=True)
-            cmd = (p_base_ee_tgt, q_base_ee_tgt, "close_gripper", {})
-            manip_list.append(cmd)
-
-            if i == self.contact_pose_index - 1:
-                p_base_ee = self.traj_keyframes[i][:3, 3]
-                q_base_ee = R.from_matrix(self.traj_keyframes[i][:3, :3]).as_quat(scalar_first=True)
-                ignore_substring = deepcopy(
-                    self.controller.ignore_substring + self.skill_cfg.get("ignore_substring", [])
+            manip_list.append(
+                self.pose_command(
+                    MotionPhase.TRANSIT_PREGRASP,
+                    p_base_ee_tgt,
+                    q_base_ee_tgt,
+                    gripper_action="close_gripper",
+                    active_object=self.art_obj.name,
                 )
-                parent_name = self.art_obj.prim_path.split("/")[-2]
-                ignore_substring.append(parent_name)
-                cmd = (
-                    p_base_ee,
-                    q_base_ee,
-                    "update_specific",
-                    {"ignore_substring": ignore_substring, "reference_prim_path": self.controller.reference_prim_path},
+            )
+            if i == self.contact_pose_index:
+                manip_list.append(
+                    self.pose_command(
+                        MotionPhase.GRIPPER_CLOSE,
+                        p_base_ee_tgt,
+                        q_base_ee_tgt,
+                        gripper_action="close_gripper",
+                        active_object=self.art_obj.name,
+                        replan_allowed=False,
+                        dwell_steps=40,
+                    )
                 )
-                manip_list.append(cmd)
         self.manip_list = manip_list
 
     def update(self):
@@ -150,20 +160,11 @@ class Close(BaseSkill):
         return contact
 
     def is_feasible(self, th=5):
-        return self.controller.num_plan_failed <= th
+        return self.skill_runtime.execution.state.num_plan_failed <= th
 
     def is_subtask_done(self, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        p_base_ee, q_base_ee, *_ = self.manip_list[0]
-        diff_trans = np.linalg.norm(p_base_ee_cur - p_base_ee)
-        diff_ori = 2 * np.arccos(min(abs(np.dot(q_base_ee_cur, q_base_ee)), 1.0))
-        pose_flag = np.logical_and(
-            diff_trans < t_eps,
-            diff_ori < o_eps,
-        )
-        self.plan_flag = self.controller.num_last_cmd > 10
-        return np.logical_or(pose_flag, self.plan_flag)
+        return self.command_complete(self.manip_list[0])
 
     def is_done(self):
         if len(self.manip_list) == 0:

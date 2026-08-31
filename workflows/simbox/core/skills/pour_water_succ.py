@@ -1,25 +1,26 @@
 import numpy as np
 import torch
 from core.skills.base_skill import BaseSkill, register_skill
+from core.planning.motion_command import MotionPhase, MotionPhaseCommand
 from core.utils.transformation_utils import (
     get_orientation,
     perturb_orientation,
     perturb_position,
 )
 from omegaconf import DictConfig
-from omni.isaac.core.controllers import BaseController
-from omni.isaac.core.robots.robot import Robot
-from omni.isaac.core.tasks import BaseTask
+from isaacsim.core.api.controllers import BaseController
+from isaacsim.core.api.robots.robot import Robot
+from isaacsim.core.api.tasks import BaseTask
 from scipy.spatial.transform import Rotation as R
 
 
 # pylint: disable=unused-argument
 @register_skill
 class Pour_Water_Succ(BaseSkill):
-    def __init__(self, robot: Robot, controller: BaseController, task: BaseTask, cfg: DictConfig, *args, **kwargs):
+    def __init__(self, robot: Robot, skill_runtime, task: BaseTask, cfg: DictConfig, *args, **kwargs):
         super().__init__()
         self.robot = robot
-        self.controller = controller
+        self.bind_skill_runtime(skill_runtime)
         self.task = task
         self.skill_cfg = cfg
         self.frame = self.skill_cfg.get("frame", "robot")
@@ -41,29 +42,17 @@ class Pour_Water_Succ(BaseSkill):
 
     def simple_generate_manip_cmds(self):
         manip_list = []
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
+        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.execution.get_ee_pose()
         if self.p_base_ee_tgt is None:
             self.p_base_ee_tgt = p_base_ee_cur
         if self.q_base_ee_tgt is None:
             self.q_base_ee_tgt = q_base_ee_cur
-        # --- Get current joint positions ---
-        joint_positions = self.robot.get_joints_state().positions
-
-        if isinstance(joint_positions, torch.Tensor):
-            curr_js = joint_positions.detach().cpu().numpy()[self.controller.arm_indices]
-        elif isinstance(joint_positions, np.ndarray):
-            curr_js = joint_positions[self.controller.arm_indices]
-        else:
-            raise TypeError(f"Unsupported joint state type: {type(joint_positions)}")
-        p_base_ee, q_base_ee = self.controller.forward_kinematic(curr_js)
-        cmd = (
-            p_base_ee,
-            q_base_ee,
-            "dummy_forward",
-            {
-                "arm_action": curr_js,
-                "gripper_state": self.skill_cfg.get("gripper_state", 1.0),
-            },
+        gripper_state = self.skill_cfg.get("gripper_state", 1.0)
+        cmd = self.measured_hold_command(
+            gripper_action=(
+                "close_gripper" if gripper_state < 0 else "open_gripper"
+            ),
+            phase=MotionPhase.CARRY_HOME,
         )
         manip_list.append(cmd)
 
@@ -82,37 +71,14 @@ class Pour_Water_Succ(BaseSkill):
     #     return interp_trans, interp_ori
 
     def is_feasible(self, th=5):
-        return self.controller.num_plan_failed <= th
+        return self.skill_runtime.execution.state.num_plan_failed <= th
 
     def is_subtask_done(self, js_eps=5e-3, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
-        manip_cmd = self.manip_list[0]
-        if manip_cmd[2] == "joint_ctrl":
-            # --- Get current joint positions ---
-            joint_positions = self.robot.get_joints_state().positions
-
-            if isinstance(joint_positions, torch.Tensor):
-                curr_js = joint_positions.detach().cpu().numpy()[self.controller.arm_indices]
-            elif isinstance(joint_positions, np.ndarray):
-                curr_js = joint_positions[self.controller.arm_indices]
-            else:
-                raise TypeError(f"Unsupported joint state type: {type(joint_positions)}")
-            target_js = self.manip_list[0][3]["target"]
-            diff_js = np.linalg.norm(curr_js - target_js)
-            js_flag = diff_js < js_eps
-            self.plan_flag = self.controller.num_last_cmd > 10
-            return np.logical_or(js_flag, self.plan_flag)
-        else:
-            p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-            p_base_ee, q_base_ee, *_ = self.manip_list[0]
-            diff_trans = np.linalg.norm(p_base_ee_cur - p_base_ee)
-            diff_ori = 2 * np.arccos(min(abs(np.dot(q_base_ee_cur, q_base_ee)), 1.0))
-            pose_flag = np.logical_and(
-                diff_trans < t_eps,
-                diff_ori < o_eps,
-            )
-            self.plan_flag = self.controller.num_last_cmd > 10
-            return np.logical_or(pose_flag, self.plan_flag)
+        command = self.manip_list[0]
+        if not isinstance(command, MotionPhaseCommand):
+            raise TypeError("Pour_Water_Succ emits MotionPhaseCommand values only")
+        return self.command_complete(command)
 
     def is_done(self):
         if len(self.manip_list) == 0:

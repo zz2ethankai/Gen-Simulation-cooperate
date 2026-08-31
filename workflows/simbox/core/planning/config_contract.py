@@ -1,23 +1,21 @@
-"""Simulator-independent validation for Physics-schema manipulation configs."""
+"""Strict task contract for the Physics Schema planning world."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from copy import deepcopy
 from typing import Any
 
-
+PHYSICS_SCHEMA_MODE = "physics_schema"
+PASSTHROUGH_MODE = "passthrough"
+DIRECT_EXECUTION_MODE = "direct_execution"
 PHYSICS_SCHEMA_SKILLS = {"pick", "place"}
-VALIDATION_ONLY_SKILLS = {"pick_plan_probe"}
 VALIDATION_ONLY_SKILL_OBJECT_COUNTS = {
     "pick_plan_probe": 1,
     "place_plan_probe": 2,
 }
-ATTACHED_PHYSICS_SCHEMA_SKILL_MODES = {
-    ("heuristic__skill", "home"),
-}
-NON_MANIPULATION_SKILLS = {
-    "navigate",
-    "observe_hold",
-}
+VALIDATION_ONLY_SKILLS = set(VALIDATION_ONLY_SKILL_OBJECT_COUNTS)
+NON_MANIPULATION_SKILLS = {"navigate", "wait", "observe_hold", "scan", "track"}
 SPAWN_SETTLE_FIELDS = {
     "max_object_linear_speed_m_s",
     "max_object_angular_speed_rad_s",
@@ -25,194 +23,157 @@ SPAWN_SETTLE_FIELDS = {
     "max_unexpected_contact_n",
     "target_support",
 }
-
-PHYSICS_SCHEMA_MODE = "physics_schema"
-LEGACY_STAGE_SCAN_MODE = "legacy_stage_scan"
-HYBRID_MODE = "hybrid"
-PASSTHROUGH_MODE = "passthrough"
+_PATTERN_CHARS = frozenset("*?[]{}^$()|+")
 
 
-def _arm_skill_names(task_cfg: dict[str, Any]) -> set[str]:
-    names: set[str] = set()
-    for cfg_skill_dict in task_cfg.get("skills", []):
-        for robot_skill_list in cfg_skill_dict.values():
-            for lr_skill_dict in robot_skill_list:
-                for arm in ("left", "right"):
-                    names.update(
-                        str(skill_cfg.get("name", "")).lower()
-                        for skill_cfg in lr_skill_dict.get(arm, [])
-                    )
-    return names
+def _skills(task_cfg: Mapping[str, Any]):
+    for robot_cfg in task_cfg.get("skills", ()) or ():
+        if not isinstance(robot_cfg, Mapping):
+            continue
+        for robot, phases in robot_cfg.items():
+            if not isinstance(phases, list):
+                continue
+            for phase in phases:
+                if not isinstance(phase, Mapping):
+                    continue
+                for arm, entries in phase.items():
+                    if isinstance(entries, list):
+                        for entry in entries:
+                            if isinstance(entry, Mapping):
+                                yield str(robot), str(arm), entry
 
 
-def resolve_skill_collision_world_mode(
-    skill_name: str, requested_mode: str | None
-) -> str:
-    """Resolve one Skill without weakening explicit task-level requests."""
-
-    name = str(skill_name).strip().lower()
-    requested = "auto" if requested_mode is None else str(requested_mode).strip().lower()
-    if name in NON_MANIPULATION_SKILLS:
-        return PASSTHROUGH_MODE
-    if requested == LEGACY_STAGE_SCAN_MODE:
-        return LEGACY_STAGE_SCAN_MODE
-    if name in PHYSICS_SCHEMA_SKILLS | VALIDATION_ONLY_SKILLS:
-        return PHYSICS_SCHEMA_MODE
-    return LEGACY_STAGE_SCAN_MODE
+def _skill_name(value: Any) -> str:
+    return str(value.get("name", "")).strip().lower() if isinstance(value, Mapping) else str(value).strip().lower()
 
 
-def resolve_runtime_skill_collision_world_mode(
-    skill_cfg: Any,
-    requested_mode: str | None,
-    *,
-    attached_object: bool,
-) -> str:
-    """Resolve conditional Physics adapters that depend on object ownership.
-
-    Static task resolution keeps these Skills in the legacy fallback set.  At
-    runtime, an attached object cannot cross into that world safely, so only
-    explicitly adapted Skill modes stay in the Physics world until detach.
-    """
-
-    name = str(
-        skill_cfg.get("name", "") if hasattr(skill_cfg, "get") else ""
-    ).strip().lower()
-    mode = str(
-        skill_cfg.get("mode", "") if hasattr(skill_cfg, "get") else ""
-    ).strip().lower()
-    resolved = resolve_skill_collision_world_mode(name, requested_mode)
-    requested = "auto" if requested_mode is None else str(requested_mode).strip().lower()
-    if (
-        attached_object
-        and requested != LEGACY_STAGE_SCAN_MODE
-        and (name, mode) in ATTACHED_PHYSICS_SCHEMA_SKILL_MODES
-    ):
-        return PHYSICS_SCHEMA_MODE
-    return resolved
+def is_passthrough_skill(skill_cfg_or_name: Any) -> bool:
+    return _skill_name(skill_cfg_or_name) in NON_MANIPULATION_SKILLS
 
 
-def task_uses_physics_schema(collision_world_mode: str) -> bool:
-    return str(collision_world_mode) in {PHYSICS_SCHEMA_MODE, HYBRID_MODE}
+def _exact_entity_name(value: Any) -> bool:
+    return (
+        isinstance(value, str) and bool(value) and value == value.strip()
+        and value not in {".", ".."} and not value.startswith("/")
+        and "/" not in value and "\\" not in value
+        and not any(char.isspace() or char in _PATTERN_CHARS for char in value)
+    )
 
 
-def resolve_skill_test_mode(skill_cfg: Any, collision_world_mode: str) -> str:
-    """Resolve legacy test_mode without weakening Physics-schema planning.
-
-    ``test_mode: ik`` is retained only for explicit legacy-stage-scan Skills.
-    Migrated Pick and Place Skills always require forward planning so that their
-    transit paths are collision-validated.
-    """
-
-    if str(collision_world_mode) in {PHYSICS_SCHEMA_MODE, HYBRID_MODE}:
-        return "forward"
-    return str(skill_cfg.get("test_mode", "forward"))
-
-
-def resolve_collision_world_mode(
-    task_cfg: dict[str, Any], requested_mode: str | None
-) -> tuple[str, str]:
-    """Resolve auto mode without weakening explicit Physics-schema validation."""
-
-    requested = "auto" if requested_mode is None else str(requested_mode).strip().lower()
-    if requested == "auto":
-        skill_names = _arm_skill_names(task_cfg)
-        if not skill_names.intersection(PHYSICS_SCHEMA_SKILLS | VALIDATION_ONLY_SKILLS):
-            return LEGACY_STAGE_SCAN_MODE, "task has no Physics-schema manipulation skills"
-        legacy_skills = sorted(
-            name
-            for name in skill_names
-            if resolve_skill_collision_world_mode(name, requested)
-            == LEGACY_STAGE_SCAN_MODE
-        )
-        mode = HYBRID_MODE if legacy_skills else PHYSICS_SCHEMA_MODE
-        validate_planning_contract(task_cfg, mode)
-        if legacy_skills:
-            return mode, (
-                "Physics-schema Skills enabled with per-Skill legacy fallback: "
-                + ", ".join(legacy_skills)
-            )
-        return mode, "all active manipulation skills support physics_schema"
-
-    validate_planning_contract(task_cfg, requested)
-    return requested, "explicit configuration"
+def validate_planning_exclusions(values: Any | None) -> list[str]:
+    if values is None:
+        return []
+    if not isinstance(values, list):
+        raise ValueError("planning_exclusions must be a YAML list of exact entity names")
+    result = []
+    for value in values:
+        if not _exact_entity_name(value):
+            raise ValueError(f"planning exclusion must be one exact task entity name: {value!r}")
+        if value in result:
+            raise ValueError(f"duplicate planning exclusion: {value}")
+        result.append(value)
+    return result
 
 
-def validate_planning_contract(task_cfg: dict[str, Any], collision_world_mode: str) -> None:
-    """Reject configs that would silently bypass the stateful collision path."""
+def _validate_world(planning: Mapping[str, Any]) -> None:
+    world = planning.get("collision_world", {})
+    if not isinstance(world, Mapping):
+        raise ValueError("planning.collision_world must be a mapping")
+    mode = world.get("mode", PHYSICS_SCHEMA_MODE)
+    if str(mode).lower() != PHYSICS_SCHEMA_MODE:
+        raise ValueError("Physics schema is the only supported planning world")
+    for old in ("exact_exclusions", "ignore_substring", "reference_prim_path"):
+        if old in world or old in planning:
+            raise ValueError(f"unsupported historical planning field: {old}")
 
-    if collision_world_mode == LEGACY_STAGE_SCAN_MODE:
-        return
-    if collision_world_mode not in {PHYSICS_SCHEMA_MODE, HYBRID_MODE}:
-        raise ValueError(
-            f"unsupported planning.collision_world.mode: {collision_world_mode!r}"
-        )
 
-    for stage_index, cfg_skill_dict in enumerate(task_cfg.get("skills", [])):
-        for robot_name, robot_skill_list in cfg_skill_dict.items():
-            for phase_index, lr_skill_dict in enumerate(robot_skill_list):
-                active_arms = []
-                for arm in ("left", "right"):
-                    arm_skills = lr_skill_dict.get(arm, [])
-                    if any(
-                        str(skill_cfg.get("name", "")).lower()
-                        not in NON_MANIPULATION_SKILLS
-                        for skill_cfg in arm_skills
-                    ):
-                        active_arms.append(arm)
-                if len(active_arms) > 1:
+def canonicalize_planning_config(task_cfg: Mapping[str, Any], *, config_path: Any | None = None) -> dict[str, Any]:
+    del config_path
+    if not isinstance(task_cfg, Mapping):
+        raise TypeError("task config must be a mapping")
+    result = deepcopy(dict(task_cfg))
+    planning_value = result.get("planning", {})
+    if not isinstance(planning_value, Mapping):
+        raise ValueError("planning must be a mapping")
+    planning = deepcopy(dict(planning_value))
+    _validate_world(planning)
+    exclusions = validate_planning_exclusions(planning.get("planning_exclusions", []))
+    world = deepcopy(dict(planning.get("collision_world", {})))
+    world["mode"] = PHYSICS_SCHEMA_MODE
+    planning["collision_world"] = world
+    planning["planning_exclusions"] = exclusions
+    result["planning"] = planning
+    validate_planning_contract(result, PHYSICS_SCHEMA_MODE)
+    return result
+
+
+def validate_planning_contract(task_cfg: Mapping[str, Any], collision_world_mode: str | None = None, *, config_path: Any | None = None) -> None:
+    del config_path
+    if not isinstance(task_cfg, Mapping):
+        raise TypeError("task config must be a mapping")
+    if collision_world_mode is not None and str(collision_world_mode).lower() != PHYSICS_SCHEMA_MODE:
+        raise ValueError("Physics schema is the only supported planning world")
+    planning = task_cfg.get("planning", {})
+    if not isinstance(planning, Mapping):
+        raise ValueError("planning must be a mapping")
+    _validate_world(planning)
+    validate_planning_exclusions(planning.get("planning_exclusions", []))
+    for _, _, skill in _skills(task_cfg):
+        name = _skill_name(skill)
+        if is_passthrough_skill(skill):
+            continue
+        if name in VALIDATION_ONLY_SKILL_OBJECT_COUNTS:
+            if not isinstance(task_cfg.get("metadata", {}).get("workspace_probe"), Mapping):
+                raise ValueError(f"{name} requires metadata.workspace_probe")
+            expected = VALIDATION_ONLY_SKILL_OBJECT_COUNTS[name]
+            if len(skill.get("objects", ()) or ()) != expected:
+                raise ValueError(f"{name} requires exactly {expected} object identities")
+            if name == "pick_plan_probe":
+                expectation = skill.get("spawn_expectation")
+                missing = (
+                    sorted(SPAWN_SETTLE_FIELDS - expectation.keys())
+                    if isinstance(expectation, Mapping)
+                    else sorted(SPAWN_SETTLE_FIELDS)
+                )
+                if missing:
                     raise ValueError(
-                        "UNSUPPORTED_CONCURRENT_MANIPULATION: "
-                        f"stage={stage_index} robot={robot_name} "
-                        f"phase={phase_index} arms={active_arms}"
+                        "pick_plan_probe spawn_expectation is missing: "
+                        + ", ".join(missing)
                     )
-                for arm in ("left", "right"):
-                    for skill_cfg in lr_skill_dict.get(arm, []):
-                        skill_name = str(skill_cfg.get("name", "")).lower()
-                        if skill_name in NON_MANIPULATION_SKILLS:
-                            continue
-                        if skill_name in VALIDATION_ONLY_SKILL_OBJECT_COUNTS:
-                            if not isinstance(task_cfg.get("metadata", {}).get("workspace_probe"), dict):
-                                raise ValueError(
-                                    f"validation-only Skill {skill_name!r} requires metadata.workspace_probe"
-                                )
-                            expected_count = VALIDATION_ONLY_SKILL_OBJECT_COUNTS[skill_name]
-                            if len(skill_cfg.get("objects", [])) != expected_count:
-                                raise ValueError(
-                                    f"validation-only Skill {skill_name!r} requires exactly "
-                                    f"{expected_count} object identities"
-                                )
-                            if (
-                                skill_name == "place_plan_probe"
-                                and str(skill_cfg.get("test_mode", "forward")) != "forward"
-                            ):
-                                raise ValueError(
-                                    "place_plan_probe requires test_mode=forward because "
-                                    "IK-only checks do not validate a collision-free path"
-                                )
-                            if skill_name == "pick_plan_probe":
-                                expectation = skill_cfg.get("spawn_expectation")
-                                missing = (
-                                    sorted(SPAWN_SETTLE_FIELDS - expectation.keys())
-                                    if isinstance(expectation, dict)
-                                    else sorted(SPAWN_SETTLE_FIELDS)
-                                )
-                                if missing:
-                                    raise ValueError(
-                                        "pick_plan_probe spawn_expectation is missing: "
-                                        + ", ".join(missing)
-                                    )
-                            continue
-                        if skill_name not in PHYSICS_SCHEMA_SKILLS:
-                            if collision_world_mode == HYBRID_MODE:
-                                continue
-                            raise ValueError(
-                                f"Skill {skill_name!r} is not migrated to physics_schema; "
-                                "set planning.collision_world.mode=legacy_stage_scan explicitly"
-                            )
-                        object_count = len(skill_cfg.get("objects", []))
-                        expected_count = 1 if skill_name == "pick" else 2
-                        if object_count != expected_count:
-                            raise ValueError(
-                                f"physics_schema {skill_name} requires exactly "
-                                f"{expected_count} object identities, got {object_count}"
-                            )
+            elif str(skill.get("test_mode", "forward")) != "forward":
+                raise ValueError("place_plan_probe requires test_mode=forward")
+        elif name in PHYSICS_SCHEMA_SKILLS:
+            expected = 1 if name == "pick" else 2
+            actual = len(skill.get("objects", ()) or ())
+            if actual != expected:
+                raise ValueError(f"physics_schema {name} requires {expected} object identities, got {actual}")
+
+
+def resolve_skill_collision_world_mode(skill_name: str, requested_mode: str | None = None, *, config_path: Any | None = None) -> str:
+    del config_path
+    if is_passthrough_skill(skill_name):
+        return PASSTHROUGH_MODE
+    if requested_mode is not None and str(requested_mode).lower() != PHYSICS_SCHEMA_MODE:
+        raise ValueError("Physics schema is the only supported planning world")
+    return PHYSICS_SCHEMA_MODE
+
+
+def resolve_collision_world_mode(task_cfg: Mapping[str, Any], requested_mode: str | None = None) -> tuple[str, str]:
+    planning = task_cfg.get("planning", {})
+    world = planning.get("collision_world", {}) if isinstance(planning, Mapping) else {}
+    configured = world.get("mode") if isinstance(world, Mapping) else None
+    mode = requested_mode or configured or PHYSICS_SCHEMA_MODE
+    if str(mode).lower() != PHYSICS_SCHEMA_MODE:
+        raise ValueError("Physics schema is the only supported planning world")
+    validate_planning_contract(task_cfg, mode)
+    return PHYSICS_SCHEMA_MODE, "Physics schema is the only planning world"
+
+
+__all__ = [
+    "DIRECT_EXECUTION_MODE", "NON_MANIPULATION_SKILLS", "PASSTHROUGH_MODE",
+    "PHYSICS_SCHEMA_MODE", "PHYSICS_SCHEMA_SKILLS", "SPAWN_SETTLE_FIELDS",
+    "VALIDATION_ONLY_SKILLS", "VALIDATION_ONLY_SKILL_OBJECT_COUNTS",
+    "canonicalize_planning_config", "is_passthrough_skill",
+    "resolve_collision_world_mode", "resolve_skill_collision_world_mode",
+    "validate_planning_contract", "validate_planning_exclusions",
+]

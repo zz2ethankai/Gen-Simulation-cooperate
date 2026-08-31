@@ -5,14 +5,16 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
 
 try:
-    from omni.isaac.core.utils.prims import get_prim_at_path
-    from omni.isaac.core.utils.transformations import get_relative_transform
+    from isaacsim.core.utils.prims import get_prim_at_path
+    from isaacsim.core.utils.transformations import get_relative_transform
 except ImportError:  # Allows offline USD tests outside Isaac Sim.
     get_prim_at_path = None
     get_relative_transform = None
@@ -28,6 +30,45 @@ from .skill_target_math import (
 
 LOGGER = logging.getLogger("de_logger")
 DEBUG_ROOT_NAME = "__debug_skill_targets__"
+
+
+@dataclass(frozen=True)
+class SkillTargetReferenceFrame:
+    """Narrow robot inputs required to draw one skill target.
+
+    Skills expose this information through the typed runtime. Keeping the
+    frame and robot geometry together avoids making the visualization layer
+    depend on the controller façade (which is an Isaac lifecycle object).
+    ``robot`` is intentionally the only robot value needed by the renderer:
+    gripper keypoints and maximum width.
+    """
+
+    robot: Any
+    arm_name: str
+    robot_base_path: str
+
+
+def _skill_reference_frame(skill) -> SkillTargetReferenceFrame:
+    """Build a render frame from the explicit Skill runtime port."""
+
+    runtime = skill.skill_runtime
+    if runtime is None:
+        raise RuntimeError(
+            "skill target visualization requires a bound typed runtime"
+        )
+    base_path = str(runtime.setup.robot_base_path or "").strip()
+    if not base_path:
+        raise RuntimeError("skill target visualization requires robot_base_path")
+    arm_name = str(runtime.arm_name or "").strip()
+    if arm_name not in {"left", "right"}:
+        raise RuntimeError(
+            "skill target visualization requires a left/right typed runtime arm"
+        )
+    return SkillTargetReferenceFrame(
+        robot=runtime.robot_port.robot,
+        arm_name=arm_name,
+        robot_base_path=base_path,
+    )
 
 
 def _prim_name(value: object) -> str:
@@ -265,25 +306,26 @@ class SkillTargetVisualizer:
 
     @staticmethod
     def _skill_context(skill) -> dict:
-        context = dict(getattr(skill, "_target_visualization_context", {}) or {})
-        context.setdefault("robot", getattr(getattr(skill, "robot", None), "name", "unknown"))
-        context.setdefault("arm", getattr(getattr(skill, "controller", None), "lr_name", "unknown"))
-        context.setdefault("skill", getattr(skill, "name", skill.__class__.__name__).lower())
+        frame = _skill_reference_frame(skill)
+        context = dict(skill._target_visualization_context or {})
+        context.setdefault("robot", frame.robot.name)
+        context.setdefault("arm", frame.arm_name)
+        context.setdefault("skill", skill.__class__.__name__.lower())
         return context
 
     @staticmethod
-    def _gripper_parameters(skill):
-        arm = str(getattr(skill.controller, "lr_name", "left"))
+    def _gripper_parameters(frame: SkillTargetReferenceFrame):
+        arm = frame.arm_name
         keypoints = (
-            skill.robot.fr_gripper_keypoints
+            frame.robot.fr_gripper_keypoints
             if arm == "right"
-            else skill.robot.fl_gripper_keypoints
+            else frame.robot.fl_gripper_keypoints
         )
         return (
             np.asarray(keypoints["tool_head"], dtype=np.float64),
             np.asarray(keypoints["tool_tail"], dtype=np.float64),
             np.asarray(keypoints["tool_side"], dtype=np.float64),
-            float(skill.robot.gripper_max_width),
+            float(frame.robot.gripper_max_width),
         )
 
     def record_target(self, skill, descriptor: dict) -> str | None:
@@ -296,6 +338,7 @@ class SkillTargetVisualizer:
             return None
         if kind not in {"pick", "place"}:
             return None
+        frame = _skill_reference_frame(skill)
         context = self._skill_context(skill)
         handle = f"skill_{self.target_count:03d}_{_prim_name(kind)}"
         path = f"{self.root_path}/Skills/{handle}"
@@ -333,10 +376,10 @@ class SkillTargetVisualizer:
                     prim.SetCustomDataByKey("candidate_count", int(candidate_count))
             elif kind == "pick":
                 prim.SetCustomDataByKey("has_target", True)
-                self._record_pick(skill, prim, path, descriptor)
+                self._record_pick(frame, prim, path, descriptor)
             else:
                 prim.SetCustomDataByKey("has_target", True)
-                self._record_place(skill, prim, path, descriptor)
+                self._record_place(frame, prim, path, descriptor)
             self.target_count += 1
             self.target_paths[handle] = path
             self.stage.GetPrimAtPath(self.root_path).SetCustomDataByKey(
@@ -344,7 +387,9 @@ class SkillTargetVisualizer:
             )
         return handle
 
-    def _record_pick(self, skill, prim, path: str, descriptor: dict):
+    def _record_pick(
+        self, frame: SkillTargetReferenceFrame, prim, path: str, descriptor: dict
+    ):
         selected_index = int(descriptor["selected_index"])
         prim.SetCustomDataByKey("selected_index", selected_index)
         score = descriptor.get("selected_score")
@@ -355,9 +400,9 @@ class SkillTargetVisualizer:
         prim.SetCustomDataByKey(
             "grasp_pose_arm_base", self._pose_values(grasp_position, grasp_orientation)
         )
-        task_from_base = self._relative_transform(skill.controller.robot_base_path)
+        task_from_base = self._relative_transform(frame.robot_base_path)
         grasp_transform = task_from_base @ pose_matrix(grasp_position, grasp_orientation)
-        tool_head, tool_tail, tool_side, max_width = self._gripper_parameters(skill)
+        tool_head, tool_tail, tool_side, max_width = self._gripper_parameters(frame)
         self._add_curves(
             f"{path}/grasp",
             gripper_line_curves(
@@ -390,7 +435,9 @@ class SkillTargetVisualizer:
                 "pick_pre",
             )
 
-    def _record_place(self, skill, prim, path: str, descriptor: dict):
+    def _record_place(
+        self, frame: SkillTargetReferenceFrame, prim, path: str, descriptor: dict
+    ):
         direction = str(descriptor.get("place_direction", "vertical"))
         constraint = str(descriptor.get("position_constraint", "gripper"))
         prim.SetCustomDataByKey("place_direction", direction)
@@ -464,14 +511,14 @@ class SkillTargetVisualizer:
             "place_selected",
         )
 
-        task_from_base = self._relative_transform(skill.controller.robot_base_path)
+        task_from_base = self._relative_transform(frame.robot_base_path)
         place_position = np.asarray(descriptor["place_position"], dtype=np.float64)
         place_orientation = np.asarray(descriptor["place_orientation"], dtype=np.float64)
         prim.SetCustomDataByKey(
             "place_pose_arm_base", self._pose_values(place_position, place_orientation)
         )
         place_transform = task_from_base @ pose_matrix(place_position, place_orientation)
-        tool_head, tool_tail, tool_side, max_width = self._gripper_parameters(skill)
+        tool_head, tool_tail, tool_side, max_width = self._gripper_parameters(frame)
         self._add_curves(
             f"{path}/place_gripper",
             gripper_line_curves(
@@ -527,3 +574,11 @@ class SkillTargetVisualizer:
             prim = self.stage.GetPrimAtPath(path)
             if prim.IsValid() and prim.GetCustomDataByKey("status") == "active":
                 self.finish_target(handle, False, reason=reason)
+
+
+__all__ = [
+    "SkillTargetExportSnapshot",
+    "SkillTargetReferenceFrame",
+    "SkillTargetVisualizer",
+    "create_skill_target_visualizer",
+]

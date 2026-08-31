@@ -12,10 +12,20 @@
 
 - Use `/home/dyf/miniconda3/envs/anygrasp/bin/python` for scene-4 helper scripts and compile checks.
 - Start Isaac through `scripts/docker/up_simbox_isaac.sh` or the validation wrapper that calls it; avoid ad-hoc container startup.
-- For real validation, prefer the Scene-4 validation wrapper when present, or `scripts/docker/run_simbox_task.sh` for one task. Judge success from the validation summary, per-task logs, and skill snapshots.
+- For real validation, prefer the Scene-4 validation wrapper when present, or `scripts/docker/up_simbox_isaac.sh` with `TASK_CONFIG` for one task. Judge success from the validation summary, per-task logs, and skill snapshots.
 - A successful run needs `Task is successful, mode=plan_with_render` and no `[LmdbLogger] Episode failed`; a video or missing traceback is not enough.
 - Keep `emit_obs_on_failure` disabled for strict validation. Placeholder observations can hide retry/reset behavior.
 - Stop and inspect the first failure when using `--stop-on-failure`; use `output/local_navigation/skills/*` snapshots before changing logic.
+
+## Isaac Bash Development Environment
+
+- For code development, shell access, imports, and lightweight checks, use `scripts/docker/isaac_dev.sh`; do not write an agent implementation or start an ad-hoc Isaac container.
+- The developer wrapper reuses the current Isaac 6.0.1 + CuRobo v2 image, mounts the repository at `/workspace`, forces `INTERNDATA_AUTOSTART_LAUNCHER=0`, and does not start `launcher.py`.
+- Start and enter the isolated developer container with `scripts/docker/isaac_dev.sh shell --gpu 0`; add `--build` only when the image needs rebuilding. For a background container use `scripts/docker/isaac_dev.sh start --gpu 0`.
+- Run non-interactive checks through the wrapper, for example `scripts/docker/isaac_dev.sh exec -- bash -lc 'pwd; python -V'`; use `scripts/docker/isaac_dev.sh stop` to release the GPU.
+- The default developer container is `isaac-dev-dev`; custom `--stack-id` values isolate the container name and cache. Developer caches live under `output/isaac-dev/`, not the root-owned `.docker/isaac-sim/` tree.
+- Verify the developer environment before relying on it: `scripts/docker/isaac_dev.sh status`, container state `running`, `/workspace` as the working directory, `INTERNDATA_AUTOSTART_LAUNCHER=0`, and a Bash process as the container main process. CuRobo/Isaac Torch verification from the entrypoint must pass.
+- A running Bash developer container is not task validation. For task success, stop it if it competes for GPU resources and use the normal validation wrapper or `scripts/docker/up_simbox_isaac.sh` with `TASK_CONFIG`; require `Task is successful, mode=plan_with_render` and no `[LmdbLogger] Episode failed`.
 
 ## Reset And Randomization
 
@@ -109,3 +119,19 @@
 - Keep fixes scoped: do not change YAML to mask a code bug, and do not change code when the user explicitly asks for YAML-only repair.
 - Before risky rollback or checkpoint work, verify `git status --short`, branch, and `git log -1 --oneline`.
 - When saving a successful state, create a clear checkpoint commit and verify the final status. Include generated assets only when the user explicitly asks.
+
+## PnP/CuRobo Closed-Loop Debugging
+
+- Fix the first runtime error that prevents task generation; do not treat a later traceback, placeholder observation, video, or renderer startup warning as the root cause.
+- Keep each fix minimal and local to the proven regression. Do not add a large new control path, retries, or fallback layer merely to make a failed episode appear to progress.
+- For PnP/CuRobo planning regressions, inspect the earliest working implementation and the commit diff before changing current behavior; preserve the original project contract unless runtime evidence requires a targeted correction.
+- After every suspected bug-point fix, run the project-prescribed real single-episode wrapper and inspect the fresh first-failure log before making the next change.
+- Static compilation and unit/contract checks are useful gates, but completion requires a fresh runtime result with `Task is successful, mode=plan_with_render` and no `[LmdbLogger] Episode failed`.
+
+## Cross-Task Collision Proxy Contract
+
+- Preserve the original asset collision/proxy contract. Do not replace a source collider with a newly invented box, delete or reshape an existing proxy, or make a debug proxy authoritative merely to solve one task.
+- Scene-8 and legacy Sort the Rubbish are a compatibility pair. Any rigid-object scale/parser/collision-group change must use the same compatible path for both and preserve native collision shapes, exact attach paths, PhysX contacts, and CuRobo addressability.
+- A visible/generated `collision_proxy`, a native USD `CollisionAPI` mesh, a PhysX shape, and a CuRobo in-memory geometry are different layers. Do not call a collision volume missing from a video or one audit field alone; verify all relevant layers.
+- Before changing collision parsing, compare the earliest working implementation and both task assets. After every suspected fix, run real single-episode Scene-8 and Sort the Rubbish validation, inspect the first-failure logs, and inspect fresh video frames when rendering is enabled.
+- A task-specific workaround, newly added box, hidden fallback, or YAML exception is not an acceptable substitute for a cross-task-compatible fix.

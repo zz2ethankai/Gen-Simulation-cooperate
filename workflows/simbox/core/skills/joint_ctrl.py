@@ -2,50 +2,44 @@
 import numpy as np
 import torch
 from core.skills.base_skill import BaseSkill, register_skill
+from core.planning.motion_command import MotionPhase, MotionPhaseCommand
 from core.utils.interpolate_utils import linear_interpolation
 from omegaconf import DictConfig
-from omni.isaac.core.controllers import BaseController
-from omni.isaac.core.robots.robot import Robot
-from omni.isaac.core.tasks import BaseTask
+from isaacsim.core.api.controllers import BaseController
+from isaacsim.core.api.robots.robot import Robot
+from isaacsim.core.api.tasks import BaseTask
 
 
 # pylint: disable=unused-argument
 @register_skill
 class Joint_Ctrl(BaseSkill):
-    def __init__(self, robot: Robot, controller: BaseController, task: BaseTask, cfg: DictConfig, *args, **kwargs):
+    def __init__(self, robot: Robot, skill_runtime, task: BaseTask, cfg: DictConfig, *args, **kwargs):
         super().__init__()
         self.robot = robot
-        self.controller = controller
+        self.bind_skill_runtime(skill_runtime)
         self.task = task
         self.name = cfg["name"]
         self.skill_cfg = cfg
-        self.robot_base_path = self.controller.robot_base_path
-        if "left" in controller.robot_file:
+        self.robot_base_path = self.skill_runtime.setup.robot_base_path
+        if self.skill_runtime.arm_name == "left":
             self.robot_lr = "left"
-        elif "right" in controller.robot_file:
+        elif self.skill_runtime.arm_name == "right":
             self.robot_lr = "right"
         self.manip_list = []
         self.success_threshold_js = self.skill_cfg.get("success_threshold_js", 5e-3)
 
     def simple_generate_manip_cmds(self):
         manip_list = []
-        p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-        # cmd = (p_base_ee_cur, q_base_ee_cur, 'update_pose_cost_metric', {'hold_vec_weight': [0,0,0,0,0,0]})
-        cmd = (p_base_ee_cur, q_base_ee_cur, "update_pose_cost_metric", {"hold_vec_weight": None})
-        manip_list.append(cmd)
-
         curr_js, target_js = self.get_target_js()
         interp_js_list = linear_interpolation(curr_js, target_js, self.skill_cfg.get("num_steps", 10))
         for js in interp_js_list:
-            p_base_ee, q_base_ee = self.controller.forward_kinematic(js)
-            cmd = (
-                p_base_ee,
-                q_base_ee,
-                "dummy_forward",
-                {
-                    "arm_action": js,
-                    "gripper_state": self.skill_cfg.get("gripper_state", 1.0),
-                },
+            gripper_state = self.skill_cfg.get("gripper_state", 1.0)
+            cmd = self.joint_command(
+                js,
+                gripper_state=gripper_state,
+                phase=MotionPhase.CARRY_HOME,
+                replan_allowed=False,
+                direct=True,
             )
             manip_list.append(cmd)
 
@@ -66,9 +60,9 @@ class Joint_Ctrl(BaseSkill):
         joint_positions = self.robot.get_joints_state().positions
 
         if isinstance(joint_positions, torch.Tensor):
-            curr_js = joint_positions.detach().cpu().numpy()[self.controller.arm_indices]
+            curr_js = joint_positions.detach().cpu().numpy()[self.skill_runtime.robot_port.arm_indices]
         elif isinstance(joint_positions, np.ndarray):
-            curr_js = joint_positions[self.controller.arm_indices]
+            curr_js = joint_positions[self.skill_runtime.robot_port.arm_indices]
         else:
             raise TypeError(f"Unsupported joint state type: {type(joint_positions)}")
 
@@ -87,7 +81,7 @@ class Joint_Ctrl(BaseSkill):
                 raise ValueError(f"Unknown control mode: {mode}")
 
         # --- Apply robot-specific joint limits / safety clamps ---
-        robot_file = self.controller.robot_file.lower()
+        robot_file = self.skill_runtime.planner_build_config.robot_file.lower()
 
         if "piper" in robot_file:
             # Example: clamp elbow and wrist joints for Piper robot
@@ -101,33 +95,14 @@ class Joint_Ctrl(BaseSkill):
         return curr_js, target_js
 
     def is_feasible(self, th=5):
-        return self.controller.num_plan_failed <= th
+        return self.skill_runtime.execution.state.num_plan_failed <= th
 
     def is_subtask_done(self, js_eps=5e-3, t_eps=1e-3, o_eps=5e-3):
         assert len(self.manip_list) != 0
         manip_cmd = self.manip_list[0]
-        if manip_cmd[2] == "joint_ctrl":
-            joint_positions = self.robot.get_joints_state().positions
-            if isinstance(joint_positions, torch.Tensor):
-                curr_js = joint_positions.numpy()[self.controller.arm_indices]  # JointState
-            elif isinstance(joint_positions, np.ndarray):
-                curr_js = joint_positions[self.controller.arm_indices]  # JointState
-            target_js = self.manip_list[0][3]["target"]
-            diff_js = np.linalg.norm(curr_js - target_js)
-            js_flag = diff_js < js_eps
-            self.plan_flag = self.controller.num_last_cmd > 10
-            return np.logical_or(js_flag, self.plan_flag)
-        else:
-            p_base_ee_cur, q_base_ee_cur = self.controller.get_ee_pose()
-            p_base_ee, q_base_ee, *_ = self.manip_list[0]
-            diff_trans = np.linalg.norm(p_base_ee_cur - p_base_ee)
-            diff_ori = 2 * np.arccos(min(abs(np.dot(q_base_ee_cur, q_base_ee)), 1.0))
-            pose_flag = np.logical_and(
-                diff_trans < t_eps,
-                diff_ori < o_eps,
-            )
-            self.plan_flag = self.controller.num_last_cmd > 10
-            return np.logical_or(pose_flag, self.plan_flag)
+        if not isinstance(manip_cmd, MotionPhaseCommand):
+            raise TypeError("Joint_Ctrl emits MotionPhaseCommand values only")
+        return self.command_complete(manip_cmd)
 
     def is_done(self):
         if len(self.manip_list) == 0:
@@ -140,9 +115,9 @@ class Joint_Ctrl(BaseSkill):
     def is_success(self):
         joint_positions = self.robot.get_joints_state().positions
         if isinstance(joint_positions, torch.Tensor):
-            curr_js = joint_positions.numpy()[self.controller.arm_indices]  # JointState
+            curr_js = joint_positions.numpy()[self.skill_runtime.robot_port.arm_indices]  # JointState
         elif isinstance(joint_positions, np.ndarray):
-            curr_js = joint_positions[self.controller.arm_indices]  # JointState
+            curr_js = joint_positions[self.skill_runtime.robot_port.arm_indices]  # JointState
         distance_js = np.linalg.norm(curr_js - self.target_js)
         flag = (distance_js < self.success_threshold_js) and (len(self.manip_list) == 0)
 

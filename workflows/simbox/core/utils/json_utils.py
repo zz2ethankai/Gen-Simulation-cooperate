@@ -49,3 +49,15 @@ def json_ready(value: Any):
     if isinstance(value, (list, tuple, set)):
         return [json_ready(item) for item in value]
     return str(value)
+
+
+def joint_state_json_ready(joint_state: Any):
+    """Serialize simulator or CuRobo joint-state objects for diagnostics."""
+
+    if joint_state is None:
+        return None
+    payload = {}
+    for field in ("position", "velocity", "acceleration", "jerk", "joint_names", "shape"):
+        if hasattr(joint_state, field):
+            payload[field] = getattr(joint_state, field)
+    return json_ready(payload)

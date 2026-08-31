@@ -1,11 +1,13 @@
-"""Unit tests for the Physics-schema Skill migration boundary."""
+"""Unit tests for the single-world MotionPlanner configuration boundary."""
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
+import warnings
 
 import pytest
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -13,58 +15,90 @@ SIMBOX_ROOT = ROOT / "workflows" / "simbox"
 if str(SIMBOX_ROOT) not in sys.path:
     sys.path.insert(0, str(SIMBOX_ROOT))
 
-from core.planning.config_contract import validate_planning_contract  # noqa: E402
+from core.planning.config_contract import (  # noqa: E402
+    PASSTHROUGH_MODE,
+    PHYSICS_SCHEMA_MODE,
+    canonicalize_planning_config,
+    resolve_collision_world_mode,
+    resolve_skill_collision_world_mode,
+    validate_planning_contract,
+    validate_planning_exclusions,
+)
 
 
-def _task(skill, *, both_arms=False):
+def _task(skill, *, both_arms=False, planning=None):
     phase = {"left": [skill], "right": [skill] if both_arms else []}
-    return {"skills": [{"robot": [phase]}]}
+    task = {"skills": [{"robot": [phase]}]}
+    if planning is not None:
+        task["planning"] = planning
+    return task
 
 
-def test_standard_pick_and_place_are_accepted():
+def _spawn_expectation():
+    return {
+        "max_object_linear_speed_m_s": 0.05,
+        "max_object_angular_speed_rad_s": 0.2,
+        "max_robot_joint_speed_rad_s": 0.05,
+        "max_unexpected_contact_n": 1.0,
+        "target_support": "counter",
+    }
+
+
+def _workspace_probe_task(skill):
+    task = _task(skill)
+    task["metadata"] = {"workspace_probe": {"candidate_id": "candidate_0"}}
+    return task
+
+
+def test_standard_pick_and_place_are_accepted_in_the_unique_world():
     task = {
         "skills": [
             {"robot": [{"left": [{"name": "Pick", "objects": ["a"]}], "right": []}]},
             {"robot": [{"left": [{"name": "Place", "objects": ["a", "support"]}], "right": []}]},
         ]
     }
-    validate_planning_contract(task, "physics_schema")
+    validate_planning_contract(task, PHYSICS_SCHEMA_MODE)
 
 
-@pytest.mark.parametrize("name", ["DynamicPick", "ManualPick", "DexPick", "DexPlace", "Open", "Close"])
-def test_unmigrated_skills_require_explicit_legacy_mode(name):
-    task = _task({"name": name, "objects": ["a"]})
-    with pytest.raises(ValueError, match="not migrated"):
-        validate_planning_contract(task, "physics_schema")
-    validate_planning_contract(task, "legacy_stage_scan")
+@pytest.mark.parametrize("requested", [None, PHYSICS_SCHEMA_MODE])
+def test_task_mode_is_always_physics_schema(requested):
+    task = _task({"name": "pick", "objects": ["a"]})
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter("always")
+        mode, _reason = resolve_collision_world_mode(task, requested)
+    assert mode == PHYSICS_SCHEMA_MODE
 
 
-def test_concurrent_arms_are_rejected():
-    with pytest.raises(ValueError, match="UNSUPPORTED_CONCURRENT_MANIPULATION"):
-        validate_planning_contract(
-            _task({"name": "Pick", "objects": ["a"]}, both_arms=True),
-            "physics_schema",
-        )
+@pytest.mark.parametrize(
+    "name", ["navigate", "wait", "observe_hold", "scan", "track"]
+)
+def test_non_operation_skills_are_passthrough(name):
+    assert resolve_skill_collision_world_mode(name, PHYSICS_SCHEMA_MODE) == PASSTHROUGH_MODE
 
 
-def test_two_arm_observe_hold_is_not_concurrent_manipulation():
+def test_other_skills_use_physics_schema():
+    assert resolve_skill_collision_world_mode("heuristic__skill", PHYSICS_SCHEMA_MODE) == PHYSICS_SCHEMA_MODE
+
+
+def test_dual_arm_operation_phases_are_accepted_for_sequential_dag_compile():
+    # Existing dual-arm YAML keeps both arms in one phase.  The workflow
+    # compiler adds deterministic dependency edges and executes those nodes
+    # one typed command at a time; validation must not reject the source DAG.
     validate_planning_contract(
-        _task({"name": "Observe_Hold", "hold_steps": 300}, both_arms=True),
-        "physics_schema",
+        _task({"name": "pick", "objects": ["a"]}, both_arms=True),
+        PHYSICS_SCHEMA_MODE,
+    )
+    validate_planning_contract(
+        _task({"name": "observe_hold", "hold_steps": 300}, both_arms=True),
+        PHYSICS_SCHEMA_MODE,
     )
 
 
-def test_workspace_probe_is_allowed_only_as_sequential_validation_phases():
+def test_workspace_probe_contract_remains_sequential_and_typed():
     probe = {
         "name": "pick_plan_probe",
         "objects": ["a"],
-        "spawn_expectation": {
-            "target_support": "table",
-            "max_object_linear_speed_m_s": 0.02,
-            "max_object_angular_speed_rad_s": 0.05,
-            "max_robot_joint_speed_rad_s": 0.05,
-            "max_unexpected_contact_n": 5.0,
-        },
+        "spawn_expectation": _spawn_expectation(),
     }
     task = {
         "metadata": {"workspace_probe": {"candidate_id": "candidate_0"}},
@@ -77,57 +111,153 @@ def test_workspace_probe_is_allowed_only_as_sequential_validation_phases():
             }
         ],
     }
-    validate_planning_contract(task, "physics_schema")
+    validate_planning_contract(task, PHYSICS_SCHEMA_MODE)
 
 
-def test_place_probe_requires_workspace_metadata_and_two_objects():
-    place_probe = {
-        "name": "place_plan_probe",
-        "objects": ["a", "support"],
-    }
-    task = _task(place_probe)
-    task["metadata"] = {"workspace_probe": {"candidate_id": "candidate_0"}}
-    validate_planning_contract(task, "physics_schema")
-
-    with pytest.raises(ValueError, match="exactly 2 object identities"):
-        invalid = _task({"name": "place_plan_probe", "objects": ["a"]})
-        invalid["metadata"] = {"workspace_probe": {"candidate_id": "candidate_0"}}
-        validate_planning_contract(invalid, "physics_schema")
-
-    with pytest.raises(ValueError, match="requires metadata.workspace_probe"):
-        validate_planning_contract(_task(place_probe), "physics_schema")
-
-    with pytest.raises(ValueError, match="test_mode=forward"):
-        invalid_mode = _task({**place_probe, "test_mode": "ik"})
-        invalid_mode["metadata"] = {
-            "workspace_probe": {"candidate_id": "candidate_0"}
-        }
-        validate_planning_contract(invalid_mode, "physics_schema")
-
-
-def test_workspace_probe_cannot_leak_into_a_normal_task():
-    with pytest.raises(ValueError, match="requires metadata.workspace_probe"):
+def test_workspace_probe_requires_metadata():
+    with pytest.raises(ValueError, match="metadata.workspace_probe"):
         validate_planning_contract(
             _task({"name": "pick_plan_probe", "objects": ["a"]}),
-            "physics_schema",
+            PHYSICS_SCHEMA_MODE,
         )
 
 
-def test_pick_probe_requires_spawn_settle_measurement_contract():
-    task = _task({"name": "pick_plan_probe", "objects": ["a"]})
-    task["metadata"] = {"workspace_probe": {"candidate_id": "candidate_0"}}
+def test_pick_probe_requires_complete_spawn_settle_expectation():
+    probe = {
+        "name": "pick_plan_probe",
+        "objects": ["a"],
+        "spawn_expectation": _spawn_expectation(),
+    }
+    probe["spawn_expectation"].pop("target_support")
 
-    with pytest.raises(ValueError, match="spawn_expectation is missing"):
-        validate_planning_contract(task, "physics_schema")
-
-
-def test_object_identity_arity_and_ik_only_mode_are_rejected():
-    with pytest.raises(ValueError, match="exactly 2 object identities"):
+    with pytest.raises(ValueError, match="target_support"):
         validate_planning_contract(
-            _task({"name": "Place", "objects": ["a"]}), "physics_schema"
+            _workspace_probe_task(probe),
+            PHYSICS_SCHEMA_MODE,
+        )
+
+
+def test_place_probe_requires_two_objects_and_forward_mode():
+    validate_planning_contract(
+        _workspace_probe_task(
+            {
+                "name": "place_plan_probe",
+                "objects": ["a", "support"],
+                "test_mode": "forward",
+            }
+        ),
+        PHYSICS_SCHEMA_MODE,
+    )
+    with pytest.raises(ValueError, match="exactly 2"):
+        validate_planning_contract(
+            _workspace_probe_task(
+                {"name": "place_plan_probe", "objects": ["a"]}
+            ),
+            PHYSICS_SCHEMA_MODE,
         )
     with pytest.raises(ValueError, match="test_mode=forward"):
         validate_planning_contract(
-            _task({"name": "Pick", "objects": ["a"], "test_mode": "ik"}),
-            "physics_schema",
+            _workspace_probe_task(
+                {
+                    "name": "place_plan_probe",
+                    "objects": ["a", "support"],
+                    "test_mode": "ik",
+                }
+            ),
+            PHYSICS_SCHEMA_MODE,
         )
+
+
+def test_planning_exclusions_are_exact_task_entity_names():
+    assert validate_planning_exclusions(["table", "sink_0_id1"]) == [
+        "table",
+        "sink_0_id1",
+    ]
+    with pytest.raises(ValueError, match="YAML list"):
+        validate_planning_exclusions({"table": "reason"})
+    with pytest.raises(ValueError, match="exact task entity name"):
+        validate_planning_exclusions([""])
+    with pytest.raises(ValueError, match="exact task entity name"):
+        validate_planning_exclusions(["/World/table"])
+    with pytest.raises(ValueError, match="exact task entity name"):
+        validate_planning_exclusions(["table/collider"])
+    with pytest.raises(ValueError, match="exact task entity name"):
+        validate_planning_exclusions(["table*"])
+    with pytest.raises(ValueError, match="duplicate"):
+        validate_planning_exclusions(["table", "table"])
+
+
+def test_old_world_fields_are_rejected_instead_of_ignored():
+    task = {
+        "planning": {
+            "collision_world": {
+                "mode": "deprecated_world",
+                "exact_exclusions": [],
+            }
+        },
+        "skills": [
+            {
+                "robot": [
+                    {
+                        "left": [
+                            {
+                                "name": "pick",
+                                "objects": ["a"],
+                                "ignore_substring": ["table"],
+                                "test_mode": "ik",
+                            }
+                        ],
+                        "right": [],
+                    }
+                ]
+            }
+        ],
+    }
+    with pytest.raises(ValueError, match="only supported"):
+        canonicalize_planning_config(task)
+
+
+def test_legacy_neglect_names_remain_inert_for_planner_contract():
+    task = {"neglect_collision_names": ["table"]}
+
+    canonical = canonicalize_planning_config(task)
+
+    assert canonical["planning"]["planning_exclusions"] == []
+    # The simulator still consumes this field while creating PhysX support
+    # groups; only the planner exclusion contract must remain typed.
+    assert canonical["neglect_collision_names"] == ["table"]
+
+
+def test_canonical_exact_planning_exclusions_are_preserved_over_legacy_names():
+    task = {
+        "planning": {"planning_exclusions": ["table"]},
+        "neglect_collision_names": ["legacy_substring"],
+    }
+
+    canonical = canonicalize_planning_config(task)
+
+    assert canonical["planning"]["planning_exclusions"] == ["table"]
+    assert canonical["neglect_collision_names"] == ["legacy_substring"]
+
+
+def test_all_task_yaml_documents_validate_the_physics_contract():
+    """Validate every task under the repository's ``tasks[0]`` wrapper."""
+
+    task_root = ROOT / "workflows" / "simbox" / "core" / "configs" / "tasks"
+    task_files = []
+    task_count = 0
+    for config_path in sorted(task_root.rglob("*.yaml")):
+        document = yaml.safe_load(config_path.read_text())
+        if not isinstance(document, dict) or "tasks" not in document:
+            continue
+        tasks = document["tasks"]
+        assert isinstance(tasks, list), f"{config_path}: tasks must be a list"
+        task_files.append(config_path)
+        for task_index, task in enumerate(tasks):
+            assert isinstance(task, dict), f"{config_path}: tasks[{task_index}] must be a mapping"
+            canonical = canonicalize_planning_config(task, config_path=config_path)
+            validate_planning_contract(canonical, config_path=config_path)
+            task_count += 1
+
+    assert len(task_files) == 1149
+    assert task_count == 1149

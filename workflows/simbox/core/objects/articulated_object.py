@@ -1,17 +1,14 @@
-import glob
 import json
 import os
 import random
 
 import numpy as np
 from core.objects.base_object import register_object
-from omni.isaac.core.articulations.articulation import Articulation
-from omni.isaac.core.utils.stage import add_reference_to_stage
+from core.utils.asset_path_utils import resolve_texture_paths
+from isaacsim.core.prims import SingleArticulation as Articulation
+from isaacsim.core.utils.stage import add_reference_to_stage
 
-try:
-    from omni.isaac.core.materials.omni_pbr import OmniPBR  # Isaac Sim 4.1.0 / 4.2.0
-except ImportError:
-    from isaacsim.core.api.materials import OmniPBR  # Isaac Sim 4.5.0
+from isaacsim.core.api.materials.omni_pbr import OmniPBR
 
 
 @register_object
@@ -125,8 +122,7 @@ class ArticulatedObject(Articulation):
 
     def apply_texture(self, asset_root, cfg):
         texture_name = cfg["texture_lib"]
-        texture_path_list = glob.glob(os.path.join(asset_root, texture_name, "*.jpg"))
-        texture_path_list.sort()
+        texture_path_list = resolve_texture_paths(asset_root, texture_name)
         if cfg["apply_randomization"]:
             texture_id = random.randint(0, len(texture_path_list) - 1)
         else:
@@ -141,8 +137,8 @@ class ArticulatedObject(Articulation):
         )
         self.apply_visual_material(mat)
 
-    def initialize(self):
-        super().initialize()
+    def initialize(self, *args, **kwargs):
+        super().initialize(*args, **kwargs)
         self._articulation_view.set_joint_velocities([0.0])
         if "joint_position_range" in self.cfg:
             self.articulation_initial_joint_position = np.random.uniform(

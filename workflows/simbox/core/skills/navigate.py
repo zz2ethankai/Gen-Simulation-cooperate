@@ -10,10 +10,15 @@ from pathlib import Path
 import sys
 
 from core.skills.base_skill import BaseSkill, SKILL_DICT, register_skill
+from core.mobile.navigation_settle import (
+    NavigationSettleBarrier,
+    NavigationSettlePort,
+    NavigationSettleStatus,
+)
 from omegaconf import DictConfig, OmegaConf
-from omni.isaac.core.controllers import BaseController
-from omni.isaac.core.robots.robot import Robot
-from omni.isaac.core.tasks import BaseTask
+from isaacsim.core.api.controllers import BaseController
+from isaacsim.core.api.robots.robot import Robot
+from isaacsim.core.api.tasks import BaseTask
 
 try:
     from .local_navigation import (
@@ -21,7 +26,6 @@ try:
         build_navigation_plan,
         load_or_export_static_map,
         parse_approach_config,
-        resolve_footprint_points,
         select_approach_goal,
     )
 except ImportError:
@@ -35,7 +39,6 @@ except ImportError:
     build_navigation_plan = local_navigation.build_navigation_plan
     load_or_export_static_map = local_navigation.load_or_export_static_map
     parse_approach_config = local_navigation.parse_approach_config
-    resolve_footprint_points = local_navigation.resolve_footprint_points
     select_approach_goal = local_navigation.select_approach_goal
 
 
@@ -53,10 +56,10 @@ class Navigate(BaseSkill):
     process.
     """
 
-    def __init__(self, robot: Robot, controller: BaseController, task: BaseTask, cfg: DictConfig, *args, **kwargs):
+    def __init__(self, robot: Robot, skill_runtime, task: BaseTask, cfg: DictConfig, *args, **kwargs):
         super().__init__()
         self.robot = robot
-        self.controller = controller
+        self.bind_skill_runtime(skill_runtime)
         self.task = task
         self.world = kwargs["world"]
         self.workflow = kwargs.get("workflow")
@@ -66,16 +69,16 @@ class Navigate(BaseSkill):
         self.local_navigation_cfg = dict(base_cfg.get("local_navigation", {})) if isinstance(base_cfg, dict) else {}
         self.planner_cfg = dict(self.local_navigation_cfg.get("planner", {}))
         self.map_cfg = dict(self.local_navigation_cfg.get("map", {}))
-        self.controller_cfg = dict(self.local_navigation_cfg.get("controller", {}))
+        self.navigation_controller_cfg = dict(self.local_navigation_cfg.get("controller", {}))
         self.planner_cfg.update({key: value for key, value in cfg_container.items() if key in self.planner_cfg})
         self.map_cfg.update(
             {
                 key: value
                 for key, value in cfg_container.items()
-                if key in self.map_cfg or key in {"occupancy_map_path", "map_yaml_path", "map_output_dir"}
+                if key in self.map_cfg
             }
         )
-        self.controller_cfg.update(
+        self.navigation_controller_cfg.update(
             {
                 key: value
                 for key, value in cfg_container.items()
@@ -92,7 +95,7 @@ class Navigate(BaseSkill):
         )
         nested_controller_cfg = cfg_container.get("local_navigation", {})
         if isinstance(nested_controller_cfg, dict):
-            self.controller_cfg.update(nested_controller_cfg)
+            self.navigation_controller_cfg.update(nested_controller_cfg)
         platform_cfg = base_cfg.get("platform", {}) if isinstance(base_cfg, dict) else {}
         platform_navigation_cfg = (
             platform_cfg.get("local_navigation", {})
@@ -125,7 +128,7 @@ class Navigate(BaseSkill):
             raise ValueError("Navigate settling tolerances must be non-negative and consecutive_steps must be positive")
         self._goal_reached = False
         self._settle_streak = 0
-        self.approach_config = parse_approach_config(cfg_container)
+        self.approach_config = parse_approach_config(cfg_container, self.local_navigation_cfg)
         if self.approach_config is None:
             self.goal_x, self.goal_y, self.goal_yaw = self._resolve_goal_pose(task, cfg)
         else:
@@ -134,21 +137,34 @@ class Navigate(BaseSkill):
         self.position_tolerance_m = float(
             cfg.get(
                 "xy_goal_tolerance",
-                cfg.get("skill_xy_goal_tolerance", self.controller_cfg.get("position_tolerance_m", 0.10)),
+                cfg.get("skill_xy_goal_tolerance", self.navigation_controller_cfg.get("position_tolerance_m", 0.10)),
             )
         )
         self.yaw_tolerance_rad = float(
             cfg.get(
                 "yaw_goal_tolerance",
-                cfg.get("skill_yaw_goal_tolerance", self.controller_cfg.get("yaw_tolerance_rad", 0.10)),
+                cfg.get("skill_yaw_goal_tolerance", self.navigation_controller_cfg.get("yaw_tolerance_rad", 0.10)),
             )
         )
         self.waypoint_tolerance_m = float(
-            cfg.get("waypoint_tolerance", self.controller_cfg.get("waypoint_tolerance_m", 0.25))
+            cfg.get("waypoint_tolerance", self.navigation_controller_cfg.get("waypoint_tolerance_m", 0.25))
         )
         self.runtime_timeout_sec = float(
             cfg.get("runtime_timeout_sec", self.local_navigation_cfg.get("runtime_timeout_sec", 180.0))
         )
+        # A stopped base must not hold the DAG at the navigation boundary
+        # indefinitely.  Keep this conservative code default local to the
+        # barrier; existing task YAML remains unchanged.
+        default_settle_timeout = (
+            min(5.0, self.runtime_timeout_sec)
+            if self.runtime_timeout_sec > 0.0
+            else 5.0
+        )
+        self.settle_timeout_sec = float(
+            cfg_container.get("settle_timeout_sec", default_settle_timeout)
+        )
+        if not math.isfinite(self.settle_timeout_sec) or self.settle_timeout_sec <= 0.0:
+            raise ValueError("settle_timeout_sec must be finite and positive")
         self.output_root = str(cfg.get("output_root", "output/local_navigation/skills"))
         self.scene_name = str(cfg.get("scene_name", getattr(task, "name", "local_navigation_scene")))
         self._local_done = False
@@ -156,6 +172,7 @@ class Navigate(BaseSkill):
         self._plan_started = False
         self._started_time = None
         self._static_map = None
+        self._static_map_debug = {}
         self._controller = None
         self._driver = None
         self._plan = None
@@ -163,6 +180,8 @@ class Navigate(BaseSkill):
         self.manip_list = []
         self.failure_reason = ""
         self.error_message = ""
+        self.navigation_settle_port: NavigationSettlePort | None = None
+        self.settle_barrier: NavigationSettleBarrier | None = None
 
     def _resolve_goal_pose(self, task: BaseTask, cfg: DictConfig) -> tuple[float, float, float]:
         goal_name = str(cfg.get("goal", "") or "").strip()
@@ -251,7 +270,65 @@ class Navigate(BaseSkill):
         cfg = getattr(self.robot, "cfg", {})
         return cfg if isinstance(cfg, dict) else {}
 
+    def _timing_phase(self, name, category, metadata=None):
+        scope = getattr(self, "_timing_scope", None)
+        if scope is None:
+            return None
+        try:
+            return scope.phase(name, category=category, metadata=metadata).start()
+        except Exception:
+            # Navigation must remain usable when optional telemetry is broken.
+            return None
+
+    @staticmethod
+    def _finish_timing_phase(phase, success, error=None):
+        if phase is None:
+            return
+        try:
+            phase.finish(
+                success=bool(success),
+                reason=(str(error) if error is not None else None),
+                error=error,
+            )
+        except Exception:
+            pass
+
+    def _start_execution_timing(self):
+        if getattr(self, "_timing_execution_phase", None) is not None:
+            return
+        workflow_start = getattr(self.workflow, "_start_skill_execution_phase", None)
+        if callable(workflow_start):
+            workflow_start(self, "navigation.execution")
+            return
+        phase = self._timing_phase(
+            "navigation.execution",
+            "execution",
+            metadata={"skill": "navigate"},
+        )
+        if phase is not None:
+            self._timing_execution_phase = phase
+
     def _begin_plan(self):
+        phase = self._timing_phase(
+            "navigation.plan",
+            "planner",
+            metadata={"skill": "navigate"},
+        )
+        try:
+            planned = self._begin_plan_impl()
+        except Exception as exc:
+            self._finish_timing_phase(phase, False, exc)
+            raise
+        self._finish_timing_phase(
+            phase,
+            planned,
+            None if planned else RuntimeError(self.failure_reason or "navigation_plan_failed"),
+        )
+        if planned:
+            self._start_execution_timing()
+        return planned
+
+    def _begin_plan_impl(self):
         driver = self._get_driver()
         if driver is None:
             return False
@@ -260,27 +337,25 @@ class Navigate(BaseSkill):
                 workflow=self.workflow,
                 robot=self.robot,
                 cfg=self.map_cfg,
-                scene_name=self.scene_name,
             )
+            get_map_debug = getattr(self.workflow, "get_static_map_debug", None)
+            if callable(get_map_debug):
+                self._static_map_debug = get_map_debug(self.robot)
         except Exception as exc:
             self.failure_reason = "static_map_error"
             self.error_message = f"Static occupancy map preparation failed: {type(exc).__name__}: {exc}"
             return False
         if self._static_map is None and not bool(self.skill_cfg.get("allow_unmapped_navigation", False)):
             self.failure_reason = "static_map_unavailable"
-            self.error_message = "Local navigation requires a generated or configured static occupancy map"
+            self.error_message = "Local navigation requires a generated static occupancy map"
             return False
         start_pose = self._get_pose()
-        base_cfg = getattr(self.robot, "base_cfg", {}) or {}
-        footprint = resolve_footprint_points(base_cfg)
-        padding = float(self.local_navigation_cfg.get("footprint_padding_m", 0.0))
         if self.approach_config is not None:
             goal, debug = select_approach_goal(
                 approach_config=self.approach_config,
                 target_xy=self._target_xy(),
                 start_pose=start_pose,
                 static_map=self._static_map,
-                base_cfg=base_cfg,
                 robot_cfg=self._robot_cfg_for_approach(),
                 planner_cfg=self.planner_cfg,
             )
@@ -294,8 +369,6 @@ class Navigate(BaseSkill):
             start_pose=start_pose,
             goal=(self.goal_x, self.goal_y, self.goal_yaw),
             static_map=self._static_map,
-            footprint_points=footprint,
-            footprint_padding_m=padding,
             planner_cfg=self.planner_cfg,
         )
         if self._plan is None:
@@ -303,16 +376,36 @@ class Navigate(BaseSkill):
             self.error_message = "Local center-cell A* could not find a collision-free path"
             return False
         self._controller = WaypointController(
-            max_linear_velocity=float(self.controller_cfg.get("max_linear_velocity", 0.35)),
-            max_angular_velocity=float(self.controller_cfg.get("max_angular_velocity", 0.8)),
+            max_linear_velocity=float(self.navigation_controller_cfg.get("max_linear_velocity", 0.35)),
+            max_angular_velocity=float(self.navigation_controller_cfg.get("max_angular_velocity", 0.8)),
             waypoint_tolerance_m=self.waypoint_tolerance_m,
             position_tolerance_m=self.position_tolerance_m,
             yaw_tolerance_rad=self.yaw_tolerance_rad,
-            rotate_first_error_rad=float(self.controller_cfg.get("rotate_first_error_rad", 0.2)),
-            linear_gain=float(self.controller_cfg.get("linear_gain", 2.0)),
-            angular_gain=float(self.controller_cfg.get("angular_gain", 2.0)),
+            rotate_first_error_rad=float(self.navigation_controller_cfg.get("rotate_first_error_rad", 0.2)),
+            linear_gain=float(self.navigation_controller_cfg.get("linear_gain", 2.0)),
+            angular_gain=float(self.navigation_controller_cfg.get("angular_gain", 2.0)),
         )
         self._controller.reset(self._plan.path)
+        # Compose the measured-state boundary from the existing local driver;
+        # this does not alter A*, waypoint control, or base actuation.
+        try:
+            settle_port = NavigationSettlePort.from_robot_driver(self.robot, driver)
+            settle_barrier = NavigationSettleBarrier(
+                settle_port,
+                linear_speed_tolerance=self.settle_linear_speed_tolerance,
+                angular_speed_tolerance=self.settle_angular_speed_tolerance,
+                consecutive_steps=self.settle_consecutive_steps,
+                timeout_sec=self.settle_timeout_sec,
+            )
+        except Exception as exc:
+            self.failure_reason = "settle_port_unavailable"
+            self.error_message = (
+                "Local navigation could not compose its measured settle boundary: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return False
+        self.navigation_settle_port = settle_port
+        self.settle_barrier = settle_barrier
         driver.prepare_for_navigation()
         self._started_time = self._now_sec()
         self._write_debug("planned")
@@ -325,11 +418,37 @@ class Navigate(BaseSkill):
         except (TypeError, ValueError):
             return 0.0
 
+    def _physics_dt(self):
+        getter = getattr(self.world, "get_physics_dt", None)
+        try:
+            value = getter() if callable(getter) else getattr(self.world, "physics_dt", 0.0)
+            value = float(value)
+        except (TypeError, ValueError):
+            value = 0.0
+        return value if math.isfinite(value) and value >= 0.0 else 0.0
+
+    def _finalize_navigation(self):
+        port = self.navigation_settle_port
+        if port is not None:
+            port.finalize()
+            return
+        driver = self._driver
+        if driver is not None:
+            driver.finalize_after_navigation()
+
     def _write_debug(self, tag):
         try:
             path = os.path.join(self.output_root, "local_navigation", self.scene_name, f"{tag}.json")
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            payload = {"goal": [self.goal_x, self.goal_y, self.goal_yaw], "failure_reason": self.failure_reason, "error_message": self.error_message, "approach": self._approach_debug}
+            payload = {
+                "goal": [self.goal_x, self.goal_y, self.goal_yaw],
+                "failure_reason": self.failure_reason,
+                "error_message": self.error_message,
+                "approach": self._approach_debug,
+                "map": self._static_map_debug,
+            }
+            if self.settle_barrier is not None:
+                payload["settle"] = self.settle_barrier.result.to_dict()
             if self._plan is not None:
                 payload["path"] = self._plan.path
                 payload["collision_check"] = self._plan.collision_check
@@ -365,29 +484,51 @@ class Navigate(BaseSkill):
         if self._started_time is not None and self._now_sec() - self._started_time > self.runtime_timeout_sec:
             self.failure_reason = "runtime_timeout"
             self.error_message = "Local navigation exceeded runtime_timeout_sec"
-            driver.finalize_after_navigation()
+            self._finalize_navigation()
             self._local_done = True
             self._local_success = False
             self._write_debug("timeout")
             return
         if self._goal_reached:
-            driver.set_command(0.0, 0.0, 0.0)
-            actual_twist = driver.get_actual_twist_body()
-            planar_speed = math.hypot(float(actual_twist[0]), float(actual_twist[1]))
-            yaw_rate = abs(float(actual_twist[2]))
-            if (
-                planar_speed <= self.settle_linear_speed_tolerance
-                and yaw_rate <= self.settle_angular_speed_tolerance
-            ):
-                self._settle_streak += 1
-            else:
-                self._settle_streak = 0
-            if self._settle_streak < self.settle_consecutive_steps:
+            barrier = self.settle_barrier
+            if barrier is None:
+                self.failure_reason = "settle_barrier_unavailable"
+                self.error_message = "Navigation reached its goal without a settle barrier"
+                try:
+                    driver.finalize_after_navigation()
+                finally:
+                    self._local_done = True
+                    self._local_success = False
+                    self._write_debug("settle_error")
                 return
-            driver.finalize_after_navigation()
-            self._local_done = True
-            self._local_success = True
-            self._write_debug("succeeded")
+            result = barrier.step(
+                now_sec=self._now_sec(),
+                dt_sec=self._physics_dt(),
+            )
+            self._settle_streak = result.stable_steps
+            if not result.complete:
+                return
+            if result.success:
+                self._finalize_navigation()
+                self._local_done = True
+                self._local_success = True
+                self._write_debug("succeeded")
+                return
+            if result.status == NavigationSettleStatus.TIMED_OUT:
+                self.failure_reason = "settle_timeout"
+                self.error_message = (
+                    "Measured base pose/twist did not remain stable before "
+                    f"settle_timeout_sec={self.settle_timeout_sec:.3f}"
+                )
+            else:
+                self.failure_reason = "settle_measurement_failed"
+                self.error_message = result.reason or "Measured base settle barrier failed"
+            try:
+                self._finalize_navigation()
+            finally:
+                self._local_done = True
+                self._local_success = False
+                self._write_debug("settle_failed")
             return
         try:
             body_vx, body_vy, body_wz, done, _ = self._controller.command(
@@ -408,6 +549,8 @@ class Navigate(BaseSkill):
         if done:
             self._goal_reached = True
             self._settle_streak = 0
+            if self.settle_barrier is not None:
+                self.settle_barrier.start(self._now_sec())
             driver.set_command(0.0, 0.0, 0.0)
 
     def is_done(self):

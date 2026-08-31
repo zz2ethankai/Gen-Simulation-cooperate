@@ -258,17 +258,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input",
         type=Path,
-        default=Path("InternDataAssets/assets/split_aloha_mid_360/robot.usd"),
+        default=Path("InternDataAssets/robots/split_aloha_mid_360/robot.usd"),
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("InternDataAssets/assets/split_aloha_mid_360_virtual/robot.usd"),
+        default=Path("InternDataAssets/robots/split_aloha_mid_360_virtual/robot.usd"),
     )
     parser.add_argument(
         "--metadata-output",
         type=Path,
-        default=Path("InternDataAssets/assets/split_aloha_mid_360_virtual/virtual_postprocess_metadata.json"),
+        default=Path("InternDataAssets/robots/split_aloha_mid_360_virtual/virtual_postprocess_metadata.json"),
     )
     return parser.parse_args()
 

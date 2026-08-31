@@ -6,8 +6,8 @@ import math
 import numpy as np
 from core.robots.base_robot import register_robot
 from core.robots.template_robot import TemplateRobot
-from omni.isaac.core.utils.prims import get_prim_at_path
-from omni.isaac.core.utils.transformations import get_relative_transform, pose_from_tf_matrix, tf_matrix_from_pose
+from isaacsim.core.utils.prims import get_prim_at_path
+from isaacsim.core.utils.transformations import get_relative_transform, pose_from_tf_matrix, tf_matrix_from_pose
 from pxr import UsdPhysics
 
 
@@ -326,6 +326,10 @@ class PandaOmron(TemplateRobot):
             joint_indices=joint_indices,
         )
         self._set_active_manipulator_position_target(joint_positions, joint_indices)
+        # Keep the mobile-base hold separate from the arm action.  The hold
+        # strategy writes its own base position/velocity targets and never
+        # changes this action's joint-index payload.
+        self.reapply_manipulation_base_hold()
 
     def _set_active_manipulator_position_target(self, joint_positions, joint_indices):
         joint_positions = np.asarray(joint_positions, dtype=np.float32).reshape(1, -1)
@@ -358,7 +362,9 @@ class PandaOmron(TemplateRobot):
             joint_indices=self._active_manipulator_joint_indices,
         )
 
-    def get_armbase_world_pose(self):
+    def get_armbase_world_pose(self, arm="left"):
+        if arm != "left":
+            raise ValueError(f"unsupported arm {arm!r}")
         mobile_translation, mobile_orientation = self.get_mobile_base_pose()
         world_mobile = tf_matrix_from_pose(mobile_translation, mobile_orientation)
         mobile_to_armbase = tf_matrix_from_pose(
@@ -369,8 +375,8 @@ class PandaOmron(TemplateRobot):
         translation, orientation = pose_from_tf_matrix(world_armbase)
         return translation.astype(np.float32), orientation.astype(np.float32)
 
-    def get_armbase_world_transform(self):
-        translation, orientation = self.get_armbase_world_pose()
+    def get_armbase_world_transform(self, arm="left"):
+        translation, orientation = self.get_armbase_world_pose(arm)
         return tf_matrix_from_pose(translation, orientation)
 
     def apply_base_command(self, steering_positions, wheel_velocities):

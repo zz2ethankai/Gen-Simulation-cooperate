@@ -1,6 +1,6 @@
 profile_id: genie1_floor_standing_v1
 target_class: Genie1
-path: G1_120s/robot.usd
+path: "InternDataAssets/robots/G1_120s/robot.usd"
 
 placement:
   family: floor_standing
@@ -30,7 +30,7 @@ base:
 arms:
   left:
     controller: Genie1
-    curobo_file: workflows/simbox/curobo/src/curobo/content/configs/robot/G1_120s_left_arm_parallel_gripper.yml
+    curobo_file: InternDataAssets/curobov2/curobo/content/custom/configs/robot/G1_120s_left_arm_parallel_gripper.yml
     command_joint_names: [idx21_arm_l_joint1, idx22_arm_l_joint2, idx23_arm_l_joint3, idx24_arm_l_joint4, idx25_arm_l_joint5, idx26_arm_l_joint6, idx27_arm_l_joint7]
     trajectory_joint_names: [idx21_arm_l_joint1, idx22_arm_l_joint2, idx23_arm_l_joint3, idx24_arm_l_joint4, idx25_arm_l_joint5, idx26_arm_l_joint6, idx27_arm_l_joint7]
     joint_indices: [4, 6, 8, 10, 12, 14, 16]
@@ -60,7 +60,7 @@ arms:
           clip: [0.0, 1.0]
   right:
     controller: Genie1
-    curobo_file: workflows/simbox/curobo/src/curobo/content/configs/robot/G1_120s_right_arm_parallel_gripper.yml
+    curobo_file: InternDataAssets/curobov2/curobo/content/custom/configs/robot/G1_120s_right_arm_parallel_gripper.yml
     command_joint_names: [idx61_arm_r_joint1, idx62_arm_r_joint2, idx63_arm_r_joint3, idx64_arm_r_joint4, idx65_arm_r_joint5, idx66_arm_r_joint6, idx67_arm_r_joint7]
     trajectory_joint_names: [idx61_arm_r_joint1, idx62_arm_r_joint2, idx63_arm_r_joint3, idx64_arm_r_joint4, idx65_arm_r_joint5, idx66_arm_r_joint6, idx67_arm_r_joint7]
     joint_indices: [5, 7, 9, 11, 13, 15, 17]

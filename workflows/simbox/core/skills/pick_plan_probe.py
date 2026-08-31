@@ -1,4 +1,4 @@
-"""Planning-only Pick probe that emits a structured CuRobo result."""
+"""Planning-only Pick probe that emits a structured planner result."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from core.utils.camera_template import resolve_camera_template_pose
 
 @register_skill
 class PickPlanProbe(Pick):
-    """Run Pick's shared grasp evaluator without executing any commands."""
+    """Run Pick's direct runtime planning path without executing commands."""
 
     @staticmethod
     def _yaw_deg(quaternion) -> float:
@@ -54,18 +54,16 @@ class PickPlanProbe(Pick):
         allowed_support_contact = 0.0
         collision_world_exact = False
         collision_world_error = None
-        manager = getattr(self.controller, "collision_scene_manager", None)
-        if manager is not None:
+        runtime = self._require_skill_runtime()
+        manager = runtime.robot_port.collision_scene_manager
+        port = getattr(runtime, "scene_port", None)
+        if manager is not None and port is not None:
             try:
                 manager.sync_dynamic_poses(0, interval_steps=1, force=True)
-                for controller in manager.controllers.values():
-                    manager.audit_controller(controller)
-                    unexpected_robot_contact = max(
-                        unexpected_robot_contact,
-                        manager.get_unexpected_robot_contact_force(
-                            str(controller.name), str(controller.lr_name)
-                        ),
-                    )
+                manager.audit_controller(port)
+                unexpected_robot_contact = manager.get_unexpected_robot_contact_force(
+                    str(port.name), str(port.lr_name)
+                )
                 allowed_support_contact, unexpected_object_contact = (
                     manager.get_object_environment_contact_forces(
                         self.pick_obj.name,
@@ -174,32 +172,26 @@ class PickPlanProbe(Pick):
                 "segments": [],
             },
         }
-
         if capture.get("trajectory"):
             trajectory = evidence["trajectory"]
-            visualizer = getattr(self.controller, "trajectory_visualizer", None)
-            evaluation = self.plan_evaluation
+            runtime = self._require_skill_runtime()
+            visualizer = getattr(runtime, "trajectory_visualizer", None)
             if visualizer is None:
                 trajectory["status"] = "unavailable"
                 trajectory["error"] = "trajectory visualizer is not enabled"
-            elif evaluation is None:
+            elif self.plan_state is None:
                 trajectory["status"] = "unavailable"
                 trajectory["error"] = "grasp planning did not run"
             else:
                 try:
-                    paths = (
-                        ("pregrasp", evaluation.pregrasp_path),
-                        ("terminal_grasp", evaluation.terminal_path),
-                    )
-                    for name, path in paths:
-                        if path is None:
-                            continue
-                        full_path = self.controller.motion_gen.get_full_js(path)
-                        full_path = full_path.get_ordered_joint_state(
-                            self.controller.raw_js_names
+                    trajectory["segments"] = [
+                        name
+                        for name, path in (
+                            ("pregrasp", self.plan_state.get("pregrasp_path")),
+                            ("terminal_grasp", self.plan_state.get("terminal_path")),
                         )
-                        visualizer.record_plan(self.controller, full_path, name)
-                        trajectory["segments"].append(name)
+                        if path is not None
+                    ]
                     artifact = (
                         visualizer.export(output_dir)
                         if trajectory["segments"]
@@ -213,7 +205,6 @@ class PickPlanProbe(Pick):
                 except Exception as exc:
                     trajectory["status"] = "error"
                     trajectory["error"] = str(exc)
-
         if capture.get("overview"):
             overview = evidence["overview"]
             camera = dict(capture.get("camera") or {})
@@ -249,8 +240,13 @@ class PickPlanProbe(Pick):
                 overview["error"] = str(exc)
         return evidence
 
-    def simple_generate_manip_cmds(self):
+    def generate_manip_cmds(self):
+        runtime = self._require_skill_runtime()
         spawn_check = self._spawn_check()
+        target_only = bool(self.skill_cfg.get("diagnostic_target_only_world", False))
+        empty_world = bool(self.skill_cfg.get("diagnostic_empty_world", False))
+        manager = runtime.robot_port.collision_scene_manager
+        port = getattr(runtime, "scene_port", None)
         raw_curobo_only_paths = self.skill_cfg.get(
             "diagnostic_disable_curobo_obstacle_paths", []
         )
@@ -260,116 +256,94 @@ class PickPlanProbe(Pick):
         raw_collision_entities = self.skill_cfg.get(
             "diagnostic_disable_collision_entities", []
         )
-        if not isinstance(raw_curobo_only_paths, (list, tuple)):
-            raise ValueError(
-                "diagnostic_disable_curobo_obstacle_paths must be a list of exact Prim paths"
-            )
-        if not isinstance(raw_physics_and_curobo_paths, (list, tuple)):
-            raise ValueError(
-                "diagnostic_disable_physics_and_curobo_obstacle_paths must be a list"
-            )
-        if not isinstance(raw_collision_entities, (list, tuple)):
-            raise ValueError("diagnostic_disable_collision_entities must be a list")
-        curobo_only_paths = [str(value).strip() for value in raw_curobo_only_paths]
-        physics_and_curobo_paths = [
-            str(value).strip() for value in raw_physics_and_curobo_paths
+        for field, values in (
+            ("diagnostic_disable_curobo_obstacle_paths", raw_curobo_only_paths),
+            (
+                "diagnostic_disable_physics_and_curobo_obstacle_paths",
+                raw_physics_and_curobo_paths,
+            ),
+            ("diagnostic_disable_collision_entities", raw_collision_entities),
+        ):
+            if not isinstance(values, (list, tuple)):
+                raise ValueError(f"{field} must be a list")
+        curobo_only_paths = [
+            str(value).strip()
+            for value in raw_curobo_only_paths
         ]
-        collision_entities = [str(value).strip() for value in raw_collision_entities]
-        resolved_entities: dict[str, list[str]] = {}
-        if spawn_check["stable"]:
-            manager = getattr(self.controller, "collision_scene_manager", None)
-            target_only = bool(self.skill_cfg.get("diagnostic_target_only_world", False))
-            empty_world = bool(self.skill_cfg.get("diagnostic_empty_world", False))
-            dual_world_diagnostic = bool(physics_and_curobo_paths or collision_entities)
-            active_modes = sum(
-                bool(value)
-                for value in (
-                    curobo_only_paths,
-                    dual_world_diagnostic,
-                    target_only,
-                    empty_world,
+        physics_and_curobo_paths = [
+            str(value).strip()
+            for value in raw_physics_and_curobo_paths
+        ]
+        collision_entities = [
+            str(value).strip()
+            for value in raw_collision_entities
+        ]
+        resolved_entities = {}
+        if collision_entities:
+            if manager is None:
+                raise RuntimeError("diagnostic entity isolation requires a scene manager")
+            resolved_entities = manager.resolve_diagnostic_collision_entities(
+                collision_entities
+            )
+            for paths in resolved_entities.values():
+                for path in paths:
+                    if path not in physics_and_curobo_paths:
+                        physics_and_curobo_paths.append(path)
+            self.task.cfg.setdefault("metadata", {}).setdefault(
+                "workspace_probe", {}
+            )["diagnostic_resolved_collision_entities"] = resolved_entities
+        active_modes = sum(
+            bool(value)
+            for value in (
+                curobo_only_paths,
+                physics_and_curobo_paths,
+                target_only,
+                empty_world,
+            )
+        )
+        if active_modes > 1:
+            raise ValueError(
+                "CuRobo-only, Physics+CuRobo, target-only, and empty-world "
+                "diagnostic isolation modes are mutually exclusive"
+            )
+        if (active_modes or collision_entities) and (manager is None or port is None):
+            raise RuntimeError(
+                "diagnostic collision isolation requires a typed scene port"
+            )
+        if target_only or empty_world:
+            target_paths = set(manager.records[self.pick_obj.name].collision_prim_paths)
+            enabled = manager.controller_enabled[(str(port.name), str(port.lr_name))]
+            curobo_only_paths = [
+                path
+                for path, is_enabled in enabled.items()
+                if is_enabled and (empty_world or path not in target_paths)
+            ]
+        if curobo_only_paths:
+            diagnostic_context = manager.diagnostic_curobo_obstacles_disabled(
+                port, curobo_only_paths
+            )
+        elif physics_and_curobo_paths:
+            diagnostic_context = (
+                manager.diagnostic_physics_and_curobo_obstacles_disabled(
+                    port, physics_and_curobo_paths
                 )
             )
-            if active_modes > 1:
-                raise ValueError(
-                    "CuRobo-only, Physics+CuRobo, target-only, and empty-world "
-                    "diagnostic isolation modes are mutually exclusive"
-                )
-            if (curobo_only_paths or dual_world_diagnostic) and manager is None:
-                raise RuntimeError(
-                    "diagnostic collision isolation requires the physics_schema collision manager"
-                )
-            if collision_entities:
-                resolved_entities = manager.resolve_diagnostic_collision_entities(
-                    collision_entities
-                )
-                for paths in resolved_entities.values():
-                    for path in paths:
-                        if path not in physics_and_curobo_paths:
-                            physics_and_curobo_paths.append(path)
-                probe_metadata = self.task.cfg.setdefault("metadata", {}).setdefault(
-                    "workspace_probe", {}
-                )
-                probe_metadata["diagnostic_resolved_collision_entities"] = (
-                    resolved_entities
-                )
-            disabled_paths: list[str] = []
-            original_begin_target_transit = None
-            if (target_only or empty_world) and manager is not None:
-                key = (str(self.controller.name), str(self.controller.lr_name))
-                target_paths = set(manager.records[self.pick_obj.name].collision_prim_paths)
-                enabled = manager.controller_enabled.get(key, {})
-                disabled_paths = [
-                    path
-                    for path, is_enabled in enabled.items()
-                    if is_enabled and (empty_world or path not in target_paths)
-                ]
-                for path in disabled_paths:
-                    self.controller.motion_gen.world_collision.enable_obstacle(path, False)
-                self._debug_log(
-                    "diagnostic %s world disabled_obstacle_count=%d"
-                    % ("empty" if empty_world else "target-only", len(disabled_paths))
-                )
-                if empty_world:
-                    original_begin_target_transit = manager.begin_target_transit
-
-                    def _begin_target_transit_without_world(entity_name, robot, arm):
-                        record = original_begin_target_transit(entity_name, robot, arm)
-                        for path in target_paths:
-                            self.controller.motion_gen.world_collision.enable_obstacle(path, False)
-                        return record
-
-                    manager.begin_target_transit = _begin_target_transit_without_world
-            if curobo_only_paths:
-                diagnostic_context = manager.diagnostic_curobo_obstacles_disabled(
-                    self.controller, curobo_only_paths
-                )
-            elif physics_and_curobo_paths:
-                diagnostic_context = (
-                    manager.diagnostic_physics_and_curobo_obstacles_disabled(
-                        self.controller, physics_and_curobo_paths
-                    )
-                )
-            else:
-                diagnostic_context = nullcontext()
-            try:
-                with diagnostic_context:
-                    super().simple_generate_manip_cmds()
-            finally:
-                if original_begin_target_transit is not None:
-                    manager.begin_target_transit = original_begin_target_transit
-                for path in disabled_paths:
-                    self.controller.motion_gen.world_collision.enable_obstacle(path, True)
-            result = self.plan_evaluation.result.to_dict() if self.plan_evaluation is not None else {
+        else:
+            diagnostic_context = nullcontext()
+        if spawn_check["stable"]:
+            with diagnostic_context:
+                super().generate_manip_cmds()
+            result = dict(self.plan_state["result"]) if self.plan_state is not None else {
                 "feasible": False,
                 "failure_code": "PROBE_DID_NOT_RUN",
             }
             result["diagnostic_target_only_world"] = target_only
             result["diagnostic_empty_world"] = empty_world
+            result["diagnostic_world_override_ignored"] = False
         else:
             result = {
                 "feasible": False,
-                "arm": getattr(self.controller, "lr_name", None),
+                "arm": runtime.arm_name,
                 "grasp_count": 0,
                 "pregrasp_success_count": 0,
                 "grasp_success_count": 0,
@@ -384,19 +358,14 @@ class PickPlanProbe(Pick):
         )
         result["diagnostic_resolved_collision_entities"] = resolved_entities
         result["spawn_check"] = spawn_check
-        position, orientation = self.controller.get_ee_pose()
         diagnostic_evidence = self._capture_diagnostics(spawn_check)
         if diagnostic_evidence is not None:
             result["diagnostic_evidence"] = diagnostic_evidence
         self._write_result(result)
-        if diagnostic_evidence is not None:
-            self.manip_list = []
-            return
-        # Keep the standard controller contract valid without moving the robot.
-        # The external validator ends the process once both arm JSONs exist.
-        self.manip_list = [
-            (position, orientation, "update_pose_cost_metric", {"hold_vec_weight": None})
-        ]
+        # Keep the standard controller contract valid without moving the robot
+        # or changing the gripper.  The external validator ends the process
+        # once both arm JSONs exist.
+        self.manip_list = [self.measured_hold_command()]
 
     def is_success(self):
         # Probe execution success is separate from grasp feasibility, which is

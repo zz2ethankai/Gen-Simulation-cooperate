@@ -3,13 +3,11 @@ import os
 import random
 
 from core.objects.base_object import register_object
-from omni.isaac.core.prims import XFormPrim
-from omni.isaac.core.utils.prims import create_prim, is_prim_path_valid
+from core.utils.asset_path_utils import resolve_texture_paths
+from isaacsim.core.prims import SingleXFormPrim as XFormPrim
+from isaacsim.core.utils.prims import create_prim, is_prim_path_valid
 
-try:
-    from omni.isaac.core.materials.omni_pbr import OmniPBR  # Isaac Sim 4.1.0 / 4.2.0
-except ImportError:
-    from isaacsim.core.api.materials import OmniPBR  # Isaac Sim 4.5.0
+from isaacsim.core.api.materials.omni_pbr import OmniPBR
 
 
 @register_object
@@ -43,8 +41,7 @@ class XFormObject(XFormPrim):
 
     def apply_texture(self, asset_root, cfg):
         texture_name = cfg["texture_lib"]
-        texture_path_list = glob.glob(os.path.join(asset_root, texture_name, "*"))
-        texture_path_list.sort()
+        texture_path_list = resolve_texture_paths(asset_root, texture_name)
         if cfg["apply_randomization"]:
             texture_id = random.randint(0, len(texture_path_list) - 1)
         else:

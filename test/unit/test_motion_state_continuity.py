@@ -1,63 +1,126 @@
-"""Tests for preserving measured motion state across manipulation replans."""
+"""Behavior checks for measured-state starts and named trajectory execution."""
 
-import ast
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
+import torch
+
+from core.controllers.curobo.phase_execution import PhaseExecutor
+from core.execution.curobo_execution import ControllerExecution
+from core.planning.domain_types import JointTrajectory, PlanResult
 
 
-_CONTROLLER_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "workflows"
-    / "simbox"
-    / "core"
-    / "controllers"
-    / "template_controller.py"
-)
+def test_cartesian_fk_path_reorders_named_positions_in_one_native_call(monkeypatch):
+    pytest.importorskip("curobo")
+    from core.controllers.curobo import runtime as runtime_module
 
+    class JointState:
+        @classmethod
+        def from_position(cls, position, joint_names):
+            return SimpleNamespace(position=position, joint_names=tuple(joint_names))
 
-def _load_derivative_helper():
-    tree = ast.parse(_CONTROLLER_PATH.read_text(encoding="utf-8"))
-    controller_node = next(
-        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "TemplateController"
+    class NativePlanner:
+        tool_frames = ["ee"]
+        joint_names = ["joint_0", "joint_1"]
+
+        def __init__(self):
+            self.seen = None
+
+        def compute_kinematics(self, state):
+            self.seen = state
+            return SimpleNamespace(
+                tool_poses=SimpleNamespace(
+                    get_link_pose=lambda _name: SimpleNamespace(
+                        position=state.position[..., :3]
+                    )
+                )
+            )
+
+    planner = NativePlanner()
+    runtime = object.__new__(runtime_module.MotionPlannerRuntime)
+    runtime._planner = planner
+    runtime.tensor_args = SimpleNamespace(
+        to_device=lambda value: torch.as_tensor(value, dtype=torch.float32)
     )
-    method_node = next(
-        node
-        for node in controller_node.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_joint_state_derivatives"
-    )
-    namespace = {"np": np}
-    method_module = ast.fix_missing_locations(ast.Module(body=[method_node], type_ignores=[]))
-    exec(compile(method_module, _CONTROLLER_PATH, "exec"), namespace)
-    return namespace["_joint_state_derivatives"]
+    import curobo.types
+    monkeypatch.setattr(curobo.types, "JointState", JointState)
 
-
-def test_joint_state_derivatives_preserve_measured_values():
-    helper = _load_derivative_helper()
-    state = SimpleNamespace(
-        positions=np.zeros(3),
-        velocities=np.array([0.1, -0.2, 0.3]),
-        accelerations=np.array([0.4, 0.5, -0.6]),
-        jerks=np.array([-0.7, 0.8, 0.9]),
-    )
-
-    velocity, acceleration, jerk = helper(state)
-
-    np.testing.assert_allclose(velocity, state.velocities)
-    np.testing.assert_allclose(acceleration, state.accelerations)
-    np.testing.assert_allclose(jerk, state.jerks)
-
-
-def test_joint_state_derivatives_fall_back_for_missing_or_invalid_fields():
-    helper = _load_derivative_helper()
-    state = SimpleNamespace(
-        positions=np.zeros(3),
-        velocities=np.array([0.1, np.nan, 0.3]),
+    # The helper uses the runtime's CuRobo import directly; patch the module
+    # import site so this test exercises the real named Cartesian path logic.
+    result = runtime._compute_cartesian_fk_batch(
+        [[1.0, 2.0], [3.0, 4.0]], ["joint_1", "joint_0"]
     )
 
-    velocity, acceleration, jerk = helper(state)
+    np.testing.assert_allclose(planner.seen.position, [[2.0, 1.0], [4.0, 3.0]])
+    np.testing.assert_allclose(result, [[2.0, 1.0], [4.0, 3.0]])
 
-    np.testing.assert_array_equal(velocity, np.zeros(3))
-    np.testing.assert_array_equal(acceleration, np.zeros(3))
-    np.testing.assert_array_equal(jerk, np.zeros(3))
+
+def _execution(state=None):
+    measured = np.asarray([0.1, 0.2, 0.3, 0.01])
+    execution = ControllerExecution(
+        name="test_robot",
+        lr_name="left",
+        robot=SimpleNamespace(
+            get_joints_state=lambda: SimpleNamespace(positions=measured)
+        ),
+        tensor_args=SimpleNamespace(
+            to_device=lambda value: torch.as_tensor(value, dtype=torch.float32)
+        ),
+        raw_js_names=["joint_0", "joint_1", "joint_2"],
+        arm_indices=[0, 1, 2],
+        gripper_indices=[3],
+        phase_executor=PhaseExecutor(),
+        execution_state=state,
+    )
+    execution.state.ee_trans = torch.zeros(3)
+    execution.state.ee_ori = torch.zeros(4)
+    execution.state.last_arm_action = np.asarray([0.7, 0.8, 0.9])
+    execution.get_ee_pose = lambda: (np.zeros(3), np.zeros(4))
+    execution.get_gripper_action = lambda: np.asarray([0.01])
+    return execution, measured
+
+
+def test_replan_uses_measured_joint_state_and_discards_stale_path():
+    execution, measured = _execution()
+    stale = JointTrajectory(
+        positions=[[1.1, 1.2, 1.3]],
+        joint_names=("joint_0", "joint_1", "joint_2"),
+    )
+    execution.phase_executor.install(stale)
+    seen = []
+
+    def start_state(sim_state):
+        seen.append(np.asarray(sim_state.positions).copy())
+        return SimpleNamespace(unsqueeze=lambda _dim: sim_state)
+
+    execution.runtime = SimpleNamespace(
+        arm_joint_state=start_state,
+        plan_pose=lambda *args, **kwargs: PlanResult(success=False),
+    )
+
+    action = execution.ee_forward(np.ones(3), np.ones(4))
+
+    np.testing.assert_allclose(seen[0], measured)
+    np.testing.assert_allclose(action["arm_action"], measured[:3])
+    assert execution.phase_executor.current is None
+    assert execution.state.num_plan_failed == 1
+
+
+def test_named_trajectory_is_reordered_once_and_consumed_in_order():
+    execution, _ = _execution()
+    execution.raw_js_names = ("joint_1", "joint_0", "joint_2")
+    execution.phase_executor.install(
+        JointTrajectory(
+            positions=[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+            joint_names=("joint_0", "joint_1", "joint_2"),
+        )
+    )
+    execution.state.last_arm_action = None
+    execution._make_action = lambda arm, gripper: {"arm_action": np.asarray(arm)}
+
+    actions = [execution._forward_installed_joint_path() for _ in range(2)]
+
+    np.testing.assert_allclose(actions[0]["arm_action"], [2.0, 1.0, 3.0])
+    np.testing.assert_allclose(actions[1]["arm_action"], [5.0, 4.0, 6.0])
+    assert execution.phase_executor.current is None

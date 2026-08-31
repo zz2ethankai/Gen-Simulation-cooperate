@@ -4,9 +4,9 @@ InternDataEngine 是面向具身智能的合成数据生成引擎，基于 NVIDI
 
 ## 快速开始
 
-当前 Docker 工作流依赖完整的 `InternDataAssets/` 目录。请按下面顺序安装，
-否则 Docker 构建会因为找不到 `InternDataAssets/curobo` 失败，SimBox 运行时也
-无法解析资产路径。
+当前 Docker 工作流依赖 `InternDataAssets/` 下的场景/机器人资产，以及
+`InternDataAssets/curobov2` 下的 CuRobo v2。场景资产通过 ModelScope 获取，
+CuRobo v2 单独通过 Git 管理。
 
 ### 1. 系统依赖
 
@@ -14,9 +14,10 @@ InternDataEngine 是面向具身智能的合成数据生成引擎，基于 NVIDI
 - Docker Engine with Compose v2
 - NVIDIA Container Toolkit
 - 宿主机 Python 3.10+
+- Git
 - `7z` 命令行工具
-- 足够磁盘空间存放资产压缩包、解压后的资产、Docker 镜像和 Isaac Sim cache。
-当前 `InternDataAssets/` 解压后约 200 GB。
+- 足够磁盘空间存放所需资产、CuRobo checkout、Docker 镜像和 Isaac Sim cache。
+  当前完整的 `InternDataAssets/` 资产目录约占 200 GB。
 
 快速检查：
 
@@ -31,7 +32,7 @@ Ubuntu 上缺少工具时可安装：
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y p7zip-full python3-pip
+sudo apt-get install -y git p7zip-full python3-pip
 python3 -m pip install -U modelscope
 ```
 
@@ -44,16 +45,26 @@ python3 scripts/download_modelscope.py --token <MODEL_SCOPE_TOKEN>
 ```
 
 脚本会下载 `MinMaxMex/InterndataAssets/InternDataAssets_7z` 分卷压缩包，
-解压出 `InternDataAssets/`，并在 SimBox 下创建所需的相对软链接：
+解压出 `InternDataAssets/`，并在 SimBox 下创建场景和 `panda_drake` 的软链接。
+当前 ModelScope 压缩包只包含 `assets/custom`、`robots/` 下的机器人资产和
+`panda_drake`；其他场景/任务资产以及两个 CuRobo checkout 都不会上传：
 
 ```text
 workflows/simbox/assets -> ../../InternDataAssets/assets
-workflows/simbox/curobo -> ../../InternDataAssets/curobo
 workflows/simbox/panda_drake -> ../../InternDataAssets/panda_drake
 ```
 
 如果本地已经存在 `InternDataAssets/`，脚本会拒绝覆盖。需要重新安装资产时，
 请先移动或删除旧目录。
+
+ModelScope 下载完成后，单独拉取 CuRobo v2：
+
+```bash
+git clone https://github.com/MaxDYF/curobo.git InternDataAssets/curobov2
+```
+
+运行时直接使用 `InternDataAssets/curobov2`，不再下载或依赖旧的
+`InternDataAssets/curobo` checkout。
 
 ### 3. 安装校验
 
@@ -61,10 +72,11 @@ workflows/simbox/panda_drake -> ../../InternDataAssets/panda_drake
 
 ```bash
 test -d InternDataAssets/assets
-test -d InternDataAssets/curobo
+test -d InternDataAssets/assets/custom
+test -d InternDataAssets/robots
+test -f InternDataAssets/curobov2/curobo/__init__.py
 test -d InternDataAssets/panda_drake
 test -L workflows/simbox/assets
-test -L workflows/simbox/curobo
 test -L workflows/simbox/panda_drake
 ```
 
@@ -116,6 +128,30 @@ scripts/docker/up_simbox_isaac.sh --stack-id worker0 --gpu 0
 scripts/docker/up_simbox_isaac.sh --stack-id worker1 --gpu 1
 ```
 
+### Isaac Bash 开发环境
+
+如果只需要进入 Isaac Sim 容器开发代码，不希望容器自动运行
+`launcher.py`，使用独立的开发入口：
+
+```bash
+# 构建镜像并进入 /workspace 的 Bash
+scripts/docker/isaac_dev.sh shell --gpu 0 --build
+
+# 后台启动，之后再进入
+scripts/docker/isaac_dev.sh start --gpu 0
+scripts/docker/isaac_dev.sh shell
+
+# 让脚本化工具在容器内执行命令
+scripts/docker/isaac_dev.sh exec -- python -c 'import torch; print(torch.__version__)'
+
+# 停止开发容器
+scripts/docker/isaac_dev.sh stop
+```
+
+该入口复用现有 Isaac 镜像、GPU、代码和 CuRobo 挂载，但使用独立的
+`isaac-dev-*` 容器名和 `output/isaac-dev/` cache，不会启动任务生成器，
+也不会影响普通的 `isaac` 任务容器。
+
 ## 查看日志
 
 默认容器：
@@ -160,4 +196,3 @@ DEFAULT_STOP_EVERY_RUNNING_CONTAINER="1"
 ```bash
 scripts/docker/stop_all_docker.sh
 ```
-
