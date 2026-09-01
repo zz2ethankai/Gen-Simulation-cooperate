@@ -1,9 +1,7 @@
-import glob
 import os
-import random
 
 from core.objects.base_object import register_object
-from core.utils.asset_path_utils import resolve_texture_paths
+from core.utils.asset_path_utils import select_texture_path
 from isaacsim.core.prims import SingleXFormPrim as XFormPrim
 from isaacsim.core.utils.prims import is_prim_path_valid
 from isaacsim.core.utils.stage import get_current_stage
@@ -87,13 +85,7 @@ class PlaneObject(XFormPrim):
         raise NotImplementedError
 
     def apply_texture(self, asset_root, cfg):
-        texture_name = cfg["texture_lib"]
-        texture_path_list = resolve_texture_paths(asset_root, texture_name)
-        if cfg["apply_randomization"]:
-            texture_id = random.randint(0, len(texture_path_list) - 1)
-        else:
-            texture_id = cfg["texture_id"]
-        texture_path = texture_path_list[texture_id]
+        texture_path = select_texture_path(asset_root, cfg)
 
         # UsdGeom.Plane supplied implicit texture coordinates in the older
         # renderer.  Author them explicitly for the Mesh so OmniPBR has a

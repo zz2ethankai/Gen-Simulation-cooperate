@@ -491,16 +491,24 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
 
         self.task_cfg["arena"] = arena
 
-        # Arena generators express fixture texture libraries relative to the
-        # arena YAML (for example, ``../../../texture_libs/floor_textures``),
-        # whereas object asset paths are resolved from ``asset_root``.  Make
-        # the arena-local convention explicit before the task consumes the
-        # fixture configs so both layouts work with Isaac Sim 6.
+        # Arena generators express fixture textures relative to the arena
+        # YAML, whereas object asset paths are resolved from ``asset_root``.
+        # Resolve both an explicit texture_file and a texture_lib here so a
+        # scene remains portable when its runs directory is copied elsewhere.
         arena_dir = os.path.dirname(arena_file_path)
         for fixture_cfg in arena.get("fixtures", []):
             texture_cfg = fixture_cfg.get("texture")
             if not isinstance(texture_cfg, dict):
                 continue
+
+            texture_file = texture_cfg.get("texture_file")
+            if texture_file and not os.path.isabs(str(texture_file)):
+                arena_texture_file = os.path.abspath(
+                    os.path.join(arena_dir, str(texture_file))
+                )
+                if os.path.isfile(arena_texture_file):
+                    texture_cfg["texture_file"] = arena_texture_file
+
             texture_lib = texture_cfg.get("texture_lib")
             if not texture_lib or os.path.isabs(str(texture_lib)):
                 continue

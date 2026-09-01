@@ -1,10 +1,8 @@
-import glob
 import logging
 import os
-import random
 
 from core.objects.base_object import register_object
-from core.utils.asset_path_utils import resolve_texture_paths
+from core.utils.asset_path_utils import select_texture_path
 from isaacsim.core.prims import SingleGeometryPrim as GeometryPrim
 from isaacsim.core.utils.prims import (
     create_prim,
@@ -445,13 +443,7 @@ class GeometryObject(GeometryPrim):
                     continue
                 _recursive_apply(child, mat_prim_path)
 
-        texture_name = cfg["texture_lib"]
-        texture_path_list = resolve_texture_paths(asset_root, texture_name)
-        if cfg["apply_randomization"]:
-            texture_id = random.randint(0, len(texture_path_list) - 1)
-        else:
-            texture_id = cfg["texture_id"]
-        texture_path = texture_path_list[texture_id]
+        texture_path = select_texture_path(asset_root, cfg)
         mat_prim_path = f"{self.prim_path}/Looks/Material"
         if not is_prim_path_valid(mat_prim_path):
             self.mat = OmniPBR(

@@ -1,10 +1,9 @@
 import os
-import random
 import logging
 import math
 
 from core.objects.base_object import register_object
-from core.utils.asset_path_utils import resolve_texture_paths
+from core.utils.asset_path_utils import select_texture_path
 from core.utils.attach_collision_utils import join_prim_path, resolve_attach_collision_prims
 from isaacsim.core.prims import SingleRigidPrim
 from isaacsim.core.utils.prims import create_prim, get_prim_at_path
@@ -328,13 +327,7 @@ class RigidObject(SingleRigidPrim):
         return obs
 
     def apply_texture(self, asset_root, cfg):
-        texture_name = cfg["texture_lib"]
-        texture_path_list = resolve_texture_paths(asset_root, texture_name)
-        if cfg["apply_randomization"]:
-            texture_id = random.randint(0, len(texture_path_list) - 1)
-        else:
-            texture_id = cfg["texture_id"]
-        texture_path = texture_path_list[texture_id]
+        texture_path = select_texture_path(asset_root, cfg)
         mat_prim_path = f"{self.base_prim_path}/Looks/Material"
         mat = OmniPBR(
             prim_path=mat_prim_path,
