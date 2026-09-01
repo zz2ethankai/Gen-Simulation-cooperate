@@ -3,9 +3,11 @@ build
 debug
 dist
 *.egg
+save
 .vscode
 output
 InternDataAssets/
+temp
 *.err
 *.out
 .cursor
