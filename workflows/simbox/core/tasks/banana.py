@@ -17,7 +17,10 @@ from core.utils.dr import update_articulated_objs, update_rigid_objs, update_sce
 from core.utils.asset_path_utils import resolve_asset_root
 from core.utils.language import update_language
 from core.utils.layout import optimize_2d_manip_layout
-from core.utils.region_metadata import merge_source_region_sampling_metadata
+from core.utils.region_metadata import (
+    merge_source_region_sampling_metadata,
+    resolve_region_target_name,
+)
 from core.utils.region_sampler import RandomRegionSampler
 from core.utils.rigid_pose import upright_world_orientation
 from core.utils.scene_utils import deactivate_selected_prims
@@ -1217,7 +1220,8 @@ class BananaBaseTask(BaseTask):
                         get_orientation(euler, quaternion),
                     )
                     continue
-            tgt = self._task_objects[cfg["target"]]
+            target_name = resolve_region_target_name(cfg)
+            tgt = self._task_objects[target_name]
             if "sub_tgt_prim" in cfg:
                 tgt = SingleXFormPrim(prim_path=tgt.prim_path + cfg["sub_tgt_prim"])
             if self._debug_reset_lifecycle:
@@ -1245,7 +1249,7 @@ class BananaBaseTask(BaseTask):
                         "target_bbox_z=(%.6f,%.6f) stage_mpu=%s "
                         "prim=%s xforms=%s",
                         cfg["object"],
-                        cfg["target"],
+                        target_name,
                         obj_world,
                         obj_scale,
                         getattr(obj, "usd_path", "<unknown>"),
@@ -1261,7 +1265,7 @@ class BananaBaseTask(BaseTask):
                     LOGGER.warning(
                         "[RegionDebug] object=%s target=%s pre_sample_error=%s",
                         cfg["object"],
-                        cfg["target"],
+                        target_name,
                         exc,
                     )
             random_config = deepcopy(cfg.get("random_config", {}))
@@ -1304,7 +1308,7 @@ class BananaBaseTask(BaseTask):
                     LOGGER.warning(
                         "[RegionDebug] object=%s target=%s sampled=%s applied_world=%s",
                         cfg["object"],
-                        cfg["target"],
+                        target_name,
                         sampled_translation,
                         sampled_world,
                     )
@@ -1312,7 +1316,7 @@ class BananaBaseTask(BaseTask):
                     LOGGER.warning(
                         "[RegionDebug] object=%s target=%s post_sample_error=%s",
                         cfg["object"],
-                        cfg["target"],
+                        target_name,
                         exc,
                     )
 

@@ -7,6 +7,28 @@ from copy import deepcopy
 from typing import Any
 
 
+_REGION_TARGET_FIELDS = (
+    "target",
+    "B",
+    "parent_fixture",
+    "support_target_fixture",
+)
+
+
+def resolve_region_target_name(region: Any) -> str:
+    """Resolve the runtime support target across old and converted schemas."""
+
+    for field in _REGION_TARGET_FIELDS:
+        value = region.get(field)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    raise KeyError(
+        "region "
+        f"{region.get('name')!r} for object {region.get('object', region.get('A'))!r} "
+        f"must define one of {_REGION_TARGET_FIELDS}"
+    )
+
+
 def canonical_region_object_name(value: Any) -> str | None:
     """Return the task-entity spelling used by executable regions.
 
