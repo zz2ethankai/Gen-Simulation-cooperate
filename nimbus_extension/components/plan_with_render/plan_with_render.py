@@ -41,6 +41,7 @@ class EnvPlanWithRender(Iterator):
     def __init__(
         self,
         scene_iter: Iterator[Scene],
+        save_failed: bool = False,
         emit_obs_on_failure: bool = True,
         failure_obs_length: int = 1,
     ):
@@ -49,6 +50,7 @@ class EnvPlanWithRender(Iterator):
         self.episodes = 1
         self.current_episode = sys.maxsize
         self.scene = None
+        self.save_failed = bool(save_failed)
         self.emit_obs_on_failure = emit_obs_on_failure
         self.failure_obs_length = max(1, int(failure_obs_length))
 
@@ -58,6 +60,7 @@ class EnvPlanWithRender(Iterator):
         if scene is None or scene.wf is None:
             return None
         wf = scene.wf
+        wf.save_failed = self.save_failed
         obs_num = wf.plan_with_render()
         if obs_num <= 0:
             failure_context = _format_failure_context(wf)
