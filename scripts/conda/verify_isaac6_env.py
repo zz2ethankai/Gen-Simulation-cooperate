@@ -139,10 +139,18 @@ def verify(repo_root: Path) -> dict[str, str]:
         )
 
     importlib.import_module("isaacsim")
-    if importlib.util.find_spec("isaacsim.core.api") is None:
-        raise RuntimeError("Isaac Sim core API package is unavailable")
-    if importlib.util.find_spec("curobo.motion_planner") is None:
-        raise RuntimeError("CuRobo motion_planner package is unavailable")
+
+    try:
+        isaac_core_version = metadata.version("isaacsim-core")
+    except metadata.PackageNotFoundError as exc:
+        raise RuntimeError(
+            "Isaac Sim core package is unavailable: isaacsim-core is not installed"
+        ) from exc
+    if isaac_core_version != EXPECTED_ISAAC_VERSION:
+        raise RuntimeError(
+            f"Isaac Sim core version mismatch: expected {EXPECTED_ISAAC_VERSION}, "
+            f"got {isaac_core_version}"
+        )   
 
     return {
         "python": sys.version.split()[0],
