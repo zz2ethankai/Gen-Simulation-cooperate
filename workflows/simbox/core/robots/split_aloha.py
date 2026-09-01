@@ -445,7 +445,7 @@ class SplitAloha(SplitAlohaActual):
         if not get_prim_at_path(self.mobile_base_prim_path).IsValid():
             raise ValueError(f"SplitAloha virtual base prim does not exist: {self.mobile_base_prim_path}")
 
-        relative_joint_paths = list(self.cfg["virtual_base_joint_paths"])
+        relative_joint_paths = list(self.base_cfg["virtual_base_joint_paths"])
         if len(relative_joint_paths) != 3:
             raise ValueError("SplitAloha virtual_base_joint_paths must contain X, Y, and yaw joints")
         self._wheel_joint_paths = [f"{self.robot_prim_path}/{path.strip('/')}" for path in relative_joint_paths]

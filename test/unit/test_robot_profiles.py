@@ -161,6 +161,27 @@ def test_runtime_projection_uses_canonical_arms_and_rejects_schema_overrides():
         project_runtime_config(profile, {"ignore_roles": ["fixture"]})
 
 
+def test_virtual_base_joint_paths_survive_runtime_projection(tmp_path):
+    asset_path = tmp_path / "robot.usd"
+    asset_path.write_text("#usda 1.0\n", encoding="utf-8")
+    raw_profile = yaml.safe_load(
+        (ROBOT_CONFIG_DIR / "split_aloha.yaml").read_text(encoding="utf-8")
+    )
+    raw_profile["path"] = str(asset_path)
+    profile_path = tmp_path / "split_aloha.yaml"
+    profile_path.write_text(
+        yaml.safe_dump(raw_profile, sort_keys=False), encoding="utf-8"
+    )
+
+    runtime = project_runtime_config(load_robot_profile(profile_path))
+
+    assert runtime["base"]["virtual_base_joint_paths"] == [
+        "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/dummy_base_x/mobile_translate_x",
+        "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/dummy_base_y/mobile_translate_y",
+        "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/dummy_base_rotate/mobile_rotate",
+    ]
+
+
 def test_legacy_skill_placement_fields_are_not_projected_into_robot_config(
     tmp_path,
 ):

@@ -193,6 +193,7 @@ _BASE_NAVIGATION_FIELDS = {
     "wheel_velocity_command_signs",
     "base_velocity_joint_names",
     "base_velocity_command_signs",
+    "virtual_base_joint_paths",
     "wheel_center_to_base_translation",
 }
 _REQUIRED_PROFILE_FIELDS = _PROFILE_FIELDS - {"asset_variants"}
@@ -491,6 +492,18 @@ def _load_placement(value: Any) -> RobotPlacementProfile:
 
 def _load_base(value: Any) -> RobotBaseProfile:
     raw = _mapping(value, "base")
+    allowed_fields = {
+        "operation_mode",
+        "locked_joint_names",
+        "joint_groups",
+        "hold",
+        *_BASE_NAVIGATION_FIELDS,
+    }
+    unknown_fields = set(raw) - allowed_fields
+    if unknown_fields:
+        raise RobotProfileError(
+            f"base contains non-canonical fields: {sorted(unknown_fields)}"
+        )
     operation_mode = _text(raw.get("operation_mode"), "base.operation_mode")
     if operation_mode != "locked":
         raise RobotProfileError("base.operation_mode must be locked in v1")
@@ -536,6 +549,16 @@ def _load_base(value: Any) -> RobotBaseProfile:
     navigation = {
         key: copy.deepcopy(raw[key]) for key in _BASE_NAVIGATION_FIELDS if key in raw
     }
+    if "virtual_base_joint_paths" in navigation:
+        virtual_joint_paths = _texts(
+            navigation["virtual_base_joint_paths"],
+            "base.virtual_base_joint_paths",
+        )
+        if len(virtual_joint_paths) != 3:
+            raise RobotProfileError(
+                "base.virtual_base_joint_paths must contain X, Y, and yaw joints"
+            )
+        navigation["virtual_base_joint_paths"] = list(virtual_joint_paths)
     return RobotBaseProfile(
         operation_mode=operation_mode,
         locked_joint_names=_texts(
