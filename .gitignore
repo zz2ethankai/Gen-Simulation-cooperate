@@ -31,3 +31,5 @@ generator
 download
 example
 *.pyc
+
+runs/
