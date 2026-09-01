@@ -67,6 +67,7 @@ from core.telemetry import SkillTimingRecorder
 from core.utils.collision_utils import filter_collisions
 from core.utils.episode_event_writer import emit_episode_saved
 from core.utils.relation_predicates import evaluate_compiled_place_relations
+from core.utils.task_data import normalize_runtime_data_config
 from core.utils.utils import set_random_seed
 from core.visualization.curobo_trajectory import create_curobo_trajectory_visualizer
 from core.visualization.skill_targets import create_skill_target_visualizer
@@ -175,6 +176,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         # Merge robot configs for each task
         for task_cfg in task_cfgs:
+            normalize_runtime_data_config(task_cfg, task_cfg_path)
             asset_root = task_cfg.get("asset_root")
             if asset_root and not os.path.isabs(str(asset_root)):
                 # Both downloaded task formats exist in the workspace:
