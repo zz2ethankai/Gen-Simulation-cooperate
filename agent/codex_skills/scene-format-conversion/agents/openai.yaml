@@ -1,0 +1,4 @@
+interface:
+  display_name: "Scene Format Conversion"
+  short_description: "Convert InterData and SimBox scene YAML pairs"
+  default_prompt: "Convert this scene between InterData and SimBox YAML formats, preserve assets, layout, and calibrated cameras, leave robot pose and skill planning empty, normalize runtime-relative camera paths, and validate the result."
