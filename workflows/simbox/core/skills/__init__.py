@@ -16,9 +16,8 @@ from .heuristic_skill import Heuristic_Skill
 from .home import Home
 from .joint_ctrl import Joint_Ctrl
 from .manualpick import Manualpick
-from .mobile_rotate import Mobile_Rotate
-from .mobile_translate import Mobile_Translate
 from .move import Move
+from .navigate import Navigate
 from .open import Open
 from .observe_hold import ObserveHold
 from .pick import Pick
@@ -48,10 +47,9 @@ __all__ = [
     "Heuristic_Skill",
     "Home",
     "Joint_Ctrl",
-    "Mobile_Rotate",
-    "Mobile_Translate",
     "ReturnToEpisodeInitial",
     "Move",
+    "Navigate",
     "Open",
     "ObserveHold",
     "Pick",
