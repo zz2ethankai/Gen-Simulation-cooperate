@@ -1,0 +1,41 @@
+name: split_aloha
+interdata_config_file: workflows/simbox/core/configs/robots/split_aloha.yaml
+# Repository-relative runtime asset path.  Keep this in sync with the USD
+# mounted at <repo>/InternDataAssets on the simulation server.
+usd_asset: InternDataAssets/robots/split_aloha_mid_360_virtual/robot.usd
+interdata_task_usd_path: InternDataAssets/robots/split_aloha_mid_360_virtual/robot.usd
+coordinate_frame: isaac_z_up_x_front
+base:
+  default_yaw_deg: 90.0
+  navigation_radius_m: 0.34
+  approach_offset_m: 0.59
+  footprint_xz_m:
+    - [0.46, 0.24]
+    - [0.42, 0.29]
+    - [-0.32, 0.29]
+    - [-0.36, 0.24]
+    - [-0.36, -0.24]
+    - [-0.32, -0.29]
+    - [0.42, -0.29]
+    - [0.46, -0.24]
+manipulator:
+  model: dual_piper
+  arm_count: 2
+  arm_mount_forward_from_base_m: 0.36848
+  arm_mount_lateral_from_center_m: 0.306
+  arm_mount_height_from_floor_m: 1.2527
+  arm_chain_max_extension_m: 0.762786
+  horizontal_reach_from_base_center_m: 1.131266
+  gripper_max_opening_m: 0.11
+  tcp_offset_m: 0.12
+  lift_joint_range_m: [-0.60, 0.0]
+  support_grid_safety_margin_m: 0.02
+  ik:
+    solver: curobo
+    content_root_env: ROBOLAYOUT_CUROBO_CONTENT_ROOT
+    robot_files:
+      left: configs/robot/piper100_left_arm.yml
+      right: configs/robot/piper100_right_arm.yml
+    position_threshold_m: 0.005
+    rotation_threshold_rad: 0.05
+    num_seeds: 24

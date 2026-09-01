@@ -22,6 +22,7 @@ from core.robots.profile import (  # noqa: E402
     RobotProfileError,
     load_robot_profile,
     project_runtime_config,
+    resolve_fixed_robot_start_pose,
     resolve_robot_asset_path,
 )
 
@@ -158,6 +159,76 @@ def test_runtime_projection_uses_canonical_arms_and_rejects_schema_overrides():
     ]
     with pytest.raises(RobotProfileError, match="canonical fields"):
         project_runtime_config(profile, {"ignore_roles": ["fixture"]})
+
+
+def test_legacy_skill_placement_fields_are_not_projected_into_robot_config(
+    tmp_path,
+):
+    asset_path = tmp_path / "robot.usd"
+    asset_path.write_text("#usda 1.0\n", encoding="utf-8")
+    raw_profile = yaml.safe_load(
+        (ROBOT_CONFIG_DIR / "split_aloha.yaml").read_text(encoding="utf-8")
+    )
+    raw_profile["path"] = str(asset_path)
+    profile_path = tmp_path / "split_aloha.yaml"
+    profile_path.write_text(
+        yaml.safe_dump(raw_profile, sort_keys=False), encoding="utf-8"
+    )
+    profile = load_robot_profile(profile_path)
+    runtime = project_runtime_config(
+        profile,
+        {
+            "name": "split_aloha",
+            "euler": [0.0, 0.0, 0.0],
+            "translation": [-1.03, -0.055, 0.0],
+            "initial_pose": {
+                "rotation": [0.0, 0.0, 0.0],
+                "keep_upright": True,
+            },
+            "spawn_region": "split_aloha_start_region",
+            "placement": {
+                "defined_by": "regions",
+                "spawn_region": "split_aloha_start_region",
+            },
+        },
+    )
+
+    assert runtime["euler"] == [0.0, 0.0, 0.0]
+    assert not {"translation", "initial_pose", "spawn_region"} & runtime.keys()
+    assert runtime["placement"]["family"] == "floor_standing"
+    assert "defined_by" not in runtime["placement"]
+
+
+def test_fixed_robot_start_pose_is_owned_by_region():
+    region = {
+        "placement_mode": "fixed_from_region_pose",
+        "world_translation": [-1.03, -0.055, 0.0],
+        "world_euler": [0.0, 0.0, 0.0],
+    }
+    translation, euler, quaternion = resolve_fixed_robot_start_pose(
+        region,
+        {"euler": [0.0, 0.0, 90.0]},
+    )
+
+    assert translation == [-1.03, -0.055, 0.0]
+    assert euler == [0.0, 0.0, 0.0]
+    assert quaternion is None
+
+
+def test_legacy_fixed_region_center_preserves_generated_world_pose():
+    region = {
+        "placement_mode": "fixed_from_robot_start_position",
+        "center": [-1.03, -0.055],
+        "support_surface_z": 0.0,
+    }
+    translation, euler, quaternion = resolve_fixed_robot_start_pose(
+        region,
+        {"euler": [0.0, 0.0, 0.0]},
+    )
+
+    assert translation == [-1.03, -0.055, 0.0]
+    assert euler == [0.0, 0.0, 0.0]
+    assert quaternion is None
 
 
 def test_runtime_projection_validates_instance_assertions(tmp_path):

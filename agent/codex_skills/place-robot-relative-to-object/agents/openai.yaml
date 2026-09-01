@@ -1,0 +1,4 @@
+interface:
+  display_name: "Relative Robot Placement"
+  short_description: "Place a robot around a fixture using world-axis language"
+  default_prompt: "Use $place-robot-relative-to-object to place the robot at the requested side of a fixture, validate the pose, and write a profile-safe robot block with a region-owned start pose."

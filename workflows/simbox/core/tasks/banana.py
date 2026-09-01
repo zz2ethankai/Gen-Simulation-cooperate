@@ -11,6 +11,7 @@ import yaml
 from core.cameras import CustomCamera
 from core.objects import get_object_cls
 from core.robots import get_robot_cls
+from core.robots.profile import resolve_fixed_robot_start_pose
 from core.tasks.base_task import register_task
 from core.utils.dr import update_articulated_objs, update_rigid_objs, update_scenes
 from core.utils.asset_path_utils import resolve_asset_root
@@ -1206,13 +1207,16 @@ class BananaBaseTask(BaseTask):
         random_region_list = deepcopy(self.random_region_list)
         for cfg in self.cfg["regions"]:
             obj = self._task_objects[cfg["object"]]
-            if cfg.get("placement_mode") == "fixed_from_robot_start_position" and cfg["object"] in self.robots:
+            if cfg["object"] in self.robots:
                 robot_cfg = self._robot_cfg_by_name(cfg["object"])
-                obj.set_mobile_base_world_pose(
-                    robot_cfg.get("translation", [0.0, 0.0, 0.0]),
-                    get_orientation(robot_cfg.get("euler"), robot_cfg.get("quaternion")),
-                )
-                continue
+                fixed_pose = resolve_fixed_robot_start_pose(cfg, robot_cfg)
+                if fixed_pose is not None:
+                    translation, euler, quaternion = fixed_pose
+                    obj.set_mobile_base_world_pose(
+                        translation,
+                        get_orientation(euler, quaternion),
+                    )
+                    continue
             tgt = self._task_objects[cfg["target"]]
             if "sub_tgt_prim" in cfg:
                 tgt = SingleXFormPrim(prim_path=tgt.prim_path + cfg["sub_tgt_prim"])
@@ -1322,12 +1326,16 @@ class BananaBaseTask(BaseTask):
     def set_fixed_robot_start_poses(self):
         for region_cfg in self.cfg.get("regions", []):
             robot_name = region_cfg.get("object")
-            if region_cfg.get("placement_mode") != "fixed_from_robot_start_position" or robot_name not in self.robots:
+            if robot_name not in self.robots:
                 continue
             robot_cfg = self._robot_cfg_by_name(robot_name)
+            fixed_pose = resolve_fixed_robot_start_pose(region_cfg, robot_cfg)
+            if fixed_pose is None:
+                continue
+            translation, euler, quaternion = fixed_pose
             self.robots[robot_name].reset_mobile_base_world_state(
-                robot_cfg.get("translation", [0.0, 0.0, 0.0]),
-                get_orientation(robot_cfg.get("euler"), robot_cfg.get("quaternion")),
+                translation,
+                get_orientation(euler, quaternion),
             )
 
     @staticmethod

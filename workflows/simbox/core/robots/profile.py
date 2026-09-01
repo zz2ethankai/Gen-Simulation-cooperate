@@ -212,6 +212,21 @@ _INSTANCE_OVERRIDE_FIELDS = {
     "constrain_grasp_approach",
     "tcp_offset",
 }
+# Robot placement used to be authored directly in ``robots[]`` by the
+# repository placement skill.  The canonical profile owns the robot instance;
+# placement now belongs to ``regions[]``.  These keys are accepted only as
+# deprecated input assertions and are deliberately not projected into the
+# runtime robot config.
+_LEGACY_INSTANCE_PLACEMENT_FIELDS = {
+    "translation",
+    "initial_pose",
+    "spawn_region",
+    "placement",
+}
+_FIXED_ROBOT_REGION_MODES = {
+    "fixed_from_robot_start_position",
+    "fixed_from_region_pose",
+}
 _PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
 
@@ -266,6 +281,84 @@ def _numbers(
     if not allow_empty and not result:
         raise RobotProfileError(f"{field} must not be empty")
     return tuple(result)
+
+
+def resolve_fixed_robot_start_pose(
+    region_config: Mapping[str, Any],
+    robot_config: Mapping[str, Any],
+) -> tuple[list[float], list[float] | None, list[float] | None] | None:
+    """Resolve a fixed robot pose while keeping translation region-owned.
+
+    New configs should author ``world_translation`` and optionally
+    ``world_euler``/``world_quaternion`` in the robot's region.  The region
+    ``center`` form is retained for the original placement-skill output, and
+    ``robots[].translation`` is only a final compatibility fallback.
+    """
+
+    mode = str(region_config.get("placement_mode", ""))
+    if mode not in _FIXED_ROBOT_REGION_MODES:
+        return None
+
+    raw_translation = region_config.get("world_translation")
+    if raw_translation is not None:
+        translation = list(
+            _numbers(raw_translation, "region.world_translation", length=3)
+        )
+    else:
+        center = region_config.get("center")
+        if center is not None:
+            center_xy = _numbers(center, "region.center", length=2)
+            random_config = region_config.get("random_config")
+            random_mapping = (
+                random_config if isinstance(random_config, Mapping) else {}
+            )
+            support_z = region_config.get(
+                "support_surface_z",
+                random_mapping.get("support_surface_z", 0.0),
+            )
+            try:
+                support_z = float(support_z)
+            except (TypeError, ValueError) as exc:
+                raise RobotProfileError(
+                    "region.support_surface_z must be numeric"
+                ) from exc
+            if not math.isfinite(support_z):
+                raise RobotProfileError(
+                    "region.support_surface_z must be finite"
+                )
+            translation = [center_xy[0], center_xy[1], support_z]
+        elif mode == "fixed_from_robot_start_position" and robot_config.get(
+            "translation"
+        ) is not None:
+            translation = list(
+                _numbers(
+                    robot_config["translation"],
+                    "robot.translation",
+                    length=3,
+                )
+            )
+        else:
+            raise RobotProfileError(
+                f"{mode} requires region.world_translation or region.center"
+            )
+
+    raw_euler = region_config.get("world_euler", robot_config.get("euler"))
+    raw_quaternion = region_config.get(
+        "world_quaternion", robot_config.get("quaternion")
+    )
+    euler = (
+        None
+        if raw_euler is None
+        else list(_numbers(raw_euler, "robot start euler", length=3))
+    )
+    quaternion = (
+        None
+        if raw_quaternion is None
+        else list(
+            _numbers(raw_quaternion, "robot start quaternion", length=4)
+        )
+    )
+    return translation, euler, quaternion
 
 
 def _indices(value: Any, field: str, *, allow_empty: bool = False) -> tuple[int, ...]:
@@ -987,6 +1080,8 @@ def project_runtime_config(
                     asset_root=asset_root,
                 )
             )
+        for field in _LEGACY_INSTANCE_PLACEMENT_FIELDS:
+            normalized_overrides.pop(field, None)
         unknown_overrides = set(normalized_overrides) - _INSTANCE_OVERRIDE_FIELDS
         if unknown_overrides:
             raise RobotProfileError(
