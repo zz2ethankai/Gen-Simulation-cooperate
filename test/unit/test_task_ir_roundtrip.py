@@ -56,6 +56,20 @@ def test_roundtrip_yaml_can_be_loaded_by_task_config_parser(tmp_path):
     assert "skills" in parsed_tasks[0]
 
 
+def test_task_config_parser_promotes_scene_only_runtime_identity(tmp_path):
+    output_path = tmp_path / "scene_only.yaml"
+    output_path.write_text(
+        yaml.safe_dump({"tasks": [{"name": "scene_only"}]}, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    task = TaskConfigParser(str(output_path)).parse_tasks()[0]
+
+    assert task["task"] == "BananaBaseTask"
+    assert task["task_id"] == 0
+    assert task["offset"] is None
+
+
 def test_roundtrip_yaml_reparsed_task_ir_still_valid(tmp_path):
     source_path = ROOT / ROUNDTRIP_CASES[2]
     task_ir = parse_task_yaml_to_ir(source_path)
