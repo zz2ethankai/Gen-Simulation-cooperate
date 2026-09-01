@@ -19,6 +19,7 @@ from core.utils.language import update_language
 from core.utils.layout import optimize_2d_manip_layout
 from core.utils.region_metadata import (
     merge_source_region_sampling_metadata,
+    normalize_legacy_runtime_region_offsets,
     resolve_region_target_name,
 )
 from core.utils.region_sampler import RandomRegionSampler
@@ -57,6 +58,7 @@ class BananaBaseTask(BaseTask):
         super().__init__(name=cfg["name"], offset=cfg["offset"])
         self.cfg = cfg
         self._merge_source_region_sampling_metadata(self.cfg)
+        normalize_legacy_runtime_region_offsets(self.cfg)
         self._render = cfg.get("render", True)
         self.asset_root = os.path.abspath(self.cfg["asset_root"])
         self.root_prim_path = os.path.join("/World", f"task_{cfg['task_id']}")

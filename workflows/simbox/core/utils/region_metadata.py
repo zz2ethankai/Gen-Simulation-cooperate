@@ -6,7 +6,6 @@ import re
 from copy import deepcopy
 from typing import Any
 
-
 _REGION_TARGET_FIELDS = (
     "target",
     "B",
@@ -93,3 +92,61 @@ def merge_source_region_sampling_metadata(cfg: Any) -> None:
         for key, value in source_sampling.items():
             if key not in active_sampling:
                 active_sampling[key] = deepcopy(value)
+
+
+def normalize_legacy_runtime_region_offsets(cfg: Any) -> None:
+    """Recenter legacy zero-based ranges on their authored runtime offset.
+
+    Early InterData-to-SimBox exports copied placement jitter into
+    ``random_config.pos_range`` without adding the object's
+    ``runtime_placement.offset_xy``.  Every object was therefore sampled at
+    the support center.  Repair only that recognizable legacy shape: a range
+    centered on zero paired with a non-zero parent-relative offset.  Modern
+    ranges already centered on their offset, and arbitrary conflicts, remain
+    untouched.
+    """
+
+    for region in cfg.get("regions", []) or []:
+        if not hasattr(region, "get"):
+            continue
+        placement = region.get("runtime_placement")
+        if not hasattr(placement, "get"):
+            continue
+        if placement.get("frame") != "parent_world_xy_offset":
+            continue
+        offset = placement.get("offset_xy")
+        random_config = region.get("random_config")
+        pos_range = (
+            random_config.get("pos_range")
+            if hasattr(random_config, "get")
+            else None
+        )
+        if not (
+            isinstance(offset, (list, tuple))
+            and len(offset) >= 2
+            and isinstance(pos_range, (list, tuple))
+            and len(pos_range) == 2
+            and all(
+                isinstance(bound, (list, tuple)) and len(bound) >= 2
+                for bound in pos_range
+            )
+        ):
+            continue
+
+        midpoint = [
+            (float(pos_range[0][axis]) + float(pos_range[1][axis])) / 2.0
+            for axis in range(2)
+        ]
+        offset_xy = [float(offset[0]), float(offset[1])]
+        if any(abs(value) > 1e-9 for value in midpoint):
+            continue
+        if not any(abs(value) > 1e-9 for value in offset_xy):
+            continue
+
+        recentered = []
+        for bound in pos_range:
+            updated = list(bound)
+            updated[0] = float(bound[0]) + offset_xy[0]
+            updated[1] = float(bound[1]) + offset_xy[1]
+            recentered.append(updated)
+        random_config["pos_range"] = recentered

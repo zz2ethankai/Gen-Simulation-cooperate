@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import MutableMapping
 from pathlib import Path
-from typing import Any, MutableMapping
+from typing import Any
 
 
 def normalize_runtime_data_config(
     task_cfg: MutableMapping[str, Any],
     task_cfg_path: str | Path,
 ) -> MutableMapping[str, Any]:
-    """Populate logger-required metadata missing from converted scene tasks."""
+    """Populate runtime metadata missing from converted scene tasks."""
 
     data = task_cfg.get("data")
     if data is None:
@@ -35,4 +36,21 @@ def normalize_runtime_data_config(
         data["version"] = "v1.0"
     if data.get("update") is None:
         data["update"] = True
+
+    max_episode_length = data.get("max_episode_length")
+    if max_episode_length is None:
+        max_episode_length = task_cfg.get("max_episode_length")
+    if max_episode_length is None:
+        max_episode_length = 10_000
+    if isinstance(max_episode_length, bool):
+        raise TypeError("max_episode_length must be a positive integer")
+    try:
+        max_episode_length = int(max_episode_length)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("max_episode_length must be a positive integer") from exc
+    if max_episode_length <= 0:
+        raise ValueError("max_episode_length must be a positive integer")
+    data["max_episode_length"] = max_episode_length
+    if task_cfg.get("max_episode_length") is None:
+        task_cfg["max_episode_length"] = max_episode_length
     return data
