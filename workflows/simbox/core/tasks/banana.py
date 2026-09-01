@@ -1374,14 +1374,32 @@ class BananaBaseTask(BaseTask):
         """Randomize or reset the environment map (HDR dome light)."""
         cfg = self.cfg["env_map"]
         if cfg.get("light_type", "DomeLight") == "DomeLight":
-            envmap_dir = os.path.join(self.asset_root, cfg["envmap_lib"])
-            envmap_hdr_path_list = glob.glob(os.path.join(envmap_dir, "*.hdr"))
+            direct_path = cfg.get("path")
+            if direct_path:
+                direct_path = os.path.expanduser(str(direct_path))
+                if not os.path.isabs(direct_path):
+                    direct_path = os.path.join(self.asset_root, direct_path)
+                envmap_hdr_path_list = [os.path.abspath(direct_path)]
+                searched = envmap_hdr_path_list[0]
+            else:
+                envmap_lib = cfg.get("envmap_lib")
+                if not envmap_lib:
+                    raise ValueError(
+                        "env_map must declare either a direct HDR path in 'path' "
+                        "or an HDR directory in 'envmap_lib'"
+                    )
+                envmap_dir = os.path.join(self.asset_root, str(envmap_lib))
+                envmap_hdr_path_list = glob.glob(os.path.join(envmap_dir, "*.hdr"))
+                searched = os.path.abspath(envmap_dir)
             envmap_hdr_path_list.sort()
-            if not envmap_hdr_path_list:
+            if not envmap_hdr_path_list or not all(
+                os.path.isfile(path) for path in envmap_hdr_path_list
+            ):
                 raise FileNotFoundError(
                     "No HDR envmap files found for task "
                     f"{self.cfg.get('name')!r}: asset_root={self.asset_root!r}, "
-                    f"envmap_lib={cfg['envmap_lib']!r}, searched={os.path.abspath(envmap_dir)!r}"
+                    f"path={cfg.get('path')!r}, envmap_lib={cfg.get('envmap_lib')!r}, "
+                    f"searched={searched!r}"
                 )
             if cfg.get("apply_randomization", False):
                 envmap_id = int(np.random.randint(0, len(envmap_hdr_path_list)))
@@ -1392,8 +1410,16 @@ class BananaBaseTask(BaseTask):
                 ]
             else:
                 envmap_id = 0
-                intensity = 1000.0
-                rotation = [0.0, 0.0, 0.0]
+                # Direct-path conversion output uses a normalized multiplier
+                # (1.0 = the legacy fixed DomeLight intensity of 1000).
+                intensity = 1000.0 * float(cfg.get("intensity", 1.0))
+                rotation_deg = cfg.get("rotation_deg", 0.0)
+                if isinstance(rotation_deg, (list, tuple)):
+                    rotation = [float(value) for value in rotation_deg]
+                    if len(rotation) != 3:
+                        raise ValueError("env_map.rotation_deg must be a scalar or xyz triple")
+                else:
+                    rotation = [0.0, 0.0, float(rotation_deg)]
             dome_prim_path = f"{self.root_prim_path}/DomeLight"
             envmap_hdr_path = envmap_hdr_path_list[envmap_id]
 
