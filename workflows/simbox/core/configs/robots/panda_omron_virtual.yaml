@@ -99,8 +99,8 @@ data_adapter:
   arms:
     left:
       action_name: left
-      joint_position_key: states.left_joint.position
-      gripper_position_key: states.left_gripper.position
+      joint_position_key: states.joint.position
+      gripper_position_key: states.gripper.position
       gripper_pose_key: null
 
 capabilities: [pick, place]

@@ -13,6 +13,15 @@ if str(SIMBOX_ROOT) not in sys.path:
     sys.path.insert(0, str(SIMBOX_ROOT))
 sys.modules.setdefault("cv2", types.ModuleType("cv2"))
 
+transform_stub = types.ModuleType("core.utils.transformation_utils")
+transform_stub.get_fk_solution = lambda joint_position: np.eye(4)
+transform_stub.pose_to_6d = lambda pose: np.zeros(6)
+sys.modules.setdefault("core.utils.transformation_utils", transform_stub)
+
+lmdb_logger_stub = types.ModuleType("core.loggers.lmdb_logger")
+lmdb_logger_stub.LmdbLogger = object
+sys.modules.setdefault("core.loggers.lmdb_logger", lmdb_logger_stub)
+
 from core.loggers.utils import log_dual_obs  # noqa: E402
 
 
@@ -133,3 +142,43 @@ def test_single_arm_adapter_preserves_unprefixed_dataset_schema():
     assert ("robot_0", "master_actions.joint.position") in logger.actions
     assert ("robot_0", "master_actions.gripper.position") in logger.actions
     assert ("robot_0", "master_actions.gripper.pose") in logger.actions
+
+
+def test_raw_action_does_not_eagerly_read_missing_observation_fallback():
+    adapter = {
+        "arms": {
+            "left": {
+                "action_name": "left",
+                "joint_position_key": "states.joint.position",
+                "gripper_position_key": "states.gripper.position",
+                "gripper_pose_key": None,
+            }
+        }
+    }
+    logger = FakeLogger(adapter)
+    controllers = {"robot_0": {"left": _runtime(1.0)}}
+    observations = {
+        "robots": {
+            "robot_0": {
+                # Deliberately omit states.joint.position: the raw action is
+                # authoritative for this step and the fallback must stay lazy.
+                "states.gripper.position": np.array([0.04]),
+            }
+        },
+        "objects": {},
+    }
+    raw_action = np.arange(7)
+    action = {
+        "robot_0": {
+            "raw_action": [
+                {"lr_name": "left", "arm_action": raw_action}
+            ]
+        }
+    }
+
+    log_dual_obs(logger, observations, action, controllers)
+
+    np.testing.assert_array_equal(
+        logger.actions[("robot_0", "master_actions.left_joint.position")],
+        raw_action,
+    )

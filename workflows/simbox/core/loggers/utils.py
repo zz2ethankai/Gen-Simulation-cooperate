@@ -104,9 +104,13 @@ def log_dual_obs(
             }
             for arm_id, arm_adapter in data_adapter["arms"].items():
                 action_name = str(arm_adapter.get("action_name", ""))
-                joint_position = raw_actions.get(
-                    arm_id, robot_infos[arm_adapter["joint_position_key"]]
-                )
+                # Do not use ``dict.get(key, robot_infos[...])`` here. Python
+                # evaluates the default expression eagerly, so that form raises
+                # for a missing observation key even when a raw action exists.
+                if arm_id in raw_actions:
+                    joint_position = raw_actions[arm_id]
+                else:
+                    joint_position = robot_infos[arm_adapter["joint_position_key"]]
                 logger.add_action_data(
                     robot_name,
                     _master_key(action_name, "joint.position"),

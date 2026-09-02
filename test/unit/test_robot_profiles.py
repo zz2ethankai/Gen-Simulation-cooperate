@@ -96,6 +96,17 @@ def test_canonical_profiles_are_strict_and_hashable(filename, profile_id, family
     assert profile.collision_world_modes == {"physics_schema"}
 
 
+@pytest.mark.parametrize("filename", ["panda_omron.yaml", "panda_omron_virtual.yaml"])
+def test_panda_omron_adapter_matches_single_arm_observation_schema(filename):
+    profile = load_robot_profile(ROBOT_CONFIG_DIR / filename)
+    adapter = profile.data_adapter.arms["left"]
+
+    assert adapter.action_name == "left"
+    assert adapter.joint_position_key == "states.joint.position"
+    assert adapter.gripper_position_key == "states.gripper.position"
+    assert adapter.gripper_pose_key is None
+
+
 def test_unknown_placement_family_fails_instead_of_defaulting(tmp_path):
     raw = yaml.safe_load((ROBOT_CONFIG_DIR / "fr3.yaml").read_text(encoding="utf-8"))
     raw["placement"]["family"] = "tabletop"
