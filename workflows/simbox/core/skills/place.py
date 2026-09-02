@@ -239,6 +239,8 @@ class Place(BaseSkill):
         b_max = np.asarray(bbox.max, dtype=float)
         defaults = (("x_ratio_range", (0.4, 0.6)), ("y_ratio_range", (0.4, 0.6)), ("z_ratio_range", (0.4, 0.6)))
         target_rotations = self.generate_constrained_rotations()[:60]
+        if len(target_rotations) == 0:
+            raise PlaceCandidateError("NO_VALID_PLACE_ORIENTATION")
         candidate_count = len(target_rotations)
 
         def ratios(key, default):
