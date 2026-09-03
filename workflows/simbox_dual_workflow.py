@@ -1072,6 +1072,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                     robot_file=robot_file,
                     constrain_grasp_approach=robot.get("constrain_grasp_approach", False),
                     collision_activation_distance=robot.get("collision_activation_distance", 0.03),
+                    ignore_substring=robot.get("ignore_substring"),
                     task=task,
                     world=world,
                     trajectory_visualizer=self.trajectory_visualizer,

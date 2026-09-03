@@ -76,6 +76,7 @@ class PlannerScenePort:
     detach_attachment: Callable[[], Any] | None = None
     has_attached_collision_spheres: Callable[[], bool] | None = None
     collision_world_mode: str = "physics_schema"
+    ignore_substring: tuple[str, ...] = ()
 
 
 _ALLOWED_TRANSITIONS = {
@@ -657,7 +658,34 @@ class CollisionSceneManager:
     def collision_prim_paths(self) -> list[str]:
         return [path for record in self.records.values() for path in record.collision_prim_paths]
 
-    def build_world_config(self, reference_prim_path: str):
+    @staticmethod
+    def _filter_collision_paths(
+        paths: Iterable[str], ignore_substring: Iterable[str] | None = None
+    ) -> list[str]:
+        ignored = tuple(str(value) for value in (ignore_substring or ()) if str(value))
+        return [path for path in paths if not any(value in path for value in ignored)]
+
+    def _planner_collision_paths(self, port: PlannerScenePort) -> list[str]:
+        return self._filter_collision_paths(
+            self.collision_prim_paths,
+            getattr(port, "ignore_substring", ()),
+        )
+
+    def build_world_config(
+        self,
+        reference_prim_path: str,
+        ignore_substring: Iterable[str] | None = None,
+    ):
+        collision_paths = self._filter_collision_paths(
+            self.collision_prim_paths, ignore_substring
+        )
+        if len(collision_paths) != len(self.collision_prim_paths):
+            LOGGER.info(
+                "[CollisionWorld] applied YAML ignore_substring reference=%s "
+                "ignored=%s",
+                reference_prim_path,
+                sorted(set(self.collision_prim_paths) - set(collision_paths)),
+            )
         helper = self._helper()
         exact_loader = getattr(helper, "get_obstacles_from_collision_prims", None)
         # The pre-native-v2 implementation deliberately used one oriented
@@ -668,17 +696,17 @@ class CollisionSceneManager:
         # full mesh collision fidelity.
         if self.geometry_mode == "native" and callable(exact_loader):
             world = exact_loader(
-                self.collision_prim_paths,
+                collision_paths,
                 reference_prim_path=reference_prim_path,
             )
         else:
             stage_loader = getattr(helper, "get_obstacles_from_stage", None)
             if self.geometry_mode == "native" and callable(stage_loader):
                 world = stage_loader(
-                    only_paths=self.collision_prim_paths,
+                    only_paths=collision_paths,
                     reference_prim_path=reference_prim_path,
                 )
-                allowed = set(self.collision_prim_paths)
+                allowed = set(collision_paths)
                 for field in ("cuboid", "sphere", "mesh", "cylinder", "capsule"):
                     obstacles = getattr(world, field, None)
                     if obstacles is not None:
@@ -715,7 +743,7 @@ class CollisionSceneManager:
 
                 proxies = [
                     self._bbox_collision_proxy(path, reference_prim_path)
-                    for path in self.collision_prim_paths
+                    for path in collision_paths
                 ]
                 world = SceneCfg(cuboid=proxies)
                 LOGGER.info(
@@ -852,7 +880,9 @@ class CollisionSceneManager:
         self.scene_ports[key] = port
         try:
             self.world_revision = max(self.world_revision, int(port.runtime.scene_revision))
-            self.controller_enabled[key] = {path: True for path in self.collision_prim_paths}
+            self.controller_enabled[key] = {
+                path: True for path in self._planner_collision_paths(port)
+            }
             self._native_pose_cache[key] = {}
             self._controller_reference_matrices[key] = self._world_matrix(
                 port.reference_prim_path
@@ -942,7 +972,7 @@ class CollisionSceneManager:
         ):
             return False
         poses = {}
-        for path in self.collision_prim_paths:
+        for path in self._planner_collision_paths(port):
             obstacle_pose = self._port_obstacle_pose(port, path)
             poses[path] = obstacle_pose
             self._native_pose_cache.setdefault(key, {})[path] = obstacle_pose
@@ -953,7 +983,7 @@ class CollisionSceneManager:
             "[CollisionWorld] refreshed moving reference controller=%s/%s obstacles=%d world_revision=%d",
             port.name,
             port.lr_name,
-            len(self.collision_prim_paths),
+            len(poses),
             self.world_revision,
         )
         return True
@@ -971,7 +1001,7 @@ class CollisionSceneManager:
 
         original = dict(self.controller_enabled[key])
         enabled_paths = [
-            path for path in self.collision_prim_paths if original.get(path, False)
+            path for path in self._planner_collision_paths(port) if original.get(path, False)
         ]
         grouped_paths: dict[str, list[str]] = {}
         for path in enabled_paths:
@@ -1309,7 +1339,10 @@ class CollisionSceneManager:
 
     def _set_enabled(self, key: tuple[str, str], paths: Iterable[str], enabled: bool) -> None:
         port = self.scene_ports[key]
-        requested_paths = tuple(str(path) for path in paths)
+        planner_paths = set(self._planner_collision_paths(port))
+        requested_paths = tuple(
+            path for path in (str(path) for path in paths) if path in planner_paths
+        )
         missing = tuple(path for path in requested_paths if not port.runtime.has_obstacle(path))
         if missing:
             raise CollisionSceneError(
@@ -1331,6 +1364,7 @@ class CollisionSceneManager:
             return
         key = self._controller_key(port.name, port.lr_name)
         ignored: list[str] = []
+        planner_paths = set(self._planner_collision_paths(port))
         for entity_name in self._planning_exclusion_names:
             record = self.records.get(entity_name)
             if record is None:
@@ -1338,7 +1372,7 @@ class CollisionSceneManager:
                     "planning_exclusions entry does not name a collision entity record: "
                     f"{entity_name}"
                 )
-            paths = list(record.collision_prim_paths)
+            paths = [path for path in record.collision_prim_paths if path in planner_paths]
             self._set_enabled(key, paths, False)
             self._temporary_disabled[key].update(paths)
             ignored.extend(paths)
@@ -1638,6 +1672,8 @@ class CollisionSceneManager:
             self._pose_matrices[path] = matrix
             changed = True
             for key in self._physics_controller_keys():
+                if path not in self.controller_enabled.get(key, {}):
+                    continue
                 controller = self.scene_ports[key]
                 obstacle_pose = self._port_obstacle_pose(controller, path)
                 controller.runtime.update_obstacle_pose(
@@ -1699,7 +1735,7 @@ class CollisionSceneManager:
         return changed
 
     def audit_controller(self, port: PlannerScenePort) -> None:
-        expected = set(self.collision_prim_paths)
+        expected = set(self._planner_collision_paths(port))
         try:
             actual = set(port.runtime.obstacle_names())
         except Exception as exc:
@@ -1727,7 +1763,10 @@ class CollisionSceneManager:
                 CollisionObjectState.PLACEMENT_CONTACT,
             }:
                 owner = self._controller_key(record.owner_robot, record.owner_arm)
-                if any(self.controller_enabled[owner].get(path, True) for path in record.collision_prim_paths):
+                if any(
+                    self.controller_enabled[owner].get(path, False)
+                    for path in record.collision_prim_paths
+                ):
                     raise CollisionSceneError(f"attached object remains world-enabled: {record.entity_name}")
                 if (
                     record.entity_name not in self._pending_detach
@@ -1744,7 +1783,8 @@ class CollisionSceneManager:
                     disabled_paths = {
                         path
                         for path in record.collision_prim_paths
-                        if not self.controller_enabled[key].get(path, False)
+                        if path in self.controller_enabled[key]
+                        and not self.controller_enabled[key][path]
                     }
                     unexpected_disabled = disabled_paths - self._temporary_disabled.get(
                         key, set()
@@ -1875,14 +1915,17 @@ class CollisionSceneManager:
             if controller.collision_world_mode != "physics_schema":
                 continue
             self.controller_enabled[key] = {
-                path: True for path in self.collision_prim_paths
+                path: True for path in self._planner_collision_paths(controller)
             }
             self._temporary_disabled[key] = set()
             self._controller_reference_matrices[key] = self._world_matrix(
                 controller.reference_prim_path
             )
 
-            world = self.build_world_config(controller.reference_prim_path)
+            world = self.build_world_config(
+                controller.reference_prim_path,
+                ignore_substring=getattr(controller, "ignore_substring", ()),
+            )
             planner = controller.runtime.native_planner
             if planner is None:
                 raise CollisionSceneError(

@@ -144,26 +144,26 @@ class LocalNavigationTests(unittest.TestCase):
                 places=6,
             )
 
-    def test_center_collision_uses_binary_occupancy(self):
+    def test_footprint_collision_rejects_clear_center(self):
         occupancy = np.zeros((20, 20), dtype=np.uint8)
         occupancy[10, 10] = 1
         static_map = StaticMap(occupancy, 0.1, (0.0, 0.0, 0.0))
-        blocked = check_footprint_static_collision(
+        clear_center = check_footprint_static_collision(
             static_map=static_map,
-            x=1.0,
-            # Image row 10 corresponds to world y=0.86 with the current
-            # image-pixel rounding convention.
+            x=0.75,
             y=0.86,
         )
-        self.assertFalse(blocked["ok"])
-        clear = check_footprint_static_collision(
+        blocked_footprint = check_footprint_static_collision(
             static_map=static_map,
-            x=0.8,
+            x=0.75,
             y=0.86,
+            footprint_points=[[-0.25, -0.15], [0.35, -0.15], [0.35, 0.15], [-0.25, 0.15]],
         )
-        self.assertTrue(clear["ok"])
+        self.assertTrue(clear_center["ok"])
+        self.assertFalse(blocked_footprint["ok"])
+        self.assertEqual(blocked_footprint["reason"], "static_footprint_collision")
 
-    def test_path_collision_checks_discrete_waypoints_only(self):
+    def test_path_collision_checks_between_waypoints(self):
         occupancy = np.zeros((30, 30), dtype=np.uint8)
         occupancy[15, 10:20] = 1
         static_map = StaticMap(occupancy, 0.1, (0.0, 0.0, 0.0))
@@ -174,8 +174,9 @@ class LocalNavigationTests(unittest.TestCase):
                 {"x": 2.5, "y": 1.36, "yaw": 0.0},
             ],
         )
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["sampled_pose_count"], 2)
+        self.assertFalse(result["ok"])
+        self.assertGreater(result["sampled_pose_count"], 2)
+        self.assertGreater(result["interpolated_pose_count"], 0)
 
     def test_candidate_selection_requires_path_success(self):
         candidates = [

@@ -760,7 +760,7 @@ class TemplateRobot(Robot):
         T_obj_tcp[:, :3, 3] = poses[:, 13:16] * grasp_scale
         scores = poses[:, 0]
         widths = np.clip(poses[:, 1:2], self.gripper_min_width, self.gripper_max_width)
-        depths = poses[:, 3:4]
+        depths = poses[:, 3:4] * grasp_scale
 
         if tcp_offset is None:
             tcp_offset = self.tcp_offset

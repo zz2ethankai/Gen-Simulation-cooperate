@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-DEFAULT_LAUNCHER_CONFIG="configs/de_pipe_template.yaml"
+DEFAULT_LAUNCHER_CONFIG="configs/de_plan_with_render_template.yaml"
 DEFAULT_GPU_ID="0"
 DEFAULT_COMPOSE_FILE="${REPO_ROOT}/docker/docker-compose.yml"
 

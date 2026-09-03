@@ -170,36 +170,68 @@ def check_footprint_static_collision(
     static_map: StaticMap,
     x: float,
     y: float,
+    yaw: float = 0.0,
+    footprint_points: list[list[float]] | None = None,
 ) -> dict[str, Any]:
-    """Check the binary occupancy cell under the point robot center."""
+    """Check every static-map cell covered by the robot footprint."""
     if not isinstance(static_map, StaticMap):
         raise TypeError("static_map must be a StaticMap")
     occupancy = static_map.occupancy
     height, width = occupancy.shape
-    pixel_x, pixel_y = _world_to_image_pixel(
-        float(x),
-        float(y),
-        origin_x=static_map.origin[0],
-        origin_y=static_map.origin[1],
-        resolution=static_map.resolution,
-        height=height,
-    )
-    if not (0 <= pixel_x < width and 0 <= pixel_y < height):
+    footprint = footprint_points or [[0.0, 0.0]]
+    world_polygon = transform_footprint_points(footprint, x=x, y=y, yaw=yaw)
+    pixel_polygon = [
+        _world_to_image_pixel(
+            world_x,
+            world_y,
+            origin_x=static_map.origin[0],
+            origin_y=static_map.origin[1],
+            resolution=static_map.resolution,
+            height=height,
+        )
+        for world_x, world_y in world_polygon
+    ]
+    out_of_bounds_vertices = _out_of_bounds_vertices(pixel_polygon, width=width, height=height)
+    if len(pixel_polygon) < 3:
+        pixel_x, pixel_y = pixel_polygon[0]
+        if not (0 <= pixel_x < width and 0 <= pixel_y < height):
+            return {
+                "ok": False,
+                "reason": "center_out_of_bounds",
+                "sampled_cells": 0,
+                "blocked_cells": 0,
+                "out_of_bounds_vertices": 1,
+                "footprint_world": world_polygon,
+            }
+        blocked_cells = int(occupancy[pixel_y, pixel_x] == 1)
+        return {
+            "ok": blocked_cells == 0,
+            "reason": "" if blocked_cells == 0 else "static_center_collision",
+            "sampled_cells": 1,
+            "blocked_cells": blocked_cells,
+            "out_of_bounds_vertices": 0,
+            "footprint_world": world_polygon,
+        }
+
+    mask = _polygon_mask(height=height, width=width, polygon=pixel_polygon)
+    if not mask.any() or out_of_bounds_vertices:
         return {
             "ok": False,
-            "reason": "center_out_of_bounds",
-            "sampled_cells": 0,
+            "reason": "footprint_out_of_bounds",
+            "sampled_cells": int(mask.sum()),
             "blocked_cells": 0,
-            "out_of_bounds_vertices": 1,
+            "out_of_bounds_vertices": int(out_of_bounds_vertices),
+            "footprint_world": world_polygon,
         }
-    blocked_cells = int(occupancy[pixel_y, pixel_x] == 1)
+    blocked_cells = int(np.count_nonzero(occupancy[mask]))
     ok = blocked_cells == 0
     return {
         "ok": bool(ok),
-        "reason": "" if ok else "static_center_collision",
-        "sampled_cells": 1,
+        "reason": "" if ok else "static_footprint_collision",
+        "sampled_cells": int(mask.sum()),
         "blocked_cells": blocked_cells,
-        "out_of_bounds_vertices": 0,
+        "out_of_bounds_vertices": int(out_of_bounds_vertices),
+        "footprint_world": world_polygon,
     }
 
 
@@ -207,13 +239,15 @@ def check_path_static_collision(
     *,
     static_map: StaticMap,
     path_poses: list[dict[str, Any]],
+    footprint_points: list[list[float]] | None = None,
 ) -> dict[str, Any]:
-    """Check each discrete A* waypoint at the robot center."""
+    """Check the footprint sweep between every pair of path poses."""
     if not isinstance(static_map, StaticMap):
         raise TypeError("static_map must be a StaticMap")
     blocked_results = []
     normalized_poses = [_path_pose(pose) for pose in path_poses or []]
     sampled_pose_count = 0
+    interpolated_pose_count = 0
 
     def check_sample(
         pose: dict[str, float],
@@ -222,12 +256,16 @@ def check_path_static_collision(
         segment_index: int | None,
         segment_fraction: float,
     ):
-        nonlocal sampled_pose_count
+        nonlocal sampled_pose_count, interpolated_pose_count
         sampled_pose_count += 1
+        if segment_fraction not in {0.0, 1.0}:
+            interpolated_pose_count += 1
         result = check_footprint_static_collision(
             static_map=static_map,
             x=pose["x"],
             y=pose["y"],
+            yaw=pose["yaw"],
+            footprint_points=footprint_points,
         )
         if not bool(result.get("ok", False)):
             blocked_results.append(
@@ -246,23 +284,83 @@ def check_path_static_collision(
                 }
             )
 
-    for index, pose in enumerate(normalized_poses):
+    if normalized_poses:
         check_sample(
-            pose,
-            index=index,
+            normalized_poses[0],
+            index=0,
             segment_index=None,
             segment_fraction=0.0,
         )
+    for index in range(1, len(normalized_poses)):
+        previous_pose = normalized_poses[index - 1]
+        pose = normalized_poses[index]
+        sample_count = _path_segment_sample_count(
+            static_map=static_map,
+            footprint_points=footprint_points or [],
+            previous_pose=previous_pose,
+            pose=pose,
+        )
+        yaw_delta = wrap_to_pi(pose["yaw"] - previous_pose["yaw"])
+        for sample_index in range(1, sample_count + 1):
+            fraction = float(sample_index) / float(sample_count)
+            check_sample(
+                {
+                    "x": previous_pose["x"] + fraction * (pose["x"] - previous_pose["x"]),
+                    "y": previous_pose["y"] + fraction * (pose["y"] - previous_pose["y"]),
+                    "yaw": wrap_to_pi(previous_pose["yaw"] + fraction * yaw_delta),
+                },
+                index=index,
+                segment_index=index - 1,
+                segment_fraction=fraction,
+            )
 
     return {
         "ok": len(blocked_results) == 0,
         "num_poses": int(len(normalized_poses)),
         "sampled_pose_count": int(sampled_pose_count),
+        "interpolated_pose_count": int(interpolated_pose_count),
         "blocked_pose_count": int(len(blocked_results)),
         "first_blocked_index": int(blocked_results[0]["index"]) if blocked_results else None,
         "first_blocked_result": blocked_results[0] if blocked_results else {},
         "blocked_summary": blocked_results[:20],
     }
+
+
+def _path_segment_sample_count(
+    *,
+    static_map: StaticMap,
+    footprint_points: list[list[float]],
+    previous_pose: dict[str, float],
+    pose: dict[str, float],
+) -> int:
+    translation_distance = math.hypot(
+        pose["x"] - previous_pose["x"], pose["y"] - previous_pose["y"]
+    )
+    yaw_delta = abs(wrap_to_pi(pose["yaw"] - previous_pose["yaw"]))
+    footprint_radius = max(
+        (math.hypot(float(px), float(py)) for px, py in footprint_points),
+        default=0.0,
+    )
+    sweep_distance = translation_distance + footprint_radius * yaw_delta
+    return max(1, int(math.ceil(sweep_distance / (static_map.resolution * 0.5))))
+
+
+def transform_footprint_points(
+    footprint_points: list[list[float]],
+    *,
+    x: float,
+    y: float,
+    yaw: float,
+) -> list[list[float]]:
+    cos_yaw = math.cos(float(yaw))
+    sin_yaw = math.sin(float(yaw))
+    return [
+        [
+            float(x) + float(px) * cos_yaw - float(py) * sin_yaw,
+            float(y) + float(px) * sin_yaw + float(py) * cos_yaw,
+        ]
+        for px, py in footprint_points
+    ]
 
 
 def _path_pose(pose: dict[str, Any]) -> dict[str, float]:
@@ -511,3 +609,44 @@ def _world_to_image_pixel(
     col = int(round((float(world_x) - origin_x) / resolution))
     map_row = int(round((float(world_y) - origin_y) / resolution))
     return col, int(height - 1 - map_row)
+
+
+def _polygon_mask(*, height: int, width: int, polygon: list[tuple[int, int]]) -> np.ndarray:
+    mask = np.zeros((height, width), dtype=bool)
+    if len(polygon) < 3:
+        return mask
+    min_col = max(0, min(point[0] for point in polygon))
+    max_col = min(width - 1, max(point[0] for point in polygon))
+    min_row = max(0, min(point[1] for point in polygon))
+    max_row = min(height - 1, max(point[1] for point in polygon))
+    if min_col > max_col or min_row > max_row:
+        return mask
+    poly = [(float(col), float(row)) for col, row in polygon]
+    for row in range(min_row, max_row + 1):
+        for col in range(min_col, max_col + 1):
+            if _point_in_polygon(float(col) + 0.5, float(row) + 0.5, poly):
+                mask[row, col] = True
+    return mask
+
+
+def _point_in_polygon(x: float, y: float, polygon: list[tuple[float, float]]) -> bool:
+    inside = False
+    j = len(polygon) - 1
+    for i, (xi, yi) in enumerate(polygon):
+        xj, yj = polygon[j]
+        if ((yi > y) != (yj > y)) and (
+            x < (xj - xi) * (y - yi) / (yj - yi) + xi
+        ):
+            inside = not inside
+        j = i
+    return inside
+
+
+def _out_of_bounds_vertices(
+    polygon: list[tuple[int, int]], *, width: int, height: int
+) -> int:
+    return sum(
+        1
+        for col, row in polygon
+        if col < 0 or col >= width or row < 0 or row >= height
+    )

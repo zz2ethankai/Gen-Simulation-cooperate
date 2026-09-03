@@ -21,6 +21,6 @@ class PandaOmronController(TemplateController):
             "robot0_joint1", "robot0_joint2", "robot0_joint3", "robot0_joint4",
             "robot0_joint5", "robot0_joint6", "robot0_joint7",
         )},
-        default_ignore_substring=("material", "Plane", "conveyor", "scene", "table", "fluid"),
+        default_ignore_substring=("material", "Plane", "conveyor", "scene", "fluid"),
         supported_arms=("left",),
     )

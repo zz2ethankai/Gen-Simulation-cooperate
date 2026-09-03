@@ -53,7 +53,7 @@ python3 scripts/upload_modelscope.py --token "$MODELSCOPE_TOKEN"
 - **GoalToolPose 5D 形状**：目标位姿 helper 把位姿 reshape 成 `[B,H,L,G,3/4]`——batch_size==1 时 (1,1,1,1,3)/(1,1,1,1,4)，否则 (batch_size,1,1,1,3/4)，再构造 GoalToolPose（tool_frames 取 planner.tool_frames[0]）。
 - **attachment_manager**：attach_objects()（:1920）输入显式 attach_collision_prim_paths + native mesh：_native_attachment_geometry()（:1841）把全部 collider mesh 在首个 collider 当前帧合并为 __native_attached_object__，经 self.planner.attachment_manager.attach()（:1945，link_name=attached_object、SphereFitType.VOXEL、world_objects_pose_offset、disable_obstacle_names=paths）。detach_obj()（:2084）→ attachment_manager.detach()（:2086）；reset 清理走 _clear_attached_object_state()（:976）；attach 后校验走 has_attached_collision_spheres()（:2090）。legacy 兼容入口 attach_obj()（:2021）与 test_attached_forward_from_joint_positions()（:1961，评估期瞬时 attach/detach）仍存在，物理路径不经过它们。
 - **world 更新**：_update_world_if_changed()（:858）按 _make_world_update_signature 签名变化触发 planner.update_world()/batch_planner.update_world()（:867/:869）；动态障碍位姿同步走 collision_scene_manager.sync_dynamic_poses()（collision_scene_manager.py:1355）→ scene_collision_checker.update_obstacle_pose()（:1349），覆盖 single 与 batch 两个 planner（_native_planners :1107）。
-- **legacy_stage_scan**：_legacy_update()（:935）的 get_obstacles_from_stage + ignore_substring 只是显式旧碰撞 world 扫描模式，不是 v1 planner 或兼容 API。
+- **legacy_stage_scan**：_legacy_update()（:935）的 get_obstacles_from_stage + ignore_substring 只是历史旧碰撞 world 扫描模式，不是 v1 planner 或兼容 API。当前任务级 `robots[].ignore_substring` 另由 `CollisionSceneManager.build_world_config()` 在 Physics schema world 加载前应用。
 
 ## 时间线
 

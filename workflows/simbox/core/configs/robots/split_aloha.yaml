@@ -97,7 +97,7 @@ left_joint_home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 right_joint_home_std: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 left_gripper_home: [0.05]
 right_gripper_home: [0.05]
-lift_home: [-0.3]
+lift_home: [-0.2]
 
 mobile_base_path: "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/base_link"
 lift_joint_path: "split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/box_link/lifting_joint"

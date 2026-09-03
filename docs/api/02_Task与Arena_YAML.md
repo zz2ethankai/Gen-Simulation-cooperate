@@ -262,13 +262,44 @@ robots:
 | `robot_file` | `str` 或 `list[str]` | 操作类 skill 时必填 | 无 | 基础配置提供。 | controller 配置路径；含 `left` 的映射到 `left` controller，含 `right` 的映射到 `right`。 |
 | `constrain_grasp_approach` | `bool` | 否 | `false` | 少量 `true`。 | 约束抓取接近方向。 |
 | `collision_activation_distance` | `float` | 否 | `0.03` | 常见 `0.05`。 | 控制器碰撞激活距离。 |
-| `ignore_substring` | `list[str]` | 否 | `["material","Plane","conveyor","scene","table"]` | 任意字符串。 | 规划时忽略名称含这些子串的 prim，子串匹配。 |
+| `ignore_substring` | `list[str]` | 否 | controller 默认值；任务显式配置时覆盖 | 非空字符串列表。 | 任务级 CuRobo world 过滤项：在 `CollisionSceneManager.build_world_config()` 调用 CuRobo loader 前，按完整 CollisionAPI Prim path 做子串匹配并排除。 |
 | `use_batch` | `bool` | 否 | `false` | 部分 `true`。 | 是否用 batch 规划。 |
 | `left_joint_home` / `right_joint_home` | `list[float]` | 合并后必填 | 无 | 基础配置提供。 | 左右臂 home 关节位。 |
 | `left_joint_home_std` / `right_joint_home_std` | `list[float]` | 否 | 长度匹配的 0 列表 | 大量显式配置。 | reset/home 关节噪声标准差。 |
 | `left_gripper_home` / `right_gripper_home` | `list[float]` | 合并后必填 | 无 | 基础配置提供。 | home 时夹爪关节位置。 |
 | `tcp_offset` | `float` | 合并后常用 | 基础配置内定义 | `0.115`、`0.12`、`0.135` 等。 | pick 类 skill 默认 TCP 偏移。 |
 | `base` | `dict` | 移动底盘可选 | 无 | 见下。 | 底盘与本地导航配置。 |
+
+### 任务级 `ignore_substring`
+
+场景或任务专属的 CuRobo 忽略名单必须写在 `simbox_task.yaml` 的
+`tasks[].robots[]` 下。task 内的 robot 字段会覆盖
+`robot_config_file` 合并得到的同名字段；省略时才使用 controller 的默认名单。
+controller 名称会由运行时自动加入过滤项。
+
+```yaml
+tasks:
+  - name: s04_map04
+    robots:
+      - name: panda_omron
+        robot_config_file: workflows/simbox/core/configs/robots/panda_omron_virtual.yaml
+        ignore_substring:
+          - chair
+          - bench
+          - floor_lamp
+          - floor_plant
+          - cabinet
+          - bookcase
+          - bookshelf
+          - shelf
+          - cart
+```
+
+匹配对完整 Prim path 做大小写敏感的子串匹配；命中的碰撞 Prim 不会进入该
+controller 的 CuRobo world，因此会减少规划开销。该配置只过滤规划器输入，
+不会删除 USD、Physics schema 或 PhysX 接触碰撞。不要把这次任务专属名单写进
+`workflows/simbox/core/configs/robots/*.yaml`，也不要写成
+`planning.collision_world.ignore_substring`；后者是已拒绝的历史字段。
 
 ### `base`
 

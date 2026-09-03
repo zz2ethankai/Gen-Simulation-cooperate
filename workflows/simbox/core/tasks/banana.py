@@ -16,7 +16,10 @@ from core.utils.dr import update_articulated_objs, update_rigid_objs, update_sce
 from core.utils.asset_path_utils import resolve_asset_root
 from core.utils.language import update_language
 from core.utils.layout import optimize_2d_manip_layout
-from core.utils.region_metadata import merge_source_region_sampling_metadata
+from core.utils.region_metadata import (
+    merge_source_region_sampling_metadata,
+    normalize_legacy_runtime_region_offsets,
+)
 from core.utils.region_sampler import RandomRegionSampler
 from core.utils.rigid_pose import upright_world_orientation
 from core.utils.scene_utils import deactivate_selected_prims
@@ -53,6 +56,7 @@ class BananaBaseTask(BaseTask):
         super().__init__(name=cfg["name"], offset=cfg["offset"])
         self.cfg = cfg
         self._merge_source_region_sampling_metadata(self.cfg)
+        normalize_legacy_runtime_region_offsets(self.cfg)
         self._render = cfg.get("render", True)
         self.asset_root = os.path.abspath(self.cfg["asset_root"])
         self.root_prim_path = os.path.join("/World", f"task_{cfg['task_id']}")

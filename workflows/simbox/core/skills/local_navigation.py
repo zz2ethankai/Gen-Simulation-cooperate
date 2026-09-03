@@ -61,7 +61,7 @@ class NavigationPlan:
 
 
 class GridAStarPlanner:
-    """Center-cell A* over a static map image, matching the example skill."""
+    """Center-cell A* over a static map image."""
 
     def __init__(self, *, resolution: float = 0.05, safety_distance_m: float = 0.35, proximity_weight: float = 2.0):
         self.resolution = float(resolution)
@@ -322,7 +322,7 @@ class WaypointController:
         return body_vx, body_vy, wz, False, {"waypoint_index": self.waypoint_index, "waypoint_count": len(self.path), "distance_to_goal": distance, "yaw_error": yaw_error}
 
 
-def build_navigation_plan(*, start_pose: tuple[float, float, float], goal: tuple[float, float, float], static_map: StaticMap | None, planner_cfg: dict[str, Any] | None = None, planner: GridAStarPlanner | None = None, planned_points: list[tuple[float, float]] | None = None) -> NavigationPlan | None:
+def build_navigation_plan(*, start_pose: tuple[float, float, float], goal: tuple[float, float, float], static_map: StaticMap | None, footprint_points: list[list[float]] | None = None, planner_cfg: dict[str, Any] | None = None, planner: GridAStarPlanner | None = None, planned_points: list[tuple[float, float]] | None = None) -> NavigationPlan | None:
     planner_cfg = planner_cfg or {}
     if planner is None:
         planner = GridAStarPlanner(
@@ -335,24 +335,20 @@ def build_navigation_plan(*, start_pose: tuple[float, float, float], goal: tuple
     points = planned_points if planned_points is not None else planner.plan((start_pose[0], start_pose[1]), (goal[0], goal[1]))
     if not points:
         return None
-    poses = []
-    for index, (x, y) in enumerate(points):
-        if index == 0:
-            # The robot is already at this pose.  Preserve its measured yaw
-            # so collision checks do not invent an in-place turn at startup.
-            yaw = float(start_pose[2])
-        elif index < len(points) - 1:
-            next_x, next_y = points[index + 1]
-            yaw = math.atan2(next_y - y, next_x - x)
-        else:
-            yaw = float(goal[2])
-        poses.append({"x": float(x), "y": float(y), "yaw": wrap_to_pi(yaw)})
+    # The controller turns to the final yaw first, then translates while
+    # holding it. Check the footprint along that actual motion.
+    poses = [{"x": float(points[0][0]), "y": float(points[0][1]), "yaw": wrap_to_pi(start_pose[2])}]
+    poses.extend(
+        {"x": float(x), "y": float(y), "yaw": wrap_to_pi(goal[2])}
+        for x, y in points
+    )
     if static_map is None:
         collision = {"ok": True, "reason": "no_static_map"}
     else:
         collision = check_path_static_collision(
             static_map=static_map,
             path_poses=poses,
+            footprint_points=footprint_points,
         )
         if not collision.get("ok", False):
             return None
@@ -394,11 +390,10 @@ def load_or_export_static_map(*, workflow, robot, cfg: dict[str, Any]) -> Static
     return static_map
 
 
-def select_approach_goal(*, approach_config: ApproachConfig, target_xy: tuple[float, float], start_pose: tuple[float, float, float], static_map: StaticMap | None, robot_cfg: dict[str, Any] | None = None, planner_cfg: dict[str, Any] | None = None) -> tuple[tuple[float, float, float] | None, dict[str, Any]]:
+def select_approach_goal(*, approach_config: ApproachConfig, target_xy: tuple[float, float], start_pose: tuple[float, float, float], static_map: StaticMap | None, robot_cfg: dict[str, Any] | None = None, footprint_points: list[list[float]] | None = None, planner_cfg: dict[str, Any] | None = None) -> tuple[tuple[float, float, float] | None, dict[str, Any]]:
     robot_cfg = robot_cfg or {}
     planner_cfg = planner_cfg or {}
     context = build_armbase_target_context(robot_cfg, approach_config)
-    candidates = sample_approach_candidates(approach_config, target_xy, context)
     planner = GridAStarPlanner(
         resolution=float(planner_cfg.get("map_resolution", static_map.resolution if static_map else 0.05)),
         safety_distance_m=float(planner_cfg.get("safety_distance_m", 0.35)),
@@ -408,13 +403,20 @@ def select_approach_goal(*, approach_config: ApproachConfig, target_xy: tuple[fl
         # Candidate preflight can evaluate hundreds of poses.  The occupancy
         # grid and distance field depend only on this navigation request.
         planner.set_static_map(static_map)
+    max_solutions = max(1, int(planner_cfg.get("max_approach_solutions", 10)))
     checked = []
     eligible = []
-    for candidate in candidates:
+    for candidate in sample_approach_candidates(approach_config, target_xy, context):
         goal = (float(candidate["x"]), float(candidate["y"]), float(candidate["yaw"]))
         static_result = {"ok": True}
         if static_map is not None:
-            static_result = check_footprint_static_collision(static_map=static_map, x=goal[0], y=goal[1])
+            static_result = check_footprint_static_collision(
+                static_map=static_map,
+                x=goal[0],
+                y=goal[1],
+                yaw=goal[2],
+                footprint_points=footprint_points,
+            )
         candidate = dict(candidate)
         candidate["static_ok"] = bool(static_result.get("ok", False))
         candidate["path_ok"] = False
@@ -422,7 +424,6 @@ def select_approach_goal(*, approach_config: ApproachConfig, target_xy: tuple[fl
         checked.append(candidate)
         if static_result.get("ok", False):
             eligible.append((len(checked) - 1, goal))
-    max_solutions = max(1, int(planner_cfg.get("max_approach_solutions", 10)))
     paths = planner.plan_to_goals(
         (start_pose[0], start_pose[1]),
         [goal for _, goal in eligible],
@@ -431,7 +432,7 @@ def select_approach_goal(*, approach_config: ApproachConfig, target_xy: tuple[fl
     reachable = []
     for eligible_index, path in paths.items():
         checked_index, goal = eligible[eligible_index]
-        plan = build_navigation_plan(start_pose=start_pose, goal=goal, static_map=static_map, planner_cfg=planner_cfg, planner=planner, planned_points=path)
+        plan = build_navigation_plan(start_pose=start_pose, goal=goal, static_map=static_map, footprint_points=footprint_points, planner_cfg=planner_cfg, planner=planner, planned_points=path)
         if plan is None:
             continue
         checked[checked_index]["path_ok"] = True
