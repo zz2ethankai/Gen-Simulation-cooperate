@@ -847,6 +847,15 @@ def test_native_usd_parser_builds_exact_name_bbox_world(monkeypatch):
     assert all(len(obstacle.pose) == 7 for obstacle in result.cuboid)
     assert all(min(obstacle.dims) > 0.0 for obstacle in result.cuboid)
 
+    filtered = manager.build_world_config(
+        "/World/task_0", ignore_substring=["sink_table_named_asset"]
+    )
+    assert [obstacle.name for obstacle in filtered.cuboid] == [
+        path
+        for path in manager.collision_prim_paths
+        if "sink_table_named_asset" not in path
+    ]
+
 
 def test_native_bbox_proxy_uses_sibling_reference_and_applies_scale_once(monkeypatch):
     stage = Usd.Stage.CreateInMemory()

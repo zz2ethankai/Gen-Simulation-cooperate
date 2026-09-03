@@ -476,6 +476,8 @@ class MotionPlannerRuntime(PlannerRuntime):
             start_state = self.arm_joint_state(
                 self.robot_port.robot.get_joints_state(), repeat=count
             )
+        if getattr(getattr(start_state, "position", None), "ndim", 2) == 1:
+            start_state = start_state.unsqueeze(0)
         state_time = time.perf_counter() - state_start
         common = self._request_common(
             phase_id=phase_id,

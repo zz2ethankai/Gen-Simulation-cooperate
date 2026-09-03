@@ -31,6 +31,7 @@ class ControllerSetup:
         phase_executor: Any,
         execution_state: MutableExecutionState | None = None,
         collision_scene_manager: Any = None,
+        ignore_substring: Any = (),
     ) -> None:
         self.name = name
         self.world = world
@@ -43,6 +44,7 @@ class ControllerSetup:
         self.phase_executor = phase_executor
         self.execution_state = execution_state or MutableExecutionState()
         self.collision_scene_manager = collision_scene_manager
+        self.ignore_substring = tuple(ignore_substring or ())
         self.raw_js_names = []
         self.cmd_js_names = []
         self.arm_indices = np.array([], dtype=np.int64)
@@ -157,7 +159,8 @@ class ControllerSetup:
         if self.collision_scene_manager is None:
             raise RuntimeError("TemplateController requires CollisionSceneManager")
         self.world_cfg = self.collision_scene_manager.build_world_config(
-            self.reference_prim_path
+            self.reference_prim_path,
+            ignore_substring=self.ignore_substring,
         )
         return self.world_cfg
     def reset(self, runtime: Any, get_ee_pose: Any) -> None:

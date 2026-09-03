@@ -4,7 +4,7 @@ load_stage:
     type: env_loader
     args:
       workflow_type: SimBoxDualWorkFlow
-      cfg_path: workflows/simbox/assets/custom/scene_8/01_kitchen/assets/basic/kitchen_apple_orange_to_tray/simbox_task.yaml # Task config path
+      cfg_path: InternDataAssets/assets/custom/s04_map04/simbox_task.yaml # Task config path
       simulator:
         physics_dt: 1/30                   # Physics update rate
         rendering_dt: 1/30                 # Render update rate
@@ -50,7 +50,7 @@ dedump_stage:
     type: env_loader
     args:
       workflow_type: SimBoxDualWorkFlow
-      cfg_path: workflows/simbox/assets/custom/scene_8/01_kitchen/assets/basic/kitchen_apple_orange_to_tray/simbox_task.yaml  # Must match load_stage cfg_path
+      cfg_path: InternDataAssets/assets/custom/s04_map04/simbox_task.yaml  # Must match load_stage cfg_path
       simulator:
         physics_dt: 1/30                   # Physics update rate
         rendering_dt: 1/30                 # Render update rate

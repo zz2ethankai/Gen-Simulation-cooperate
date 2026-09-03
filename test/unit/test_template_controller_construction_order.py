@@ -46,8 +46,9 @@ def test_robot_ee_path_is_resolved_before_runtime_and_scene_ports(
             return 0.01
 
     class FakeSceneManager:
-        def build_world_config(self, reference_prim_path):
+        def build_world_config(self, reference_prim_path, *, ignore_substring=()):
             assert reference_prim_path == expected_base
+            assert ignore_substring == ("robot",)
             return object()
 
         def bind_scene_port(self, port):

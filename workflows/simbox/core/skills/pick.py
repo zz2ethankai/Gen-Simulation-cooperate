@@ -54,14 +54,23 @@ class Pick(BaseSkill):
             "Aligned_obj.usd", cfg.get("npy_name", "Aligned_grasp_sparse.npy")
         )
         sparse_grasps = np.load(grasp_path)
+        grasp_scale = cfg.get("grasp_scale")
+        if grasp_scale is None:
+            grasp_scale = object_cfg.get("grasp_annotation_scale", 1.0)
+        grasp_scale = np.asarray(grasp_scale, dtype=float).reshape(-1)
+        if (
+            grasp_scale.size not in (1, 3)
+            or not np.all(np.isfinite(grasp_scale))
+            or np.any(grasp_scale <= 0)
+            or (grasp_scale.size == 3 and not np.allclose(grasp_scale, grasp_scale[0]))
+        ):
+            raise ValueError(f"grasp scale must be a positive scalar or uniform 3-vector: {grasp_scale}")
+        grasp_scale = float(grasp_scale[0])
         self.lr_arm = self.skill_runtime.arm_name
-        annotation_scale = object_cfg.get("grasp_annotation_scale", [1.0])
-        if isinstance(annotation_scale, (list, tuple)):
-            annotation_scale = annotation_scale[0]
         self.T_obj_ee, self.scores = robot.pose_post_process_fn(
             sparse_grasps,
             lr_arm=self.lr_arm,
-            grasp_scale=cfg.get("grasp_scale", float(annotation_scale)),
+            grasp_scale=grasp_scale,
             tcp_offset=cfg.get("tcp_offset", robot.tcp_offset),
             constraints=cfg.get("constraints", None),
         )

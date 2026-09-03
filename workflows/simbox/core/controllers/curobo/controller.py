@@ -1,5 +1,6 @@
 from __future__ import annotations
 from abc import abstractmethod
+from collections.abc import Sequence
 from typing import Any
 import torch
 from curobo.types import DeviceCfg
@@ -37,6 +38,7 @@ class TemplateController(_TypedIsaacController):
         constrain_grasp_approach: bool = False,
         collision_activation_distance: float = 0.03,
         collision_scene_manager=None,
+        ignore_substring=None,
         **kwargs: Any,
     ) -> None:
         trajectory_visualizer = kwargs.pop("trajectory_visualizer", None)
@@ -52,6 +54,16 @@ class TemplateController(_TypedIsaacController):
         self.collision_scene_manager = collision_scene_manager
         self.constrain_grasp_approach = bool(constrain_grasp_approach)
         self.collision_activation_distance = float(collision_activation_distance)
+        configured_ignore = getattr(self.arm_spec, "default_ignore_substring", ())
+        if ignore_substring is not None:
+            if isinstance(ignore_substring, (str, bytes)) or not isinstance(
+                ignore_substring, Sequence
+            ):
+                raise TypeError("ignore_substring must be a YAML list of strings")
+            configured_ignore = ignore_substring
+        if any(not isinstance(value, str) or not value for value in configured_ignore):
+            raise TypeError("ignore_substring must contain non-empty strings")
+        self.ignore_substring = tuple(dict.fromkeys((*configured_ignore, self.name)))
         self.tensor_args = DeviceCfg(
             device=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
             dtype=torch.float32,
@@ -71,6 +83,7 @@ class TemplateController(_TypedIsaacController):
             phase_executor=self.phase_executor,
             execution_state=self.execution_state,
             collision_scene_manager=self.collision_scene_manager,
+            ignore_substring=self.ignore_substring,
         )
         self._prepare_setup(self._setup)
         self._execution = ControllerExecution(
@@ -121,6 +134,7 @@ class TemplateController(_TypedIsaacController):
                 attach_collision_object=self.runtime.attach_collision_object,
                 detach_attachment=self.runtime.detach_attachment,
                 has_attached_collision_spheres=self.runtime.has_attached_collision_spheres,
+                ignore_substring=self.ignore_substring,
             )
             self.runtime.robot_port.obstacle_pose = lambda path: self.collision_scene_manager._port_obstacle_pose(self._scene_port, path)
             self._setup.scene_port = self._scene_port

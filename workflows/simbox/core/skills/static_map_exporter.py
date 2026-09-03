@@ -107,7 +107,18 @@ class IsaacStaticMapExporter:
         if not root_prim.IsValid():
             raise RuntimeError(f"Task root prim '{root_path}' is invalid, cannot compute localization map bounds")
 
-        bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), includedPurposes=[UsdGeom.Tokens.default_])
+        # Imported asset colliders are commonly authored with purpose=proxy.
+        # Include every USD purpose that can carry a CollisionAPI; using only
+        # default silently drops tables, chairs, shelves, and similar USDs.
+        bbox_cache = UsdGeom.BBoxCache(
+            Usd.TimeCode.Default(),
+            includedPurposes=[
+                UsdGeom.Tokens.default_,
+                UsdGeom.Tokens.render,
+                UsdGeom.Tokens.proxy,
+                UsdGeom.Tokens.guide,
+            ],
+        )
         bbox_cache.Clear()
         bounds = bbox_cache.ComputeWorldBound(root_prim)
         aligned = Gf.BBox3d(bounds.ComputeAlignedRange()).GetBox()
@@ -157,7 +168,15 @@ class IsaacStaticMapExporter:
         if not root_prim.IsValid():
             raise RuntimeError(f"Task root prim '{root_path}' is invalid, cannot rasterize static colliders")
 
-        bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), includedPurposes=[UsdGeom.Tokens.default_])
+        bbox_cache = UsdGeom.BBoxCache(
+            Usd.TimeCode.Default(),
+            includedPurposes=[
+                UsdGeom.Tokens.default_,
+                UsdGeom.Tokens.render,
+                UsdGeom.Tokens.proxy,
+                UsdGeom.Tokens.guide,
+            ],
+        )
         bbox_cache.Clear()
 
         usd_prim_count = 0
@@ -206,7 +225,7 @@ class IsaacStaticMapExporter:
         size_x = float(bbox_max[0] - bbox_min[0])
         size_y = float(bbox_max[1] - bbox_min[1])
         size_z = float(bbox_max[2] - bbox_min[2])
-        if size_x <= 1.0e-4 or size_y <= 1.0e-4 or size_z <= 1.0e-4:
+        if size_x <= 1.0e-4 or size_y <= 1.0e-4 or size_z <= 1.0e-6:
             return False
         if bbox_max[2] < self._z_min or bbox_min[2] > self._z_max:
             return False

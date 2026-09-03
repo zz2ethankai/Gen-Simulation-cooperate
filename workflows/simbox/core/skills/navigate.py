@@ -102,6 +102,7 @@ class Navigate(BaseSkill):
             if isinstance(platform_cfg, dict)
             else {}
         )
+        self.footprint_points = platform_navigation_cfg.get("footprint_points", [])
         settle_cfg = dict(platform_navigation_cfg.get("settle", {}))
         settle_cfg.update(self.local_navigation_cfg.get("settle", {}))
         for cfg_key, settle_key in (
@@ -357,23 +358,25 @@ class Navigate(BaseSkill):
                 start_pose=start_pose,
                 static_map=self._static_map,
                 robot_cfg=self._robot_cfg_for_approach(),
+                footprint_points=self.footprint_points,
                 planner_cfg=self.planner_cfg,
             )
             self._approach_debug = debug
             if goal is None:
                 self.failure_reason = "no_reachable_approach_goal"
-                self.error_message = "No approach candidate passed center-cell occupancy and local A* checks"
+                self.error_message = "No approach candidate passed footprint collision and local A* checks"
                 return False
             self.goal_x, self.goal_y, self.goal_yaw = goal
         self._plan = build_navigation_plan(
             start_pose=start_pose,
             goal=(self.goal_x, self.goal_y, self.goal_yaw),
             static_map=self._static_map,
+            footprint_points=self.footprint_points,
             planner_cfg=self.planner_cfg,
         )
         if self._plan is None:
             self.failure_reason = "local_plan_failed"
-            self.error_message = "Local center-cell A* could not find a collision-free path"
+            self.error_message = "Local footprint-aware A* could not find a collision-free path"
             return False
         self._controller = WaypointController(
             max_linear_velocity=float(self.navigation_controller_cfg.get("max_linear_velocity", 0.35)),

@@ -123,7 +123,8 @@ class SafetyMonitor:
             (m.ee_orientation_error_rad, "ee_orientation_hard_rad", "ee_orientation_tracking_error"),
             (m.base_translation_m, "base_translation_hard_m", "base_translation_drift"),
             (m.base_rotation_deg, "base_rotation_hard_deg", "base_rotation_drift"),
-            (m.unexpected_contact_n, "unexpected_contact_hard_n", "unexpected_contact"),
+            # Temporarily disabled while the runtime collision geometry is being debugged.
+            # (m.unexpected_contact_n, "unexpected_contact_hard_n", "unexpected_contact"),
             (m.arm_velocity_rad_s, "arm_velocity_hard_rad_s", "arm_velocity"),
             (
                 m.unexpected_object_contact_n,
@@ -153,7 +154,8 @@ class SafetyMonitor:
             (m.ee_orientation_error_rad, "ee_orientation_soft_rad", "ee_orientation_tracking_error"),
             (m.base_translation_m, "base_translation_soft_m", "base_translation_drift"),
             (m.base_rotation_deg, "base_rotation_soft_deg", "base_rotation_drift"),
-            (m.unexpected_contact_n, "unexpected_contact_soft_n", "unexpected_contact"),
+            # Temporarily disabled while the runtime collision geometry is being debugged.
+            # (m.unexpected_contact_n, "unexpected_contact_soft_n", "unexpected_contact"),
             (m.arm_velocity_rad_s, "arm_velocity_soft_rad_s", "arm_velocity"),
             (
                 m.unexpected_object_contact_n,

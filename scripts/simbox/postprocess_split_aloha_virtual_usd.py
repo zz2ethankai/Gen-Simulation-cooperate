@@ -194,6 +194,9 @@ def _disable_collision_tree(stage: Usd.Stage, root_path: str) -> list[str]:
 
 def patch_stage(stage: Usd.Stage) -> dict:
     _require_prim(stage, ROOT_PRIM)
+    physics_scene_path = f"{ROOT_PRIM}/physicsScene"
+    if stage.GetPrimAtPath(physics_scene_path).IsValid():
+        stage.RemovePrim(physics_scene_path)
     for path in (ROBOT_ROOT, DUMMY_X_BODY, DUMMY_Y_BODY, DUMMY_YAW_BODY, BASE_BODY):
         _require_prim(stage, path)
 
