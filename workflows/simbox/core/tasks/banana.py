@@ -1,5 +1,6 @@
 import glob
 import inspect
+import json
 import logging
 import os
 import random
@@ -79,6 +80,7 @@ class BananaBaseTask(BaseTask):
         self._rigid_object_reset_states = {}
         self._reset_reuse_warning_emitted = False
         self._debug_reset_lifecycle = os.environ.get("INTERNDATA_DEBUG_RESET_LIFECYCLE") == "1"
+        self._debug_world_poses = os.environ.get("INTERNDATA_DEBUG_WORLD_POSES") == "1"
         self.stage = get_current_stage()
         self.random_region_list = self.cfg.get("random_region_list", [])
         self.current_id = 0
@@ -507,6 +509,69 @@ class BananaBaseTask(BaseTask):
             label,
             f"{type(self).__module__}.{type(self).__qualname__}",
             rows,
+        )
+        return rows
+
+    def debug_world_poses(self, label="snapshot"):
+        """Log one JSON line per loaded entity with its current world pose.
+
+        This is intentionally independent of the verbose reset-lifecycle
+        diagnostic.  Enable it with ``INTERNDATA_DEBUG_WORLD_POSES=1`` when a
+        scene needs spatial debugging; the default path performs no pose
+        queries and emits no additional logs.
+        """
+
+        if not self._debug_world_poses:
+            return []
+
+        rows = []
+        collections = (
+            ("fixture", self.fixtures),
+            ("object", self.objects),
+            ("distractor", self.distractors),
+            ("robot", self.robots),
+        )
+        seen_entities = set()
+        for collection_name, collection in collections:
+            for configured_name, entity in collection.items():
+                # An entity can be exposed through more than one task
+                # collection.  Keep the output contract to one line per
+                # loaded entity at each snapshot boundary.
+                entity_identity = id(entity)
+                if entity_identity in seen_entities:
+                    continue
+                seen_entities.add(entity_identity)
+
+                name = str(getattr(entity, "name", configured_name))
+                prim_path = str(getattr(entity, "prim_path", "<unset>"))
+                row = {
+                    "label": str(label),
+                    "collection": collection_name,
+                    "name": name,
+                    "prim_path": prim_path,
+                }
+                try:
+                    position, orientation = entity.get_world_pose()
+                    row["world_xyz"] = [
+                        float(value)
+                        for value in self._state_value_to_numpy(position).reshape(-1)[:3]
+                    ]
+                    row["world_quat_wxyz"] = [
+                        float(value)
+                        for value in self._state_value_to_numpy(orientation).reshape(-1)[:4]
+                    ]
+                except Exception as exc:
+                    row["pose_error"] = repr(exc)
+                rows.append(row)
+                LOGGER.warning(
+                    "[WorldPose] %s",
+                    json.dumps(row, ensure_ascii=False, separators=(",", ":")),
+                )
+
+        LOGGER.warning(
+            "[WorldPoseSummary] label=%s entity_count=%d",
+            label,
+            len(rows),
         )
         return rows
 

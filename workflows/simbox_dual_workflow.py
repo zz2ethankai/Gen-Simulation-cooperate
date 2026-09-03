@@ -647,6 +647,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         self._completed_relation_skills = []
 
         self._run_reset_warmup(50)
+        self._debug_world_pose_snapshot("initial_reset_warmup_complete")
 
         get_physics_dt = getattr(self.world, "get_physics_dt", None)
         if callable(get_physics_dt):
@@ -656,8 +657,11 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         video_fps = int(round(1.0 / physics_dt)) if physics_dt > 0 else 30
 
         if self.task_cfg.get("debug_topdown_check") or os.environ.get("INTERNDATA_DEBUG_TOPDOWN") == "1":
+            screenshot_dir = os.environ.get("INTERNDATA_SCREENSHOT_DIR") or self.task_cfg[
+                "data"
+            ]["task_dir"]
             capture_topdown_screenshot(
-                self.task_cfg["data"]["task_dir"],
+                screenshot_dir,
             )
         self.logger = LmdbLogger(
             task_dir=self.task_cfg["data"]["task_dir"],
@@ -1456,6 +1460,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
         """
 
         task_type = f"{type(self.task).__module__}.{type(self.task).__qualname__}"
+        self._debug_world_pose_snapshot(f"{label}:before_restore")
         audit = getattr(self.task, "audit_fixed_rigid_object_reset", None)
         if callable(audit):
             audit(label=f"{label}:dispatch")
@@ -1493,6 +1498,7 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 label,
                 task_type,
             )
+        self._debug_world_pose_snapshot(f"{label}:after_restore")
         LOGGER.warning(
             "[ResetLifecycle] fixed rigid restore dispatched label=%s task_type=%s restored=%d",
             label,
@@ -1500,6 +1506,14 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
             len(restored),
         )
         return restored
+
+    def _debug_world_pose_snapshot(self, label):
+        """Dispatch the task's opt-in, one-entity-per-line pose logger."""
+
+        debug_world_poses = getattr(self.task, "debug_world_poses", None)
+        if callable(debug_world_poses):
+            return debug_world_poses(label)
+        return []
 
     def _refresh_task_rigid_views_after_world_reset(self):
         """Rebind task rigid wrappers before any post-reset pose writes.

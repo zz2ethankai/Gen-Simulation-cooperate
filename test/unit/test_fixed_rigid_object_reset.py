@@ -154,6 +154,21 @@ def test_fixed_restore_is_wired_after_normal_layout_warmup():
     assert 'LOGGER = logging.getLogger("de_logger")' in task_source
 
 
+def test_world_pose_debug_is_opt_in_and_wired_to_reset_boundaries():
+    """World-pose debugging must be parseable and absent by default."""
+
+    workflow_source = (ROOT / "workflows/simbox_dual_workflow.py").read_text(encoding="utf-8")
+    task_source = (ROOT / "workflows/simbox/core/tasks/banana.py").read_text(encoding="utf-8")
+
+    assert 'os.environ.get("INTERNDATA_DEBUG_WORLD_POSES") == "1"' in task_source
+    assert 'def debug_world_poses(self, label="snapshot"):' in task_source
+    assert '"[WorldPose] %s"' in task_source
+    assert "json.dumps(row" in task_source
+    assert 'self._debug_world_pose_snapshot("initial_reset_warmup_complete")' in workflow_source
+    assert 'f"{label}:before_restore"' in workflow_source
+    assert 'f"{label}:after_restore"' in workflow_source
+
+
 def test_task_reset_resets_camera_acquisition_timing_without_replacing_camera_pose():
     """Camera timing must be reset because cameras are not World scene objects."""
 
