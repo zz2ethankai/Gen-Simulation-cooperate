@@ -48,7 +48,7 @@ def test_conda_setup_dry_run_pins_isaac6_torch_and_python():
     assert "InternDataAssets/curobov2/pyproject.toml" in completed.stdout
 
 
-def test_conda_runner_dry_run_uses_process_local_gpu_zero():
+def test_conda_runner_dry_run_uses_absolute_physical_gpu_index():
     env = os.environ.copy()
     env.update(
         {
@@ -71,10 +71,12 @@ def test_conda_runner_dry_run_uses_process_local_gpu_zero():
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert "CUDA_VISIBLE_DEVICES=3" in completed.stdout
+    assert "-u CUDA_VISIBLE_DEVICES" in completed.stdout
     assert "test-isaac6" in completed.stdout
-    assert "simulator.active_gpu=0" in completed.stdout
-    assert "simulator.active_gpu=3" not in completed.stdout
+    assert "simulator.active_gpu=3" in completed.stdout
+    assert "simulator.physics_gpu=3" in completed.stdout
+    assert "simulator.cuda_device=3" in completed.stdout
+    assert "CUDA_VISIBLE_DEVICES=3" not in completed.stdout
     assert "launcher.py" in completed.stdout
 
 

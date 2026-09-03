@@ -54,9 +54,9 @@ COMMAND=(
   --name="${RUN_NAME}"
   --random_seed="${RANDOM_SEED}"
   --load_stage.scene_loader.args.cfg_path="${TASK_PATH}"
-  --load_stage.scene_loader.args.simulator.active_gpu=0
-  --load_stage.scene_loader.args.simulator.physics_gpu=0
-  --load_stage.scene_loader.args.simulator.cuda_device=0
+  --load_stage.scene_loader.args.simulator.active_gpu="${GPU_ID}"
+  --load_stage.scene_loader.args.simulator.physics_gpu="${GPU_ID}"
+  --load_stage.scene_loader.args.simulator.cuda_device="${GPU_ID}"
   --load_stage.layout_random_generator.args.random_num="${RANDOM_NUM}"
 )
 if [[ -n "${OUTPUT_DIR}" ]]; then
@@ -69,7 +69,7 @@ fi
 if [[ "${DRY_RUN}" == "1" ]]; then
   DRY_COMMAND=(
     env
-    CUDA_VISIBLE_DEVICES="${GPU_ID}"
+    -u CUDA_VISIBLE_DEVICES
     CONDA_ENV="${CONDA_ENV}"
     conda run --no-capture-output -n "${CONDA_ENV}"
     "${COMMAND[@]}"
@@ -95,7 +95,12 @@ nvidia-smi --query-gpu=index --format=csv,noheader,nounits |
     exit 2
   }
 
-export CUDA_VISIBLE_DEVICES="${GPU_ID}"
+# Native Isaac Sim/Omniverse selects the renderer GPU by the physical
+# nvidia-smi index.  CUDA_VISIBLE_DEVICES renumbers CUDA devices without
+# equivalently renumbering Vulkan devices, which can leave RTX/Hydra without
+# a matching CUDA device on non-zero GPUs.  Keep the full device inventory
+# visible and pass GPU_ID as the absolute index to rendering, PhysX and CUDA.
+unset CUDA_VISIBLE_DEVICES
 export ACCEPT_EULA="${ACCEPT_EULA:-Y}"
 export PRIVACY_CONSENT="${PRIVACY_CONSENT:-Y}"
 export OMNI_KIT_ACCEPT_EULA="${OMNI_KIT_ACCEPT_EULA:-YES}"

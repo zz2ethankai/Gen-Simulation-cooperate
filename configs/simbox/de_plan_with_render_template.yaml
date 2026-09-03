@@ -11,9 +11,9 @@ load_stage:
         stage_units_in_meters: 1.0         # Stage unit scale
         headless: True                     # Headless mode (no GUI); set false for visual debugging
         anti_aliasing: 0                   # Anti-aliasing level
-        active_gpu: 0                      # Rendering GPU (0-indexed, physical GPU)
-        physics_gpu: 0                     # PhysX CUDA GPU in the process-visible namespace
-        cuda_device: 0                     # PyTorch/CuRobo GPU in the process-visible CUDA namespace
+        active_gpu: 0                      # Physical nvidia-smi index; native runner overrides from GPU_ID
+        physics_gpu: 0                     # Same absolute physical index as the renderer
+        cuda_device: 0                     # Same absolute index for PyTorch/CuRobo in native runs
         multi_gpu: false                   # Disable multi-GPU to prevent touching GPU 0
         max_gpu_count: 1                   # Only use 1 GPU
   layout_random_generator:                 # Scene randomization
