@@ -111,6 +111,7 @@ class RigidObject(SingleRigidPrim):
                 self.base_prim_path,
                 self.rigid_prim_path,
             )
+        self._sanitize_composed_physics_hierarchy()
         self._author_initial_scale(cfg)
         self._apply_small_scale_collision_fallback(cfg)
         resolution = resolve_attach_collision_prims(
@@ -131,6 +132,84 @@ class RigidObject(SingleRigidPrim):
         )
         super().__init__(prim_path=self.rigid_prim_path, name=cfg["name"], *args, **kwargs)
         self._apply_physics_material_overrides(cfg)
+
+    def _sanitize_composed_physics_hierarchy(self):
+        """Keep a ``RigidObject`` as one rigid body with one collision source.
+
+        Task-ready wrappers put the authoritative rigid body and CoACD shapes
+        under ``/Aligned`` and ``/Aligned/Collision``.  Some source visual
+        packages still carry their original RigidBody/Mass/Collision APIs
+        below ``/Aligned/Geometry``.  Once composed, that creates a nested
+        dynamic body: PhysX writes a compensating transform onto the visual
+        child during reset while the wrapper body follows its dedicated
+        collision shapes.  The collision object then remains present, but its
+        rendered mesh sinks below the support surface.
+
+        Remove descendant rigid bodies unconditionally because this class is
+        explicitly a *single* rigid object.  When a dedicated Collision
+        subtree exists, also strip collision APIs outside that subtree so the
+        visual mesh cannot become a duplicate physics shape.  The opinions
+        are authored only in the runtime stage; source USD files are not
+        modified.
+        """
+
+        rigid_root = get_prim_at_path(self.rigid_prim_path)
+        if not rigid_root.IsValid():
+            return
+
+        descendants = [prim for prim in Usd.PrimRange(rigid_root) if prim != rigid_root]
+        dedicated_collision_roots = [
+            prim
+            for prim in descendants
+            if prim.GetParent() == rigid_root
+            and prim.GetName().lower() in {"collision", "collisions"}
+        ]
+        dedicated_prefixes = [f"{prim.GetPath()}/" for prim in dedicated_collision_roots]
+
+        removed_rigid = []
+        removed_visual_collision = []
+        for prim in descendants:
+            prim_path = str(prim.GetPath())
+            if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                prim.RemoveAPI(UsdPhysics.RigidBodyAPI)
+                removed_rigid.append(prim_path)
+            if prim.HasAPI(UsdPhysics.MassAPI):
+                prim.RemoveAPI(UsdPhysics.MassAPI)
+
+            in_dedicated_collision = any(
+                prim_path == prefix[:-1] or prim_path.startswith(prefix)
+                for prefix in dedicated_prefixes
+            )
+            if dedicated_collision_roots and not in_dedicated_collision:
+                removed = False
+                if prim.HasAPI(UsdPhysics.CollisionAPI):
+                    prim.RemoveAPI(UsdPhysics.CollisionAPI)
+                    removed = True
+                if prim.HasAPI(UsdPhysics.MeshCollisionAPI):
+                    prim.RemoveAPI(UsdPhysics.MeshCollisionAPI)
+                    removed = True
+                if removed:
+                    removed_visual_collision.append(prim_path)
+
+        remaining_nested = [
+            str(prim.GetPath())
+            for prim in descendants
+            if prim.HasAPI(UsdPhysics.RigidBodyAPI)
+        ]
+        if remaining_nested:
+            raise ValueError(
+                f"RigidObject {self.base_prim_path} still has nested rigid bodies: "
+                f"{remaining_nested}"
+            )
+        if removed_rigid or removed_visual_collision:
+            LOGGER.warning(
+                "[RigidObject] sanitized composed physics hierarchy root=%s "
+                "nested_rigid=%s visual_collision=%s dedicated_collision=%s",
+                self.rigid_prim_path,
+                removed_rigid,
+                removed_visual_collision,
+                [str(prim.GetPath()) for prim in dedicated_collision_roots],
+            )
 
     def _apply_physics_material_overrides(self, cfg):
         """Apply an optional task-level friction coefficient to this asset.
