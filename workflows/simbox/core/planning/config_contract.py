@@ -1,4 +1,4 @@
-"""Strict task contract for the Physics Schema planning world."""
+"""Shared task contract for the Physics Schema planning world."""
 
 from __future__ import annotations
 
@@ -9,7 +9,10 @@ from typing import Any
 PHYSICS_SCHEMA_MODE = "physics_schema"
 PASSTHROUGH_MODE = "passthrough"
 DIRECT_EXECUTION_MODE = "direct_execution"
-PHYSICS_SCHEMA_SKILLS = {"pick", "place"}
+# These are shape checks for the two skills with a stable generic contract;
+# they are not an allowlist for the Physics Schema. Other runtime Skills use
+# the same planning world and validate their own execution parameters.
+SKILL_OBJECT_COUNTS = {"pick": 1, "place": 2}
 VALIDATION_ONLY_SKILLS = {"pick_plan_probe"}
 NON_MANIPULATION_SKILLS = {"navigate", "wait", "observe_hold", "scan", "track"}
 _PATTERN_CHARS = frozenset("*?[]{}^$()|+")
@@ -116,8 +119,10 @@ def validate_planning_contract(task_cfg: Mapping[str, Any], collision_world_mode
                 raise ValueError("pick_plan_probe requires metadata.workspace_probe")
             if len(skill.get("objects", ()) or ()) != 1:
                 raise ValueError("pick_plan_probe requires exactly one object")
-        elif name in PHYSICS_SCHEMA_SKILLS:
-            expected = 1 if name == "pick" else 2
+        else:
+            expected = SKILL_OBJECT_COUNTS.get(name)
+            if expected is None:
+                continue
             actual = len(skill.get("objects", ()) or ())
             if actual != expected:
                 raise ValueError(f"physics_schema {name} requires {expected} object identities, got {actual}")
@@ -145,7 +150,7 @@ def resolve_collision_world_mode(task_cfg: Mapping[str, Any], requested_mode: st
 
 __all__ = [
     "DIRECT_EXECUTION_MODE", "NON_MANIPULATION_SKILLS", "PASSTHROUGH_MODE",
-    "PHYSICS_SCHEMA_MODE", "PHYSICS_SCHEMA_SKILLS", "VALIDATION_ONLY_SKILLS",
+    "PHYSICS_SCHEMA_MODE", "SKILL_OBJECT_COUNTS", "VALIDATION_ONLY_SKILLS",
     "canonicalize_planning_config", "is_passthrough_skill",
     "resolve_collision_world_mode", "resolve_skill_collision_world_mode",
     "validate_planning_contract", "validate_planning_exclusions",

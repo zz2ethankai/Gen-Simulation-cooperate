@@ -8,7 +8,7 @@
 任务需求与场景 manifest
   → 划分 object subtask
   → 为每个 subtask 选择执行模式
-  → 选择 Pick / Place、执行顺序和机械臂
+  → 选择已有 runtime Skill、执行顺序和机械臂
   → 填写允许由 Agent 决定的 Skill 参数
   → 返回结构化 TaskPlan
 ```
@@ -16,7 +16,9 @@
 Agent 不直接编辑 SimBox YAML，不生成 `pick_plan_probe`，也不展开接近、闭合、attach、detach、
 碰撞世界更新、安全重规划等 Skill 内部动作。TaskPlan 通过校验后，由确定性编译器写入源任务配置的副本。
 
-当前 Agent 对外只开放 `pick` 和 `place`。其他 Skill 即使在 SimBox 中存在，也不能写入 TaskPlan。
+Physics Schema 不再按 `pick` / `place` 做 Skill 白名单。选中源任务已经存在的 runtime Skill 可以写入
+TaskPlan；注册表中的 Skill 继续提供参数和对象数量的确定性校验，未注册 Skill 则保留源配置并由
+SimBox runtime 负责最终 Skill 实例化校验。
 
 ## 2. Subtask 划分
 
@@ -127,8 +129,8 @@ Agent 返回 JSON 前必须逐项确认：
 1. 所有对象、机器人和资产引用均来自选中 manifest；
 2. 每个 Stage 的 `execution_mode` 与 Skill 数量、手臂和顺序一致；
 3. 每个可执行 subtask 的 `arm` 已明确为 `left` 或 `right`，其单臂 Skill 与之一致；任何必须双臂的 Subtask 都已写入 `unresolved`；
-4. 只使用 `pick` 和 `place`；
-5. 每个 `params` 字段都出现在下方对应 Skill 的参数表中；
+4. 只使用 manifest/source task 中真实存在或 runtime 已注册的 Skill，不编造 Skill 名称；
+5. 已登记 Skill 的 `params` 字段都出现在下方对应参数表中；未登记但来自 source task 的 Skill 使用源配置或明确的 runtime 参数；
 6. 参数值满足类型、枚举、长度、单位和依赖条件；
 7. `owner` 不是 `agent` 的参数不写入返回；
 8. 不使用 `ignore_substring`，不通过隐藏障碍物换取规划成功；

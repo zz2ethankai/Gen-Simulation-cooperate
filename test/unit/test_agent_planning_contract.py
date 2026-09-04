@@ -142,6 +142,68 @@ def test_valid_pick_place_plan_and_deterministic_defaults(tmp_path):
     assert phase["left"][1]["test_mode"] == "forward"
 
 
+def test_unregistered_skill_is_compiled_and_reuses_source_settings(tmp_path):
+    source = tmp_path / "source.yaml"
+    source.write_text(
+        yaml.safe_dump(
+            {
+                "tasks": [
+                    {
+                        "robots": [{"name": "split_aloha"}],
+                        "skills": [
+                            {
+                                "split_aloha": [
+                                    {
+                                        "left": [
+                                            {
+                                                "name": "open",
+                                                "objects": ["cup"],
+                                                "collision_valid": False,
+                                                "planner_setting": {"task_name": "OpenBox"},
+                                            }
+                                        ],
+                                        "right": [],
+                                    }
+                                ]
+                            }
+                        ],
+                    }
+                ]
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    manifest = _manifest(source)
+    data = _plan(source).to_dict()
+    subtask = data["subtasks"][0]
+    subtask["target_object"] = None
+    subtask["relation"] = "none"
+    stage = subtask["stages"][0]
+    stage["execution_mode"] = "single_arm_single_skill"
+    stage["skills"] = [
+        {
+            "name": "open",
+            "objects": ["cup"],
+            "arm": "left",
+            "params": {},
+            "decision_basis": "source task exposes the articulation skill",
+        }
+    ]
+    plan = TaskPlan.from_dict(data)
+
+    _resolver().validate_plan(plan, manifest)
+    output = compile_task_config(plan, manifest, tmp_path / "compiled.yaml")
+    compiled = yaml.safe_load(output.read_text(encoding="utf-8"))
+    skill = compiled["tasks"][0]["skills"][0]["split_aloha"][0]["left"][0]
+
+    assert skill["name"] == "open"
+    assert skill["objects"] == ["cup"]
+    assert skill["collision_valid"] is False
+    assert skill["planner_setting"] == {"task_name": "OpenBox"}
+    assert skill["test_mode"] == "forward"
+
+
 def test_skill_defaults_are_loaded_from_agent_config_and_agent_params_override_them(tmp_path):
     source = _source_task(tmp_path / "source.yaml")
     manifest = _manifest(source)

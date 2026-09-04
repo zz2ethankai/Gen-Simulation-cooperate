@@ -1,6 +1,7 @@
 from copy import deepcopy
 
 import numpy as np
+from core.planning.config_contract import DIRECT_EXECUTION_MODE
 from core.planning.motion_command import MotionPhase
 from core.skills.base_skill import BaseSkill, register_skill
 from omegaconf import DictConfig
@@ -16,6 +17,8 @@ from solver.planner import KPAMPlanner, KPAMPlannerQueries, KPAMRobotFrame
 # pylint: disable=unused-argument
 @register_skill
 class Close(BaseSkill):
+    execution_mode = DIRECT_EXECUTION_MODE
+
     def __init__(self, robot: Robot, skill_runtime, task: BaseTask, cfg: DictConfig, *args, **kwargs):
         super().__init__()
         self.robot = robot
@@ -98,6 +101,27 @@ class Close(BaseSkill):
                 self.draw.draw_points([(T_world_base @ np.append(keypose[:3, 3], 1))[:3]], [(0, 0, 0, 1)], [7])
         manip_list = []
 
+        p_base_ee_cur, q_base_ee_cur = self.skill_runtime.execution.get_ee_pose()
+        ignore_substring = deepcopy(
+            list(getattr(self.skill_runtime.setup, "ignore_substring", ()) or ())
+        )
+        ignore_substring.extend(
+            list(self.skill_cfg.get("ignore_substring", []) or [])
+        )
+        manip_list.append(
+            self.pose_command(
+                MotionPhase.SYNC_WORLD,
+                p_base_ee_cur,
+                q_base_ee_cur,
+                dwell_steps=1,
+                metadata={
+                    "legacy_operation": "update_specific",
+                    "legacy_ignore_substring": ignore_substring,
+                    "legacy_reference_prim_path": self.skill_runtime.setup.reference_prim_path,
+                },
+            )
+        )
+
         for i in range(len(self.traj_keyframes)):
             p_base_ee_tgt = self.traj_keyframes[i][:3, 3]
             q_base_ee_tgt = R.from_matrix(self.traj_keyframes[i][:3, :3]).as_quat(scalar_first=True)
@@ -107,19 +131,28 @@ class Close(BaseSkill):
                     p_base_ee_tgt,
                     q_base_ee_tgt,
                     gripper_action="close_gripper",
-                    active_object=self.art_obj.name,
                 )
             )
-            if i == self.contact_pose_index:
+
+            if i == self.contact_pose_index - 1:
+                ignore_substring = deepcopy(
+                    list(getattr(self.skill_runtime.setup, "ignore_substring", ()) or ())
+                )
+                ignore_substring.extend(
+                    list(self.skill_cfg.get("ignore_substring", []) or [])
+                )
+                ignore_substring.append(self.art_obj.prim_path.split("/")[-2])
                 manip_list.append(
                     self.pose_command(
-                        MotionPhase.GRIPPER_CLOSE,
+                        MotionPhase.SYNC_WORLD,
                         p_base_ee_tgt,
                         q_base_ee_tgt,
-                        gripper_action="close_gripper",
-                        active_object=self.art_obj.name,
-                        replan_allowed=False,
-                        dwell_steps=40,
+                        dwell_steps=1,
+                        metadata={
+                            "legacy_operation": "update_specific",
+                            "legacy_ignore_substring": ignore_substring,
+                            "legacy_reference_prim_path": self.skill_runtime.setup.reference_prim_path,
+                        },
                     )
                 )
         self.manip_list = manip_list

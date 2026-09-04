@@ -60,7 +60,6 @@ planning:
   collision_world:
     mode: physics_schema
     strict: true
-    exact_exclusions: []
   pick_place:
     terminal_step_m: 0.005
     max_terminal_distance_m: 0.10

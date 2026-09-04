@@ -166,13 +166,13 @@ fluid: <Fluid>                             # optional
 | --- | --- | --- | --- |
 | `mode` | `str` | `physics_schema` | 操作类规划唯一使用 Physics schema；旧 `legacy_stage_scan` / `hybrid` 值只产生弃用警告并被规范化为 `physics_schema`。skill 级解析由 `resolve_skill_collision_world_mode` 完成：`navigate`、`observe_hold` 等非操作 skill 为 `passthrough`，其他操作 skill 为 `physics_schema`。`home` Skill 与 `heuristic__skill(mode: home)` 另走 `direct_execution`，不创建或切换碰撞规划世界。 |
 | `strict` | `bool` | `true` | `CollisionSceneManager` 读取（`collision_scene_manager.py:132`）。`true` 时遇到缺失/不支持碰撞体直接报错；`false` 时记入 `schema_exclusions` 降级。 |
-| `exact_exclusions` | `list[dict]` | `[]` | 精确排除项，每项必须含 `prim_path` 与 `reason`；路径必须是完整绝对 Prim 路径、`reason` 非空、不可重复（`validate_exact_exclusions`，`collision_scene_manager.py:99`）。 |
+| `planning_exclusions` | `list[str]` | `[]` | 按任务实体名精确排除；每项必须是一个已存在的实体名，不能使用 Prim 路径或通配符。 |
 
 `mode` 说明：
 
 | 值 | 语义 |
 | --- | --- |
-| `physics_schema` | 按 Physics 刚体精确映射 CuRobo 世界；`pick` / `place` / `pick_plan_probe` 使用该规划契约。 |
+| `physics_schema` | 按 Physics 刚体精确映射 CuRobo 世界；所有需要机械臂规划的 runtime Skill 使用该规划世界，`pick` / `place` 仍有额外对象数量校验。 |
 | `legacy_stage_scan` / `hybrid` | 已废弃；不会选择旧运行时世界，规范化时仅产生弃用警告。 |
 | `passthrough` | 仅用于 skill 级解析（导航/观测类），不是 task 级模式。 |
 
@@ -202,7 +202,7 @@ fluid: <Fluid>                             # optional
 
 | 集合 | 内容 | 校验规则 |
 | --- | --- | --- |
-| `PHYSICS_SCHEMA_SKILLS` | `{pick, place}` | pick 要求恰好 1 个 object，place 恰好 2 个。 |
+| `SKILL_OBJECT_COUNTS` | `{pick: 1, place: 2}` | 已知 Skill 的对象数量校验，不构成 Physics Schema Skill 白名单。 |
 | `VALIDATION_ONLY_SKILLS` | `{pick_plan_probe}` | 仅校验/探测；要求 `metadata.workspace_probe` 且恰好 1 个 object。 |
 | `NON_MANIPULATION_SKILLS` | `{navigate, observe_hold}` | 不参与操作类校验，skill 级模式固定 `passthrough`。 |
 | `DIRECT_EXECUTION_MODE` | `direct_execution` | `home` 类 Skill 的直接关节动作模式；不创建或切换碰撞规划世界。 |

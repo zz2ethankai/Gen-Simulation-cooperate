@@ -453,10 +453,11 @@ class AgentOrchestrator:
             if stage is None or not 0 <= update.skill_index < len(stage["skills"]):
                 raise AgentDecisionError("revision references an unknown stage or skill index")
             skill = stage["skills"][update.skill_index]
-            contract = contracts[skill["name"]]
-            unknown = set(update.params) - set(contract.allowed_params)
-            if unknown:
-                raise AgentDecisionError(f"revision contains unsupported params: {sorted(unknown)}")
+            contract = contracts.get(str(skill["name"]).lower())
+            if contract is not None:
+                unknown = set(update.params) - set(contract.allowed_params)
+                if unknown:
+                    raise AgentDecisionError(f"revision contains unsupported params: {sorted(unknown)}")
             for key, value in update.params.items():
                 if skill.setdefault("params", {}).get(key) != value:
                     skill["params"][key] = value

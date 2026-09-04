@@ -1,6 +1,7 @@
 from copy import deepcopy
 
 import numpy as np
+from core.planning.config_contract import DIRECT_EXECUTION_MODE
 from core.planning.motion_command import MotionPhase
 from core.skills.base_skill import BaseSkill, register_skill
 from omegaconf import DictConfig
@@ -16,6 +17,8 @@ from solver.planner import KPAMPlanner, KPAMPlannerQueries, KPAMRobotFrame
 # pylint: disable=unused-argument
 @register_skill
 class Artpreplan(BaseSkill):
+    execution_mode = DIRECT_EXECUTION_MODE
+
     def __init__(self, robot: Robot, skill_runtime, task: BaseTask, cfg: DictConfig, *args, **kwargs):
         super().__init__()
         self.robot = robot
@@ -96,21 +99,25 @@ class Artpreplan(BaseSkill):
                 self.draw.draw_points([(T_world_base @ np.append(keypose[:3, 3], 1))[:3]], [(0, 0, 0, 1)], [7])
         manip_list = []
 
-        self.p_base_ee_tgt = self.traj_keyframes[-1][:3, 3]
-        self.q_base_ee_tgt = R.from_matrix(self.traj_keyframes[-1][:3, :3]).as_quat(scalar_first=True)
-        manip_list = []
-        for keypose in self.traj_keyframes:
-            position = keypose[:3, 3]
-            orientation = R.from_matrix(keypose[:3, :3]).as_quat(scalar_first=True)
-            manip_list.append(
-                self.pose_command(
-                    MotionPhase.TRANSIT_PREGRASP,
-                    position,
-                    orientation,
-                    gripper_action="open_gripper",
-                    active_object=self.art_obj.name,
-                )
+        p_base_ee, q_base_ee = self.skill_runtime.execution.get_ee_pose()
+        ignore_substring = deepcopy(
+            list(getattr(self.skill_runtime.setup, "ignore_substring", ()) or ())
+        )
+        self.p_base_ee_tgt = p_base_ee
+        self.q_base_ee_tgt = q_base_ee
+        manip_list.append(
+            self.pose_command(
+                MotionPhase.SYNC_WORLD,
+                p_base_ee,
+                q_base_ee,
+                dwell_steps=1,
+                metadata={
+                    "legacy_operation": "update_specific",
+                    "legacy_ignore_substring": ignore_substring,
+                    "legacy_reference_prim_path": self.skill_runtime.setup.reference_prim_path,
+                },
             )
+        )
         self.manip_list = manip_list
 
     def update(self):

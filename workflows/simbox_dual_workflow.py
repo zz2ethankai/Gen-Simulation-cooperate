@@ -2424,11 +2424,11 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 sorted(changed),
         )
         for robot_name, skill in self._iter_active_skills() or []:
-            if (
-                not skill.manip_list
-                or getattr(skill, "collision_world_mode", PHYSICS_SCHEMA_MODE)
-                == PASSTHROUGH_MODE
-            ):
+            if not skill.manip_list:
+                continue
+            if getattr(skill, "execution_mode", None) == DIRECT_EXECUTION_MODE:
+                continue
+            if getattr(skill, "collision_world_mode", PHYSICS_SCHEMA_MODE) == PASSTHROUGH_MODE:
                 continue
             command = skill.manip_list[0]
             if not isinstance(command, MotionPhaseCommand):
@@ -2531,12 +2531,18 @@ class SimBoxDualWorkFlow(NimbusWorkFlow):
                 f"operation Skill {self._skill_display_name(skill)!r} must emit "
                 "MotionPhaseCommand values"
             )
-        if not command.is_direct:
+        legacy_lane = (
+            getattr(skill, "execution_mode", None) == DIRECT_EXECUTION_MODE
+            and not command.is_direct
+        )
+        if not legacy_lane and not command.is_direct:
             self._activate_skill_collision_world(skill)
         self._start_skill_motion_phase(skill, command)
         scope = getattr(skill, "_timing_scope", None)
         previous_scope = runtime.push_timing_scope(scope)
         try:
+            if legacy_lane:
+                return runtime.execution.forward_legacy_command(command)
             try:
                 return self.execution_supervisor.forward_or_hold(
                     runtime,

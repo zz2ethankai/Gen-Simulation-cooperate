@@ -46,12 +46,58 @@ def _container_region(manifest: SceneCapabilityManifest, target: str) -> dict[st
     )
 
 
-def _skill_defaults(settings: Mapping[str, Any], name: str) -> dict[str, Any]:
+def _skill_defaults(
+    settings: Mapping[str, Any],
+    name: str,
+    source_template: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     values = settings.get("skill_defaults", {})
-    result = values.get(name) if isinstance(values, Mapping) else None
-    if not isinstance(result, Mapping):
-        raise CompileError(f"agent config has no skill_defaults.{name} mapping")
-    return copy.deepcopy(dict(result))
+    result = copy.deepcopy(dict(source_template or {}))
+    configured = values.get(name) if isinstance(values, Mapping) else None
+    if isinstance(configured, Mapping):
+        result.update(copy.deepcopy(dict(configured)))
+    return result
+
+
+def _collect_source_skill_templates(
+    value: Any,
+) -> dict[tuple[str, tuple[str, ...] | None], dict[str, Any]]:
+    """Collect legacy skill settings for generic Skills that the Agent preserves."""
+
+    templates: dict[tuple[str, tuple[str, ...] | None], dict[str, Any]] = {}
+
+    def visit(node: Any) -> None:
+        if isinstance(node, Mapping):
+            name = node.get("name")
+            objects = node.get("objects")
+            if name and isinstance(objects, list):
+                template = copy.deepcopy(dict(node))
+                for key in ("name", "objects", "arm", "id", "depends_on"):
+                    template.pop(key, None)
+                # This legacy field is intentionally not carried into the
+                # exact Physics Schema world.
+                template.pop("ignore_substring", None)
+                skill_name = str(name).strip().lower()
+                object_key = tuple(str(item) for item in objects)
+                templates.setdefault((skill_name, object_key), template)
+                templates.setdefault((skill_name, None), template)
+                return
+            for child in node.values():
+                visit(child)
+        elif isinstance(node, list):
+            for child in node:
+                visit(child)
+
+    visit(value)
+    return templates
+
+
+def _source_skill_template(
+    templates: Mapping[tuple[str, tuple[str, ...] | None], dict[str, Any]],
+    name: str,
+    objects: list[str],
+) -> dict[str, Any] | None:
+    return templates.get((name, tuple(str(item) for item in objects))) or templates.get((name, None))
 
 
 def _compile_skill(
@@ -59,12 +105,21 @@ def _compile_skill(
     relation: str,
     manifest: SceneCapabilityManifest,
     settings: Mapping[str, Any],
+    source_skill_templates: Mapping[tuple[str, tuple[str, ...] | None], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     name = skill.name.lower()
-    if name == "pick":
-        value = _skill_defaults(settings, "pick")
-    elif name == "place":
-        value = _skill_defaults(settings, "place")
+    configured_defaults = settings.get("skill_defaults", {})
+    has_configured_defaults = (
+        isinstance(configured_defaults, Mapping)
+        and isinstance(configured_defaults.get(name), Mapping)
+    )
+    source_template = (
+        _source_skill_template(source_skill_templates, name, list(skill.objects))
+        if source_skill_templates is not None and not has_configured_defaults
+        else None
+    )
+    value = _skill_defaults(settings, name, source_template)
+    if name == "place":
         relation_defaults = settings.get("skill_defaults", {}).get("relation", {})
         if not isinstance(relation_defaults, Mapping):
             raise CompileError("agent config skill_defaults.relation must be a mapping")
@@ -74,8 +129,6 @@ def _compile_skill(
             region = _container_region(manifest, target)
             if region is None:
                 raise CompileError(f"inside placement requires a declared container region: {target}")
-    else:
-        raise CompileError(f"unsupported physics-schema Skill: {name}")
     value.update(copy.deepcopy(skill.params))
     value["name"] = name
     value["objects"] = list(skill.objects)
@@ -102,6 +155,7 @@ def _compile_stage_phases(
     relation: str,
     manifest: SceneCapabilityManifest,
     settings: Mapping[str, Any],
+    source_skill_templates: Mapping[tuple[str, tuple[str, ...] | None], dict[str, Any]] | None = None,
 ) -> list[dict[str, list[dict[str, Any]]]]:
     """Translate the explicit planning mode to SimBox's phase/arm nesting."""
 
@@ -109,7 +163,13 @@ def _compile_stage_phases(
     ordered: list[tuple[str, dict[str, Any]]] = [
         (
             _resolve_arm(skill.arm, subtask_arm),
-            _compile_skill(skill, relation, manifest, settings),
+            _compile_skill(
+                skill,
+                relation,
+                manifest,
+                settings,
+                source_skill_templates,
+            ),
         )
         for skill in stage.skills
     ]
@@ -190,6 +250,7 @@ def compile_task_config(
         else:
             document = apply_workspace_candidate(document, source_path, workspace_candidate)
     task = document["tasks"][0]
+    source_skill_templates = _collect_source_skill_templates(task.get("skills", []))
     robot_name = str(task.get("robots", [{}])[0].get("name", ""))
     if robot_name != plan.robot.robot_type:
         raise CompileError(f"plan robot {plan.robot.robot_type} does not match source task robot {robot_name}")
@@ -203,6 +264,7 @@ def compile_task_config(
                 _enum_text(subtask.relation),
                 manifest,
                 effective_settings,
+                source_skill_templates,
             )
             stages.append({robot_name: phases})
     task["skills"] = stages

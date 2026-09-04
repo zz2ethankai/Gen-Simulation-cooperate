@@ -511,6 +511,7 @@ def _compact_manifest(manifest: SceneCapabilityManifest) -> dict[str, Any]:
             for item in manifest.objects
         ],
         "container_regions": manifest.container_regions,
+        "existing_skills": manifest.existing_skills,
         "physics_readiness": manifest.physics_readiness,
     }
 
@@ -764,27 +765,29 @@ class TaskResolver:
                 seen_pick: dict[str, bool] = {"auto": False, "left": False, "right": False}
                 for skill in stage.skills:
                     name = skill.name.lower()
+                    if not name:
+                        raise AgentDecisionError("skill name must not be empty")
                     contract = self.skill_contracts.get(name)
-                    if contract is None:
-                        raise AgentDecisionError(f"unsupported skill in v1: {name}")
-                    if len(skill.objects) != contract.object_count:
-                        raise AgentDecisionError(
-                            f"{name} requires {contract.object_count} objects, got {len(skill.objects)}"
-                        )
+                    if contract is not None:
+                        if len(skill.objects) != contract.object_count:
+                            raise AgentDecisionError(
+                                f"{name} requires {contract.object_count} objects, got {len(skill.objects)}"
+                            )
                     if any(item not in object_names for item in skill.objects):
                         raise AgentDecisionError(f"{name} references an unknown object")
                     if skill.arm not in {"auto", "left", "right"}:
                         raise AgentDecisionError(f"invalid arm: {skill.arm}")
-                    unknown_params = set(skill.params) - set(contract.allowed_params)
-                    if unknown_params:
-                        raise AgentDecisionError(f"unsupported {name} params: {sorted(unknown_params)}")
-                    for parameter_name, value in skill.params.items():
-                        _validate_parameter_value(
-                            name,
-                            parameter_name,
-                            value,
-                            contract.parameters[parameter_name],
-                        )
+                    if contract is not None:
+                        unknown_params = set(skill.params) - set(contract.allowed_params)
+                        if unknown_params:
+                            raise AgentDecisionError(f"unsupported {name} params: {sorted(unknown_params)}")
+                        for parameter_name, value in skill.params.items():
+                            _validate_parameter_value(
+                                name,
+                                parameter_name,
+                                value,
+                                contract.parameters[parameter_name],
+                            )
 
                     arm = _effective_arm(skill.arm, subtask.arm)
                     if name == "pick":

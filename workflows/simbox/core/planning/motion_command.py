@@ -179,6 +179,10 @@ class MotionPhaseCommand:
         if not isinstance(self.metadata, Mapping):
             raise TypeError("MotionPhaseCommand metadata must be a mapping")
         self.metadata = dict(self.metadata)
+        if "direct_joint_action" in self.params:
+            raise ValueError(
+                "direct_joint_action must be provided as a typed field"
+            )
 
         if self.gripper_state is not None:
             self.gripper_state = float(self.gripper_state)

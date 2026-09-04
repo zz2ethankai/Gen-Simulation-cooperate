@@ -230,7 +230,9 @@ workflows/simbox/core/skills/observe_hold.py
 workflows/simbox/core/skills/pick_plan_probe.py
 ```
 
-当前 Agent 正式可编排的机器人执行 Skill 仍只有 `pick` 和 `place`。`pick_plan_probe` 是 Workspace 验证内部使用的 planning-only Skill；`observe_hold` 是观察/调试基础设施，不应被 LLM 当成普通任务 Skill 自由选择。
+Physics Schema 不再把机器人执行 Skill 限制为 `pick` 和 `place`。源任务中真实存在的 Skill 可以透传到
+TaskPlan；`pick_plan_probe` 仍是 Workspace 验证内部使用的 planning-only Skill，`observe_hold` 仍是
+观察/调试基础设施。
 
 ### 5.5 合并后必须保留的语义
 
@@ -768,7 +770,7 @@ output/agent_runs/<run_id>/workspace_manifests.json
 ## 12. 当前能力边界
 
 - 首批 inventory 是 Bench2.1 四个场景、20 个任务，但架构不能按这 20 个任务写专属分支；
-- 当前只开放标准 Pick 和 Place；
+- Physics Schema 不按 Skill 名称区分标准/特殊执行 Skill；已登记 Skill 做静态契约校验，其他源任务 Skill 由 runtime 实例化校验；
 - `dual_arm_simultaneous` 显式关闭；
 - 多个 Subtask 可以左右臂先后执行并编译进同一个 YAML；
 - 当前没有 Nav，没有共同底座位姿时停止；

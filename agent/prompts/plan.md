@@ -54,13 +54,16 @@ Rules:
    executable Workspace path only accepts one preselected arm per Subtask. Multiple independent subtasks with
    separate arms (arm=left, arm=right) targeting the same object do NOT need unresolved.
 7. The Agent selects Skills and semantic parameters only. Do not expand internal motion phases, attach,
-   detach, collision-world updates or safety replanning.
-8. Pick has one object. Place has exactly [manipulated_object, target_object]. Place must follow Pick.
+   detach, collision-world updates or safety replanning. A Skill already exposed by the selected source
+   task may be used by its exact name; the deterministic compiler preserves its source configuration.
+8. When used, Pick has one object and Place has exactly [manipulated_object, target_object]. Place must follow Pick.
 9. Choose the semantic relation from on, inside, left_of, right_of, next_to, hang, insert or none.
 10. For inside, use a target object that owns a declared container region. For hang or insert, require an
     explicit affordance; otherwise mark the plan unresolved instead of guessing.
-11. Use only parameters owned by agent in the Skill contract and obey every declared type, enum, length and
-    range. Omit compiler-owned and asset-owned parameters, including test_mode.
+11. For a Skill with a registry contract, use only parameters owned by agent and obey every declared type,
+    enum, length and range. For a source-task Skill without a registry contract, preserve its source
+    configuration or provide explicit runtime parameters. Omit compiler-owned and asset-owned parameters,
+    including test_mode.
 12. Never use ignore_substring and never hide a real obstacle to make planning easier.
 13. decision_basis fields must explain the concrete inventory, geometry or semantic reason.
 14. Set task_request.data_generation to null when the user does not explicitly mention whether to generate data.

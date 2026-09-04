@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from core.controllers.curobo.phase_execution import ExecutionStatus
 from core.controllers.curobo.trajectory import execution_trajectory_tensor
-from core.planning.domain_types import CollisionPolicy, CommandStatus
+from core.planning.domain_types import CollisionOptions, CollisionPolicy, CommandStatus
 from core.planning.motion_command import MotionPhase, MotionPhaseCommand
 from core.controllers.curobo.components import (
     MutableExecutionState,
@@ -69,6 +69,7 @@ class ControllerExecution:
                 dtype=float,
             ).reshape(-1)
         self._action = None
+        self._legacy_excluded_obstacles: tuple[str, ...] = ()
     def _begin_phase_command(self, command: MotionPhaseCommand) -> bool:
         if command is self.state.active_phase_command:
             return False
@@ -110,6 +111,90 @@ class ControllerExecution:
             self.close_gripper()
         else:
             raise ValueError("direct gripper_state must be exactly 1.0 or -1.0")
+
+    def _legacy_update_specific(self, ignore_substring) -> None:
+        """Translate the old substring world filter to exact native paths."""
+
+        manager = getattr(
+            getattr(self.runtime, "robot_port", None),
+            "collision_scene_manager",
+            None,
+        )
+        if manager is None:
+            self._legacy_excluded_obstacles = ()
+            return
+        if isinstance(ignore_substring, (str, bytes)):
+            terms = (str(ignore_substring),)
+        else:
+            terms = tuple(
+                str(value)
+                for value in (ignore_substring or ())
+                if value is not None and str(value)
+            )
+        native_paths = set(self.runtime.obstacle_names())
+        self._legacy_excluded_obstacles = tuple(
+            dict.fromkeys(
+                str(path)
+                for path in getattr(manager, "collision_prim_paths", ())
+                if str(path) in native_paths
+                and any(term in str(path) for term in terms)
+            )
+        )
+
+    def forward_legacy_command(self, command: MotionPhaseCommand):
+        """Execute the old art-skill lane through the current typed boundary."""
+
+        if not isinstance(command, MotionPhaseCommand):
+            raise TypeError("legacy execution accepts MotionPhaseCommand only")
+        if command.is_direct:
+            return self.forward_phase_command(command)
+
+        first_step = command is not self.state.active_phase_command
+        if first_step and self.state.active_phase_command is not None:
+            self.clear_plan_and_hold()
+        first_step = self._begin_phase_command(command)
+        if first_step:
+            self.phase_executor.clear()
+            self.state.last_arm_action = None
+            if command.metadata.get("legacy_operation") == "update_specific":
+                self._legacy_update_specific(
+                    command.metadata.get("legacy_ignore_substring", ())
+                )
+                self.state.phase_bookkeeping_done = True
+
+        self._apply_gripper_action(command.gripper_action)
+        if command.joint_target is not None:
+            raise ValueError("legacy art execution accepts pose commands only")
+        if command.is_bookkeeping or command.phase in {
+            MotionPhase.GRIPPER_CLOSE,
+            MotionPhase.GRIPPER_OPEN,
+        }:
+            self.state.phase_dwell_count += 1
+            position, orientation = self.get_ee_pose()
+            return self.ee_forward(
+                position,
+                orientation,
+                skip_plan=True,
+                use_phase_command=False,
+            )
+
+        position = command.target_position
+        orientation = command.target_orientation
+        skip_plan = position is None or orientation is None
+        if skip_plan:
+            position, orientation = self.get_ee_pose()
+        collision_options = CollisionOptions(
+            policy=CollisionPolicy.WORLD_TRANSIT,
+            excluded_obstacles=self._legacy_excluded_obstacles,
+        )
+        return self.ee_forward(
+            position,
+            orientation,
+            eps=command.planning_epsilon,
+            skip_plan=skip_plan,
+            use_phase_command=False,
+            collision_options=collision_options,
+        )
     def forward_phase_command(self, command: MotionPhaseCommand):
         first_step = self._begin_phase_command(command)
         direct_joint_action = command.direct_joint_action
@@ -405,6 +490,9 @@ class ControllerExecution:
         eps=1e-4,
         skip_plan=False,
         gripper_action=None,
+        *,
+        use_phase_command=True,
+        collision_options: CollisionOptions | None = None,
     ):
         ee_trans = self.tensor_args.to_device(ee_trans)
         ee_ori = self.tensor_args.to_device(ee_ori)
@@ -421,8 +509,13 @@ class ControllerExecution:
             self.state.last_arm_action = None
             command = self.state.active_phase_command
             kwargs = {"start_state": self.runtime.arm_joint_state(sim_js).unsqueeze(0)}
-            if isinstance(command, MotionPhaseCommand):
+            if use_phase_command and isinstance(command, MotionPhaseCommand):
                 kwargs["command"] = command
+            else:
+                kwargs["phase_id"] = self.state.last_command_name
+                kwargs["collision_policy"] = CollisionPolicy.WORLD_TRANSIT
+                if collision_options is not None:
+                    kwargs["collision_options"] = collision_options
             result = self.runtime.plan_pose(ee_trans, ee_ori, **kwargs)
             self._install_result(
                 result, ee_trans, ee_ori, self.state.last_command_name

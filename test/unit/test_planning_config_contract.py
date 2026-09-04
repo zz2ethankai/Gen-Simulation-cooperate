@@ -61,7 +61,15 @@ def test_non_operation_skills_are_passthrough(name):
 
 
 def test_other_skills_use_physics_schema():
-    assert resolve_skill_collision_world_mode("heuristic__skill", PHYSICS_SCHEMA_MODE) == PHYSICS_SCHEMA_MODE
+    for name in ("heuristic__skill", "open", "close", "artpreplan"):
+        assert resolve_skill_collision_world_mode(name, PHYSICS_SCHEMA_MODE) == PHYSICS_SCHEMA_MODE
+
+
+def test_unregistered_operation_skills_are_accepted_by_the_physics_contract():
+    validate_planning_contract(
+        _task({"name": "open", "objects": ["microwave"], "planner_setting": {}}),
+        PHYSICS_SCHEMA_MODE,
+    )
 
 
 def test_dual_arm_operation_phases_are_accepted_for_sequential_dag_compile():

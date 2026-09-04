@@ -36,7 +36,7 @@ Agent 的主要职责是生成或修订配置，而不是无限制编写策略�
 - 选择 Skill、顺序和参数的决策依据；
 - Place 到哪里、为何选择该位置以及用什么 predicate 判断成功。
 
-LLM 可以利用语义能力选择 Skill 和总体顺序，但对象引用、位姿、几何、参数范围、配置写入和合法性检查必须交给确定性代码。
+LLM 可以利用语义能力选择 Skill 和总体顺序，但对象引用、位姿、几何、已登记 Skill 的参数范围、配置写入和合法性检查必须交给确定性代码；未登记的源任务 Skill 由 SimBox runtime 做最终校验。
 
 ### 2.2 Skill 指机器人执行技能
 
@@ -152,8 +152,8 @@ TaskRequest
 规划阶段实际加载三类约束：`prompts/plan.md` 提供结构化输出要求；
 `prompts/Agent任务规划与Skill编排规范.md` 提供 subtask、手臂、执行模式以及 Pick/Place 参数含义；
 `prompts/Agent中心物品选择与机器人初始位姿生成规范.md` 提供中心物品识别、先选手臂、再生成候选以及共同位姿规则。
-参数的机器可读类型、枚举、范围和所有权以 `registry/skill_contracts.yaml` 为准，
-`resolver.py` 必须在配置编译前强制校验，不能只依赖 LLM 遵守文字说明。
+参数的机器可读类型、枚举、范围和所有权以 `registry/skill_contracts.yaml` 为准；未登记但源任务已有的
+Skill 继承源 YAML 配置。`resolver.py` 对已登记 Skill 在配置编译前强制校验，不能只依赖 LLM 遵守文字说明。
 
 ### 4.1 配置分工和覆盖顺序
 
